@@ -33,17 +33,22 @@ export const sendUintMessage =
   };
 
 export const getCallerFile = (n: number) => {
-  const originalStackTrace = Error.prepareStackTrace;
-  Error.prepareStackTrace = (_, stack) => stack;
   const err = new Error();
-  const stack = err.stack as unknown as NodeJS.CallSite[];
-  Error.prepareStackTrace = originalStackTrace;
-  // Get the caller file
-  const caller = stack[n]?.getFileName();
+  const stack = err?.stack;
 
-  if (!caller) {
+  if (typeof stack === "undefined") {
     throw new Error("Unable to determine caller file.");
+  } else {
+    const path = fromStackStringToFiles(stack);
+    return path[path.length - 1];
   }
-
-  return caller;
 };
+
+const fromStackStringToFiles = (str: string) =>
+  str.split(" ")
+    .filter((s) => s.includes("://"))
+    .map((s) => s.replaceAll("(", "").replaceAll(")", ""))
+    .map((s) => {
+      const next = s.indexOf(":", s.indexOf(":") + 1);
+      return s.slice(0, next);
+    });

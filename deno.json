@@ -1,0 +1,5 @@
+{
+  "imports": {
+    "@cross/test": "jsr:@cross/test@^0.0.10"
+  }
+}

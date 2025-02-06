@@ -98,7 +98,10 @@ export const getFunctions = async ({ list, ids }: {
   return flattenedResults as unknown as (UnionReturnFixed & { name: string })[];
 };
 
-const toListAndIds = (args: Record<string, Composed>, filter?: string) => {
+export const toListAndIds = (
+  args: Record<string, Composed>,
+  filter?: string,
+) => {
   const result = Object.values(args)
     .reduce(
       (acc, v) => (
@@ -147,8 +150,6 @@ export const compose = ({
     name: k,
   }))
     .sort((a, b) => a.name.localeCompare(b.name));
-
-  console.log(listOfFunctions);
 
   const workers = Array.from({
     length: threads ?? 1,
