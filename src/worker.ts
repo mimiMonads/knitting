@@ -11,7 +11,7 @@ const mainLoop = async () => {
     sharedSab,
   });
 
-  const listOfFunctions = await getFunctions({
+  const jobs = await getFunctions({
     list: workerData.list,
     isWorker: true,
     ids: workerData.ids,
@@ -23,30 +23,31 @@ const mainLoop = async () => {
         ),
     );
 
-  const status = signals.status;
-  const id = signals.id;
-
-  const workerSig = workerSignal(signals);
-
-  const readMsg = readMessageToUint(signals);
-  const writeMsg = writeUintMessage(signals);
+  const signal = workerSignal(signals);
+  const reader = readMessageToUint(signals);
+  const writer = writeUintMessage(signals);
 
   const queue = multi({
     //@ts-ignore
-    jobs: listOfFunctions,
-    writer: writeMsg,
-    status,
+    jobs,
+    writer,
+    reader,
+    signal,
   });
 
+  const on192 = queue.add(192);
+  const on224 = queue.add(224);
+
   while (true) {
-    switch (workerSig.curretSignal()) {
+    switch (signal.curretSignal()) {
       case 0:
       case 1:
       case 2:
-      case 128: {
+      case 128:
+      case 254:
+      case 255: {
         continue;
       }
-
       case 127: {
         await queue.nextJob();
 
@@ -55,23 +56,22 @@ const mainLoop = async () => {
           continue;
         }
         if (queue.allDone()) {
-          workerSig.finishedAllTasks();
+          signal.finishedAllTasks();
           continue;
         }
 
-        workerSig.messageWasRead();
+        signal.messageWasRead();
         continue;
       }
 
       case 224:
         {
-          //@ts-ignore
-          queue.add([id[0], null, status[1], 224]);
+          on224();
         }
         continue;
       case 192:
         {
-          queue.add([id[0], readMsg(), status[1], 192]);
+          on192();
         }
 
         continue;

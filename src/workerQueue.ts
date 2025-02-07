@@ -1,15 +1,21 @@
 import type { PartialQueueList, QueueList } from "./mainQueue.ts";
-import type { StatusSignal, WorkerSignal } from "./signal.ts";
+import {
+  signalsForWorker,
+  type StatusSignal,
+  type WorkerSignal,
+} from "./signal.ts";
 
 type ArgumetnsForMulti = {
   jobs: [Function, StatusSignal][];
   max?: number;
   writer: (job: QueueList) => void;
+  reader: () => Uint8Array;
   signal: WorkerSignal;
-  status: Uint8Array;
 };
 // Create and manage a working queue.
-export const multi = ({ jobs, max, writer, status }: ArgumetnsForMulti) => {
+export const multi = (
+  { jobs, max, writer, signal, reader }: ArgumetnsForMulti,
+) => {
   const queue = Array.from(
     { length: max ?? 10 },
     () =>
@@ -30,28 +36,29 @@ export const multi = ({ jobs, max, writer, status }: ArgumetnsForMulti) => {
     someHasFinished: () => queue.some((task) => task[2] === true),
 
     // Add a task to the queue.
-    add: (element: PartialQueueList) => {
+    add: (statusSignal: StatusSignal) => () => {
       const freeSlot = queue.findIndex((task) => !task[0]);
+
       if (freeSlot !== -1) {
         queue[freeSlot][0] = true;
-        queue[freeSlot][3] = element[0];
-        queue[freeSlot][4] = element[1];
-        queue[freeSlot][5] = element[2];
-        queue[freeSlot][7] = element[3];
+        queue[freeSlot][3] = signal.getCurrentID();
+        queue[freeSlot][4] = reader();
+        queue[freeSlot][5] = signal.functionToUse();
+        queue[freeSlot][7] = statusSignal;
       } else {
         queue.push([
           true,
           false,
           false,
-          element[0],
-          element[1],
-          element[2],
+          signal.getCurrentID(),
+          reader(),
+          signal.functionToUse(),
           new Uint8Array(),
-          element[3],
+          statusSignal,
         ]);
       }
 
-      status[0] = 127;
+      signal.readyToRead();
     },
 
     // Write completed tasks to the writer.
@@ -59,7 +66,7 @@ export const multi = ({ jobs, max, writer, status }: ArgumetnsForMulti) => {
       const finishedTaskIndex = queue.findIndex((task) => task[2]);
       if (finishedTaskIndex !== -1) {
         writer(queue[finishedTaskIndex]); // Writes on playload
-        status[0] = 0; // The main can read it now;
+        signal.messageReady();
         queue[finishedTaskIndex][0] = false; // Reset OnUse
         queue[finishedTaskIndex][2] = false; // Reset Solved
       }

@@ -5,7 +5,7 @@ export type WorkerSignal = ReturnType<typeof workerSignal>;
 type StatusSignalForVoid = 224 | 192;
 export type StatusSignal = StatusSignalForVoid;
 
-type Sab = {
+export type Sab = {
   size?: number;
   sharedSab?: SharedArrayBuffer;
 };
@@ -45,5 +45,7 @@ export const workerSignal = ({ status, id }: SignalArguments) => ({
   messageReady: (): 0 => (status[0] = 0),
   messageWasRead: (): 1 => (status[0] = 1),
   finishedAllTasks: (): 2 => (status[0] = 2),
+  readyToRead: (): 127 => (status[0] = 127),
   getCurrentID: () => id[0],
+  functionToUse: () => status[1],
 });

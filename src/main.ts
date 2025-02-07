@@ -2,22 +2,24 @@
 import { Worker } from "node:worker_threads";
 import { multi, type MultiQueue, type PromiseMap } from "./mainQueue.ts";
 import { genTaskID, readMessageToUint, sendUintMessage } from "./helpers.ts";
-import { mainSignal, signalsForWorker } from "./signal.ts";
+import { mainSignal, Sab, signalsForWorker } from "./signal.ts";
 import { checker } from "./checker.ts";
 
 export const createContext = ({
   promisesMap,
   list,
   ids,
+  sab,
 }: {
   promisesMap: PromiseMap;
   list: string[];
   ids: number[];
+  sab?: Sab;
 }) => {
   const currentPath = import.meta.url;
   const workerUrl = new URL(currentPath.replace("main.ts", "worker.ts"));
 
-  const signals = signalsForWorker();
+  const signals = signalsForWorker(sab);
   const signalBox = mainSignal(signals);
 
   const writer = sendUintMessage(signals);

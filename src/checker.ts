@@ -30,9 +30,9 @@ export const checker = ({
           queue.sendNextToWorker();
           queueMicrotask(boundCheck);
         } else {
-          signalBox.hasNoMoreMessages();
           //@ts-ignore
           this.channelHandler.close();
+          signalBox.hasNoMoreMessages();
         }
         return;
 
