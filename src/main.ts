@@ -48,13 +48,13 @@ export const createContext = ({
     },
   });
 
-  const isActive = ((status: Uint8Array) => () =>
+  const isActive = ((status: Uint8Array) =>(fun : () => boolean) => () =>
     status[0] === 255
       ? (
-        // Skips one cycle
-        status[0] = 254, queueMicrotask(check)
+        status[0] = 254, 
+        queueMicrotask(check)
       )
-      : undefined)(signals.status);
+      : undefined)(signals.status)(queue.canWrite);
 
   type Resolver = {
     queue: MultiQueue;
@@ -67,7 +67,7 @@ export const createContext = ({
     const { queue, fnNumber, statusSignal } = args;
 
     const adds = queue.add(statusSignal)(fnNumber);
-    return async (args: Uint8Array) => {
+    return  (args: Uint8Array) => {
       const r = adds(args);
       isActive();
       return queue.awaits(r);

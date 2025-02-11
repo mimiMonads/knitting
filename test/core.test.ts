@@ -81,8 +81,10 @@ Deno.test("Using core wit multiple arguments", async () => {
       ctx.kills,
     );
 
+  
   assertEquals(
     res,
     [unitArrayOne, unitArrayTwo, unitArrayThree],
   );
+
 });
