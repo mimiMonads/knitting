@@ -32,11 +32,15 @@ type ReturnFixed<A extends Args> = FixPoint<A> & SecondPart;
 export const fixedPoint = <A extends Args>(
   I: FixPoint<A>,
 ): ReturnFixed<A> => {
+
+  const importedFrom = new URL(getCallerFile(2)).href
+
+  
   return ({
     ...I,
     statusSignal: I.args === "void" ? 224 : 192,
     id: genTaskID(),
-    importedFrom: new URL(getCallerFile(2)).href,
+    importedFrom,
     [symbol]: "vixeny",
   });
 };

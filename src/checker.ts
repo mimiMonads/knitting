@@ -4,11 +4,18 @@ import type { MainSignal } from "./signal.ts";
 export const checker = ({
   signalBox,
   queue,
+  channelHandler
 }: {
   queue: MultiQueue;
   signalBox: MainSignal;
+  channelHandler: ChannelHandler
 }) => {
-  function check() {
+  const  check =  () => {
+
+    if(check.running === false) {
+      return
+    }
+
     switch (signalBox.updateLastSignal()) {
       case 0:
         queue.solve();
@@ -17,49 +24,42 @@ export const checker = ({
         } else {
           signalBox.readyToRead();
         }
-        queueMicrotask(boundCheck);
+        queueMicrotask(check);
         return;
 
       case 1:
         signalBox.readyToRead();
-        queueMicrotask(boundCheck);
+        queueMicrotask(check);
         return;
 
       case 2:
         if (queue.canWrite()) {
           queue.sendNextToWorker();
-          queueMicrotask(boundCheck);
+          queueMicrotask(check);
         } else {
-          //@ts-ignore
-          this.channelHandler.close();
           signalBox.hasNoMoreMessages();
+          check.running = false;
         }
         return;
 
       case 127: {
-        //@ts-ignore
-        this.channelHandler.open(boundCheck);
-        //@ts-ignore
-        this.channelHandler.channel.port2.postMessage(null);
+        
+        channelHandler.scheduleCheck();
         return;
       }
       case 192:
       case 224:
-        queueMicrotask(boundCheck);
+        queueMicrotask(check);
         return;
 
       case 254:
+      
         queue.sendNextToWorker();
-        queueMicrotask(boundCheck);
+        queueMicrotask(check);
         return;
 
       case 255:
-        if (queue.canWrite()) {
-          queue.sendNextToWorker();
-          queueMicrotask(boundCheck);
-        } else {
-          console.log("Finish by 255");
-        }
+        check.running = false;
         return;
     }
 
@@ -67,47 +67,53 @@ export const checker = ({
     throw new Error("unreachable");
   }
 
-  const boundCheck = check.bind({
-    channelHandler: new ChannelHandler(),
-  });
+  // This is not the best way to do it but it should work for now 
+  check.running = false;
 
-  return boundCheck;
+
+ return check
 };
 
-class ChannelHandler {
-  channel: MessageChannel;
-  isOpen: boolean;
+export class ChannelHandler {
+  public channel: MessageChannel;
+  private isOpen: boolean;
 
   constructor() {
     this.channel = new MessageChannel();
-
     this.isOpen = false;
   }
 
-  scheduleCheck(f: Function) {
-    f();
+
+  public scheduleCheck(): void {
+    this.channel.port2.postMessage(null)
   }
 
-  open(f: Function) {
+  /**
+   * Opens the channel (if not already open) and sets the onmessage handler.
+   * This is the setup so `scheduleCheck` can send a message to the port 1.
+   */
+  public open(f: () => void): void {
     if (this.isOpen) {
       return;
     }
-
-    //@ts-ignore
     this.channel.port1.onmessage = f;
     this.channel.port2.start();
     this.channel.port1.start();
     this.isOpen = true;
   }
 
-  close() {
+  /**
+   * Closes the channel if it is open.
+   */
+  public close(): void {
     if (!this.isOpen) {
       return;
     }
-
     this.channel.port1.close();
     this.channel.port1.onmessage = null;
     this.channel.port2.close();
     this.isOpen = false;
   }
 }
+
+

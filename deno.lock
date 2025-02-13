@@ -7,6 +7,7 @@
     "jsr:@std/internal@^1.0.5": "1.0.5",
     "npm:@types/node@*": "22.5.4",
     "npm:assert@*": "2.1.0",
+    "npm:mitata@^1.0.34": "1.0.34",
     "npm:test@*": "3.3.0"
   },
   "jsr": {
@@ -511,6 +512,9 @@
     "minimist@1.2.8": {
       "integrity": "sha512-2yyAR8qBkN3YuheJanUpWC5U3bb5osDywNB8RzDVlDwDHbocAJveqqj1u8+SVD7jkWT4yvsHCpWqqWqAxb0zCA=="
     },
+    "mitata@1.0.34": {
+      "integrity": "sha512-Mc3zrtNBKIMeHSCQ0XqRLo1vbdIx1wvFV9c8NJAiyho6AjNfMY8bVhbS12bwciUdd1t4rj8099CH3N3NFahaUA=="
+    },
     "object-inspect@1.13.4": {
       "integrity": "sha512-W67iLl4J2EXEGTbfeHCffrjDfitvLANg0UlX3wFUUSTx92KXRFegMHUVgSqE+wvhAbi4WqjGg9czysTV2Epbew=="
     },
@@ -845,7 +849,8 @@
   },
   "workspace": {
     "dependencies": [
-      "jsr:@cross/test@^0.0.10"
+      "jsr:@cross/test@^0.0.10",
+      "npm:mitata@^1.0.34"
     ]
   }
 }

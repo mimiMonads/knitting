@@ -3,7 +3,7 @@ import { Worker } from "node:worker_threads";
 import { multi, type MultiQueue, type PromiseMap } from "./mainQueue.ts";
 import { genTaskID, readMessageToUint, sendUintMessage } from "./helpers.ts";
 import { mainSignal, Sab, signalsForWorker } from "./signal.ts";
-import { checker } from "./checker.ts";
+import { checker  , ChannelHandler} from "./checker.ts";
 
 export const createContext = ({
   promisesMap,
@@ -33,10 +33,16 @@ export const createContext = ({
     promisesMap,
   });
 
+  const channelHandler = new ChannelHandler()
+  
+
   const check = checker({
     signalBox,
     queue,
+    channelHandler
   });
+
+  channelHandler.open(check)
 
   const worker = new Worker(workerUrl, {
     //@ts-ignore
@@ -48,13 +54,14 @@ export const createContext = ({
     },
   });
 
-  const isActive = ((status: Uint8Array) =>(fun : () => boolean) => () =>
-    status[0] === 255
+  const isActive = ((status: Uint8Array) => () =>
+    check.running === false
       ? (
-        status[0] = 254, 
+        status[0] = 254,
+        check.running = true,
         queueMicrotask(check)
       )
-      : undefined)(signals.status)(queue.canWrite);
+      : undefined)(signals.status);
 
   type Resolver = {
     queue: MultiQueue;
@@ -79,6 +86,9 @@ export const createContext = ({
     resolver,
     isActive,
     awaitArray: queue.awaitArray,
-    kills: () => worker.terminate(),
+    kills: () => (
+      channelHandler.close(),
+      worker.terminate()
+    ),
   };
 };

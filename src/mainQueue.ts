@@ -67,8 +67,9 @@ export const multi = (
   { writer, signalBox, max, reader, genTaskID, promisesMap }:
     MultipleQueueSingle,
 ) => {
+
   const queue = Array.from(
-    { length: max ?? 10 },
+    { length: max ?? 3 },
     () =>
       [
         true,
@@ -83,7 +84,7 @@ export const multi = (
   );
 
   const freeSlotOp = Array.from(
-    { length: max ?? 10 },
+    { length: max ?? 3 },
     () => true,
   );
 

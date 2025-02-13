@@ -5,16 +5,7 @@ export const aaa = fixedPoint({
   f: async (arr: Uint8Array) => {
     // Simulate an expensive operation
 
-    let time = 100;
-
-    while (time !== 0) {
-      performance.now();
-      time--;
-    }
-
-    return Uint8Array.from(
-      Array.from(arr).map((num) => num * 2),
-    );
+   return arr
   },
 });
 
