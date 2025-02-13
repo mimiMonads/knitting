@@ -4,16 +4,15 @@ import type { MainSignal } from "./signal.ts";
 export const checker = ({
   signalBox,
   queue,
-  channelHandler
+  channelHandler,
 }: {
   queue: MultiQueue;
   signalBox: MainSignal;
-  channelHandler: ChannelHandler
+  channelHandler: ChannelHandler;
 }) => {
-  const  check =  () => {
-
-    if(check.running === false) {
-      return
+  const check = () => {
+    if (check.running === false) {
+      return;
     }
 
     switch (signalBox.updateLastSignal()) {
@@ -43,7 +42,6 @@ export const checker = ({
         return;
 
       case 127: {
-        
         channelHandler.scheduleCheck();
         return;
       }
@@ -53,7 +51,6 @@ export const checker = ({
         return;
 
       case 254:
-      
         queue.sendNextToWorker();
         queueMicrotask(check);
         return;
@@ -65,13 +62,12 @@ export const checker = ({
 
     console.log(signalBox.updateLastSignal());
     throw new Error("unreachable");
-  }
+  };
 
-  // This is not the best way to do it but it should work for now 
+  // This is not the best way to do it but it should work for now
   check.running = false;
 
-
- return check
+  return check;
 };
 
 export class ChannelHandler {
@@ -83,9 +79,8 @@ export class ChannelHandler {
     this.isOpen = false;
   }
 
-
   public scheduleCheck(): void {
-    this.channel.port2.postMessage(null)
+    this.channel.port2.postMessage(null);
   }
 
   /**
@@ -115,5 +110,3 @@ export class ChannelHandler {
     this.isOpen = false;
   }
 }
-
-

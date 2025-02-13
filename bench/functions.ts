@@ -1,11 +1,19 @@
-import { fixedPoint } from "./fixpoint.ts";
+import { fixedPoint } from "../src/fixpoint.ts";
 
 export const aaa = fixedPoint({
   args: "uint8",
   f: async (arr: Uint8Array) => {
     // Simulate an expensive operation
 
-   return arr
+    return arr;
+  },
+});
+
+export const inLine = fixedPoint({
+  args: "uint8",
+  f: async (arr: Uint8Array) => {
+    // Simulate an expensive operation
+    return arr;
   },
 });
 

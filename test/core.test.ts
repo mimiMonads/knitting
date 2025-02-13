@@ -33,7 +33,6 @@ Deno.test("Using core one argument", async () => {
   const num = ctx.queue.add(192)(0)(unitArrayOne);
   ctx.isActive();
   const res1 = await ctx.queue.awaits(num)
-    
     .finally(
       ctx.kills,
     );
@@ -75,15 +74,10 @@ Deno.test("Using core wit multiple arguments", async () => {
 
   // Resolving
   const res = await ctx.awaitArray(arr)
-    .finally(
-      () => (console.log(signal.status[0]),
-      ctx.kills())
-    );
+    .finally(ctx.kills);
 
-  
   assertEquals(
     res,
     [unitArrayOne, unitArrayTwo, unitArrayThree],
   );
-
 });

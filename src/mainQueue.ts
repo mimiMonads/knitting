@@ -67,7 +67,6 @@ export const multi = (
   { writer, signalBox, max, reader, genTaskID, promisesMap }:
     MultipleQueueSingle,
 ) => {
-
   const queue = Array.from(
     { length: max ?? 3 },
     () =>
@@ -89,8 +88,6 @@ export const multi = (
   );
 
   return {
-    isBusy: () => freeSlotOp.indexOf(true) === -1,
-
     canWrite: () => freeSlotOp.indexOf(false) !== -1,
 
     isEverythingSolve: () =>
@@ -159,7 +156,6 @@ export const multi = (
         (item) => item[0] === false && item[1] === false,
       );
       if (idx === -1) {
-        console.log(queue);
         throw "xd somethin whent wrong in sendNextToWorker";
       }
 

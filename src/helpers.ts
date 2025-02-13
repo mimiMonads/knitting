@@ -17,8 +17,6 @@ export const readMessageToUint =
   ({ payload, payloadLenght }: SignalArguments) => () =>
     payload.slice(0, payloadLenght[0].valueOf());
 
-
-
 // Write a Uint8Array message with task metadata.
 export const writeUintMessage =
   ({ id, payload, payloadLenght }: SignalArguments) => (task: QueueList) => {
@@ -41,11 +39,10 @@ export const getCallerFile = (n: number) => {
   if (typeof stack === "undefined") {
     throw new Error("Unable to determine caller file.");
   } else {
-    
     const path = fromStackStringToFiles(stack);
-  
-    if(!ISDENO){
-      return "file://" + path[path.length - 1]
+
+    if (!ISDENO) {
+      return "file://" + path[path.length - 1];
     }
     return path[path.length - 1];
   }
@@ -53,20 +50,16 @@ export const getCallerFile = (n: number) => {
 
 // This thing is annoying asf
 //@ts-ignore
-const ISDENO = typeof Deno == 'object' && Deno !== null
+const ISDENO = typeof Deno == "object" && Deno !== null;
 
 const fromStackStringToFiles = (str: string) =>
   str.split(" ")
-    .filter((s) => 
-      ISDENO ? s.includes("://")
-      :  s.includes("(/"))
+    .filter((s) => ISDENO ? s.includes("://") : s.includes("(/"))
     .map((s) => s.replaceAll("(", "").replaceAll(")", ""))
     .map((s) => {
       // There's not way this will work in the future
       // TODO: make this more robust
-      const next = ISDENO
-        ? s.indexOf(":", s.indexOf(":") + 1)
-        :  s.indexOf(":") ;
+      const next = ISDENO ? s.indexOf(":", s.indexOf(":") + 1) : s.indexOf(":");
 
       return s.slice(0, next);
     });

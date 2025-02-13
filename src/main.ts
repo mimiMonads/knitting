@@ -3,7 +3,7 @@ import { Worker } from "node:worker_threads";
 import { multi, type MultiQueue, type PromiseMap } from "./mainQueue.ts";
 import { genTaskID, readMessageToUint, sendUintMessage } from "./helpers.ts";
 import { mainSignal, Sab, signalsForWorker } from "./signal.ts";
-import { checker  , ChannelHandler} from "./checker.ts";
+import { ChannelHandler, checker } from "./checker.ts";
 
 export const createContext = ({
   promisesMap,
@@ -33,16 +33,15 @@ export const createContext = ({
     promisesMap,
   });
 
-  const channelHandler = new ChannelHandler()
-  
+  const channelHandler = new ChannelHandler();
 
   const check = checker({
     signalBox,
     queue,
-    channelHandler
+    channelHandler,
   });
 
-  channelHandler.open(check)
+  channelHandler.open(check);
 
   const worker = new Worker(workerUrl, {
     //@ts-ignore
@@ -57,9 +56,7 @@ export const createContext = ({
   const isActive = ((status: Uint8Array) => () =>
     check.running === false
       ? (
-        status[0] = 254,
-        check.running = true,
-        queueMicrotask(check)
+        status[0] = 254, check.running = true, queueMicrotask(check)
       )
       : undefined)(signals.status);
 
@@ -74,7 +71,7 @@ export const createContext = ({
     const { queue, fnNumber, statusSignal } = args;
 
     const adds = queue.add(statusSignal)(fnNumber);
-    return  (args: Uint8Array) => {
+    return (args: Uint8Array) => {
       const r = adds(args);
       isActive();
       return queue.awaits(r);
@@ -87,8 +84,7 @@ export const createContext = ({
     isActive,
     awaitArray: queue.awaitArray,
     kills: () => (
-      channelHandler.close(),
-      worker.terminate()
+      channelHandler.close(), worker.terminate()
     ),
   };
 };
