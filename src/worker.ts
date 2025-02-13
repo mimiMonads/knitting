@@ -26,20 +26,20 @@ const mainLoop = async () => {
   const signal = workerSignal(signals);
   const reader = readMessageToUint(signals);
   const writer = writeUintMessage(signals);
-
-  const queue = multi({
+  const { add, nextJob, someHasFinished, write, allDone } = multi({
     //@ts-ignore
     jobs,
     writer,
     reader,
     signal,
   });
+  const { curretSignal, finishedAllTasks, messageWasRead } = signal;
 
-  const on192 = queue.add(192);
-  const on224 = queue.add(224);
+  const on192 = add(192);
+  const on224 = add(224);
 
   while (true) {
-    switch (signal.curretSignal()) {
+    switch (curretSignal()) {
       case 0:
       case 1:
       case 2:
@@ -49,18 +49,18 @@ const mainLoop = async () => {
         continue;
       }
       case 127: {
-        await queue.nextJob();
+        await nextJob();
 
-        if (queue.someHasFinished()) {
-          queue.write();
+        if (someHasFinished()) {
+          write();
           continue;
         }
-        if (queue.allDone()) {
-          signal.finishedAllTasks();
+        if (allDone()) {
+          finishedAllTasks();
           continue;
         }
 
-        signal.messageWasRead();
+        messageWasRead();
         continue;
       }
 

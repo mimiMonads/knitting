@@ -2,8 +2,16 @@ import type { MultiQueue } from "./mainQueue.ts";
 import type { MainSignal } from "./signal.ts";
 
 export const checker = ({
-  signalBox,
-  queue,
+  signalBox: {
+    updateLastSignal,
+    readyToRead,
+    hasNoMoreMessages,
+  },
+  queue: {
+    solve,
+    canWrite,
+    sendNextToWorker,
+  },
   channelHandler,
 }: {
   queue: MultiQueue;
@@ -15,28 +23,28 @@ export const checker = ({
       return;
     }
 
-    switch (signalBox.updateLastSignal()) {
+    switch (updateLastSignal()) {
       case 0:
-        queue.solve();
-        if (queue.canWrite()) {
-          queue.sendNextToWorker();
+        solve();
+        if (canWrite()) {
+          sendNextToWorker();
         } else {
-          signalBox.readyToRead();
+          readyToRead();
         }
         queueMicrotask(check);
         return;
 
       case 1:
-        signalBox.readyToRead();
+        readyToRead();
         queueMicrotask(check);
         return;
 
       case 2:
-        if (queue.canWrite()) {
-          queue.sendNextToWorker();
+        if (canWrite()) {
+          sendNextToWorker();
           queueMicrotask(check);
         } else {
-          signalBox.hasNoMoreMessages();
+          hasNoMoreMessages();
           check.running = false;
         }
         return;
@@ -51,7 +59,7 @@ export const checker = ({
         return;
 
       case 254:
-        queue.sendNextToWorker();
+        sendNextToWorker();
         queueMicrotask(check);
         return;
 
@@ -60,7 +68,7 @@ export const checker = ({
         return;
     }
 
-    console.log(signalBox.updateLastSignal());
+    console.log(updateLastSignal());
     throw new Error("unreachable");
   };
 

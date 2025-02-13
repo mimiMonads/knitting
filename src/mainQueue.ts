@@ -64,8 +64,18 @@ type MultipleQueueSingle = {
   max?: number;
 };
 export const multi = (
-  { writer, signalBox, max, reader, genTaskID, promisesMap }:
-    MultipleQueueSingle,
+  {
+    writer,
+    signalBox: {
+      setFunctionSignal,
+      setSignal,
+      getCurrentID,
+    },
+    max,
+    reader,
+    genTaskID,
+    promisesMap,
+  }: MultipleQueueSingle,
 ) => {
   const queue = Array.from(
     { length: max ?? 3 },
@@ -90,8 +100,7 @@ export const multi = (
   return {
     canWrite: () => freeSlotOp.indexOf(false) !== -1,
 
-    isEverythingSolve: () =>
-      queue.every((item) => item[6] === true && item[0] === true),
+    isEverythingSolve: () => freeSlotOp.indexOf(false) === -1,
 
     count: () =>
       queue.reduce((count, item) => (item[0] === false ? count + 1 : count), 0),
@@ -152,25 +161,23 @@ export const multi = (
     },
 
     sendNextToWorker: () => {
-      const idx = queue.findIndex(
+      const item = queue.find(
         (item) => item[0] === false && item[1] === false,
       );
-      if (idx === -1) {
+      if (item === undefined) {
         throw "xd somethin whent wrong in sendNextToWorker";
       }
 
-      writer(queue[idx]);
+      writer(item);
 
-      signalBox.setFunctionSignal(queue[idx][4]);
-      signalBox.setSignal(queue[idx][7]);
+      setFunctionSignal(item[4]);
+      setSignal(item[7]);
     },
     solve: () => {
-      const idx = queue.findIndex((item) =>
-        item[2] === signalBox.getCurrentID()
-      );
+      const idx = queue.findIndex((item) => item[2] === getCurrentID());
 
       if (idx === -1) {
-        throw "solve couldn't find " + signalBox.getCurrentID();
+        throw "solve couldn't find " + getCurrentID();
       }
 
       // Mark the task as solved
@@ -186,7 +193,7 @@ export const multi = (
       if (info) {
         info[1](queue[idx][5]);
       } else {
-        throw signalBox.getCurrentID() + "was not found";
+        throw getCurrentID() + "was not found";
       }
     },
   };

@@ -25,16 +25,14 @@ export const signalsForWorker = (args?: Sab) => {
 
 // Main thread signal management.
 export const mainSignal = ({ status, id }: SignalArguments) => {
-  let lastSignal = status[0] = 255;
   return ({
-    currentSignal: () => lastSignal,
-    updateLastSignal: () => (lastSignal = status[0]),
-    send: (): 192 => (status[0] = lastSignal = 192),
+    updateLastSignal: () => (status[0]),
+    send: (): 192 => (status[0] = 192),
     setSignal: (signal: StatusSignal) => (status[0] = signal),
     setFunctionSignal: (signal: number) => (status[1] = signal),
-    readyToRead: (): 127 => (status[0] = lastSignal = 127),
-    voidMessage: (): 224 => (status[0] = lastSignal = 224),
-    hasNoMoreMessages: (): 255 => (status[0] = lastSignal = 255),
+    readyToRead: (): 127 => (status[0] = 127),
+    voidMessage: (): 224 => (status[0] = 224),
+    hasNoMoreMessages: (): 255 => (status[0] = 255),
     getCurrentID: () => id[0],
   });
 };

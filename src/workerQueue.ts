@@ -1,9 +1,5 @@
-import type { PartialQueueList, QueueList } from "./mainQueue.ts";
-import {
-  signalsForWorker,
-  type StatusSignal,
-  type WorkerSignal,
-} from "./signal.ts";
+import type { QueueList } from "./mainQueue.ts";
+import { type StatusSignal, type WorkerSignal } from "./signal.ts";
 
 type ArgumetnsForMulti = {
   jobs: [Function, StatusSignal][];
@@ -17,7 +13,7 @@ export const multi = (
   { jobs, max, writer, signal, reader }: ArgumetnsForMulti,
 ) => {
   const queue = Array.from(
-    { length: max ?? 10 },
+    { length: max ?? 3 },
     () =>
       [
         false,
@@ -37,14 +33,14 @@ export const multi = (
 
     // Add a task to the queue.
     add: (statusSignal: StatusSignal) => () => {
-      const freeSlot = queue.findIndex((task) => !task[0]);
+      const freeSlot = queue.find((task) => !task[0]);
 
-      if (freeSlot !== -1) {
-        queue[freeSlot][0] = true;
-        queue[freeSlot][3] = signal.getCurrentID();
-        queue[freeSlot][4] = reader();
-        queue[freeSlot][5] = signal.functionToUse();
-        queue[freeSlot][7] = statusSignal;
+      if (freeSlot) {
+        freeSlot[0] = true;
+        freeSlot[3] = signal.getCurrentID();
+        freeSlot[4] = reader();
+        freeSlot[5] = signal.functionToUse();
+        freeSlot[7] = statusSignal;
       } else {
         queue.push([
           true,
@@ -74,26 +70,25 @@ export const multi = (
 
     // Process the next available task.
     nextJob: async () => {
-      const taskIndex = queue.findIndex((task) =>
-        task[0] && !task[1] && !task[2]
-      );
-      if (taskIndex !== -1) {
-        queue[taskIndex][1] = true; // Lock the task
+      const task = queue.find((task) => task[0] && !task[1] && !task[2]);
+      if (task !== undefined) {
+        task[1] = true; // Lock the task
         try {
-          queue[taskIndex][6] = queue[taskIndex][7] === 224
-            ? await jobs[queue[taskIndex][5]][0]()
-            : await jobs[queue[taskIndex][5]][0](
-              queue[taskIndex][4],
+          task[6] = task[7] === 224
+            //@ts-ignore -> Reason , 224 doesn't take any arguments
+            ? await jobs[task[5][0]]()
+            : await jobs[task[5]][0](
+              task[4],
             );
-          queue[taskIndex][2] = true; // Mark as solved
+          task[2] = true; // Mark as solved
         } finally {
-          queue[taskIndex][1] = false; // Unlock the task
+          task[1] = false; // Unlock the task
         }
       }
     },
     allDone: () =>
       queue.every(
-        (task) => task[0] === false && task[1] === false && task[2] === false,
+        (task) => task[0] === false,
       ),
   };
 };

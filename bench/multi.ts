@@ -13,6 +13,17 @@ const { termminate, resolver, add, awaits } = compose({
 boxplot(async () => {
   group("2", () => {
     summary(() => {
+      bench(" nop ", async () => {
+        const arr = [
+          add.aaa(EMPTYUI8),
+          add.aaa(EMPTYUI8),
+          add.aaa(EMPTYUI8),
+          add.aaa(EMPTYUI8),
+        ];
+
+        await awaits.aaa(arr);
+      });
+
       bench(" 2 thread -> 1", async () => {
         const arr = [
           add.aaa(EMPTYUI8),
@@ -40,7 +51,7 @@ boxplot(async () => {
         await awaits.aaa(arr);
       });
 
-      bench(" 2 thread -> 3", async () => {
+      bench(" 2 thread -> 4", async () => {
         const arr = [
           add.aaa(EMPTYUI8),
           add.aaa(EMPTYUI8),
