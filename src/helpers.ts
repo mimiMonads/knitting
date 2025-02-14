@@ -32,7 +32,33 @@ export const sendUintMessage =
     id[0] = task[2];
   };
 
+
+ const getCallerFileForBun = (n: number) => {
+    //@ts-ignore Reason -> Types
+    const originalStackTrace = Error.prepareStackTrace;
+    //@ts-ignore Reason -> Types
+    Error.prepareStackTrace = (_, stack) => stack;
+    const err = new Error();
+    const stack = err.stack as unknown as NodeJS.CallSite[];
+    //@ts-ignore Reason -> Types
+    Error.prepareStackTrace = originalStackTrace;
+    // Get the caller file
+    const caller = stack[n]?.getFileName();
+  
+    if (!caller) {
+      throw new Error("Unable to determine caller file.");
+    }
+  
+    
+    return "file://" + caller;
+  };
+
 export const getCallerFile = (n: number) => {
+
+  if(!ISDENO){
+    return getCallerFileForBun (n)
+  }
+
   const err = new Error();
   const stack = err?.stack;
 
@@ -40,10 +66,6 @@ export const getCallerFile = (n: number) => {
     throw new Error("Unable to determine caller file.");
   } else {
     const path = fromStackStringToFiles(stack);
-
-    if (!ISDENO) {
-      return "file://" + path[path.length - 1];
-    }
     return path[path.length - 1];
   }
 };
@@ -54,12 +76,13 @@ const ISDENO = typeof Deno == "object" && Deno !== null;
 
 const fromStackStringToFiles = (str: string) =>
   str.split(" ")
-    .filter((s) => ISDENO ? s.includes("://") : s.includes("(/"))
+    .filter((s) =>s.includes("://") )
     .map((s) => s.replaceAll("(", "").replaceAll(")", ""))
     .map((s) => {
       // There's not way this will work in the future
       // TODO: make this more robust
-      const next = ISDENO ? s.indexOf(":", s.indexOf(":") + 1) : s.indexOf(":");
+      const next =  s.indexOf(":", s.indexOf(":") + 1);
 
       return s.slice(0, next);
     });
+

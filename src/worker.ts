@@ -11,6 +11,7 @@ const mainLoop = async () => {
     sharedSab,
   });
 
+
   const jobs = await getFunctions({
     list: workerData.list,
     isWorker: true,
@@ -24,6 +25,9 @@ const mainLoop = async () => {
     );
 
   if(jobs.length === 0 ){
+    console.log(workerData.list)
+    console.log(workerData.ids)
+    console.log(jobs)
     throw "no imports where found uwu"
   }
   const signal = workerSignal(signals);

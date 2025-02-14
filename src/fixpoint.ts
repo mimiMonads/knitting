@@ -33,7 +33,7 @@ export const fixedPoint = <A extends Args>(
   I: FixPoint<A>,
 ): ReturnFixed<A> => {
   const importedFrom = new URL(getCallerFile(2)).href;
-
+  //console.log(importedFrom)
   return ({
     ...I,
     statusSignal: I.args === "void" ? 224 : 192,
