@@ -20,9 +20,9 @@ export const readMessageToUint =
 // Write a Uint8Array message with task metadata.
 export const writeUintMessage =
   ({ id, payload, payloadLenght }: SignalArguments) => (task: QueueList) => {
-    payload.set(task[6], 0);
-    payloadLenght[0] = task[6].length;
-    id[0] = task[3];
+    payload.set(task[4], 0);
+    payloadLenght[0] = task[4].length;
+    id[0] = task[1];
   };
 
 export const sendUintMessage =
@@ -49,7 +49,7 @@ export const getCallerFile = (n: number) => {
 };
 
 // This thing is annoying asf
-//@ts-ignore
+//@ts-ignore -> Reason -> Deno types are not installed
 const ISDENO = typeof Deno == "object" && Deno !== null;
 
 const fromStackStringToFiles = (str: string) =>

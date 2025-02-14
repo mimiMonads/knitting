@@ -35,6 +35,7 @@ Deno.test("Basic behaivour", async () => {
     genTaskID,
     writer,
     promisesMap,
+    max: 2,
   });
   const add = queue.add(192)(0);
   const addMessage = queue.add(224)(1);

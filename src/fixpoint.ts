@@ -74,7 +74,7 @@ export const getFunctions = async ({ list, ids }: {
       const module = await import(imports);
       return Object.entries(module) // Use `Object.entries` to include names
         .filter(
-          ([_, value]): //@ts-ignore trust me bro
+          ([_, value]): //@ts-ignore -> Reason trust me bro
           value is ReturnFixed<any> =>
             typeof value === "object" &&
             value !== null &&
@@ -84,7 +84,7 @@ export const getFunctions = async ({ list, ids }: {
             ),
         )
         .map(([name, value]) => ({
-          //@ts-ignore trust me
+          //@ts-ignore Reason -> trust me
           ...value,
           name,
         }));

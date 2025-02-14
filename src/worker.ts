@@ -23,11 +23,14 @@ const mainLoop = async () => {
         ),
     );
 
+  if(jobs.length === 0 ){
+    throw "no imports where found uwu"
+  }
   const signal = workerSignal(signals);
   const reader = readMessageToUint(signals);
   const writer = writeUintMessage(signals);
   const { add, nextJob, someHasFinished, write, allDone } = multi({
-    //@ts-ignore
+    //@ts-ignore Reason -> The type `job` was not well defined
     jobs,
     writer,
     reader,
@@ -43,6 +46,7 @@ const mainLoop = async () => {
       case 0:
       case 1:
       case 2:
+      case 3:
       case 128:
       case 254:
       case 255: {

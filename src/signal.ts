@@ -28,10 +28,11 @@ export const mainSignal = ({ status, id }: SignalArguments) => {
   return ({
     updateLastSignal: () => (status[0]),
     send: (): 192 => (status[0] = 192),
-    setSignal: (signal: StatusSignal) => (status[0] = signal),
+
     setFunctionSignal: (signal: number) => (status[1] = signal),
     readyToRead: (): 127 => (status[0] = 127),
-    voidMessage: (): 224 => (status[0] = 224),
+    // 224 and 192
+    setSignal: (signal: StatusSignal) => (status[0] = signal),
     hasNoMoreMessages: (): 255 => (status[0] = 255),
     getCurrentID: () => id[0],
   });
@@ -43,6 +44,7 @@ export const workerSignal = ({ status, id }: SignalArguments) => ({
   messageReady: (): 0 => (status[0] = 0),
   messageWasRead: (): 1 => (status[0] = 1),
   finishedAllTasks: (): 2 => (status[0] = 2),
+  waitingForMore: (): 3 => (status[0] = 3),
   readyToRead: (): 127 => (status[0] = 127),
   getCurrentID: () => id[0],
   functionToUse: () => status[1],

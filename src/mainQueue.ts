@@ -43,9 +43,7 @@ export type PromiseMap = Map<
 >;
 
 export type QueueList = [
-  Free,
-  Locked,
-  Solved,
+  -1 | 0 | 1 | 2,
   TaskID,
   RawArguments,
   FunctionID,
@@ -78,7 +76,7 @@ export const multi = (
   }: MultipleQueueSingle,
 ) => {
   const queue = Array.from(
-    { length: max ?? 3 },
+    { length: max ?? 4 },
     () =>
       [
         true,
@@ -93,7 +91,7 @@ export const multi = (
   );
 
   const freeSlotOp = Array.from(
-    { length: max ?? 3 },
+    { length: max ?? 4 },
     () => true,
   );
 

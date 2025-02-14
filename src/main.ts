@@ -44,7 +44,7 @@ export const createContext = ({
   channelHandler.open(check);
 
   const worker = new Worker(workerUrl, {
-    //@ts-ignore
+    //@ts-ignore Reason -> This is a Deno only thing
     type: "module",
     workerData: {
       sab: signals.sab,

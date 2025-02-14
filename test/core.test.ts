@@ -12,7 +12,7 @@ const unitArrayOne = Uint8Array.from([1, 2, 3, 4]);
 const unitArrayTwo = Uint8Array.from([8, 7, 6, 5]);
 const unitArrayThree = Uint8Array.from([9, 10, 11, 12]);
 
-//@ts-ignore
+//@ts-ignore -> This is valid btw
 const VALUE = Uint8Array.from("Hello");
 
 Deno.test("fixpoint", async () => {

@@ -8,6 +8,7 @@ type ArgumetnsForMulti = {
   reader: () => Uint8Array;
   signal: WorkerSignal;
 };
+
 // Create and manage a working queue.
 export const multi = (
   { jobs, max, writer, signal, reader }: ArgumetnsForMulti,
@@ -16,9 +17,7 @@ export const multi = (
     { length: max ?? 3 },
     () =>
       [
-        false,
-        false,
-        false,
+        -1,
         0,
         new Uint8Array(),
         0,
@@ -29,23 +28,23 @@ export const multi = (
 
   return {
     // Check if any task is solved and ready for writing.
-    someHasFinished: () => queue.some((task) => task[2] === true),
+    someHasFinished: () => queue.some((task) => task[0] === 2),
 
     // Add a task to the queue.
     add: (statusSignal: StatusSignal) => () => {
-      const freeSlot = queue.find((task) => !task[0]);
+      const freeSlot = queue.find((task) => task[0] === -1);
 
       if (freeSlot) {
-        freeSlot[0] = true;
-        freeSlot[3] = signal.getCurrentID();
-        freeSlot[4] = reader();
-        freeSlot[5] = signal.functionToUse();
-        freeSlot[7] = statusSignal;
+        freeSlot[0] = 0;
+        freeSlot[1] = signal.getCurrentID();
+        freeSlot[2] = reader();
+        freeSlot[3] = signal.functionToUse();
+        // Optimization ??
+        //freeSlot[4] = new Uint8Array();
+        freeSlot[5] = statusSignal;
       } else {
         queue.push([
-          true,
-          false,
-          false,
+          0,
           signal.getCurrentID(),
           reader(),
           signal.functionToUse(),
@@ -54,41 +53,41 @@ export const multi = (
         ]);
       }
 
+      //signal.waitingForMore()
       signal.readyToRead();
     },
 
     // Write completed tasks to the writer.
     write: () => {
-      const finishedTaskIndex = queue.findIndex((task) => task[2]);
+      const finishedTaskIndex = queue.findIndex((task) => task[0] === 2);
       if (finishedTaskIndex !== -1) {
         writer(queue[finishedTaskIndex]); // Writes on playload
         signal.messageReady();
-        queue[finishedTaskIndex][0] = false; // Reset OnUse
-        queue[finishedTaskIndex][2] = false; // Reset Solved
+        queue[finishedTaskIndex][0] = -1; // Reset OnUse
       }
     },
 
     // Process the next available task.
     nextJob: async () => {
-      const task = queue.find((task) => task[0] && !task[1] && !task[2]);
+      const task = queue.find((task) => task[0] === 0);
       if (task !== undefined) {
-        task[1] = true; // Lock the task
+        task[0] = 1; // Lock the task
+
         try {
-          task[6] = task[7] === 224
+          task[4] = task[5] === 224
             //@ts-ignore -> Reason , 224 doesn't take any arguments
-            ? await jobs[task[5][0]]()
-            : await jobs[task[5]][0](
-              task[4],
+            ? await jobs[task[3]][0]()
+            : await jobs[task[3]][0](
+              task[2],
             );
-          task[2] = true; // Mark as solved
         } finally {
-          task[1] = false; // Unlock the task
+          task[0] = 2; // Unlock the task
         }
       }
     },
     allDone: () =>
       queue.every(
-        (task) => task[0] === false,
+        (task) => task[0] === -1,
       ),
   };
 };

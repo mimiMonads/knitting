@@ -49,6 +49,16 @@ export const checker = ({
         }
         return;
 
+      case 3:
+        if (canWrite()) {
+          sendNextToWorker();
+          queueMicrotask(check);
+          console.log(updateLastSignal());
+        } else {
+          readyToRead();
+        }
+        return;
+
       case 127: {
         channelHandler.scheduleCheck();
         return;
