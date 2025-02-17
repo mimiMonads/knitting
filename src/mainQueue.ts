@@ -11,21 +11,13 @@ type RawArguments = Uint8Array;
 type WorkerResponse = Uint8Array;
 // FunctionID represents a unique identifier for a function to execute.
 type FunctionID = number;
-// Boolean flags for task state.
-type Solved = boolean;
-type Free = boolean;
-type Locked = Boolean;
-type HasBeenResolve = boolean;
 
 // MainList represents tasks in the main thread.
 export type MainList = [
-  Free,
-  Solved,
   TaskID,
   RawArguments,
   FunctionID,
   WorkerResponse,
-  HasBeenResolve,
   StatusSignal,
 ];
 
@@ -79,42 +71,37 @@ export const multi = (
     { length: max ?? 4 },
     () =>
       [
-        true,
-        false,
         0,
         new Uint8Array(),
         0,
         new Uint8Array(),
-        true,
         224,
       ] as MainList,
   );
 
-  const freeSlotOp = Array.from(
+  const status = Array.from(
     { length: max ?? 4 },
-    () => true,
+    (_, i) => -1,
   );
 
   return {
-    canWrite: () => freeSlotOp.indexOf(false) !== -1,
+    canWrite: () => status.indexOf(0) !== -1,
 
-    isEverythingSolve: () => freeSlotOp.indexOf(false) === -1,
+    isEverythingSolve: () => status.indexOf(0) === -1,
 
-    count: () =>
-      queue.reduce((count, item) => (item[0] === false ? count + 1 : count), 0),
+    count: () => status.length,
 
     add:
       (statusSignal: StatusSignal) =>
       (functionID: FunctionID) =>
       (rawArguments: RawArguments) => {
-        const freeIndex = freeSlotOp.indexOf(true);
-        const taskID = genTaskID();
+        const freeIndex = status.indexOf(-1),
+          taskID = genTaskID();
+        let resolveFn!: (res: WorkerResponse) => void;
 
         if (freeIndex === -1) {
           throw "No free slots! isBusyFailed uwu";
         }
-
-        let resolveFn!: (res: WorkerResponse) => void;
 
         // Store the Promise + resolver in our Map
         promisesMap.set(taskID, [
@@ -124,15 +111,12 @@ export const multi = (
           resolveFn,
         ]);
 
-        // Occupy the free slot immediately
-        queue[freeIndex][0] = false; // free -> in use
-        freeSlotOp[freeIndex] = false; // free -> in use
-        queue[freeIndex][1] = false; // solved -> false
-        queue[freeIndex][2] = taskID; // taskID
-        queue[freeIndex][3] = rawArguments; // rawArguments
-        queue[freeIndex][4] = functionID; // functionID
-        queue[freeIndex][6] = false; // hasBeenResolve -> false
-        queue[freeIndex][7] = statusSignal; // StatusSignal
+        status[freeIndex] = 0;
+
+        queue[freeIndex][0] = taskID;
+        queue[freeIndex][1] = rawArguments;
+        queue[freeIndex][2] = functionID;
+        queue[freeIndex][4] = statusSignal;
 
         return taskID;
       },
@@ -159,40 +143,34 @@ export const multi = (
     },
 
     sendNextToWorker: () => {
-      const item = queue.find(
-        (item) => item[0] === false && item[1] === false,
-      );
-      if (item === undefined) {
+      const idx = status.indexOf(0);
+
+      if (idx === -1) {
         throw "xd somethin whent wrong in sendNextToWorker";
       }
 
-      writer(item);
-
-      setFunctionSignal(item[4]);
-      setSignal(item[7]);
+      writer(queue[idx]);
+      setFunctionSignal(queue[idx][2]);
+      setSignal(queue[idx][4]);
     },
     solve: () => {
-      const idx = queue.findIndex((item) => item[2] === getCurrentID());
+      const currentID = getCurrentID();
+      // Slow opetation
+      const idx = queue.findIndex((item) => item[0] === currentID);
 
       if (idx === -1) {
-        throw "solve couldn't find " + getCurrentID();
+        throw "solve couldn't find " + currentID;
       }
 
-      // Mark the task as solved
-      queue[idx][1] = true; // solved
-      queue[idx][5] = reader(); // store the response
-      queue[idx][6] = true; // hasBeenResolve = true
-      // Immediately free the slot
-      queue[idx][0] = true;
-      freeSlotOp[idx] = true; // free -> in use
-
-      // Fulfill the promise we created in add
-      const info = promisesMap.get(queue[idx][2]);
+      const info = promisesMap.get(queue[idx][0]);
       if (info) {
-        info[1](queue[idx][5]);
+        // Resolves the promise
+        info[1](reader());
       } else {
-        throw getCurrentID() + "was not found";
+        throw currentID + "was not found";
       }
+
+      status[idx] = -1;
     },
   };
 };

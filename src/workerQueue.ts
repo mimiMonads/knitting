@@ -11,7 +11,18 @@ type ArgumetnsForMulti = {
 
 // Create and manage a working queue.
 export const multi = (
-  { jobs, max, writer, signal, reader }: ArgumetnsForMulti,
+  {
+    jobs,
+    max,
+    writer,
+    signal: {
+      getCurrentID,
+      functionToUse,
+      readyToRead,
+      messageReady,
+    },
+    reader,
+  }: ArgumetnsForMulti,
 ) => {
   const queue = Array.from(
     { length: max ?? 3 },
@@ -36,34 +47,32 @@ export const multi = (
 
       if (freeSlot) {
         freeSlot[0] = 0;
-        freeSlot[1] = signal.getCurrentID();
+        freeSlot[1] = getCurrentID();
         freeSlot[2] = reader();
-        freeSlot[3] = signal.functionToUse();
-        // Optimization ??
+        freeSlot[3] = functionToUse();
         //freeSlot[4] = new Uint8Array();
         freeSlot[5] = statusSignal;
       } else {
         queue.push([
           0,
-          signal.getCurrentID(),
+          getCurrentID(),
           reader(),
-          signal.functionToUse(),
+          functionToUse(),
           new Uint8Array(),
           statusSignal,
         ]);
       }
 
-      //signal.waitingForMore()
-      signal.readyToRead();
+      readyToRead();
     },
 
     // Write completed tasks to the writer.
     write: () => {
       const finishedTaskIndex = queue.findIndex((task) => task[0] === 2);
       if (finishedTaskIndex !== -1) {
-        writer(queue[finishedTaskIndex]); // Writes on playload
-        signal.messageReady();
-        queue[finishedTaskIndex][0] = -1; // Reset OnUse
+        writer(queue[finishedTaskIndex]);
+        messageReady();
+        queue[finishedTaskIndex][0] = -1;
       }
     },
 
