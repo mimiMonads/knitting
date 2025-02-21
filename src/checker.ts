@@ -53,7 +53,6 @@ export const checker = ({
         if (canWrite()) {
           sendNextToWorker();
           queueMicrotask(check);
-          console.log(updateLastSignal());
         } else {
           readyToRead();
         }

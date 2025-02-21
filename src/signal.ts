@@ -16,36 +16,47 @@ export const signalsForWorker = (args?: Sab) => {
 
   return {
     sab,
-    status: new Uint8Array(sab, 0, 4),
+    status: new Int32Array(sab, 0, 1),
     id: new Int32Array(sab, 4, 1),
     payloadLenght: new Int32Array(sab, 8, 1),
-    payload: new Uint8Array(sab, 12),
+    funtionToUse: new Int32Array(sab, 12, 1),
+    queueState: new Int8Array(sab, 12, 4),
+    payload: new Uint8Array(sab, 16),
   };
 };
 
-// Main thread signal management.
-export const mainSignal = ({ status, id }: SignalArguments) => {
+export const mainSignal = (
+  { status, id, funtionToUse, queueState }: SignalArguments,
+) => {
   return ({
+    // Status
     updateLastSignal: () => (status[0]),
     send: (): 192 => (status[0] = 192),
-
-    setFunctionSignal: (signal: number) => (status[1] = signal),
-    readyToRead: (): 127 => (status[0] = 127),
-    // 224 and 192
+    setFunctionSignal: (signal: number) => (funtionToUse[0] = signal),
     setSignal: (signal: StatusSignal) => (status[0] = signal),
     hasNoMoreMessages: (): 255 => (status[0] = 255),
+    readyToRead: (): 127 => (status[0] = 127),
+    // ID
     getCurrentID: () => id[0],
+    // Queue state
+    isLastElementToSend: (state: boolean) =>
+      state ? queueState[0] = 1 : queueState[0] = 0,
   });
 };
 
-// Worker thread signal management.
-export const workerSignal = ({ status, id }: SignalArguments) => ({
+export const workerSignal = (
+  { status, id, funtionToUse, queueState }: SignalArguments,
+) => ({
+  // Status
   curretSignal: () => status[0],
   messageReady: (): 0 => (status[0] = 0),
   messageWasRead: (): 1 => (status[0] = 1),
   finishedAllTasks: (): 2 => (status[0] = 2),
   waitingForMore: (): 3 => (status[0] = 3),
   readyToRead: (): 127 => (status[0] = 127),
+  // Queue State
+  readyToWork: () => queueState[0] === 1 ? status[0] = 3 : status[0] = 127,
+  // Others
   getCurrentID: () => id[0],
-  functionToUse: () => status[1],
+  functionToUse: () => funtionToUse[0],
 });

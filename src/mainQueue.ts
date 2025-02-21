@@ -31,7 +31,11 @@ export type PartialQueueList = [
 
 export type PromiseMap = Map<
   TaskID,
-  [Promise<WorkerResponse>, (val: WorkerResponse) => void]
+  [
+    Promise<WorkerResponse>,
+    (val: WorkerResponse) => void,
+    (val: unknown) => void,
+  ]
 >;
 
 export type QueueList = [
@@ -60,6 +64,7 @@ export const multi = (
       setFunctionSignal,
       setSignal,
       getCurrentID,
+      isLastElementToSend,
     },
     max,
     reader,
@@ -84,9 +89,10 @@ export const multi = (
     (_, i) => -1,
   );
 
-  return {
-    canWrite: () => status.indexOf(0) !== -1,
+  const canWrite = () => status.indexOf(0) !== -1;
 
+  return {
+    canWrite,
     isEverythingSolve: () => status.indexOf(0) === -1,
 
     count: () => status.length,
@@ -97,7 +103,8 @@ export const multi = (
       (rawArguments: RawArguments) => {
         const freeIndex = status.indexOf(-1),
           taskID = genTaskID();
-        let resolveFn!: (res: WorkerResponse) => void;
+        let resolveFn!: (res: WorkerResponse) => void,
+          rejectFn!: (res: unknown) => void;
 
         if (freeIndex === -1) {
           throw "No free slots! isBusyFailed uwu";
@@ -105,10 +112,12 @@ export const multi = (
 
         // Store the Promise + resolver in our Map
         promisesMap.set(taskID, [
-          new Promise<WorkerResponse>((resolve) => {
+          new Promise<WorkerResponse>((resolve, reject) => {
             resolveFn = resolve;
+            rejectFn = reject;
           }),
           resolveFn,
+          rejectFn,
         ]);
 
         status[freeIndex] = 0;
@@ -120,12 +129,6 @@ export const multi = (
 
         return taskID;
       },
-
-    /**
-     * awaits: returns the same Promise that was created in `add`.
-     * If the task was never added or has already been cleaned up,
-     * it rejects (or you can choose to return a resolved Promise).
-     */
     awaits: (id: TaskID) =>
       promisesMap.get(id)![0].then((x) => {
         promisesMap.delete(id);
@@ -149,6 +152,7 @@ export const multi = (
         throw "xd somethin whent wrong in sendNextToWorker";
       }
 
+      isLastElementToSend(canWrite());
       writer(queue[idx]);
       setFunctionSignal(queue[idx][2]);
       setSignal(queue[idx][4]);

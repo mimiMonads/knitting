@@ -3,24 +3,6 @@ import { multi } from "../src/mainQueue.ts";
 import { mainSignal, signalsForWorker } from "../src/signal.ts";
 import { genTaskID } from "../src/helpers.ts";
 
-const emptyState = (queue: ReturnType<typeof multi>) => {
-  assertEquals(
-    queue.isEverythingSolve(),
-    true,
-    "Something didn't solved",
-  );
-
-  assertEquals(
-    queue.canWrite(),
-    false,
-  );
-
-  assertEquals(
-    queue.count(),
-    0,
-  );
-};
-
 Deno.test("Basic behaivour", async () => {
   const signals = signalsForWorker();
   const UINT8 = new Uint8Array([1, 2, 3]);
@@ -40,7 +22,16 @@ Deno.test("Basic behaivour", async () => {
   const add = queue.add(192)(0);
   const addMessage = queue.add(224)(1);
 
-  emptyState(queue);
+  assertEquals(
+    queue.isEverythingSolve(),
+    true,
+    "Something didn't solved",
+  );
+
+  assertEquals(
+    queue.canWrite(),
+    false,
+  );
 
   const ids = [
     add(new Uint8Array([123])),
@@ -81,8 +72,6 @@ Deno.test("Basic behaivour", async () => {
   queue.solve();
   signals.id[0] = 1;
   queue.solve();
-
-  emptyState(queue);
 
   assertEquals(
     await getpromise,

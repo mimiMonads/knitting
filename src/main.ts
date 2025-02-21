@@ -33,6 +33,7 @@ export const createContext = ({
     promisesMap,
   });
 
+  const { add, awaits, awaitArray } = queue;
   const channelHandler = new ChannelHandler();
 
   const check = checker({
@@ -53,7 +54,7 @@ export const createContext = ({
     },
   });
 
-  const isActive = ((status: Uint8Array) => () =>
+  const isActive = ((status: Int32Array) => () =>
     check.running === false
       ? (
         status[0] = 254, check.running = true, queueMicrotask(check)
@@ -70,9 +71,9 @@ export const createContext = ({
   const resolver = (args: Resolver) => {
     const { queue, fnNumber, statusSignal } = args;
 
-    const adds = queue.add(statusSignal)(fnNumber);
+    const adds = add(statusSignal)(fnNumber);
     return (args: Uint8Array) => (
-      isActive(), queue.awaits(adds(args))
+      isActive(), awaits(adds(args))
     );
   };
 
@@ -80,7 +81,7 @@ export const createContext = ({
     queue,
     resolver,
     isActive,
-    awaitArray: queue.awaitArray,
+    awaitArray,
     kills: () => (
       channelHandler.close(), worker.terminate()
     ),

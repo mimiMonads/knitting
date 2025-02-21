@@ -170,9 +170,8 @@ export const compose = ({
     (
       args: Uint8Array,
     ) => {
-      const r = adds(args);
       isActive();
-      return r;
+      return adds(args);
     };
 
   const adds = workers.map(

@@ -18,8 +18,8 @@ export const multi = (
     signal: {
       getCurrentID,
       functionToUse,
-      readyToRead,
       messageReady,
+      readyToWork,
     },
     reader,
   }: ArgumetnsForMulti,
@@ -63,7 +63,7 @@ export const multi = (
         ]);
       }
 
-      readyToRead();
+      readyToWork();
     },
 
     // Write completed tasks to the writer.
