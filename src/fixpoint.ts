@@ -156,11 +156,12 @@ export const compose = ({
   const workers = Array.from({
     length: threads ?? 1,
   })
-    .map((_) =>
+    .map((_, thread) =>
       createContext({
         promisesMap,
         list,
         ids,
+        thread,
       })
     );
 

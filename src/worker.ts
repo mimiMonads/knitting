@@ -46,13 +46,16 @@ const mainLoop = async () => {
 
   while (true) {
     switch (curretSignal()) {
-      case 0:
       case 1:
       case 2:
       case 3:
       case 128:
       case 254:
       case 255: {
+        continue;
+      }
+      case 0: {
+        await nextJob();
         continue;
       }
       case 127: {

@@ -1,0 +1,13 @@
+{
+  "devDependencies": {
+    "@types/node": "^22.13.5",
+    "@types/bun": "latest",
+    "@types/deno": "latest"
+  },
+  "name": "knitting",
+  "module": "index.ts",
+  "type": "module",
+  "peerDependencies": {
+    "typescript": "^5.0.0"
+  }
+}

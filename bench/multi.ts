@@ -5,7 +5,7 @@ import { aaa } from "./functions.ts";
 const EMPTYUI8 = new Uint8Array([1, 2, 3]);
 
 const { termminate, resolver, add, awaits } = compose({
-  threads: 2,
+  threads: 4,
 })({
   aaa,
 });

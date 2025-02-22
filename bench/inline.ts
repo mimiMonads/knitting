@@ -13,14 +13,6 @@ const { termminate, add, awaits } = compose({
 boxplot(async () => {
   group("2", () => {
     summary(() => {
-      bench("nop", async () => {
-        const arr = [
-          add.inLine(EMPTYUI8),
-        ];
-
-        await awaits.inLine(arr);
-      });
-
       bench(" 1 thread -> 1", async () => {
         const arr = [
           add.inLine(EMPTYUI8),

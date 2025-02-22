@@ -1,6 +1,7 @@
 export type SignalArguments = ReturnType<typeof signalsForWorker>;
 export type MainSignal = ReturnType<typeof mainSignal>;
 export type WorkerSignal = ReturnType<typeof workerSignal>;
+import { Buffer } from "node:buffer";
 
 type StatusSignalForVoid = 224 | 192;
 export type StatusSignal = StatusSignalForVoid;
@@ -22,6 +23,7 @@ export const signalsForWorker = (args?: Sab) => {
     funtionToUse: new Int32Array(sab, 12, 1),
     queueState: new Int8Array(sab, 12, 4),
     payload: new Uint8Array(sab, 16),
+    buffer: Buffer.from(sab, 16),
   };
 };
 

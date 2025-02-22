@@ -10,11 +10,13 @@ export const createContext = ({
   list,
   ids,
   sab,
+  thread,
 }: {
   promisesMap: PromiseMap;
   list: string[];
   ids: number[];
   sab?: Sab;
+  thread?: number;
 }) => {
   const currentPath = import.meta.url;
   const workerUrl = new URL(currentPath.replace("main.ts", "worker.ts"));

@@ -1,6 +1,7 @@
 {
   "imports": {
     "@cross/test": "jsr:@cross/test@^0.0.10",
-    "mitata": "npm:mitata@^1.0.34"
+    "mitata": "npm:mitata@^1.0.34",
+    "@types/node": "npm:^@types/node22.13.5"
   }
 }

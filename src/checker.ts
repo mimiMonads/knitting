@@ -26,15 +26,6 @@ export const checker = ({
     switch (updateLastSignal()) {
       case 0:
         solve();
-        if (canWrite()) {
-          sendNextToWorker();
-        } else {
-          readyToRead();
-        }
-        queueMicrotask(check);
-        return;
-
-      case 1:
         readyToRead();
         queueMicrotask(check);
         return;
