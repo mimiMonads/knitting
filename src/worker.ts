@@ -46,7 +46,6 @@ const mainLoop = async () => {
 
   while (true) {
     switch (curretSignal()) {
-      case 1:
       case 2:
       case 3:
       case 128:
@@ -70,7 +69,6 @@ const mainLoop = async () => {
           continue;
         }
 
-        messageWasRead();
         continue;
       }
 

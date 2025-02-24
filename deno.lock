@@ -866,6 +866,7 @@
     "packageJson": {
       "dependencies": [
         "npm:@types/bun@latest",
+        "npm:@types/deno@latest",
         "npm:@types/node@^22.13.5"
       ]
     }

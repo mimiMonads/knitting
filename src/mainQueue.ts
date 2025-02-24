@@ -152,7 +152,12 @@ export const multi = (
         throw "xd somethin whent wrong in sendNextToWorker";
       }
 
-      isLastElementToSend(canWrite());
+      status[idx] = 1;
+
+      isLastElementToSend(
+        canWrite(),
+      );
+
       writer(queue[idx]);
       setFunctionSignal(queue[idx][2]);
       setSignal(queue[idx][4]);

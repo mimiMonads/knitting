@@ -18,16 +18,50 @@ export const checker = ({
   signalBox: MainSignal;
   channelHandler: ChannelHandler;
 }) => {
+  /**
+   * @pure
+   */
+  const debugThisThing = () => {
+    const arr: [number, number][] = [];
+
+    return {
+      add: (n: number) => {
+        if (arr.length === 0) {
+          arr.push([
+            n,
+            performance.now(),
+          ]);
+        }
+
+        if (n !== arr.at(-1)![0]) {
+          arr.push(
+            [n, performance.now()],
+          );
+        }
+      },
+      log: () => {
+        console.log("=======");
+        arr.forEach((x) => console.log(x));
+      },
+    };
+  };
+
+  /**
+   * @pure
+   */
+  const deb = debugThisThing();
+  // for debbuging
+  //setTimeout(deb.log, 3000)
+
   const check = () => {
-    if (check.running === false) {
-      return;
-    }
+
+    //deb.add(lastUpated)
 
     switch (updateLastSignal()) {
       case 0:
         solve();
         readyToRead();
-        queueMicrotask(check);
+        channelHandler.scheduleCheck();
         return;
 
       case 2:
@@ -46,6 +80,7 @@ export const checker = ({
           queueMicrotask(check);
         } else {
           readyToRead();
+          channelHandler.scheduleCheck();
         }
         return;
 

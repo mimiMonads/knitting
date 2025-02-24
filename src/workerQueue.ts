@@ -20,6 +20,8 @@ export const multi = (
       functionToUse,
       messageReady,
       readyToWork,
+      //delete
+      logWorkStatus,
     },
     reader,
   }: ArgumetnsForMulti,

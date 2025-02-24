@@ -1,5 +1,5 @@
 import { fixedPoint } from "../src/fixpoint.ts";
-import { hrtime } from "node:process";
+
 export const aaa = fixedPoint({
   args: "uint8",
   f: async (arr: Uint8Array) => {
@@ -23,8 +23,8 @@ export const inLine = fixedPoint({
     const start = Date.now().toString();
     let a = 1000;
 
-    while (a != 0) {
-      hrtime.bigint();
+    while (a !== 0) {
+      Date.now();
       a--;
     }
 

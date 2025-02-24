@@ -21,9 +21,9 @@ export const signalsForWorker = (args?: Sab) => {
     id: new Int32Array(sab, 4, 1),
     payloadLenght: new Int32Array(sab, 8, 1),
     funtionToUse: new Int32Array(sab, 12, 1),
-    queueState: new Int8Array(sab, 12, 4),
-    payload: new Uint8Array(sab, 16),
-    buffer: Buffer.from(sab, 16),
+    queueState: new Int8Array(sab, 16, 4),
+    payload: new Uint8Array(sab, 20),
+    buffer: Buffer.from(sab, 20),
   };
 };
 
@@ -42,7 +42,7 @@ export const mainSignal = (
     getCurrentID: () => id[0],
     // Queue state
     isLastElementToSend: (state: boolean) =>
-      state ? queueState[0] = 1 : queueState[0] = 0,
+      state === true ? queueState[0] = 1 : queueState[0] = 0,
   });
 };
 
@@ -57,6 +57,7 @@ export const workerSignal = (
   waitingForMore: (): 3 => (status[0] = 3),
   readyToRead: (): 127 => (status[0] = 127),
   // Queue State
+  logWorkStatus: () => queueState[0],
   readyToWork: () => queueState[0] === 1 ? status[0] = 3 : status[0] = 127,
   // Others
   getCurrentID: () => id[0],
