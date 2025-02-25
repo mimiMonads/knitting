@@ -41,7 +41,7 @@ export const createContext = ({
     promisesMap,
   });
 
-  const { enqueue, awaitAll, awaitArray } = queue;
+  const { enqueue, awaits, awaitArray, dispatchToWorker } = queue;
   const channelHandler = new ChannelHandler();
 
   const check = taskScheduler({
@@ -62,12 +62,16 @@ export const createContext = ({
     },
   });
 
-  const isActive = ((status: Int32Array) => () =>
-    check.isRunning === false
-      ? (
-        status[0] = 254, check.isRunning = true, queueMicrotask(check)
-      )
-      : undefined)(signals.status);
+  const isActive = ((status: Int32Array) => (n: number) => {
+    if (check.isRunning === false) {
+      dispatchToWorker();
+      check.isRunning = true;
+      queueMicrotask(check);
+      //new Promise(() => check())
+    }
+
+    return n;
+  })(signals.status);
 
   type callFunction = {
     queue: MultiQueue;
@@ -80,9 +84,7 @@ export const createContext = ({
     const { queue, fnNumber, statusSignal } = args;
 
     const enqueues = enqueue(statusSignal)(fnNumber);
-    return (args: Uint8Array) => (
-      isActive(), awaitAll(enqueues(args))
-    );
+    return (args: Uint8Array) => awaits(isActive(enqueues(args)));
   };
 
   return {

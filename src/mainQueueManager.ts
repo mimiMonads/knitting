@@ -83,22 +83,6 @@ export function createMainQueue({
   const status = Array.from({ length: max ?? 5 }, () => -1);
 
   /**
-   * Attempt to find a free slot; if none is found, push a new slot.
-   * Returns the index of a newly freed slot.
-   */
-  function getFreeIndex(): number {
-    const freeIndex = status.indexOf(-1);
-    if (freeIndex !== -1) {
-      return freeIndex;
-    }
-    // If no slot is free, expand the arrays by one
-
-    queue.push([0, new Uint8Array(), 0, new Uint8Array(), 224]);
-    status.push(-1);
-    return queue.length - 1;
-  }
-
-  /**
    * Returns `true` if there is at least one slot in `status` whose value == 0,
    * meaning "ready to be dispatched".
    */
@@ -126,11 +110,11 @@ export function createMainQueue({
       (statusSignal: StatusSignal) =>
       (functionID: FunctionID) =>
       (rawArguments: RawArguments) => {
-        const idx = getFreeIndex();
-        const taskID = genTaskID();
+        const idx = status.indexOf(-1) ?? status.length,
+          taskID = genTaskID();
 
-        let resolveFn!: (res: WorkerResponse) => void;
-        let rejectFn!: (res: unknown) => void;
+        let resolveFn!: (res: WorkerResponse) => void,
+          rejectFn!: (res: unknown) => void;
 
         promisesMap.set(taskID, [
           new Promise<WorkerResponse>((resolve, reject) => {
@@ -140,6 +124,11 @@ export function createMainQueue({
           resolveFn,
           rejectFn,
         ]);
+
+        if (idx === status.length) {
+          queue.push([0, new Uint8Array(), 0, new Uint8Array(), 224]);
+          status.push(-1);
+        }
 
         // Mark slot as "Pending dispatch"
         status[idx] = 0;
@@ -156,7 +145,7 @@ export function createMainQueue({
     /**
      * Await a single task ID, remove from PromiseMap once complete.
      */
-    awaitAll: (id: TaskID) =>
+    awaits: (id: TaskID) =>
       promisesMap.get(id)![0].then((result) => {
         promisesMap.delete(id);
         return result;
@@ -182,9 +171,7 @@ export function createMainQueue({
      */
     dispatchToWorker: () => {
       const idx = status.indexOf(0);
-      if (idx === -1) {
-        throw new Error("No pending tasks found in dispatchToWorker()");
-      }
+
       // Mark this slot as "Sent to worker"
       status[idx] = 1;
 
@@ -203,19 +190,12 @@ export function createMainQueue({
      * and resolves the stored promise.
      */
     resolveTask: () => {
-      const currentID = getCurrentID();
-      // Potentially slow to search; if performance is critical, track an index map.
-      const idx = queue.findIndex((item) => item[0] === currentID);
-      if (idx === -1) {
-        throw new Error(`resolveTask could not find currentID = ${currentID}`);
-      }
+      const currentID = getCurrentID(),
+        // Potentially slow to search
+        idx = queue.findIndex((item) => item[0] === currentID),
+        info = promisesMap.get(queue[idx][0]);
 
-      const info = promisesMap.get(queue[idx][0]);
-      if (!info) {
-        throw new Error(`No promise found for taskID = ${currentID}`);
-      }
-
-      info[1](reader());
+      info![1](reader());
 
       // Mark slot as free again
       status[idx] = -1;

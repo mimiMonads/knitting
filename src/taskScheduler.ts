@@ -18,11 +18,7 @@ export const taskScheduler = ({
   signalBox: MainSignal;
   channelHandler: ChannelHandler;
 }) => {
-
-
   const check = () => {
-
-
     switch (updateLastSignal()) {
       case 0:
         resolveTask();
@@ -117,31 +113,3 @@ export class ChannelHandler {
     this.isOpen = false;
   }
 }
-
-/**
- * @pure
- */
-const debugThisThing = () => {
-  const arr: [number, number][] = [];
-
-  return {
-    enqueue: (n: number) => {
-      if (arr.length === 0) {
-        arr.push([
-          n,
-          performance.now(),
-        ]);
-      }
-
-      if (n !== arr.at(-1)![0]) {
-        arr.push(
-          [n, performance.now()],
-        );
-      }
-    },
-    log: () => {
-      console.log("=======");
-      arr.forEach((x) => console.log(x));
-    },
-  };
-};

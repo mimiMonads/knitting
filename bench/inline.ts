@@ -18,6 +18,18 @@ boxplot(async () => {
         await inLine.f(EMPTYUI8);
       });
 
+      bench("nop", async () => {
+        const arr = [
+          enqueue.inLine(EMPTYUI8),
+          enqueue.inLine(EMPTYUI8),
+          enqueue.inLine(EMPTYUI8),
+          enqueue.inLine(EMPTYUI8),
+        ];
+
+        await callFunction.inLine(EMPTYUI8);
+        await awaitAll.inLine(arr);
+      });
+
       bench(" 1 thread -> 1", async () => {
         await callFunction.inLine(EMPTYUI8);
       });

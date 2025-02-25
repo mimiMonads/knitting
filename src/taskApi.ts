@@ -166,14 +166,11 @@ export const createThreadPool = ({
     );
 
   const enqueuesWrap =
-    (isActive: (n: void) => void) =>
+    (isActive: (n: number) => number) =>
     (enqueues: (n: Uint8Array) => number) =>
     (
       args: Uint8Array,
-    ) => {
-      isActive();
-      return enqueues(args);
-    };
+    ) => isActive(enqueues(args));
 
   const enqueues = workers.map(
     (worker) => {
