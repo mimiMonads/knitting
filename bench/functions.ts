@@ -1,4 +1,4 @@
-import { fixedPoint } from "../src/fixpoint.ts";
+import { fixedPoint } from "../src/taskApi.ts";
 
 export const aaa = fixedPoint({
   args: "uint8",

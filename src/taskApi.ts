@@ -1,7 +1,7 @@
-import { getCallerFile } from "./helpers.ts";
-import { genTaskID } from "./helpers.ts";
-import { createContext } from "./main.ts";
-import type { PromiseMap } from "./mainQueue.ts";
+import { getCallerFilePath } from "./utils.ts";
+import { genTaskID } from "./utils.ts";
+import { createContext } from "./threadManager.ts";
+import type { PromiseMap } from "./mainQueueManager.ts";
 import { isMainThread } from "node:worker_threads";
 
 export const isMain = isMainThread;
@@ -32,7 +32,7 @@ type ReturnFixed<A extends Args> = FixPoint<A> & SecondPart;
 export const fixedPoint = <A extends Args>(
   I: FixPoint<A>,
 ): ReturnFixed<A> => {
-  const importedFrom = new URL(getCallerFile(2)).href;
+  const importedFrom = new URL(getCallerFilePath(2)).href;
   //console.log(importedFrom)
   return ({
     ...I,
@@ -135,9 +135,9 @@ export const toListAndIds = (
 
 const loopingBetweenThreads =
   ((n) => (functions: Function[]) => (max: number) => (args: any) =>
-    n === max ? functions[n = 0](args) : functions[n++](args))(0);
+    n < max ? functions[n = 0](args) : functions[++n](args))(0);
 
-export const compose = ({
+export const createThreadPool = ({
   threads,
 }: {
   threads?: number;
@@ -165,17 +165,17 @@ export const compose = ({
       })
     );
 
-  const addsWrap =
+  const enqueuesWrap =
     (isActive: (n: void) => void) =>
-    (adds: (n: Uint8Array) => number) =>
+    (enqueues: (n: Uint8Array) => number) =>
     (
       args: Uint8Array,
     ) => {
       isActive();
-      return adds(args);
+      return enqueues(args);
     };
 
-  const adds = workers.map(
+  const enqueues = workers.map(
     (worker) => {
       return listOfFunctions
         .map((list, index) => ({ ...list, index }))
@@ -183,13 +183,13 @@ export const compose = ({
           {
             acc.set(
               v.name,
-              addsWrap(worker.isActive)(
-                worker.queue.add(v.statusSignal)(v.index),
+              enqueuesWrap(worker.isActive)(
+                worker.queue.enqueue(v.statusSignal)(v.index),
               ),
             );
           }
           return acc;
-        }, new Map<string, ReturnType<ReturnType<typeof addsWrap>>>());
+        }, new Map<string, ReturnType<ReturnType<typeof enqueuesWrap>>>());
     },
   )
     .reduce((acc, map) => {
@@ -215,7 +215,7 @@ export const compose = ({
           {
             acc.set(
               v.name,
-              worker.resolver({
+              worker.callFunction({
                 queue: worker.queue,
                 fnNumber: v.index,
                 statusSignal: v.statusSignal,
@@ -223,7 +223,7 @@ export const compose = ({
             );
           }
           return acc;
-        }, new Map<string, ReturnType<typeof worker.resolver>>());
+        }, new Map<string, ReturnType<typeof worker.callFunction>>());
     },
   )
     .reduce((acc, map) => {
@@ -241,17 +241,17 @@ export const compose = ({
       return acc;
     }, new Map<string, Function[]>());
 
-  const resolve = new Map<string, (args: any) => Promise<any>>();
-  const add = new Map<string, (args: any) => Promise<any>>();
+  const callFunction = new Map<string, (args: any) => Promise<any>>();
+  const enqueue = new Map<string, (args: any) => Promise<any>>();
   const awaits = new Map<string, (args: any) => Promise<any>>();
 
   // Resolving maps before
   map.forEach((v, k) => {
-    resolve.set(k, loopingBetweenThreads(v)(v.length));
+    callFunction.set(k, loopingBetweenThreads(v)(v.length));
   });
 
-  adds.forEach((v, k) => {
-    add.set(k, loopingBetweenThreads(v)(v.length));
+  enqueues.forEach((v, k) => {
+    enqueue.set(k, loopingBetweenThreads(v)(v.length));
   });
 
   map.forEach((v, k) => {
@@ -259,9 +259,11 @@ export const compose = ({
   });
 
   return {
-    termminate: () => workers.forEach((worker) => worker.kills()),
-    resolver: Object.fromEntries(resolve) as unknown as FunctionMapType<T>,
-    add: Object.fromEntries(add) as unknown as FunctionMapTypeID<T>,
-    awaits: Object.fromEntries(awaits) as unknown as FunctionMapAwaits<T>,
+    terminateAll: () => workers.forEach((worker) => worker.kills()),
+    callFunction: Object.fromEntries(
+      callFunction,
+    ) as unknown as FunctionMapType<T>,
+    enqueue: Object.fromEntries(enqueue) as unknown as FunctionMapTypeID<T>,
+    awaitAll: Object.fromEntries(awaits) as unknown as FunctionMapAwaits<T>,
   };
 };

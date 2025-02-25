@@ -10,6 +10,7 @@ export type Sab = {
   size?: number;
   sharedSab?: SharedArrayBuffer;
 };
+
 export const signalsForWorker = (args?: Sab) => {
   const sab = args?.sharedSab
     ? args.sharedSab
@@ -50,10 +51,10 @@ export const workerSignal = (
   { status, id, funtionToUse, queueState }: SignalArguments,
 ) => ({
   // Status
-  curretSignal: () => status[0],
+  currentSignal: () => status[0],
   messageReady: (): 0 => (status[0] = 0),
-  messageWasRead: (): 1 => (status[0] = 1),
-  finishedAllTasks: (): 2 => (status[0] = 2),
+  markMessageAsRead: (): 1 => (status[0] = 1),
+  signalAllTasksDone: (): 2 => (status[0] = 2),
   waitingForMore: (): 3 => (status[0] = 3),
   readyToRead: (): 127 => (status[0] = 127),
   // Queue State

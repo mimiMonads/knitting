@@ -1,7 +1,7 @@
-import type { QueueList } from "./mainQueue.ts";
-import { type StatusSignal, type WorkerSignal } from "./signal.ts";
+import type { QueueList } from "./mainQueueManager.ts";
+import { type StatusSignal, type WorkerSignal } from "./signals.ts";
 
-type ArgumetnsForMulti = {
+type ArgumetnsForCreateWorkerQueue = {
   jobs: [Function, StatusSignal][];
   max?: number;
   writer: (job: QueueList) => void;
@@ -10,7 +10,7 @@ type ArgumetnsForMulti = {
 };
 
 // Create and manage a working queue.
-export const multi = (
+export const createWorkerQueue = (
   {
     jobs,
     max,
@@ -20,11 +20,9 @@ export const multi = (
       functionToUse,
       messageReady,
       readyToWork,
-      //delete
-      logWorkStatus,
     },
     reader,
-  }: ArgumetnsForMulti,
+  }: ArgumetnsForCreateWorkerQueue,
 ) => {
   const queue = Array.from(
     { length: max ?? 3 },
@@ -43,8 +41,8 @@ export const multi = (
     // Check if any task is solved and ready for writing.
     someHasFinished: () => queue.some((task) => task[0] === 2),
 
-    // Add a task to the queue.
-    add: (statusSignal: StatusSignal) => () => {
+    // enqueue a task to the queue.
+    enqueue: (statusSignal: StatusSignal) => () => {
       const freeSlot = queue.find((task) => task[0] === -1);
 
       if (freeSlot) {

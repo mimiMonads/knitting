@@ -1,16 +1,16 @@
-import type { MultiQueue } from "./mainQueue.ts";
-import type { MainSignal } from "./signal.ts";
+import type { MultiQueue } from "./mainQueueManager.ts";
+import type { MainSignal } from "./signals.ts";
 
-export const checker = ({
+export const taskScheduler = ({
   signalBox: {
     updateLastSignal,
     readyToRead,
     hasNoMoreMessages,
   },
   queue: {
-    solve,
+    resolveTask,
     canWrite,
-    sendNextToWorker,
+    dispatchToWorker,
   },
   channelHandler,
 }: {
@@ -18,65 +18,31 @@ export const checker = ({
   signalBox: MainSignal;
   channelHandler: ChannelHandler;
 }) => {
-  /**
-   * @pure
-   */
-  const debugThisThing = () => {
-    const arr: [number, number][] = [];
 
-    return {
-      add: (n: number) => {
-        if (arr.length === 0) {
-          arr.push([
-            n,
-            performance.now(),
-          ]);
-        }
-
-        if (n !== arr.at(-1)![0]) {
-          arr.push(
-            [n, performance.now()],
-          );
-        }
-      },
-      log: () => {
-        console.log("=======");
-        arr.forEach((x) => console.log(x));
-      },
-    };
-  };
-
-  /**
-   * @pure
-   */
-  const deb = debugThisThing();
-  // for debbuging
-  //setTimeout(deb.log, 3000)
 
   const check = () => {
 
-    //deb.add(lastUpated)
 
     switch (updateLastSignal()) {
       case 0:
-        solve();
+        resolveTask();
         readyToRead();
         channelHandler.scheduleCheck();
         return;
 
       case 2:
         if (canWrite()) {
-          sendNextToWorker();
+          dispatchToWorker();
           queueMicrotask(check);
         } else {
           hasNoMoreMessages();
-          check.running = false;
+          check.isRunning = false;
         }
         return;
 
       case 3:
         if (canWrite()) {
-          sendNextToWorker();
+          dispatchToWorker();
           queueMicrotask(check);
         } else {
           readyToRead();
@@ -94,21 +60,18 @@ export const checker = ({
         return;
 
       case 254:
-        sendNextToWorker();
+        dispatchToWorker();
         queueMicrotask(check);
         return;
 
       case 255:
-        check.running = false;
+        check.isRunning = false;
         return;
     }
-
-    console.log(updateLastSignal());
-    throw new Error("unreachable");
   };
 
   // This is not the best way to do it but it should work for now
-  check.running = false;
+  check.isRunning = false;
 
   return check;
 };
@@ -150,6 +113,35 @@ export class ChannelHandler {
     this.channel.port1.close();
     this.channel.port1.onmessage = null;
     this.channel.port2.close();
+    this.channel.port2.onmessage = null;
     this.isOpen = false;
   }
 }
+
+/**
+ * @pure
+ */
+const debugThisThing = () => {
+  const arr: [number, number][] = [];
+
+  return {
+    enqueue: (n: number) => {
+      if (arr.length === 0) {
+        arr.push([
+          n,
+          performance.now(),
+        ]);
+      }
+
+      if (n !== arr.at(-1)![0]) {
+        arr.push(
+          [n, performance.now()],
+        );
+      }
+    },
+    log: () => {
+      console.log("=======");
+      arr.forEach((x) => console.log(x));
+    },
+  };
+};

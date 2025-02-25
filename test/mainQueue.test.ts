@@ -1,7 +1,7 @@
 import { assertEquals } from "jsr:@std/assert";
-import { multi } from "../src/mainQueue.ts";
-import { mainSignal, signalsForWorker } from "../src/signal.ts";
-import { genTaskID } from "../src/helpers.ts";
+import { createMainQueue } from "../src/mainQueueManager.ts";
+import { mainSignal, signalsForWorker } from "../src/signals.ts";
+import { genTaskID } from "../src/utils.ts";
 
 Deno.test("Basic behaivour", async () => {
   const signals = signalsForWorker();
@@ -11,7 +11,7 @@ Deno.test("Basic behaivour", async () => {
   const signalBox = mainSignal(signals);
   const promisesMap = new Map();
 
-  const queue = multi({
+  const queue = createMainQueue({
     signalBox,
     reader,
     genTaskID,
@@ -19,8 +19,8 @@ Deno.test("Basic behaivour", async () => {
     promisesMap,
     max: 2,
   });
-  const add = queue.add(192)(0);
-  const addMessage = queue.add(224)(1);
+  const enqueue = queue.enqueue(192)(0);
+  const enqueueMessage = queue.enqueue(224)(1);
 
   assertEquals(
     queue.isEverythingSolve(),
@@ -34,25 +34,25 @@ Deno.test("Basic behaivour", async () => {
   );
 
   const ids = [
-    add(new Uint8Array([123])),
-    addMessage(new Uint8Array([456])),
+    enqueue(new Uint8Array([123])),
+    enqueueMessage(new Uint8Array([456])),
   ];
 
   assertEquals(
     [queue.canWrite(), queue.count()],
     [true, 2],
-    "add was not reconized",
+    "enqueue was not reconized",
   );
 
   assertEquals(
     queue.isEverythingSolve(),
     false,
-    "An added item has to block this",
+    "An enqueueed item has to block this",
   );
 
   const getpromise = queue.awaitArray(ids);
 
-  queue.sendNextToWorker();
+  queue.dispatchToWorker();
 
   assertEquals(
     signals.status[0],
@@ -60,7 +60,7 @@ Deno.test("Basic behaivour", async () => {
     "status was no updated",
   );
 
-  queue.sendNextToWorker();
+  queue.dispatchToWorker();
 
   // Check why it s failing uwu
   //   assertEquals(
@@ -69,9 +69,9 @@ Deno.test("Basic behaivour", async () => {
   //     "status was no updated"
   //   );
 
-  queue.solve();
+  queue.resolveTask();
   signals.id[0] = 1;
-  queue.solve();
+  queue.resolveTask();
 
   assertEquals(
     await getpromise,

@@ -1,9 +1,13 @@
 // main.ts
 import { Worker } from "node:worker_threads";
-import { multi, type MultiQueue, type PromiseMap } from "./mainQueue.ts";
-import { genTaskID, readMessageToUint, sendUintMessage } from "./helpers.ts";
-import { mainSignal, Sab, signalsForWorker } from "./signal.ts";
-import { ChannelHandler, checker } from "./checker.ts";
+import {
+  createMainQueue,
+  type MultiQueue,
+  type PromiseMap,
+} from "./mainQueueManager.ts";
+import { genTaskID, readPayload, sendPayload } from "./utils.ts";
+import { mainSignal, type Sab, signalsForWorker } from "./signals.ts";
+import { ChannelHandler, taskScheduler } from "./taskScheduler.ts";
 
 export const createContext = ({
   promisesMap,
@@ -19,15 +23,17 @@ export const createContext = ({
   thread?: number;
 }) => {
   const currentPath = import.meta.url;
-  const workerUrl = new URL(currentPath.replace("main.ts", "worker.ts"));
+  const workerUrl = new URL(
+    currentPath.replace("threadManager.ts", "workerThread.ts"),
+  );
 
   const signals = signalsForWorker(sab);
   const signalBox = mainSignal(signals);
 
-  const writer = sendUintMessage(signals);
-  const reader = readMessageToUint(signals);
+  const writer = sendPayload(signals);
+  const reader = readPayload(signals);
 
-  const queue = multi({
+  const queue = createMainQueue({
     writer,
     signalBox,
     reader,
@@ -35,10 +41,10 @@ export const createContext = ({
     promisesMap,
   });
 
-  const { add, awaits, awaitArray } = queue;
+  const { enqueue, awaitAll, awaitArray } = queue;
   const channelHandler = new ChannelHandler();
 
-  const check = checker({
+  const check = taskScheduler({
     signalBox,
     queue,
     channelHandler,
@@ -57,31 +63,31 @@ export const createContext = ({
   });
 
   const isActive = ((status: Int32Array) => () =>
-    check.running === false
+    check.isRunning === false
       ? (
-        status[0] = 254, check.running = true, queueMicrotask(check)
+        status[0] = 254, check.isRunning = true, queueMicrotask(check)
       )
       : undefined)(signals.status);
 
-  type Resolver = {
+  type callFunction = {
     queue: MultiQueue;
     fnNumber: number;
     statusSignal: 224 | 192;
     max?: number;
   };
 
-  const resolver = (args: Resolver) => {
+  const callFunction = (args: callFunction) => {
     const { queue, fnNumber, statusSignal } = args;
 
-    const adds = add(statusSignal)(fnNumber);
+    const enqueues = enqueue(statusSignal)(fnNumber);
     return (args: Uint8Array) => (
-      isActive(), awaits(adds(args))
+      isActive(), awaitAll(enqueues(args))
     );
   };
 
   return {
     queue,
-    resolver,
+    callFunction,
     isActive,
     awaitArray,
     kills: () => (

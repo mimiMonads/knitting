@@ -1,8 +1,8 @@
 import { workerData } from "node:worker_threads";
-import { readMessageToUint, writeUintMessage } from "./helpers.ts";
-import { multi } from "./workerQueue.ts";
-import { signalsForWorker, workerSignal } from "./signal.ts";
-import { getFunctions } from "./fixpoint.ts";
+import { readPayload, writePayload } from "./utils.ts";
+import { createWorkerQueue } from "./workerQueue.ts";
+import { signalsForWorker, workerSignal } from "./signals.ts";
+import { getFunctions } from "./taskApi.ts";
 
 const mainLoop = async () => {
   const sharedSab = workerData.sab as SharedArrayBuffer;
@@ -30,22 +30,23 @@ const mainLoop = async () => {
     throw "no imports where found uwu";
   }
   const signal = workerSignal(signals);
-  const reader = readMessageToUint(signals);
-  const writer = writeUintMessage(signals);
-  const { add, nextJob, someHasFinished, write, allDone } = multi({
-    //@ts-ignore Reason -> The type `job` was not well defined
-    jobs,
-    writer,
-    reader,
-    signal,
-  });
-  const { curretSignal, finishedAllTasks, messageWasRead } = signal;
+  const reader = readPayload(signals);
+  const writer = writePayload(signals);
+  const { enqueue, nextJob, someHasFinished, write, allDone } =
+    createWorkerQueue({
+      //@ts-ignore Reason -> The type `job` was not well defined
+      jobs,
+      writer,
+      reader,
+      signal,
+    });
+  const { currentSignal, signalAllTasksDone } = signal;
 
-  const on192 = add(192);
-  const on224 = add(224);
+  const on192 = enqueue(192);
+  const on224 = enqueue(224);
 
   while (true) {
-    switch (curretSignal()) {
+    switch (currentSignal()) {
       case 2:
       case 3:
       case 128:
@@ -65,7 +66,7 @@ const mainLoop = async () => {
           continue;
         }
         if (allDone()) {
-          finishedAllTasks();
+          signalAllTasksDone();
           continue;
         }
 

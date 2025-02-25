@@ -1,7 +1,7 @@
 import { assertEquals } from "jsr:@std/assert";
-import { createContext } from "../src/main.ts";
-import { fixedPoint, toListAndIds } from "../src/fixpoint.ts";
-import { signalsForWorker } from "../src/signal.ts";
+import { createContext } from "../src/threadManager.ts";
+import { fixedPoint, toListAndIds } from "../src/taskApi.ts";
+import { signalsForWorker } from "../src/signals.ts";
 
 export const a = fixedPoint({
   args: "uint8",
@@ -30,9 +30,9 @@ Deno.test("Using core one argument", async () => {
     ids,
     list,
   });
-  const num = ctx.queue.add(192)(0)(unitArrayOne);
+  const num = ctx.queue.enqueue(192)(0)(unitArrayOne);
   ctx.isActive();
-  const res1 = await ctx.queue.awaits(num)
+  const res1 = await ctx.queue.awaitAll(num)
     .finally(
       ctx.kills,
     );
@@ -62,11 +62,11 @@ Deno.test("Using core wit multiple arguments", async () => {
     sab,
   });
 
-  // Adding request to the queue
+  // enqueueing request to the queue
   const arr = [
-    ctx.queue.add(192)(0)(unitArrayOne),
-    ctx.queue.add(192)(0)(unitArrayTwo),
-    ctx.queue.add(192)(0)(unitArrayThree),
+    ctx.queue.enqueue(192)(0)(unitArrayOne),
+    ctx.queue.enqueue(192)(0)(unitArrayTwo),
+    ctx.queue.enqueue(192)(0)(unitArrayThree),
   ];
 
   // Run
