@@ -244,11 +244,15 @@ export const createThreadPool = ({
 
   // Resolving maps before
   map.forEach((v, k) => {
-    callFunction.set(k, loopingBetweenThreads(v)(v.length));
+    callFunction.set(k, threads === 1 
+      ? v[0] as (args: any) => Promise<any>
+      :loopingBetweenThreads(v)(v.length));
   });
 
   enqueues.forEach((v, k) => {
-    enqueue.set(k, loopingBetweenThreads(v)(v.length));
+    enqueue.set(k, threads === 1 
+      ? v[0] as (args: any) => Promise<any>
+      :loopingBetweenThreads(v)(v.length));
   });
 
   map.forEach((v, k) => {

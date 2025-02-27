@@ -29,11 +29,11 @@ export type PartialQueueList = [
 
 export type PromiseMap = Map<
   TaskID,
-  [
-    Promise<WorkerResponse>,
-    (val: WorkerResponse) => void,
-    (val: unknown) => void,
-  ]
+  {
+     promise : Promise<WorkerResponse>,
+     resolve: (val: WorkerResponse) => void,
+    reject: (val: unknown) => void,
+  }
 >;
 
 export type QueueList = [
@@ -113,21 +113,15 @@ export function createMainQueue({
         const idx = status.indexOf(-1) ?? status.length,
           taskID = genTaskID();
 
-        let resolveFn!: (res: WorkerResponse) => void,
-          rejectFn!: (res: unknown) => void;
 
-        promisesMap.set(taskID, [
-          new Promise<WorkerResponse>((resolve, reject) => {
-            resolveFn = resolve;
-            rejectFn = reject;
-          }),
-          resolveFn,
-          rejectFn,
-        ]);
+        // Deffering the prmise
+
+        promisesMap.set(taskID, Promise.withResolvers<WorkerResponse>());
 
         if (idx === status.length) {
-          queue.push([0, new Uint8Array(), 0, new Uint8Array(), 224]);
-          status.push(-1);
+          queue.push([taskID, rawArguments, functionID, new Uint8Array(), statusSignal]);
+          status.push(0);
+          return taskID;
         }
 
         // Mark slot as "Pending dispatch"
@@ -146,10 +140,9 @@ export function createMainQueue({
      * Await a single task ID, remove from PromiseMap once complete.
      */
     awaits: (id: TaskID) =>
-      promisesMap.get(id)![0].then((result) => {
-        promisesMap.delete(id);
-        return result;
-      }),
+      promisesMap.get(id)?.promise
+     .finally(() => promisesMap.delete(id))
+     ,
 
     /**
      * Await multiple tasks, remove each from PromiseMap once complete.
@@ -157,10 +150,7 @@ export function createMainQueue({
     awaitArray: (ids: TaskID[]) => {
       return Promise.all(
         ids.map((id) =>
-          promisesMap.get(id)![0].then((res) => {
-            promisesMap.delete(id);
-            return res;
-          })
+          promisesMap.get(id)!.promise.finally(() => promisesMap.delete(id))
         ),
       );
     },
@@ -195,7 +185,7 @@ export function createMainQueue({
         idx = queue.findIndex((item) => item[0] === currentID),
         info = promisesMap.get(queue[idx][0]);
 
-      info![1](reader());
+      info!.resolve(reader());
 
       // Mark slot as free again
       status[idx] = -1;
