@@ -30,9 +30,9 @@ export type PartialQueueList = [
 export type PromiseMap = Map<
   TaskID,
   {
-     promise : Promise<WorkerResponse>,
-     resolve: (val: WorkerResponse) => void,
-    reject: (val: unknown) => void,
+    promise: Promise<WorkerResponse>;
+    resolve: (val: WorkerResponse) => void;
+    reject: (val: unknown) => void;
   }
 >;
 
@@ -90,12 +90,36 @@ export function createMainQueue({
     return status.indexOf(0) !== -1;
   }
 
+  const addDeffered = (idx: number) => {
+    const promise = Promise.withResolvers<WorkerResponse>();
+    promisesMap.set(idx, promise);
+    return promise;
+  };
   return {
     /**
      * Returns whether there are no more slots with `status == 0`.
      */
     canWrite,
+
     isEverythingSolve: () => status.indexOf(0) === -1,
+
+    fastEnqueue:
+      (statusSignal: StatusSignal) =>
+      (functionID: FunctionID) =>
+      (rawArguments: RawArguments) => {
+        queue[0][0] = genTaskID();
+        queue[0][1] = rawArguments;
+        queue[0][2] = functionID;
+        // We can potentially skip this one
+        queue[0][4] = statusSignal;
+
+        writer(queue[0]);
+        setFunctionSignal(statusSignal);
+        status[0] = 1;
+        setSignal(192);
+
+        return addDeffered(queue[0][0]);
+      },
 
     count: () => status.length,
 
@@ -113,13 +137,18 @@ export function createMainQueue({
         const idx = status.indexOf(-1) ?? status.length,
           taskID = genTaskID();
 
-
         // Deffering the prmise
 
         promisesMap.set(taskID, Promise.withResolvers<WorkerResponse>());
 
         if (idx === status.length) {
-          queue.push([taskID, rawArguments, functionID, new Uint8Array(), statusSignal]);
+          queue.push([
+            taskID,
+            rawArguments,
+            functionID,
+            new Uint8Array(),
+            statusSignal,
+          ]);
           status.push(0);
           return taskID;
         }
@@ -141,8 +170,7 @@ export function createMainQueue({
      */
     awaits: (id: TaskID) =>
       promisesMap.get(id)?.promise
-     .finally(() => promisesMap.delete(id))
-     ,
+        .finally(() => promisesMap.delete(id)),
 
     /**
      * Await multiple tasks, remove each from PromiseMap once complete.

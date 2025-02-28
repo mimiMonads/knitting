@@ -213,7 +213,6 @@ export const createThreadPool = ({
             acc.set(
               v.name,
               worker.callFunction({
-                queue: worker.queue,
                 fnNumber: v.index,
                 statusSignal: v.statusSignal,
               }),
@@ -244,15 +243,21 @@ export const createThreadPool = ({
 
   // Resolving maps before
   map.forEach((v, k) => {
-    callFunction.set(k, threads === 1 
-      ? v[0] as (args: any) => Promise<any>
-      :loopingBetweenThreads(v)(v.length));
+    callFunction.set(
+      k,
+      threads === 1
+        ? v[0] as (args: any) => Promise<any>
+        : loopingBetweenThreads(v)(v.length),
+    );
   });
 
   enqueues.forEach((v, k) => {
-    enqueue.set(k, threads === 1 
-      ? v[0] as (args: any) => Promise<any>
-      :loopingBetweenThreads(v)(v.length));
+    enqueue.set(
+      k,
+      threads === 1
+        ? v[0] as (args: any) => Promise<any>
+        : loopingBetweenThreads(v)(v.length),
+    );
   });
 
   map.forEach((v, k) => {
