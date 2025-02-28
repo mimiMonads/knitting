@@ -240,6 +240,10 @@ export const createThreadPool = ({
   const callFunction = new Map<string, (args: any) => Promise<any>>();
   const enqueue = new Map<string, (args: any) => Promise<any>>();
   const awaits = new Map<string, (args: any) => Promise<any>>();
+  const runnable = workers.reduce((acc,  { run }) =>   {
+    acc.push(run)
+    return acc
+  } , [] as (() => void)[])
 
   // Resolving maps before
   map.forEach((v, k) => {
@@ -271,5 +275,6 @@ export const createThreadPool = ({
     ) as unknown as FunctionMapType<T>,
     enqueue: Object.fromEntries(enqueue) as unknown as FunctionMapTypeID<T>,
     awaitAll: Object.fromEntries(awaits) as unknown as FunctionMapAwaits<T>,
+    run: () => runnable.forEach(run => run())
   };
 };

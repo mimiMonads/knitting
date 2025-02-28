@@ -85,7 +85,7 @@ export const createContext = ({
     return (args: Uint8Array) => awaits(isActive(enqueues(args)));
   };
 
-  const run = () => ((starts : typeof dispatchToWorker) => () => {
+  const run = ((starts : typeof dispatchToWorker) => () => {
 
     if (check.isRunning === false) {
       starts();
