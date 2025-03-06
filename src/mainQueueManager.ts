@@ -91,10 +91,12 @@ export function createMainQueue({
   }
 
   const addDeffered = (idx: number) => {
-    const promise = Promise.withResolvers<WorkerResponse>();
-    promisesMap.set(idx, promise);
-    return promise;
+    const deffered = Promise.withResolvers<WorkerResponse>();
+    deffered.promise.finally(() => promisesMap.delete(0))
+    promisesMap.set(idx, deffered);
+    return deffered.promise.finally(() => promisesMap.delete(0));
   };
+  
   return {
     /**
      * Returns whether there are no more slots with `status == 0`.
@@ -116,10 +118,49 @@ export function createMainQueue({
         writer(queue[0]);
         setFunctionSignal(statusSignal);
         status[0] = 1;
+        isLastElementToSend(true)
         setSignal(192);
 
         return addDeffered(queue[0][0]);
       },
+
+    enqueuePromise:
+    (statusSignal: StatusSignal) =>
+    (functionID: FunctionID) =>
+    (rawArguments: RawArguments) => {
+      const idx = status.indexOf(-1) ?? status.length,
+        taskID = genTaskID() , 
+        deffered = Promise.withResolvers<WorkerResponse>()
+        ;
+
+      // Deffering the prmise
+      promisesMap.set(taskID, deffered);
+      
+
+      if (idx === status.length) {
+        queue.push([
+          taskID,
+          rawArguments,
+          functionID,
+          new Uint8Array(),
+          statusSignal,
+        ]);
+        status.push(0);
+        return deffered
+        .promise.finally(() => promisesMap.delete(taskID));;
+      }
+
+      // Mark slot as "Pending dispatch"
+      status[idx] = 0;
+
+      // Fill the queue record
+      queue[idx][0] = taskID; // TaskID
+      queue[idx][1] = rawArguments; // rawArgs
+      queue[idx][2] = functionID; // functionID
+      queue[idx][4] = statusSignal; // statusSignal
+
+      return deffered.promise.finally(() => promisesMap.delete(taskID));
+    },
 
     count: () => status.length,
 

@@ -2,7 +2,6 @@
 import { Worker } from "node:worker_threads";
 import {
   createMainQueue,
-  type MultiQueue,
   type PromiseMap,
 } from "./mainQueueManager.ts";
 import { genTaskID, readPayload, sendPayload } from "./utils.ts";
@@ -41,7 +40,7 @@ export const createContext = ({
     promisesMap,
   });
 
-  const { enqueue, awaits, awaitArray, dispatchToWorker, fastEnqueue } = queue;
+  const { enqueue, awaits, awaitArray, dispatchToWorker, fastEnqueue , enqueuePromise, canWrite } = queue;
   const channelHandler = new ChannelHandler();
 
   const check = taskScheduler({
@@ -87,7 +86,7 @@ export const createContext = ({
 
   const run = ((starts : typeof dispatchToWorker) => () => {
 
-    if (check.isRunning === false) {
+    if (check.isRunning === false && canWrite()) {
       starts();
       check.isRunning = true;
       queueMicrotask(check);
@@ -96,8 +95,13 @@ export const createContext = ({
   })(dispatchToWorker);
 
   const fastCalling = ({fnNumber, statusSignal}:CallFunction ) => {
-    const start =  fastEnqueue(statusSignal)(fnNumber)
-    return start
+    const first =  fastEnqueue(statusSignal)(fnNumber)
+    const enqueue = enqueuePromise(statusSignal)(fnNumber)
+
+    return (args: Uint8Array)=> 
+      check.isRunning === false 
+        ? first(args)
+        : enqueue(args)
   }
 
 
