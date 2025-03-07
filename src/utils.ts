@@ -1,10 +1,6 @@
 import type { MainList, QueueList } from "./mainQueueManager.ts";
 import type { SignalArguments } from "./signals.ts";
 
-// Signals
-type StatusSignalForVoid = 224;
-type StatusSignalForMessage = 192;
-export type StatusSignal = StatusSignalForVoid | StatusSignalForMessage;
 
 // Generate unique task IDs.
 export const genTaskID = ((counter: number) => () => counter++)(0);

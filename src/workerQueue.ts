@@ -2,7 +2,7 @@ import type { QueueList } from "./mainQueueManager.ts";
 import { type StatusSignal, type WorkerSignal } from "./signals.ts";
 
 type ArgumetnsForCreateWorkerQueue = {
-  jobs: [Function, StatusSignal][];
+  jobs: [Function][];
   max?: number;
   writer: (job: QueueList) => void;
   reader: () => Uint8Array;
@@ -33,7 +33,6 @@ export const createWorkerQueue = (
         new Uint8Array(),
         0,
         new Uint8Array(),
-        224,
       ] as QueueList,
   );
 
@@ -42,7 +41,7 @@ export const createWorkerQueue = (
     someHasFinished: () => queue.some((task) => task[0] === 2),
 
     // enqueue a task to the queue.
-    enqueue: (statusSignal: StatusSignal) => () => {
+    enqueue: () => {
       const freeSlot = queue.find((task) => task[0] === -1);
 
       if (freeSlot) {
@@ -50,16 +49,14 @@ export const createWorkerQueue = (
         freeSlot[1] = getCurrentID();
         freeSlot[2] = reader();
         freeSlot[3] = functionToUse();
-        //freeSlot[4] = new Uint8Array();
-        freeSlot[5] = statusSignal;
+        
       } else {
         queue.push([
           0,
           getCurrentID(),
           reader(),
           functionToUse(),
-          new Uint8Array(),
-          statusSignal,
+          new Uint8Array()
         ]);
       }
 
@@ -83,12 +80,9 @@ export const createWorkerQueue = (
         task[0] = 1; // Lock the task
 
         try {
-          task[4] = task[5] === 224
-            //@ts-ignore -> Reason , 224 doesn't take any arguments
-            ? await jobs[task[3]][0]()
-            : await jobs[task[3]][0](
+          await jobs[task[3]][0](
               task[2],
-            );
+            )
         } finally {
           task[0] = 2; // Unlock the task
         }

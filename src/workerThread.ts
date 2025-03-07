@@ -19,7 +19,7 @@ const mainLoop = async () => {
     .then(
       (objs) =>
         objs.map(
-          (obj) => [obj.f, obj.statusSignal],
+          (obj) => [obj.f],
         ),
     );
 
@@ -42,8 +42,7 @@ const mainLoop = async () => {
     });
   const { currentSignal, signalAllTasksDone } = signal;
 
-  const on192 = enqueue(192);
-  const on224 = enqueue(224);
+
 
   while (true) {
     switch (currentSignal()) {
@@ -72,15 +71,9 @@ const mainLoop = async () => {
 
         continue;
       }
-
-      case 224:
-        {
-          on224();
-        }
-        continue;
       case 192:
         {
-          on192();
+          enqueue();
         }
 
         continue;

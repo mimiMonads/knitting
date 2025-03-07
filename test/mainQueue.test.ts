@@ -19,8 +19,8 @@ Deno.test("Basic behaivour", async () => {
     promisesMap,
     max: 2,
   });
-  const enqueue = queue.enqueue(192)(0);
-  const enqueueMessage = queue.enqueue(224)(1);
+  const enqueue = queue.enqueue(0);
+  const enqueueMessage = queue.enqueue(1);
 
   assertEquals(
     queue.isEverythingSolve(),
@@ -61,13 +61,6 @@ Deno.test("Basic behaivour", async () => {
   );
 
   queue.dispatchToWorker();
-
-  // Check why it s failing uwu
-  //   assertEquals(
-  //     signals.status[0],
-  //     224,
-  //     "status was no updated"
-  //   );
 
   queue.resolveTask();
   signals.id[0] = 1;

@@ -51,7 +51,6 @@ export const taskScheduler = ({
         return;
       }
       case 192:
-      case 224:
         queueMicrotask(check);
         return;
 

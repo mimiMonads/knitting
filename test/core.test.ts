@@ -30,7 +30,7 @@ Deno.test("Using core one argument", async () => {
     ids,
     list,
   });
-  const num = ctx.queue.enqueue(192)(0)(unitArrayOne);
+  const num = ctx.queue.enqueue(0)(unitArrayOne);
   //@ts-ignore
   ctx.isActive();
   const res1 = await ctx.queue.awaits(num)!
@@ -65,9 +65,9 @@ Deno.test("Using core wit multiple arguments", async () => {
 
   // enqueueing request to the queue
   const arr = [
-    ctx.queue.enqueue(192)(0)(unitArrayOne),
-    ctx.queue.enqueue(192)(0)(unitArrayTwo),
-    ctx.queue.enqueue(192)(0)(unitArrayThree),
+    ctx.queue.enqueue(0)(unitArrayOne),
+    ctx.queue.enqueue(0)(unitArrayTwo),
+    ctx.queue.enqueue(0)(unitArrayThree),
   ];
 
   // Run

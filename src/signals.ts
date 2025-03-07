@@ -3,7 +3,7 @@ export type MainSignal = ReturnType<typeof mainSignal>;
 export type WorkerSignal = ReturnType<typeof workerSignal>;
 import { Buffer } from "node:buffer";
 
-type StatusSignalForVoid = 224 | 192;
+type StatusSignalForVoid = 192;
 export type StatusSignal = StatusSignalForVoid;
 
 export type Sab = {
@@ -36,7 +36,6 @@ export const mainSignal = (
     updateLastSignal: () => (status[0]),
     send: (): 192 => (status[0] = 192),
     setFunctionSignal: (signal: number) => (funtionToUse[0] = signal),
-    setSignal: (signal: StatusSignal) => (status[0] = signal),
     hasNoMoreMessages: (): 255 => (status[0] = 255),
     readyToRead: (): 127 => (status[0] = 127),
     // ID

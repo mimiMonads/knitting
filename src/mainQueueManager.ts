@@ -1,4 +1,3 @@
-import type { StatusSignal } from "./utils.ts";
 import { type MainSignal } from "./signals.ts";
 
 // Task ID is a unique number representing a task.
@@ -16,7 +15,6 @@ export type MainList = [
   RawArguments,
   FunctionID,
   WorkerResponse,
-  StatusSignal,
 ];
 
 // PartialQueueList represents a minimal task structure for enqueueing to a queue.
@@ -24,7 +22,6 @@ export type PartialQueueList = [
   TaskID,
   RawArguments,
   FunctionID,
-  StatusSignal,
 ];
 
 export type PromiseMap = Map<
@@ -42,8 +39,9 @@ export type QueueList = [
   RawArguments,
   FunctionID,
   WorkerResponse,
-  StatusSignal,
 ];
+
+
 
 export type MultiQueue = ReturnType<typeof createMainQueue>;
 
@@ -63,9 +61,9 @@ export function createMainQueue({
   writer,
   signalBox: {
     setFunctionSignal,
-    setSignal,
     getCurrentID,
     isLastElementToSend,
+    send
   },
   max,
   reader,
@@ -75,7 +73,7 @@ export function createMainQueue({
   // The queue holds [taskID, rawArgs, functionID, workerResponse, statusSignal].
   const queue = Array.from(
     { length: max ?? 5 },
-    () => [0, new Uint8Array(), 0, new Uint8Array(), 224] as MainList,
+    () => [0, new Uint8Array(), 0, new Uint8Array()] as MainList,
   );
 
   // Each element in `status` mirrors the same index in `queue`.
@@ -106,26 +104,22 @@ export function createMainQueue({
     isEverythingSolve: () => status.indexOf(0) === -1,
 
     fastEnqueue:
-      (statusSignal: StatusSignal) =>
       (functionID: FunctionID) =>
       (rawArguments: RawArguments) => {
         queue[0][0] = genTaskID();
         queue[0][1] = rawArguments;
         queue[0][2] = functionID;
-        // We can potentially skip this one
-        queue[0][4] = statusSignal;
 
         writer(queue[0]);
-        setFunctionSignal(statusSignal);
+        setFunctionSignal(functionID);
         status[0] = 1;
         isLastElementToSend(true)
-        setSignal(192);
+        send();
 
         return addDeffered(queue[0][0]);
       },
 
     enqueuePromise:
-    (statusSignal: StatusSignal) =>
     (functionID: FunctionID) =>
     (rawArguments: RawArguments) => {
       const idx = status.indexOf(-1) ?? status.length,
@@ -143,7 +137,6 @@ export function createMainQueue({
           rawArguments,
           functionID,
           new Uint8Array(),
-          statusSignal,
         ]);
         status.push(0);
         return deffered
@@ -157,7 +150,6 @@ export function createMainQueue({
       queue[idx][0] = taskID; // TaskID
       queue[idx][1] = rawArguments; // rawArgs
       queue[idx][2] = functionID; // functionID
-      queue[idx][4] = statusSignal; // statusSignal
 
       return deffered.promise.finally(() => promisesMap.delete(taskID));
     },
@@ -172,7 +164,6 @@ export function createMainQueue({
      *  - Returns the newly generated taskID.
      */
     enqueue:
-      (statusSignal: StatusSignal) =>
       (functionID: FunctionID) =>
       (rawArguments: RawArguments) => {
         const idx = status.indexOf(-1) ?? status.length,
@@ -188,7 +179,6 @@ export function createMainQueue({
             rawArguments,
             functionID,
             new Uint8Array(),
-            statusSignal,
           ]);
           status.push(0);
           return taskID;
@@ -201,7 +191,6 @@ export function createMainQueue({
         queue[idx][0] = taskID; // TaskID
         queue[idx][1] = rawArguments; // rawArgs
         queue[idx][2] = functionID; // functionID
-        queue[idx][4] = statusSignal; // statusSignal
 
         return taskID;
       },
@@ -240,7 +229,7 @@ export function createMainQueue({
       // Actually send the job out
       writer(queue[idx]);
       setFunctionSignal(queue[idx][2]);
-      setSignal(queue[idx][4]);
+      send();
     },
 
     /**

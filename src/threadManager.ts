@@ -76,11 +76,10 @@ export const createContext = ({
 
   type CallFunction = {
     fnNumber: number;
-    statusSignal: 224 | 192;
   };
 
-  const callFunction = ({fnNumber, statusSignal}: CallFunction) => {
-    const enqueues = enqueue(statusSignal)(fnNumber);
+  const callFunction = ({fnNumber}: CallFunction) => {
+    const enqueues = enqueue(fnNumber);
     return (args: Uint8Array) => awaits(isActive(enqueues(args)));
   };
 
@@ -94,9 +93,9 @@ export const createContext = ({
 
   })(dispatchToWorker);
 
-  const fastCalling = ({fnNumber, statusSignal}:CallFunction ) => {
-    const first =  fastEnqueue(statusSignal)(fnNumber)
-    const enqueue = enqueuePromise(statusSignal)(fnNumber)
+  const fastCalling = ({fnNumber}:CallFunction ) => {
+    const first =  fastEnqueue(fnNumber)
+    const enqueue = enqueuePromise(fnNumber)
 
     return (args: Uint8Array)=> 
       check.isRunning === false 

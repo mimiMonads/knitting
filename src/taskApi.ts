@@ -16,7 +16,6 @@ type FixPoint<A extends Args> = {
 };
 
 type SecondPart = {
-  statusSignal: 224 | 192;
   [symbol]: string;
   id: number;
   importedFrom: string;
@@ -33,10 +32,8 @@ export const fixedPoint = <A extends Args>(
   I: FixPoint<A>,
 ): ReturnFixed<A> => {
   const importedFrom = new URL(getCallerFilePath(2)).href;
-  //console.log(importedFrom)
   return ({
     ...I,
-    statusSignal: I.args === "void" ? 224 : 192,
     id: genTaskID(),
     importedFrom,
     [symbol]: "vixeny",
@@ -119,6 +116,7 @@ export const toListAndIds = (
     );
 
   if (filter) {
+    
     console.log(filter);
     result[0].delete(filter);
     console.log(result);
@@ -181,7 +179,7 @@ export const createThreadPool = ({
             acc.set(
               v.name,
               enqueuesWrap(worker.isActive)(
-                worker.queue.enqueue(v.statusSignal)(v.index),
+                worker.queue.enqueue(v.index),
               ),
             );
           }
@@ -214,7 +212,6 @@ export const createThreadPool = ({
               v.name,
               worker.callFunction({
                 fnNumber: v.index,
-                statusSignal: v.statusSignal,
               }),
             );
           }
@@ -240,6 +237,8 @@ export const createThreadPool = ({
   const callFunction = new Map<string, (args: any) => Promise<any>>();
   const enqueue = new Map<string, (args: any) => Promise<any>>();
   const awaits = new Map<string, (args: any) => Promise<any>>();
+
+
   const runnable = workers.reduce((acc,  { run }) =>   {
     acc.push(run)
     return acc
@@ -278,3 +277,18 @@ export const createThreadPool = ({
     run: () => runnable.forEach(run => run())
   };
 };
+
+
+// To clean
+
+type JoinAndComposingThreads = {
+  listOfFunctions : Composed[]
+  workers: (ReturnType< typeof createContext>)[]
+}
+
+const joinAndComposingThreads = ({
+  listOfFunctions , workers
+} :JoinAndComposingThreads) => {
+
+
+}
