@@ -1,5 +1,5 @@
 import { workerData } from "node:worker_threads";
-import { readPayload, writePayload } from "./utils.ts";
+import { readPayload, signalDebugger, writePayload } from "./utils.ts";
 import { createWorkerQueue } from "./workerQueue.ts";
 import { signalsForWorker, workerSignal } from "./signals.ts";
 import { getFunctions } from "./taskApi.ts";
@@ -40,12 +40,18 @@ const mainLoop = async () => {
       reader,
       signal,
     });
+
   const { currentSignal, signalAllTasksDone } = signal;
 
-
+  const getSignal = workerData?.debugSignal
+    ? signalDebugger({
+      thread: workerData.thread,
+      currentSignal,
+    })
+    : currentSignal;
 
   while (true) {
-    switch (currentSignal()) {
+    switch (getSignal()) {
       case 2:
       case 3:
       case 128:

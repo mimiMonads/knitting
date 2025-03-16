@@ -23,7 +23,7 @@ type SecondPart = {
 
 type Composed = {
   args: Args;
-  f: (...ags: any) => any;
+  f: (...args: any) => any;
 } & SecondPart;
 
 type ReturnFixed<A extends Args> = FixPoint<A> & SecondPart;
@@ -116,7 +116,6 @@ export const toListAndIds = (
     );
 
   if (filter) {
-    
     console.log(filter);
     result[0].delete(filter);
     console.log(result);
@@ -238,11 +237,10 @@ export const createThreadPool = ({
   const enqueue = new Map<string, (args: any) => Promise<any>>();
   const awaits = new Map<string, (args: any) => Promise<any>>();
 
-
-  const runnable = workers.reduce((acc,  { run }) =>   {
-    acc.push(run)
-    return acc
-  } , [] as (() => void)[])
+  const runnable = workers.reduce((acc, { run }) => {
+    acc.push(run);
+    return acc;
+  }, [] as (() => void)[]);
 
   // Resolving maps before
   map.forEach((v, k) => {
@@ -274,21 +272,19 @@ export const createThreadPool = ({
     ) as unknown as FunctionMapType<T>,
     enqueue: Object.fromEntries(enqueue) as unknown as FunctionMapTypeID<T>,
     awaitAll: Object.fromEntries(awaits) as unknown as FunctionMapAwaits<T>,
-    run: () => runnable.forEach(run => run())
+    run: () => runnable.forEach((run) => run()),
   };
 };
-
 
 // To clean
 
 type JoinAndComposingThreads = {
-  listOfFunctions : Composed[]
-  workers: (ReturnType< typeof createContext>)[]
-}
+  listOfFunctions: Composed[];
+  workers: (ReturnType<typeof createContext>)[];
+};
 
 const joinAndComposingThreads = ({
-  listOfFunctions , workers
-} :JoinAndComposingThreads) => {
-
-
-}
+  listOfFunctions,
+  workers,
+}: JoinAndComposingThreads) => {
+};

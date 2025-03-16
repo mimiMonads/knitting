@@ -20,8 +20,8 @@ export const signalsForWorker = (args?: Sab) => {
     sab,
     status: new Int32Array(sab, 0, 1),
     id: new Int32Array(sab, 4, 1),
-    payloadLenght: new Int32Array(sab, 8, 1),
-    funtionToUse: new Int32Array(sab, 12, 1),
+    payloadLength: new Int32Array(sab, 8, 1),
+    functionToUse: new Int32Array(sab, 12, 1),
     queueState: new Int8Array(sab, 16, 4),
     payload: new Uint8Array(sab, 20),
     buffer: Buffer.from(sab, 20),
@@ -29,13 +29,13 @@ export const signalsForWorker = (args?: Sab) => {
 };
 
 export const mainSignal = (
-  { status, id, funtionToUse, queueState }: SignalArguments,
+  { status, id, functionToUse, queueState }: SignalArguments,
 ) => {
   return ({
     // Status
-    updateLastSignal: () => (status[0]),
+    currentSignal: () => (status[0]),
     send: (): 192 => (status[0] = 192),
-    setFunctionSignal: (signal: number) => (funtionToUse[0] = signal),
+    setFunctionSignal: (signal: number) => (functionToUse[0] = signal),
     hasNoMoreMessages: (): 255 => (status[0] = 255),
     readyToRead: (): 127 => (status[0] = 127),
     // ID
@@ -47,7 +47,7 @@ export const mainSignal = (
 };
 
 export const workerSignal = (
-  { status, id, funtionToUse, queueState }: SignalArguments,
+  { status, id, functionToUse, queueState }: SignalArguments,
 ) => ({
   // Status
   currentSignal: () => status[0],
@@ -61,5 +61,5 @@ export const workerSignal = (
   readyToWork: () => queueState[0] === 1 ? status[0] = 3 : status[0] = 127,
   // Others
   getCurrentID: () => id[0],
-  functionToUse: () => funtionToUse[0],
+  functionToUse: () => functionToUse[0],
 });

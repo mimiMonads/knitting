@@ -1,7 +1,6 @@
 import type { MainList, QueueList } from "./mainQueueManager.ts";
 import type { SignalArguments } from "./signals.ts";
 
-
 // Generate unique task IDs.
 export const genTaskID = ((counter: number) => () => counter++)(0);
 
@@ -10,21 +9,21 @@ export const currentPath = () => new URL(import.meta.url);
 
 // Read a message from a Uint8Array.
 export const readPayload =
-  ({ payload, payloadLenght }: SignalArguments) => () =>
-    payload.subarray(0, payloadLenght[0].valueOf());
+  ({ payload, payloadLength }: SignalArguments) => () =>
+    payload.slice(0, payloadLength[0].valueOf());
 
 // Write a Uint8Array message with task metadata.
 export const writePayload =
-  ({ id, payload, payloadLenght }: SignalArguments) => (task: QueueList) => {
+  ({ id, payload, payloadLength }: SignalArguments) => (task: QueueList) => {
     payload.set(task[4], 0);
-    payloadLenght[0] = task[4].length;
+    payloadLength[0] = task[4].length;
     id[0] = task[1];
   };
 
 export const sendPayload =
-  ({ id, payload, payloadLenght }: SignalArguments) => (task: MainList) => {
+  ({ id, payload, payloadLength }: SignalArguments) => (task: MainList) => {
     payload.set(task[1]);
-    payloadLenght[0] = task[1].length;
+    payloadLength[0] = task[1].length;
     id[0] = task[0];
   };
 
@@ -78,3 +77,38 @@ const parseStackTraceFiles = (str: string) =>
 
       return s.slice(0, next);
     });
+
+export const signalDebugger = ({
+  thread,
+  isMain,
+  currentSignal,
+}: {
+  thread?: number;
+  isMain?: true;
+  currentSignal: { (arg: void): number };
+}) => {
+  let last = 255;
+  let thisOne = 255;
+  const builtAt = performance.now();
+
+  const orange = "\x1b[38;5;214m"; // Orange
+  const purple = "\x1b[38;5;129m"; // Purple
+  const reset = "\x1b[0m";
+  const tab = "\t"; // tab
+
+  return () => {
+    thisOne = currentSignal();
+    if (last !== thisOne) {
+      console.log(
+        `${orange}${(isMain ? "M" : "T") + thread}${reset}` + tab +
+          `${purple}${String(thisOne).padStart(3, " ")}${reset}` +
+          (isMain === true ? tab : tab + tab) +
+          `${orange}${
+            (performance.now() - builtAt).toFixed(2).padStart(6, " ")
+          }${reset}`,
+      );
+      last = thisOne;
+    }
+    return thisOne;
+  };
+};

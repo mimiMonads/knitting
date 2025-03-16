@@ -41,8 +41,6 @@ export type QueueList = [
   WorkerResponse,
 ];
 
-
-
 export type MultiQueue = ReturnType<typeof createMainQueue>;
 
 interface MultipleQueueSingle {
@@ -63,7 +61,7 @@ export function createMainQueue({
     setFunctionSignal,
     getCurrentID,
     isLastElementToSend,
-    send
+    send,
   },
   max,
   reader,
@@ -88,14 +86,27 @@ export function createMainQueue({
     return status.indexOf(0) !== -1;
   }
 
-  const addDeffered = (idx: number) => {
-    const deffered = Promise.withResolvers<WorkerResponse>();
-    deffered.promise.finally(() => promisesMap.delete(0))
-    promisesMap.set(idx, deffered);
-    return deffered.promise.finally(() => promisesMap.delete(0));
+  const rejectAll = (reason: string) => {
+    promisesMap.forEach(
+      (deferred) => deferred.reject(reason),
+    );
   };
-  
+
+  const adddeferred = (idx: number) => {
+    const deferred = Promise.withResolvers<WorkerResponse>();
+
+    promisesMap.set(idx, deferred);
+
+    // Finally returns the promise
+    return deferred.promise.finally(() => promisesMap.delete(0));
+  };
+
   return {
+    /**
+     * Rejects all the promises with a reason, this function is used to close a thread
+     * ensuring that all promises were resolved
+     */
+    rejectAll,
     /**
      * Returns whether there are no more slots with `status == 0`.
      */
@@ -103,75 +114,28 @@ export function createMainQueue({
 
     isEverythingSolve: () => status.indexOf(0) === -1,
 
-    fastEnqueue:
-      (functionID: FunctionID) =>
-      (rawArguments: RawArguments) => {
-        queue[0][0] = genTaskID();
-        queue[0][1] = rawArguments;
-        queue[0][2] = functionID;
+    fastEnqueue: (functionID: FunctionID) => (rawArguments: RawArguments) => {
+      queue[0][0] = genTaskID();
+      queue[0][1] = rawArguments;
+      queue[0][2] = functionID;
 
-        writer(queue[0]);
-        setFunctionSignal(functionID);
-        status[0] = 1;
-        isLastElementToSend(true)
-        send();
+      writer(queue[0]);
+      setFunctionSignal(functionID);
+      status[0] = 1;
+      isLastElementToSend(false);
 
-        return addDeffered(queue[0][0]);
-      },
+      send();
 
-    enqueuePromise:
-    (functionID: FunctionID) =>
-    (rawArguments: RawArguments) => {
-      const idx = status.indexOf(-1) ?? status.length,
-        taskID = genTaskID() , 
-        deffered = Promise.withResolvers<WorkerResponse>()
-        ;
-
-      // Deffering the prmise
-      promisesMap.set(taskID, deffered);
-      
-
-      if (idx === status.length) {
-        queue.push([
-          taskID,
-          rawArguments,
-          functionID,
-          new Uint8Array(),
-        ]);
-        status.push(0);
-        return deffered
-        .promise.finally(() => promisesMap.delete(taskID));;
-      }
-
-      // Mark slot as "Pending dispatch"
-      status[idx] = 0;
-
-      // Fill the queue record
-      queue[idx][0] = taskID; // TaskID
-      queue[idx][1] = rawArguments; // rawArgs
-      queue[idx][2] = functionID; // functionID
-
-      return deffered.promise.finally(() => promisesMap.delete(taskID));
+      return adddeferred(queue[0][0]);
     },
 
-    count: () => status.length,
-
-    /**
-     * Enqueue a new task:
-     *  - Finds or creates a free slot.
-     *  - Registers a Promise in `promisesMap`.
-     *  - Fills `queue` with the new task data.
-     *  - Returns the newly generated taskID.
-     */
-    enqueue:
-      (functionID: FunctionID) =>
-      (rawArguments: RawArguments) => {
+    enqueuePromise:
+      (functionID: FunctionID) => (rawArguments: RawArguments) => {
         const idx = status.indexOf(-1) ?? status.length,
-          taskID = genTaskID();
+          taskID = genTaskID(),
+          deferred = Promise.withResolvers<WorkerResponse>();
 
-        // Deffering the prmise
-
-        promisesMap.set(taskID, Promise.withResolvers<WorkerResponse>());
+        promisesMap.set(taskID, deferred);
 
         if (idx === status.length) {
           queue.push([
@@ -181,7 +145,8 @@ export function createMainQueue({
             new Uint8Array(),
           ]);
           status.push(0);
-          return taskID;
+          return deferred
+            .promise.finally(() => promisesMap.delete(taskID));
         }
 
         // Mark slot as "Pending dispatch"
@@ -192,15 +157,53 @@ export function createMainQueue({
         queue[idx][1] = rawArguments; // rawArgs
         queue[idx][2] = functionID; // functionID
 
-        return taskID;
+        return deferred.promise.finally(() => promisesMap.delete(taskID));
       },
+
+    count: () => status.length,
+
+    /**
+     * Enqueue a new task:
+     *  - Finds or creates a free slot.
+     *  - Registers a Promise in `promisesMap`.
+     *  - Fills `queue` with the new task data.
+     *  - Returns the newly generated taskID.
+     */
+    enqueue: (functionID: FunctionID) => (rawArguments: RawArguments) => {
+      const idx = status.indexOf(-1) ?? status.length,
+        taskID = genTaskID();
+
+      promisesMap.set(taskID, Promise.withResolvers<WorkerResponse>());
+
+      if (idx === status.length) {
+        queue.push([
+          taskID,
+          rawArguments,
+          functionID,
+          new Uint8Array(),
+        ]);
+        status.push(0);
+        return taskID;
+      }
+
+      // Mark slot as "Pending dispatch"
+      status[idx] = 0;
+
+      // Fill the queue record
+      queue[idx][0] = taskID; // TaskID
+      queue[idx][1] = rawArguments; // rawArgs
+      queue[idx][2] = functionID; // functionID
+
+      return taskID;
+    },
 
     /**
      * Await a single task ID, remove from PromiseMap once complete.
      */
     awaits: (id: TaskID) =>
       promisesMap.get(id)?.promise
-        .finally(() => promisesMap.delete(id)),
+        .finally(() => promisesMap.delete(id)) ??
+        new Promise((_, reject) => reject("Gone")),
 
     /**
      * Await multiple tasks, remove each from PromiseMap once complete.
@@ -208,7 +211,8 @@ export function createMainQueue({
     awaitArray: (ids: TaskID[]) => {
       return Promise.all(
         ids.map((id) =>
-          promisesMap.get(id)!.promise.finally(() => promisesMap.delete(id))
+          promisesMap.get(id)?.promise.finally(() => promisesMap.delete(id)) ??
+            new Promise((_, reject) => reject("Gone"))
         ),
       );
     },
@@ -228,6 +232,7 @@ export function createMainQueue({
 
       // Actually send the job out
       writer(queue[idx]);
+
       setFunctionSignal(queue[idx][2]);
       send();
     },

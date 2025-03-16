@@ -1,7 +1,7 @@
 import type { QueueList } from "./mainQueueManager.ts";
 import { type StatusSignal, type WorkerSignal } from "./signals.ts";
 
-type ArgumetnsForCreateWorkerQueue = {
+type ArgumentsForCreateWorkerQueue = {
   jobs: [Function][];
   max?: number;
   writer: (job: QueueList) => void;
@@ -22,7 +22,7 @@ export const createWorkerQueue = (
       readyToWork,
     },
     reader,
-  }: ArgumetnsForCreateWorkerQueue,
+  }: ArgumentsForCreateWorkerQueue,
 ) => {
   const queue = Array.from(
     { length: max ?? 3 },
@@ -49,14 +49,13 @@ export const createWorkerQueue = (
         freeSlot[1] = getCurrentID();
         freeSlot[2] = reader();
         freeSlot[3] = functionToUse();
-        
       } else {
         queue.push([
           0,
           getCurrentID(),
           reader(),
           functionToUse(),
-          new Uint8Array()
+          new Uint8Array(),
         ]);
       }
 
@@ -76,15 +75,15 @@ export const createWorkerQueue = (
     // Process the next available task.
     nextJob: async () => {
       const task = queue.find((task) => task[0] === 0);
-      if (task !== undefined) {
-        task[0] = 1; // Lock the task
 
+      if (task !== undefined) {
+        task[0] = 1;
         try {
-          await jobs[task[3]][0](
-              task[2],
-            )
+          task[4] = await jobs[task[3]][0](
+            task[2],
+          );
         } finally {
-          task[0] = 2; // Unlock the task
+          task[0] = 2;
         }
       }
     },

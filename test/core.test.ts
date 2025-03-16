@@ -29,6 +29,7 @@ Deno.test("Using core one argument", async () => {
     promisesMap,
     ids,
     list,
+    thread: 0,
   });
   const num = ctx.queue.enqueue(0)(unitArrayOne);
   //@ts-ignore
@@ -61,6 +62,7 @@ Deno.test("Using core wit multiple arguments", async () => {
     ids,
     list,
     sab,
+    thread: 0,
   });
 
   // enqueueing request to the queue
