@@ -161,62 +161,6 @@ export function createMainQueue({
       },
 
     count: () => status.length,
-
-    /**
-     * Enqueue a new task:
-     *  - Finds or creates a free slot.
-     *  - Registers a Promise in `promisesMap`.
-     *  - Fills `queue` with the new task data.
-     *  - Returns the newly generated taskID.
-     */
-    enqueue: (functionID: FunctionID) => (rawArguments: RawArguments) => {
-      const idx = status.indexOf(-1) ?? status.length,
-        taskID = genTaskID();
-
-      promisesMap.set(taskID, Promise.withResolvers<WorkerResponse>());
-
-      if (idx === status.length) {
-        queue.push([
-          taskID,
-          rawArguments,
-          functionID,
-          new Uint8Array(),
-        ]);
-        status.push(0);
-        return taskID;
-      }
-
-      // Mark slot as "Pending dispatch"
-      status[idx] = 0;
-
-      // Fill the queue record
-      queue[idx][0] = taskID; // TaskID
-      queue[idx][1] = rawArguments; // rawArgs
-      queue[idx][2] = functionID; // functionID
-
-      return taskID;
-    },
-
-    /**
-     * Await a single task ID, remove from PromiseMap once complete.
-     */
-    awaits: (id: TaskID) =>
-      promisesMap.get(id)?.promise
-        .finally(() => promisesMap.delete(id)) ??
-        new Promise((_, reject) => reject("Gone")),
-
-    /**
-     * Await multiple tasks, remove each from PromiseMap once complete.
-     */
-    awaitArray: (ids: TaskID[]) => {
-      return Promise.all(
-        ids.map((id) =>
-          promisesMap.get(id)?.promise.finally(() => promisesMap.delete(id)) ??
-            new Promise((_, reject) => reject("Gone"))
-        ),
-      );
-    },
-
     /**
      * Move the next pending task from "Pending dispatch" to "In worker".
      * Then calls `writer(...)` to actually transfer the data to the worker thread.
@@ -245,9 +189,9 @@ export function createMainQueue({
     resolveTask: () => {
       const currentID = getCurrentID(),
         // Potentially slow to search
+      
         idx = queue.findIndex((item) => item[0] === currentID),
         info = promisesMap.get(queue[idx][0]);
-
       info!.resolve(reader());
 
       // Mark slot as free again

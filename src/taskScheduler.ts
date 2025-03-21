@@ -59,6 +59,7 @@ export const taskScheduler = ({
         return;
 
       case 127: {
+        //queueMicrotask(check);
         channelHandler.scheduleCheck();
         return;
       }

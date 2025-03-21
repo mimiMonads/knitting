@@ -38,9 +38,6 @@ export const createContext = ({
   });
 
   const {
-    enqueue,
-    awaits,
-    awaitArray,
     dispatchToWorker,
     fastEnqueue,
     enqueuePromise,
@@ -69,26 +66,17 @@ export const createContext = ({
     },
   });
 
-  const isActive = ((status: Int32Array) => (n: number) => {
-    if (check.isRunning === false) {
-      dispatchToWorker();
-      check.isRunning = true;
-      queueMicrotask(check);
-    }
-
-    return n;
-  })(signals.status);
 
   type CallFunction = {
     fnNumber: number;
   };
 
   const callFunction = ({ fnNumber }: CallFunction) => {
-    const enqueues = enqueue(fnNumber);
-    return (args: Uint8Array) => awaits(isActive(enqueues(args)));
+    const enqueues = enqueuePromise(fnNumber);
+    return (args: Uint8Array) => enqueues(args);
   };
 
-  const run = ((starts: typeof dispatchToWorker) => () => {
+  const send = ((starts: typeof dispatchToWorker) => () => {
     if (check.isRunning === false && canWrite()) {
       starts();
       check.isRunning = true;
@@ -108,16 +96,13 @@ export const createContext = ({
         : enqueue(args);
   };
 
+
   return {
     queue,
     check,
-    run,
+    send,
     callFunction,
-    isActive,
     fastCalling,
-    awaitArray,
-
-    // Ensured that the thread closses prorperly
     kills: () => (
       rejectAll("Thread closed"), channelHandler.close(), worker.terminate()
     ),

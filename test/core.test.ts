@@ -32,8 +32,8 @@ Deno.test("Using core one argument", async () => {
     thread: 0,
   });
   const num = ctx.queue.enqueue(0)(unitArrayOne);
-  //@ts-ignore
-  ctx.isActive();
+
+  ctx.run();
   const res1 = await ctx.queue.awaits(num)!
     .finally(
       ctx.kills,
@@ -45,7 +45,56 @@ Deno.test("Using core one argument", async () => {
   );
 });
 
-Deno.test("Using core wit multiple arguments", async () => {
+
+Deno.test("Using core fastcalling", async () => {
+  const promisesMap = new Map();
+  const { ids, list } = toListAndIds({ a });
+  const ctx = createContext({
+    promisesMap,
+    ids,
+    list,
+    thread: 0,
+  });
+  const fn = ctx.fastCalling({fnNumber: 0})(unitArrayOne);
+
+  ctx.run();
+
+  const res1 = await fn!
+    .finally(
+      ctx.kills,
+    );
+
+  assertEquals(
+    res1,
+    unitArrayOne,
+  );
+});
+
+Deno.test("Using core calling", async () => {
+  const promisesMap = new Map();
+  const { ids, list } = toListAndIds({ a });
+  const ctx = createContext({
+    promisesMap,
+    ids,
+    list,
+    thread: 0,
+  });
+  const fn = ctx.enqueuing({fnNumber: 0})(unitArrayOne);
+
+  ctx.run();
+
+  const res1 = await fn!
+    .finally(
+      ctx.kills,
+    );
+
+  assertEquals(
+    res1,
+    unitArrayOne,
+  );
+});
+
+Deno.test("Using core  fastcalling wit multiple arguments", async () => {
   // Init signals
   const size = 200000;
   const sab = {
@@ -64,20 +113,63 @@ Deno.test("Using core wit multiple arguments", async () => {
     sab,
     thread: 0,
   });
+  const composed = ({
+    fnNumber: 0
+  })
 
   // enqueueing request to the queue
   const arr = [
-    ctx.queue.enqueue(0)(unitArrayOne),
-    ctx.queue.enqueue(0)(unitArrayTwo),
-    ctx.queue.enqueue(0)(unitArrayThree),
+    ctx.fastCalling(composed)(unitArrayOne),
+    ctx.fastCalling(composed)(unitArrayTwo),
+    ctx.fastCalling(composed)(unitArrayThree)
   ];
 
-  // Run
-  //@ts-ignore
-  ctx.isActive();
+  ctx.run();
 
   // Resolving
-  const res = await ctx.awaitArray(arr)
+  const res = await Promise.all(arr)
+    .finally(ctx.kills);
+
+  assertEquals(
+    res,
+    [unitArrayOne, unitArrayTwo, unitArrayThree],
+  );
+});
+
+Deno.test("Using core calling wit multiple arguments", async () => {
+  // Init signals
+  const size = 200000;
+  const sab = {
+    size,
+    sharedSab: new SharedArrayBuffer(size),
+  };
+  const signal = signalsForWorker(sab);
+
+  // Init context
+  const promisesMap = new Map();
+  const { ids, list } = toListAndIds({ a });
+  const ctx = createContext({
+    promisesMap,
+    ids,
+    list,
+    sab,
+    thread: 0,
+  });
+  const composed = ({
+    fnNumber: 0
+  })
+
+  // enqueueing request to the queue
+  const arr = [
+    ctx.callFunction(composed)(unitArrayOne),
+    ctx.callFunction(composed)(unitArrayTwo),
+    ctx.callFunction(composed)(unitArrayThree)
+  ];
+
+  ctx.run();
+
+  // Resolving
+  const res = await Promise.all(arr)
     .finally(ctx.kills);
 
   assertEquals(

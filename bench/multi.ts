@@ -1,4 +1,4 @@
-import { bench, boxplot, group, run, summary } from "mitata";
+import { bench, boxplot, group, run as runMitata, summary } from "mitata";
 import { createThreadPool } from "../src/taskApi.ts";
 import { aaa } from "./functions.ts";
 
@@ -7,7 +7,7 @@ const EMPTYUI8 = new Uint8Array([1, 2, 3]);
 const fn = aaa.f;
 
 const threads = 5;
-const { terminateAll, callFunction, enqueue, awaitAll } = createThreadPool({
+const { terminateAll, callFunction,  fastCallFunction , send  } = createThreadPool({
   threads,
 })({
   aaa,
@@ -21,9 +21,13 @@ group("1", () => {
 
     bench(threads + " thread -> 1", async () => {
       const arr = [
-        enqueue.aaa(EMPTYUI8),
+        callFunction.aaa(EMPTYUI8),
       ];
-      await awaitAll.aaa(arr);
+
+      send()
+
+      await Promise.all(arr)
+
     });
   });
 });
@@ -39,10 +43,13 @@ group("2", () => {
 
     bench(threads + " thread -> 2", async () => {
       const arr = [
-        enqueue.aaa(EMPTYUI8),
-        enqueue.aaa(EMPTYUI8),
+        callFunction.aaa(EMPTYUI8),
+        callFunction.aaa(EMPTYUI8),
       ];
-      await awaitAll.aaa(arr);
+
+      send()
+
+      await Promise.all(arr)
     });
   });
 });
@@ -59,11 +66,14 @@ group("3", () => {
 
     bench(threads + " thread -> 3", async () => {
       const arr = [
-        enqueue.aaa(EMPTYUI8),
-        enqueue.aaa(EMPTYUI8),
-        enqueue.aaa(EMPTYUI8),
+        callFunction.aaa(EMPTYUI8),
+        callFunction.aaa(EMPTYUI8),
+        callFunction.aaa(EMPTYUI8),
       ];
-      await awaitAll.aaa(arr);
+
+      send()
+
+      await Promise.all(arr)
     });
   });
 });
@@ -81,12 +91,15 @@ group("4", () => {
 
     bench(threads + " thread -> 4", async () => {
       const arr = [
-        enqueue.aaa(EMPTYUI8),
-        enqueue.aaa(EMPTYUI8),
-        enqueue.aaa(EMPTYUI8),
-        enqueue.aaa(EMPTYUI8),
+        callFunction.aaa(EMPTYUI8),
+        callFunction.aaa(EMPTYUI8),
+        callFunction.aaa(EMPTYUI8),
+        callFunction.aaa(EMPTYUI8),
       ];
-      await awaitAll.aaa(arr);
+
+      send()
+
+      await Promise.all(arr)
     });
   });
 
@@ -104,17 +117,34 @@ group("4", () => {
 
       bench(threads + " thread -> 5", async () => {
         const arr = [
-          enqueue.aaa(EMPTYUI8),
-          enqueue.aaa(EMPTYUI8),
-          enqueue.aaa(EMPTYUI8),
-          enqueue.aaa(EMPTYUI8),
-          enqueue.aaa(EMPTYUI8),
+          callFunction.aaa(EMPTYUI8),
+          callFunction.aaa(EMPTYUI8),
+          callFunction.aaa(EMPTYUI8),
+          callFunction.aaa(EMPTYUI8),
+          callFunction.aaa(EMPTYUI8),
         ];
-        await awaitAll.aaa(arr);
+  
+        send()
+  
+        await Promise.all(arr)
+      });
+
+      
+
+      bench(threads + " thread fast calling-> 5", async () => {
+        const arr = [
+          fastCallFunction.aaa(EMPTYUI8),
+          fastCallFunction.aaa(EMPTYUI8),
+          fastCallFunction.aaa(EMPTYUI8),
+          fastCallFunction.aaa(EMPTYUI8),
+          fastCallFunction.aaa(EMPTYUI8),
+        ];
+  
+       await Promise.all(arr)
       });
     });
   });
 });
 
-await run();
+await runMitata();
 await terminateAll();

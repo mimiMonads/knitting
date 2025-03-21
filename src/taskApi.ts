@@ -46,18 +46,6 @@ type FunctionMapType<T extends Record<string, Composed>> = {
   [K in keyof T]: T[K]["f"];
 };
 
-type FunctionMapTypeID<T extends Record<string, Composed>> = {
-  [K in keyof T]: T[K]["f"] extends (args: infer A) => any ? {
-      (arg: A): number;
-    }
-    : never;
-};
-
-type FunctionMapAwaits<T extends Record<string, Composed>> = {
-  [K in keyof T]: (n: number[]) => ReturnType<
-    T[K]["f"]
-  >[];
-};
 
 export type GetFunctions = ReturnType<typeof getFunctions>;
 
@@ -134,26 +122,25 @@ const loopingBetweenThreads =
   ((n) => (functions: Function[]) => (max: number) => (args: any) =>
     n < max ? functions[n = 0](args) : functions[++n](args))(0);
 
-export const createThreadPool = ({
-  threads,
-}: {
-  threads?: number;
-}) =>
-<T extends Record<string, Composed>>(args: T) => {
-  const promisesMap: PromiseMap = new Map();
-
-  const { list, ids } = toListAndIds(args);
-
-  const listOfFunctions = Object.entries(args).map(([k, v]) => ({
-    ...v,
-    name: k,
-  }))
-    .sort((a, b) => a.name.localeCompare(b.name));
-
-  const workers = Array.from({
-    length: threads ?? 1,
-  })
-    .map((_, thread) =>
+  export const createThreadPool = ({
+    threads,
+  }: {
+    threads?: number;
+  }) =>
+  <T extends Record<string, Composed>>(args: T) => {
+    const promisesMap: PromiseMap = new Map();
+  
+    const { list, ids } = toListAndIds(args);
+  
+    const listOfFunctions = Object.entries(args).map(([k, v]) => ({
+      ...v,
+      name: k,
+    }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  
+    const workers = Array.from({
+      length: threads ?? 1,
+    }).map((_, thread) =>
       createContext({
         promisesMap,
         list,
@@ -161,130 +148,117 @@ export const createThreadPool = ({
         thread,
       })
     );
-
-  const enqueuesWrap =
-    (isActive: (n: number) => number) =>
-    (enqueues: (n: Uint8Array) => number) =>
-    (
-      args: Uint8Array,
-    ) => isActive(enqueues(args));
-
-  const enqueues = workers.map(
-    (worker) => {
-      return listOfFunctions
-        .map((list, index) => ({ ...list, index }))
-        .reduce((acc, v) => {
-          {
-            acc.set(
-              v.name,
-              enqueuesWrap(worker.isActive)(
-                worker.queue.enqueue(v.index),
-              ),
-            );
-          }
-          return acc;
-        }, new Map<string, ReturnType<ReturnType<typeof enqueuesWrap>>>());
-    },
-  )
-    .reduce((acc, map) => {
-      map.forEach(
-        (v, k) => {
-          const fun = acc.get(k);
-          if (fun) {
-            acc.set(k, [...fun, v]);
-          } else {
-            acc.set(k, [v]);
-          }
-        },
-      );
-
-      return acc;
-    }, new Map<string, Function[]>());
-
-  const map = workers.map(
-    (worker) => {
-      return listOfFunctions
-        .map((list, index) => ({ ...list, index }))
-        .reduce((acc, v) => {
-          {
+  
+    // -- BUILD CALLFUNCTION MAP
+    const map = workers
+      .map((worker) => {
+        return listOfFunctions
+          .map((list, index) => ({ ...list, index }))
+          .reduce((acc, v) => {
             acc.set(
               v.name,
               worker.callFunction({
                 fnNumber: v.index,
               }),
             );
-          }
-          return acc;
-        }, new Map<string, ReturnType<typeof worker.callFunction>>());
-    },
-  )
-    .reduce((acc, map) => {
-      map.forEach(
-        (v, k) => {
+            return acc;
+          }, new Map<string, ReturnType<typeof worker.callFunction>>());
+      })
+      .reduce((acc, map) => {
+        map.forEach((v, k) => {
           const fun = acc.get(k);
-          if (fun) {
-            acc.set(k, [...fun, v]);
-          } else {
-            acc.set(k, [v]);
-          }
-        },
-      );
+          fun ? acc.set(k, [...fun, v]) : acc.set(k, [v]);
+        });
+        return acc;
+      }, new Map<string, Function[]>());
+  
+    const fastMap = workers
+      .map((worker) => {
+        return listOfFunctions
+          .map((list, index) => ({ ...list, index }))
+          .reduce((acc, v) => {
+            // The "fastCalling" method is presumably very similar to callFunction
+            acc.set(
+              v.name,
+              worker.fastCalling({
+                fnNumber: v.index,
+              }),
+            );
+            return acc;
+          }, new Map<string, ReturnType<typeof worker.fastCalling>>());
+      })
+      .reduce((acc, map) => {
+        map.forEach((v, k) => {
+          const fun = acc.get(k);
+          fun ? acc.set(k, [...fun, v]) : acc.set(k, [v]);
+        });
+        return acc;
+      }, new Map<string, Function[]>());
 
+
+      const enqueueMap = workers
+      .map((worker) => {
+        return listOfFunctions
+          .map((list, index) => ({ ...list, index }))
+          .reduce((acc, v) => {
+            // The "fastCalling" method is presumably very similar to callFunction
+            acc.set(
+              v.name,
+              worker.callFunction({
+                fnNumber: v.index,
+              }),
+            );
+            return acc;
+          }, new Map<string, ReturnType<typeof worker.fastCalling>>());
+      })
+      .reduce((acc, map) => {
+        map.forEach((v, k) => {
+          const fun = acc.get(k);
+          fun ? acc.set(k, [...fun, v]) : acc.set(k, [v]);
+        });
+        return acc;
+      }, new Map<string, Function[]>());
+  
+
+    const callFunction = new Map<string, (args: any) => Promise<any>>();
+    const fastCall = new Map<string, (args: any) => Promise<any>>();
+    const enqueue = new Map<string, (args: any) => Promise<any>>();
+  
+  
+    const runnable = workers.reduce((acc, { send }) => {
+      acc.push(send);
       return acc;
-    }, new Map<string, Function[]>());
+    }, [] as (() => void)[]);
+  
+    enqueueMap.forEach((v, k) => {
+      callFunction.set(
+        k,
+        threads === 1
+          ? (v[0] as (args: any) => Promise<any>)
+          : loopingBetweenThreads(v)(v.length),
+      );
+    });
+  
+    fastMap.forEach((v, k) => {
+      fastCall.set(
+        k,
+        threads === 1
+          ? (v[0] as (args: any) => Promise<any>)
+          : loopingBetweenThreads(v)(v.length),
+      );
+    });
+  
 
-  const callFunction = new Map<string, (args: any) => Promise<any>>();
-  const enqueue = new Map<string, (args: any) => Promise<any>>();
-  const awaits = new Map<string, (args: any) => Promise<any>>();
 
-  const runnable = workers.reduce((acc, { run }) => {
-    acc.push(run);
-    return acc;
-  }, [] as (() => void)[]);
-
-  // Resolving maps before
-  map.forEach((v, k) => {
-    callFunction.set(
-      k,
-      threads === 1
-        ? v[0] as (args: any) => Promise<any>
-        : loopingBetweenThreads(v)(v.length),
-    );
-  });
-
-  enqueues.forEach((v, k) => {
-    enqueue.set(
-      k,
-      threads === 1
-        ? v[0] as (args: any) => Promise<any>
-        : loopingBetweenThreads(v)(v.length),
-    );
-  });
-
-  map.forEach((v, k) => {
-    awaits.set(k, workers[0].awaitArray);
-  });
-
-  return {
-    terminateAll: () => workers.forEach((worker) => worker.kills()),
-    callFunction: Object.fromEntries(
-      callFunction,
-    ) as unknown as FunctionMapType<T>,
-    enqueue: Object.fromEntries(enqueue) as unknown as FunctionMapTypeID<T>,
-    awaitAll: Object.fromEntries(awaits) as unknown as FunctionMapAwaits<T>,
-    run: () => runnable.forEach((run) => run()),
+  
+    return {
+      terminateAll: () => workers.forEach((worker) => worker.kills()),
+      callFunction: Object.fromEntries(callFunction) as unknown as FunctionMapType<T>,
+      fastCallFunction: Object.fromEntries(fastCall) as unknown as FunctionMapType<T>,
+      send: () => runnable.forEach((fn) => fn()),
+    };
   };
-};
 
-// To clean
 
-type JoinAndComposingThreads = {
-  listOfFunctions: Composed[];
-  workers: (ReturnType<typeof createContext>)[];
-};
 
-const joinAndComposingThreads = ({
-  listOfFunctions,
-  workers,
-}: JoinAndComposingThreads) => {
-};
+

@@ -4,7 +4,7 @@ export const aaa = fixedPoint({
   args: "uint8",
   f: async (arr: Uint8Array) => {
     // Simulate an expensive operation
-    let a = 100000;
+    let a = 1000;
 
     while (a != 0) {
       performance.now();
@@ -21,7 +21,7 @@ export const inLine = fixedPoint({
     const argsToString = args.toString();
 
     const start = Date.now().toString();
-    let a = 1000;
+    let a = 100000;
 
     while (a !== 0) {
       Date.now();
