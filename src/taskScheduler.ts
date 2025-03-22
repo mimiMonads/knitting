@@ -20,7 +20,7 @@ export const taskScheduler = ({
   queue: MultiQueue;
   signalBox: MainSignal;
   channelHandler: ChannelHandler;
-  debugSignal?: true;
+  debugSignal?: boolean;
   thread: number;
 }) => {
   const getSignal = debugSignal === true

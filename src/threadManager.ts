@@ -11,12 +11,14 @@ export const createContext = ({
   ids,
   sab,
   thread,
+  debugSignal
 }: {
   promisesMap: PromiseMap;
   list: string[];
   ids: number[];
   sab?: Sab;
   thread: number;
+  debugSignal?: boolean;
 }) => {
   const currentPath = import.meta.url;
   const workerUrl = new URL(
@@ -51,6 +53,7 @@ export const createContext = ({
     queue,
     channelHandler,
     thread,
+    debugSignal: debugSignal ?? false,
   });
 
   channelHandler.open(check);

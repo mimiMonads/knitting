@@ -22,28 +22,6 @@ Deno.test("fixpoint", async () => {
   );
 });
 
-Deno.test("Using core one argument", async () => {
-  const promisesMap = new Map();
-  const { ids, list } = toListAndIds({ a });
-  const ctx = createContext({
-    promisesMap,
-    ids,
-    list,
-    thread: 0,
-  });
-  const num = ctx.queue.enqueue(0)(unitArrayOne);
-
-  ctx.run();
-  const res1 = await ctx.queue.awaits(num)!
-    .finally(
-      ctx.kills,
-    );
-
-  assertEquals(
-    res1,
-    unitArrayOne,
-  );
-});
 
 
 Deno.test("Using core fastcalling", async () => {
@@ -57,7 +35,7 @@ Deno.test("Using core fastcalling", async () => {
   });
   const fn = ctx.fastCalling({fnNumber: 0})(unitArrayOne);
 
-  ctx.run();
+  ctx.send();
 
   const res1 = await fn!
     .finally(
@@ -70,29 +48,7 @@ Deno.test("Using core fastcalling", async () => {
   );
 });
 
-Deno.test("Using core calling", async () => {
-  const promisesMap = new Map();
-  const { ids, list } = toListAndIds({ a });
-  const ctx = createContext({
-    promisesMap,
-    ids,
-    list,
-    thread: 0,
-  });
-  const fn = ctx.enqueuing({fnNumber: 0})(unitArrayOne);
 
-  ctx.run();
-
-  const res1 = await fn!
-    .finally(
-      ctx.kills,
-    );
-
-  assertEquals(
-    res1,
-    unitArrayOne,
-  );
-});
 
 Deno.test("Using core  fastcalling wit multiple arguments", async () => {
   // Init signals
@@ -124,7 +80,7 @@ Deno.test("Using core  fastcalling wit multiple arguments", async () => {
     ctx.fastCalling(composed)(unitArrayThree)
   ];
 
-  ctx.run();
+  ctx.send();
 
   // Resolving
   const res = await Promise.all(arr)
@@ -166,7 +122,7 @@ Deno.test("Using core calling wit multiple arguments", async () => {
     ctx.callFunction(composed)(unitArrayThree)
   ];
 
-  ctx.run();
+  ctx.send();
 
   // Resolving
   const res = await Promise.all(arr)

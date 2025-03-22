@@ -118,14 +118,28 @@ export const toListAndIds = (
   };
 };
 
-const loopingBetweenThreads =
-  ((n) => (functions: Function[]) => (max: number) => (args: any) =>
-    n < max ? functions[n = 0](args) : functions[++n](args))(0);
+type DebugOptions = {
+  logMain?: boolean
+  logThreads?: boolean
+}
+const loopingBetweenThreads = ((index) => {
+  return (functions: Function[]) => {
+    return (max: number) => {
+      return (args: any) => {
+  
+        return functions[index = (index + 1) % max](args);
+      };
+    };
+  };
+})(-1);
 
   export const createThreadPool = ({
     threads,
+    debug
   }: {
     threads?: number;
+    debug?: DebugOptions
+
   }) =>
   <T extends Record<string, Composed>>(args: T) => {
     const promisesMap: PromiseMap = new Map();
@@ -146,31 +160,11 @@ const loopingBetweenThreads =
         list,
         ids,
         thread,
+        debugSignal: debug?.logMain ?? false
       })
     );
   
-    // -- BUILD CALLFUNCTION MAP
-    const map = workers
-      .map((worker) => {
-        return listOfFunctions
-          .map((list, index) => ({ ...list, index }))
-          .reduce((acc, v) => {
-            acc.set(
-              v.name,
-              worker.callFunction({
-                fnNumber: v.index,
-              }),
-            );
-            return acc;
-          }, new Map<string, ReturnType<typeof worker.callFunction>>());
-      })
-      .reduce((acc, map) => {
-        map.forEach((v, k) => {
-          const fun = acc.get(k);
-          fun ? acc.set(k, [...fun, v]) : acc.set(k, [v]);
-        });
-        return acc;
-      }, new Map<string, Function[]>());
+
   
     const fastMap = workers
       .map((worker) => {
@@ -222,7 +216,6 @@ const loopingBetweenThreads =
 
     const callFunction = new Map<string, (args: any) => Promise<any>>();
     const fastCall = new Map<string, (args: any) => Promise<any>>();
-    const enqueue = new Map<string, (args: any) => Promise<any>>();
   
   
     const runnable = workers.reduce((acc, { send }) => {
@@ -247,9 +240,6 @@ const loopingBetweenThreads =
           : loopingBetweenThreads(v)(v.length),
       );
     });
-  
-
-
   
     return {
       terminateAll: () => workers.forEach((worker) => worker.kills()),
