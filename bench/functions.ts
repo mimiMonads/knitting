@@ -1,7 +1,8 @@
-import { fixedPoint } from "../src/taskApi.ts";
+import { fixedPoint } from "../main.ts";
 
 export const aaa = fixedPoint({
   args: "uint8",
+  retrun: "uint8",
   f: async (arr: Uint8Array) => {
     // Simulate an expensive operation
     let a = 1000;
@@ -36,10 +37,12 @@ export const inLine = fixedPoint({
 
 export const bbb = fixedPoint({
   args: "uint8",
+  retrun: "uint8",
   f: async (arr) => new Uint8Array([2]),
 });
 
 export const ccc = fixedPoint({
   args: "uint8",
+  retrun: "uint8",
   f: async (arr) => new Uint8Array([3]),
 });

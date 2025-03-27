@@ -5,6 +5,7 @@ import { signalsForWorker } from "../src/signals.ts";
 
 export const a = fixedPoint({
   args: "uint8",
+  retrun: "uint8",
   f: async (a) => a,
 });
 

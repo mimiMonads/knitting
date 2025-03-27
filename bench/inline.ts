@@ -1,5 +1,5 @@
 import { bench, boxplot, group, run as mitataRun, summary } from "mitata";
-import { createThreadPool } from "../src/taskApi.ts";
+import { createThreadPool } from "../main.ts";
 import { bbb } from "./functions.ts";
 
 const EMPTYUI8 = new Uint8Array([1, 2, 3]);

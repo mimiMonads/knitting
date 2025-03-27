@@ -5,15 +5,28 @@ import type { PromiseMap } from "./mainQueueManager.ts";
 import { isMainThread } from "node:worker_threads";
 
 export const isMain = isMainThread;
-type Args = "void" | "uint8";
+
+type Uint8Literral = "uint8"
+type VoidLiterral = "void"
+type External =  Uint8Literral | VoidLiterral;
+type Args = External | undefined
+
+
 const symbol = Symbol.for("FIXEDPOINT");
 
-type FixPoint<A extends Args> = {
+interface FixPoint<A extends Args , B extends Args  >  {
   args: A;
+  retrun:  B;
   f: (
-    args: A extends "void" ? void : Uint8Array,
-  ) => Promise<Uint8Array>;
+    args: Arguments<A>,
+  ) => Promise<Arguments<B>>;
 };
+
+type Arguments <A extends Args > = 
+  A extends VoidLiterral
+    ? void
+    : Uint8Array
+
 
 type SecondPart = {
   [symbol]: string;
@@ -23,14 +36,15 @@ type SecondPart = {
 
 type Composed = {
   args: Args;
+  retrun:  Args;
   f: (...args: any) => any;
 } & SecondPart;
 
-type ReturnFixed<A extends Args> = FixPoint<A> & SecondPart;
+type ReturnFixed<A extends Args , B extends Args  > = FixPoint<A, B> & SecondPart;
 
-export const fixedPoint = <A extends Args>(
-  I: FixPoint<A>,
-): ReturnFixed<A> => {
+export const fixedPoint = <A extends Args , B extends Args  >(
+  I: FixPoint<A,B>,
+): ReturnFixed<A,B> => {
   const importedFrom = new URL(getCallerFilePath(2)).href;
   return ({
     ...I,
@@ -40,9 +54,9 @@ export const fixedPoint = <A extends Args>(
   });
 };
 
-type UnionReturnFixed = ReturnFixed<Args>;
+type UnionReturnFixed = ReturnFixed<Args,Args>;
 
-type FunctionMapType<T extends Record<string, Composed>> = {
+type FunctionMapType<T extends Record<string, FixPoint<Args,Args>>> = {
   [K in keyof T]: T[K]["f"];
 };
 
