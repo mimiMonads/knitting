@@ -1,4 +1,4 @@
-import type { MainList, QueueList } from "./mainQueueManager.ts";
+import type { MainList, QueueListWorker } from "./mainQueueManager.ts";
 import type { SignalArguments } from "./signals.ts";
 
 // Generate unique task IDs.
@@ -14,7 +14,8 @@ export const readPayload =
 
 // Write a Uint8Array message with task metadata.
 export const writePayload =
-  ({ id, payload, payloadLength }: SignalArguments) => (task: QueueList) => {
+  ({ id, payload, payloadLength }: SignalArguments) =>
+  (task: QueueListWorker) => {
     payload.set(task[4], 0);
     payloadLength[0] = task[4].length;
     id[0] = task[1];

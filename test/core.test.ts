@@ -23,8 +23,6 @@ Deno.test("fixpoint", async () => {
   );
 });
 
-
-
 Deno.test("Using core fastcalling", async () => {
   const promisesMap = new Map();
   const { ids, list } = toListAndIds({ a });
@@ -33,8 +31,11 @@ Deno.test("Using core fastcalling", async () => {
     ids,
     list,
     thread: 0,
+    fixedPoints: [
+      {name: "a", ...a}
+    ]
   });
-  const fn = ctx.fastCalling({fnNumber: 0})(unitArrayOne);
+  const fn = ctx.fastCalling({ fnNumber: 0 })(unitArrayOne);
 
   ctx.send();
 
@@ -48,8 +49,6 @@ Deno.test("Using core fastcalling", async () => {
     unitArrayOne,
   );
 });
-
-
 
 Deno.test("Using core  fastcalling wit multiple arguments", async () => {
   // Init signals
@@ -69,16 +68,19 @@ Deno.test("Using core  fastcalling wit multiple arguments", async () => {
     list,
     sab,
     thread: 0,
+    fixedPoints: {
+      a,
+    },
   });
-  const composed = ({
-    fnNumber: 0
-  })
+  const composed = {
+    fnNumber: 0,
+  };
 
   // enqueueing request to the queue
   const arr = [
     ctx.fastCalling(composed)(unitArrayOne),
     ctx.fastCalling(composed)(unitArrayTwo),
-    ctx.fastCalling(composed)(unitArrayThree)
+    ctx.fastCalling(composed)(unitArrayThree),
   ];
 
   ctx.send();
@@ -111,16 +113,19 @@ Deno.test("Using core calling wit multiple arguments", async () => {
     list,
     sab,
     thread: 0,
+    fixedPoints: {
+      a,
+    },
   });
-  const composed = ({
-    fnNumber: 0
-  })
+  const composed = {
+    fnNumber: 0,
+  };
 
   // enqueueing request to the queue
   const arr = [
     ctx.callFunction(composed)(unitArrayOne),
     ctx.callFunction(composed)(unitArrayTwo),
-    ctx.callFunction(composed)(unitArrayThree)
+    ctx.callFunction(composed)(unitArrayThree),
   ];
 
   ctx.send();

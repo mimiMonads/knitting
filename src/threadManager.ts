@@ -4,6 +4,7 @@ import { createMainQueue, type PromiseMap } from "./mainQueueManager.ts";
 import { genTaskID, readPayload, sendPayload } from "./utils.ts";
 import { mainSignal, type Sab, signalsForWorker } from "./signals.ts";
 import { ChannelHandler, taskScheduler } from "./taskScheduler.ts";
+import { type ComposedWithKey, type DebugOptions } from "./taskApi.ts";
 
 export const createContext = ({
   promisesMap,
@@ -11,14 +12,15 @@ export const createContext = ({
   ids,
   sab,
   thread,
-  debugSignal
+  debug,
 }: {
   promisesMap: PromiseMap;
   list: string[];
   ids: number[];
   sab?: Sab;
   thread: number;
-  debugSignal?: boolean;
+  debug?: DebugOptions;
+  listOfFunctions: ComposedWithKey [];
 }) => {
   const currentPath = import.meta.url;
   const workerUrl = new URL(
@@ -53,7 +55,7 @@ export const createContext = ({
     queue,
     channelHandler,
     thread,
-    debugSignal: debugSignal ?? false,
+    debugSignal: debug?.logMain ?? false,
   });
 
   channelHandler.open(check);
@@ -66,9 +68,9 @@ export const createContext = ({
       list,
       ids,
       thread,
+      debug
     },
   });
-
 
   type CallFunction = {
     fnNumber: number;
@@ -98,7 +100,6 @@ export const createContext = ({
         )
         : enqueue(args);
   };
-
 
   return {
     queue,

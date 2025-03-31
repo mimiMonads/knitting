@@ -1,8 +1,4 @@
 // Exportables
-import { fixedPoint, createThreadPool, isMain } from "./src/taskApi.ts";
+import { createThreadPool, fixedPoint, isMain } from "./src/taskApi.ts";
 
-
-
-export {
-    fixedPoint,createThreadPool , isMain
-}
+export { createThreadPool, fixedPoint, isMain };

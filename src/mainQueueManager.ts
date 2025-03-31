@@ -17,8 +17,8 @@ export type MainList = [
   WorkerResponse,
 ];
 
-// PartialQueueList represents a minimal task structure for enqueueing to a queue.
-export type PartialQueueList = [
+// PartialQueueListWorker represents a minimal task structure for enqueueing to a queue.
+export type PartialQueueListWorker = [
   TaskID,
   RawArguments,
   FunctionID,
@@ -33,7 +33,7 @@ export type PromiseMap = Map<
   }
 >;
 
-export type QueueList = [
+export type QueueListWorker = [
   -1 | 0 | 1 | 2,
   TaskID,
   RawArguments,
@@ -189,7 +189,7 @@ export function createMainQueue({
     resolveTask: () => {
       const currentID = getCurrentID(),
         // Potentially slow to search
-      
+
         idx = queue.findIndex((item) => item[0] === currentID),
         info = promisesMap.get(queue[idx][0]);
       info!.resolve(reader());

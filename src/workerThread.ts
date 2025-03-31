@@ -2,7 +2,7 @@ import { workerData } from "node:worker_threads";
 import { readPayload, signalDebugger, writePayload } from "./utils.ts";
 import { createWorkerQueue } from "./workerQueue.ts";
 import { signalsForWorker, workerSignal } from "./signals.ts";
-import { getFunctions } from "./taskApi.ts";
+import { getFunctions, type DebugOptions } from "./taskApi.ts";
 
 const mainLoop = async () => {
   const sharedSab = workerData.sab as SharedArrayBuffer;
@@ -11,6 +11,7 @@ const mainLoop = async () => {
     sharedSab,
   });
 
+  const debug = workerData.debug as DebugOptions
   const jobs = await getFunctions({
     list: workerData.list,
     isWorker: true,
@@ -43,7 +44,7 @@ const mainLoop = async () => {
 
   const { currentSignal, signalAllTasksDone } = signal;
 
-  const getSignal = workerData?.debugSignal
+  const getSignal = debug?.logThreads
     ? signalDebugger({
       thread: workerData.thread,
       currentSignal,

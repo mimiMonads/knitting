@@ -1,10 +1,10 @@
-import type { QueueList } from "./mainQueueManager.ts";
+import type { QueueListWorker } from "./mainQueueManager.ts";
 import { type StatusSignal, type WorkerSignal } from "./signals.ts";
 
 type ArgumentsForCreateWorkerQueue = {
   jobs: [Function][];
   max?: number;
-  writer: (job: QueueList) => void;
+  writer: (job: QueueListWorker) => void;
   reader: () => Uint8Array;
   signal: WorkerSignal;
 };
@@ -33,7 +33,7 @@ export const createWorkerQueue = (
         new Uint8Array(),
         0,
         new Uint8Array(),
-      ] as QueueList,
+      ] as QueueListWorker,
   );
 
   return {

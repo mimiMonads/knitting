@@ -7,9 +7,11 @@ const EMPTYUI8 = new Uint8Array([1, 2, 3]);
 const fn = aaa.f;
 
 const threads = 5;
-const { terminateAll, callFunction,  fastCallFunction , send  } = createThreadPool({
-  threads,
-})({
+const { terminateAll, callFunction, fastCallFunction, send } = createThreadPool(
+  {
+    threads,
+  },
+)({
   aaa,
 });
 
@@ -24,10 +26,9 @@ group("1", () => {
         callFunction.aaa(EMPTYUI8),
       ];
 
-      send()
+      send();
 
-      await Promise.all(arr)
-
+      await Promise.all(arr);
     });
   });
 });
@@ -47,9 +48,9 @@ group("2", () => {
         callFunction.aaa(EMPTYUI8),
       ];
 
-      send()
+      send();
 
-      await Promise.all(arr)
+      await Promise.all(arr);
     });
   });
 });
@@ -71,9 +72,9 @@ group("3", () => {
         callFunction.aaa(EMPTYUI8),
       ];
 
-      send()
+      send();
 
-      await Promise.all(arr)
+      await Promise.all(arr);
     });
   });
 });
@@ -97,9 +98,9 @@ group("4", () => {
         callFunction.aaa(EMPTYUI8),
       ];
 
-      send()
+      send();
 
-      await Promise.all(arr)
+      await Promise.all(arr);
     });
   });
 
@@ -123,13 +124,11 @@ group("4", () => {
           callFunction.aaa(EMPTYUI8),
           callFunction.aaa(EMPTYUI8),
         ];
-  
-        send()
-  
-        await Promise.all(arr)
-      });
 
-      
+        send();
+
+        await Promise.all(arr);
+      });
 
       bench(threads + " thread fast calling-> 5", async () => {
         const arr = [
@@ -139,8 +138,8 @@ group("4", () => {
           fastCallFunction.aaa(EMPTYUI8),
           fastCallFunction.aaa(EMPTYUI8),
         ];
-  
-       await Promise.all(arr)
+
+        await Promise.all(arr);
       });
     });
   });

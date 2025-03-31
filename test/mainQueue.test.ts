@@ -3,7 +3,6 @@ import { createMainQueue } from "../src/mainQueueManager.ts";
 import { mainSignal, signalsForWorker } from "../src/signals.ts";
 import { genTaskID } from "../src/utils.ts";
 
-
 Deno.test("Basic behaivour", async () => {
   const signals = signalsForWorker();
   const UINT8 = new Uint8Array([1, 2, 3]);
@@ -21,5 +20,5 @@ Deno.test("Basic behaivour", async () => {
     max: 2,
   });
 
-  assertEquals(true,true)
+  assertEquals(true, true);
 });

@@ -5,9 +5,11 @@ import { bbb } from "./functions.ts";
 const EMPTYUI8 = new Uint8Array([1, 2, 3]);
 
 const inLine = bbb;
-const { terminateAll , fastCallFunction, callFunction, send} = createThreadPool({
-  threads: 1,
-})({
+const { terminateAll, fastCallFunction, callFunction, send } = createThreadPool(
+  {
+    threads: 1,
+  },
+)({
   inLine,
 });
 
@@ -24,10 +26,10 @@ boxplot(async () => {
           callFunction.inLine(EMPTYUI8),
           callFunction.inLine(EMPTYUI8),
           callFunction.inLine(EMPTYUI8),
-          callFunction.inLine(EMPTYUI8)
+          callFunction.inLine(EMPTYUI8),
         ];
 
-        send()
+        send();
 
         await Promise.all(arr);
 
@@ -44,7 +46,7 @@ boxplot(async () => {
           callFunction.inLine(EMPTYUI8),
         ];
 
-        send()
+        send();
 
         await Promise.all(arr);
       });
@@ -56,7 +58,7 @@ boxplot(async () => {
           callFunction.inLine(EMPTYUI8),
         ];
 
-        send()
+        send();
 
         await Promise.all(arr);
       });
@@ -69,7 +71,7 @@ boxplot(async () => {
           callFunction.inLine(EMPTYUI8),
         ];
 
-        send()
+        send();
 
         await Promise.all(arr);
       });
