@@ -1,4 +1,6 @@
-import { type MainSignal } from "./signals.ts";
+import { sendToWorker } from "./parsers.ts";
+import { type MainSignal, type SignalArguments } from "./signals.ts";
+import type { ComposedWithKey } from "./taskApi.ts";
 
 // Task ID is a unique number representing a task.
 type TaskID = number;
@@ -50,6 +52,8 @@ interface MultipleQueueSingle {
   genTaskID: () => number;
   promisesMap: PromiseMap;
   max?: number;
+  listOfFunctions: ComposedWithKey[];
+  signals: SignalArguments;
 }
 
 /**
@@ -67,11 +71,25 @@ export function createMainQueue({
   reader,
   genTaskID,
   promisesMap,
+  listOfFunctions,
+  signals,
 }: MultipleQueueSingle) {
   // The queue holds [taskID, rawArgs, functionID, workerResponse, statusSignal].
   const queue = Array.from(
     { length: max ?? 5 },
     () => [0, new Uint8Array(), 0, new Uint8Array()] as MainList,
+  );
+
+  const sendToWorkerWithSignal = sendToWorker(
+    signals,
+  );
+  //Parses the information to be sent to the worker
+  const functionThatSends = listOfFunctions.reduce(
+    (acc, fixpoint) => (acc.push(sendToWorkerWithSignal(
+      fixpoint.args ?? "uint8",
+    )),
+      acc),
+    [] as ((arg: any) => any)[],
   );
 
   // Each element in `status` mirrors the same index in `queue`.
@@ -119,7 +137,8 @@ export function createMainQueue({
       queue[0][1] = rawArguments;
       queue[0][2] = functionID;
 
-      writer(queue[0]);
+      functionThatSends[0](queue[0]);
+      //writer(queue[0]);
       setFunctionSignal(functionID);
       status[0] = 1;
       isLastElementToSend(false);
@@ -166,7 +185,7 @@ export function createMainQueue({
      * Then calls `writer(...)` to actually transfer the data to the worker thread.
      */
     dispatchToWorker: () => {
-      const idx = status.indexOf(0);
+      const idx = status.indexOf(0), queueElement = queue[idx];
 
       // Mark this slot as "Sent to worker"
       status[idx] = 1;
@@ -175,9 +194,9 @@ export function createMainQueue({
       isLastElementToSend(canWrite());
 
       // Actually send the job out
-      writer(queue[idx]);
+      functionThatSends[queueElement[2]](queueElement);
 
-      setFunctionSignal(queue[idx][2]);
+      setFunctionSignal(queueElement[2]);
       send();
     },
 
@@ -192,7 +211,8 @@ export function createMainQueue({
 
         idx = queue.findIndex((item) => item[0] === currentID),
         info = promisesMap.get(queue[idx][0]);
-      info!.resolve(reader());
+
+      info?.resolve(reader());
 
       // Mark slot as free again
       status[idx] = -1;
