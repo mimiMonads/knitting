@@ -24,6 +24,7 @@ interface FixPoint<A extends Args, B extends Args> {
 }
 
 type Arguments<A extends Args> = A extends VoidLiterral ? void
+  : A extends StringLiterral ? string
   : Uint8Array;
 
 type SecondPart = {
@@ -38,7 +39,7 @@ export type Composed = {
   f: (...args: any) => any;
 } & SecondPart;
 
-export type ComposedWithKey = Composed & { name: string}
+export type ComposedWithKey = Composed & { name: string };
 
 type ReturnFixed<A extends Args, B extends Args> = FixPoint<A, B> & SecondPart;
 
@@ -85,7 +86,7 @@ export const getFunctions = async ({ list, ids }: {
           //@ts-ignore Reason -> trust me
           ...value,
           name,
-        }));
+        })) as ComposedWithKey[];
     }),
   );
 
@@ -104,9 +105,7 @@ export const toListAndIds = (
   const result = Object.values(args)
     .reduce(
       (acc, v) => (
-        acc[0].add(v.importedFrom), 
-        acc[1].add(v.id), 
-        acc
+        acc[0].add(v.importedFrom), acc[1].add(v.id), acc
       ),
       [
         new Set<string>(),
@@ -156,7 +155,7 @@ export const createThreadPool = ({
     ...v,
     name: k,
   }))
-    .sort((a, b) => a.name.localeCompare(b.name)) as ComposedWithKey [];
+    .sort((a, b) => a.name.localeCompare(b.name)) as ComposedWithKey[];
 
   const workers = Array.from({
     length: threads ?? 1,

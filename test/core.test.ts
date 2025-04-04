@@ -31,9 +31,9 @@ Deno.test("Using core fastcalling", async () => {
     ids,
     list,
     thread: 0,
-    fixedPoints: [
-      {name: "a", ...a}
-    ]
+    listOfFunctions: [
+      { name: "a", ...a },
+    ],
   });
   const fn = ctx.fastCalling({ fnNumber: 0 })(unitArrayOne);
 
@@ -68,9 +68,10 @@ Deno.test("Using core  fastcalling wit multiple arguments", async () => {
     list,
     sab,
     thread: 0,
-    fixedPoints: {
-      a,
-    },
+    //@ts-ignore
+    listOfFunctions: [
+      { name: "a", ...a },
+    ],
   });
   const composed = {
     fnNumber: 0,
@@ -113,9 +114,9 @@ Deno.test("Using core calling wit multiple arguments", async () => {
     list,
     sab,
     thread: 0,
-    fixedPoints: {
-      a,
-    },
+    listOfFunctions: [
+      { name: "a", ...a },
+    ],
   });
   const composed = {
     fnNumber: 0,

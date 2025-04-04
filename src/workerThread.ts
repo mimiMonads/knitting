@@ -2,7 +2,7 @@ import { workerData } from "node:worker_threads";
 import { readPayload, signalDebugger, writePayload } from "./utils.ts";
 import { createWorkerQueue } from "./workerQueue.ts";
 import { signalsForWorker, workerSignal } from "./signals.ts";
-import { getFunctions, type DebugOptions } from "./taskApi.ts";
+import { type DebugOptions, getFunctions } from "./taskApi.ts";
 
 const mainLoop = async () => {
   const sharedSab = workerData.sab as SharedArrayBuffer;
@@ -11,23 +11,17 @@ const mainLoop = async () => {
     sharedSab,
   });
 
-  const debug = workerData.debug as DebugOptions
-  const jobs = await getFunctions({
+  const debug = workerData.debug as DebugOptions;
+  const listOfFunctions = await getFunctions({
     list: workerData.list,
     isWorker: true,
     ids: workerData.ids,
-  })
-    .then(
-      (objs) =>
-        objs.map(
-          (obj) => [obj.f],
-        ),
-    );
+  });
 
-  if (jobs.length === 0) {
+  if (listOfFunctions.length === 0) {
     console.log(workerData.list);
     console.log(workerData.ids);
-    console.log(jobs);
+    console.log(listOfFunctions);
     throw "no imports where found uwu";
   }
   const signal = workerSignal(signals);
@@ -35,11 +29,11 @@ const mainLoop = async () => {
   const writer = writePayload(signals);
   const { enqueue, nextJob, someHasFinished, write, allDone } =
     createWorkerQueue({
-      //@ts-ignore Reason -> The type `job` was not well defined
-      jobs,
+      listOfFunctions,
       writer,
       reader,
       signal,
+      signals,
     });
 
   const { currentSignal, signalAllTasksDone } = signal;

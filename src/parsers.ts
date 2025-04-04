@@ -4,10 +4,22 @@ import { type External } from "./taskApi.ts";
 import { type SignalArguments } from "./signals.ts";
 import type { MainList, QueueListWorker } from "./mainQueueManager.ts";
 
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
+
 const toWorkerUint8 =
   ({ id, payload, payloadLength }: SignalArguments) => (task: MainList) => {
     payload.set(task[1]);
     payloadLength[0] = task[1].length;
+    id[0] = task[0];
+  };
+
+const toWorkerString =
+  ({ id, payload, payloadLength }: SignalArguments) => (task: MainList) => {
+    //@ts-ignore
+    const encode = textEncoder.encode(task[1]);
+    payload.set(encode);
+    payloadLength[0] = encode.length;
     id[0] = task[0];
   };
 
@@ -17,20 +29,16 @@ const toWorkerVoid =
     id[0] = task[0];
   };
 
-const sendToWorker = ({
-  signals,
-  type,
-}: {
-  signals: SignalArguments;
-  type: External;
-}) => {
+const sendToWorker = (
+  signals: SignalArguments,
+) =>
+(type: External) => {
   switch (type) {
     case "uint8":
       return toWorkerUint8(signals);
 
-    // We are using the same as void because it is posible to set a string in a UInt8
     case "string":
-      return toWorkerUint8(signals);
+      return toWorkerString(signals);
 
     case "void":
       return toWorkerVoid(signals);
@@ -47,17 +55,14 @@ const readPayloadWorkerUint8 =
 
 const readPayloadWorkerString =
   ({ payload, payloadLength }: SignalArguments) => () =>
-    payload.subarray(0, payloadLength[0].valueOf()).toString();
+    textDecoder.decode(payload.subarray(0, payloadLength[0].valueOf()));
 
 const readPayloadWorkerVoid = ({}: SignalArguments) => () => undefined;
 
-const fromPlayloadToArguments = ({
-  signals,
-  type,
-}: {
-  signals: SignalArguments;
-  type: External;
-}) => {
+const fromPlayloadToArguments = (
+  signals: SignalArguments,
+) =>
+(type: External) => {
   switch (type) {
     case "uint8":
       return readPayloadWorkerUint8(signals);

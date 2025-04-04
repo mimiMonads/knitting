@@ -13,6 +13,7 @@ export const createContext = ({
   sab,
   thread,
   debug,
+  listOfFunctions,
 }: {
   promisesMap: PromiseMap;
   list: string[];
@@ -20,7 +21,7 @@ export const createContext = ({
   sab?: Sab;
   thread: number;
   debug?: DebugOptions;
-  listOfFunctions: ComposedWithKey [];
+  listOfFunctions: ComposedWithKey[];
 }) => {
   const currentPath = import.meta.url;
   const workerUrl = new URL(
@@ -39,6 +40,8 @@ export const createContext = ({
     reader,
     genTaskID,
     promisesMap,
+    listOfFunctions,
+    signals,
   });
 
   const {
@@ -68,7 +71,7 @@ export const createContext = ({
       list,
       ids,
       thread,
-      debug
+      debug,
     },
   });
 

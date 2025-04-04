@@ -1,20 +1,24 @@
 import type { QueueListWorker } from "./mainQueueManager.ts";
-import { type StatusSignal, type WorkerSignal } from "./signals.ts";
+import { type SignalArguments, type WorkerSignal } from "./signals.ts";
+import type { ComposedWithKey } from "./taskApi.ts";
+import { fromPlayloadToArguments } from "./parsers.ts";
 
 type ArgumentsForCreateWorkerQueue = {
-  jobs: [Function][];
+  listOfFunctions: ComposedWithKey[];
   max?: number;
   writer: (job: QueueListWorker) => void;
   reader: () => Uint8Array;
   signal: WorkerSignal;
+  signals: SignalArguments;
 };
 
 // Create and manage a working queue.
 export const createWorkerQueue = (
   {
-    jobs,
+    listOfFunctions,
     max,
     writer,
+    signals,
     signal: {
       getCurrentID,
       functionToUse,
@@ -36,25 +40,38 @@ export const createWorkerQueue = (
       ] as QueueListWorker,
   );
 
+  type AsyncFunction = (...args: any[]) => Promise<any>;
+
+  const jobs = listOfFunctions.reduce((acc, fixed) => (
+    acc.push(fixed.f), acc
+  ), [] as AsyncFunction[]);
+
+  const fromPlayloadToArgumentsWitSignal = fromPlayloadToArguments(signals);
+
+  const playloadToArgs = listOfFunctions.reduce((acc, fixed) => (
+    acc.push(fromPlayloadToArgumentsWitSignal(fixed.args ?? "uint8")), acc
+  ), [] as Function[]);
+
   return {
     // Check if any task is solved and ready for writing.
     someHasFinished: () => queue.some((task) => task[0] === 2),
 
     // enqueue a task to the queue.
     enqueue: () => {
-      const freeSlot = queue.find((task) => task[0] === -1);
+      const freeSlot = queue.find((task) => task[0] === -1),
+        fnNumber = functionToUse();
 
       if (freeSlot) {
         freeSlot[0] = 0;
         freeSlot[1] = getCurrentID();
-        freeSlot[2] = reader();
-        freeSlot[3] = functionToUse();
+        freeSlot[2] = playloadToArgs[fnNumber]();
+        freeSlot[3] = fnNumber;
       } else {
         queue.push([
           0,
           getCurrentID(),
-          reader(),
-          functionToUse(),
+          playloadToArgs[fnNumber](),
+          fnNumber,
           new Uint8Array(),
         ]);
       }
@@ -79,7 +96,8 @@ export const createWorkerQueue = (
       if (task !== undefined) {
         task[0] = 1;
         try {
-          task[4] = await jobs[task[3]][0](
+          //@ts-ignore
+          task[4] = await jobs[task[3]](
             task[2],
           );
         } finally {
