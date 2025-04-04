@@ -1,5 +1,5 @@
 import { workerData } from "node:worker_threads";
-import { readPayload, signalDebugger, writePayload } from "./utils.ts";
+import { signalDebugger } from "./utils.ts";
 import { createWorkerQueue } from "./workerQueue.ts";
 import { signalsForWorker, workerSignal } from "./signals.ts";
 import { type DebugOptions, getFunctions } from "./taskApi.ts";
@@ -25,13 +25,10 @@ const mainLoop = async () => {
     throw "no imports where found uwu";
   }
   const signal = workerSignal(signals);
-  const reader = readPayload(signals);
-  const writer = writePayload(signals);
+
   const { enqueue, nextJob, someHasFinished, write, allDone } =
     createWorkerQueue({
       listOfFunctions,
-      writer,
-      reader,
       signal,
       signals,
     });

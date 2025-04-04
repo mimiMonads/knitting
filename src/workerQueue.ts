@@ -1,13 +1,11 @@
 import type { QueueListWorker } from "./mainQueueManager.ts";
 import { type SignalArguments, type WorkerSignal } from "./signals.ts";
 import type { ComposedWithKey } from "./taskApi.ts";
-import { fromPlayloadToArguments } from "./parsers.ts";
+import { fromPlayloadToArguments, fromreturnToMain } from "./parsers.ts";
 
 type ArgumentsForCreateWorkerQueue = {
   listOfFunctions: ComposedWithKey[];
   max?: number;
-  writer: (job: QueueListWorker) => void;
-  reader: () => Uint8Array;
   signal: WorkerSignal;
   signals: SignalArguments;
 };
@@ -17,7 +15,6 @@ export const createWorkerQueue = (
   {
     listOfFunctions,
     max,
-    writer,
     signals,
     signal: {
       getCurrentID,
@@ -25,7 +22,6 @@ export const createWorkerQueue = (
       messageReady,
       readyToWork,
     },
-    reader,
   }: ArgumentsForCreateWorkerQueue,
 ) => {
   const queue = Array.from(
@@ -47,9 +43,14 @@ export const createWorkerQueue = (
   ), [] as AsyncFunction[]);
 
   const fromPlayloadToArgumentsWitSignal = fromPlayloadToArguments(signals);
+  const fromreturnToMainWitSignal = fromreturnToMain(signals);
 
   const playloadToArgs = listOfFunctions.reduce((acc, fixed) => (
     acc.push(fromPlayloadToArgumentsWitSignal(fixed.args ?? "uint8")), acc
+  ), [] as Function[]);
+
+  const returnToMain = listOfFunctions.reduce((acc, fixed) => (
+    acc.push(fromreturnToMainWitSignal(fixed.return ?? "uint8")), acc
   ), [] as Function[]);
 
   return {
@@ -81,11 +82,12 @@ export const createWorkerQueue = (
 
     // Write completed tasks to the writer.
     write: () => {
-      const finishedTaskIndex = queue.findIndex((task) => task[0] === 2);
-      if (finishedTaskIndex !== -1) {
-        writer(queue[finishedTaskIndex]);
+      const element = queue.find((task) => task[0] === 2);
+      if (element !== undefined) {
+        returnToMain[element[3]](element);
+        //writer(queue[finishedTaskIndex]);
         messageReady();
-        queue[finishedTaskIndex][0] = -1;
+        element[0] = -1;
       }
     },
 

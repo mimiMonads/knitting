@@ -17,7 +17,7 @@ const symbol = Symbol.for("FIXEDPOINT");
 
 interface FixPoint<A extends Args, B extends Args> {
   args: A;
-  retrun: B;
+  return: B;
   f: (
     args: Arguments<A>,
   ) => Promise<Arguments<B>>;
@@ -35,7 +35,7 @@ type SecondPart = {
 
 export type Composed = {
   args: Args;
-  retrun: Args;
+  return: Args;
   f: (...args: any) => any;
 } & SecondPart;
 

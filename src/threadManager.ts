@@ -1,7 +1,7 @@
 // main.ts
 import { Worker } from "node:worker_threads";
 import { createMainQueue, type PromiseMap } from "./mainQueueManager.ts";
-import { genTaskID, readPayload, sendPayload } from "./utils.ts";
+import { genTaskID } from "./utils.ts";
 import { mainSignal, type Sab, signalsForWorker } from "./signals.ts";
 import { ChannelHandler, taskScheduler } from "./taskScheduler.ts";
 import { type ComposedWithKey, type DebugOptions } from "./taskApi.ts";
@@ -31,13 +31,8 @@ export const createContext = ({
   const signals = signalsForWorker(sab);
   const signalBox = mainSignal(signals);
 
-  const writer = sendPayload(signals);
-  const reader = readPayload(signals);
-
   const queue = createMainQueue({
-    writer,
     signalBox,
-    reader,
     genTaskID,
     promisesMap,
     listOfFunctions,

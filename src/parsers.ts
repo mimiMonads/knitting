@@ -42,12 +42,34 @@ const sendToWorker = (
 
     case "void":
       return toWorkerVoid(signals);
-
-    default:
-      throw "Unreachable";
-      break;
   }
 };
+
+const readUint8FromWorker =
+  ({ payload, payloadLength }: SignalArguments) => () =>
+    payload.slice(0, payloadLength[0].valueOf());
+const readStringFromWorker =
+  ({ payload, payloadLength }: SignalArguments) => () =>
+    textDecoder.decode(payload.slice(0, payloadLength[0].valueOf()));
+const readVoidFromWorker = ({}: SignalArguments) => () => undefined;
+
+const readFromWorker = (
+  signals: SignalArguments,
+) =>
+(type: External) => {
+  switch (type) {
+    case "uint8":
+      return readUint8FromWorker(signals);
+
+    case "string":
+      return readStringFromWorker(signals);
+
+    case "void":
+      return readVoidFromWorker(signals);
+  }
+};
+
+///  WORKER ///
 
 const readPayloadWorkerUint8 =
   ({ payload, payloadLength }: SignalArguments) => () =>
@@ -73,12 +95,50 @@ const fromPlayloadToArguments = (
   }
 };
 
-//   // Write a Uint8Array message with task metadata.
-// export const writePayload =
-// ({ id, payload, payloadLength }: SignalArguments) => (task: QueueListWorker) => {
-//   payload.set(task[4], 0);
-//   payloadLength[0] = task[4].length;
-//   id[0] = task[1];
-// };
+// Write a Uint8Array message with task metadata.
+const writePayloadUnint8 =
+  ({ id, payload, payloadLength }: SignalArguments) =>
+  (task: QueueListWorker) => {
+    payload.set(task[4], 0);
+    payloadLength[0] = task[4].length;
+    id[0] = task[1];
+  };
 
-export { fromPlayloadToArguments, sendToWorker };
+const writePayloadString =
+  ({ id, payload, payloadLength }: SignalArguments) =>
+  (task: QueueListWorker) => {
+    //@ts-ignore
+    const encode = textEncoder.encode(task[4]);
+    payload.set(encode, 0);
+    payloadLength[0] = encode.length;
+    id[0] = task[1];
+  };
+
+const writePayloadVoid =
+  ({ id, payload, payloadLength }: SignalArguments) =>
+  (task: QueueListWorker) => {
+    //payload.set(task[4], 0);
+    //payloadLength[0] = task[4].length;
+    id[0] = task[1];
+  };
+
+const fromreturnToMain = (
+  signals: SignalArguments,
+) =>
+(type: External) => {
+  switch (type) {
+    case "uint8":
+      return writePayloadUnint8(signals);
+    case "string":
+      return writePayloadString(signals);
+    case "void":
+      return writePayloadVoid(signals);
+  }
+};
+
+export {
+  fromPlayloadToArguments,
+  fromreturnToMain,
+  readFromWorker,
+  sendToWorker,
+};

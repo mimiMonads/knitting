@@ -5,16 +5,19 @@ import { signalsForWorker } from "../src/signals.ts";
 
 export const a = fixedPoint({
   args: "uint8",
-  retrun: "uint8",
+  return: "uint8",
+  f: async (a) => a,
+});
+
+export const b = fixedPoint({
+  args: "string",
+  return: "string",
   f: async (a) => a,
 });
 
 const unitArrayOne = Uint8Array.from([1, 2, 3, 4]);
 const unitArrayTwo = Uint8Array.from([8, 7, 6, 5]);
 const unitArrayThree = Uint8Array.from([9, 10, 11, 12]);
-
-//@ts-ignore -> This is valid btw
-const VALUE = Uint8Array.from("Hello");
 
 Deno.test("fixpoint", async () => {
   assertEquals(
@@ -33,11 +36,10 @@ Deno.test("Using core fastcalling", async () => {
     thread: 0,
     listOfFunctions: [
       { name: "a", ...a },
+      { name: "b", ...b },
     ],
   });
   const fn = ctx.fastCalling({ fnNumber: 0 })(unitArrayOne);
-
-  ctx.send();
 
   const res1 = await fn!
     .finally(

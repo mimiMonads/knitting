@@ -1,32 +1,8 @@
-import type { MainList, QueueListWorker } from "./mainQueueManager.ts";
-import type { SignalArguments } from "./signals.ts";
-
 // Generate unique task IDs.
 export const genTaskID = ((counter: number) => () => counter++)(0);
 
 // Get the current file's path.
 export const currentPath = () => new URL(import.meta.url);
-
-// Read a message from a Uint8Array.
-export const readPayload =
-  ({ payload, payloadLength }: SignalArguments) => () =>
-    payload.slice(0, payloadLength[0].valueOf());
-
-// Write a Uint8Array message with task metadata.
-export const writePayload =
-  ({ id, payload, payloadLength }: SignalArguments) =>
-  (task: QueueListWorker) => {
-    payload.set(task[4], 0);
-    payloadLength[0] = task[4].length;
-    id[0] = task[1];
-  };
-
-export const sendPayload =
-  ({ id, payload, payloadLength }: SignalArguments) => (task: MainList) => {
-    payload.set(task[1]);
-    payloadLength[0] = task[1].length;
-    id[0] = task[0];
-  };
 
 const getCallerFilePathForBun = (n: number) => {
   //@ts-ignore Reason -> Types

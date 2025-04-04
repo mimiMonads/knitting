@@ -1,22 +1,23 @@
 import { fixedPoint } from "../main.ts";
 
 export const aaa = fixedPoint({
-  args: "uint8",
-  retrun: "uint8",
-  f: async (arr: Uint8Array) => {
+  args: "void",
+  return: "void",
+  f: async () => {
     // Simulate an expensive operation
-    let a = 1000;
+    // let a = 1000;
 
-    while (a != 0) {
-      performance.now();
-      a--;
-    }
-    return arr;
+    // while (a != 0) {
+    //   performance.now();
+    //   a--;
+    // }
+   
   },
 });
 
 export const inLine = fixedPoint({
   args: "uint8",
+  return: "uint8",
   //@ts-ignore
   f: async (args: Uint8Array) => {
     const argsToString = args.toString();
@@ -37,12 +38,12 @@ export const inLine = fixedPoint({
 
 export const bbb = fixedPoint({
   args: "uint8",
-  retrun: "uint8",
+  return: "uint8",
   f: async (arr) => new Uint8Array([2]),
 });
 
 export const ccc = fixedPoint({
   args: "uint8",
-  retrun: "uint8",
+  return: "uint8",
   f: async (arr) => new Uint8Array([3]),
 });
