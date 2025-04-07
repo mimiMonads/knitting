@@ -37,6 +37,12 @@ export const taskScheduler = ({
         readyToRead();
         channelHandler.scheduleCheck();
         return;
+      // Error Case
+      case 1:
+        resolveTask();
+        readyToRead();
+        channelHandler.scheduleCheck();
+        return;
 
       case 2:
         if (canWrite()) {

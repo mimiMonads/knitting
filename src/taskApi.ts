@@ -70,7 +70,9 @@ export const getFunctions = async ({ list, ids }: {
 }) => {
   const results = await Promise.all(
     list.map(async (imports) => {
+      //@ts-ignore
       const module = await import(imports);
+
       return Object.entries(module) // Use `Object.entries` to include names
         .filter(
           ([_, value]): //@ts-ignore -> Reason trust me bro
@@ -139,6 +141,13 @@ const loopingBetweenThreads = ((index) => {
   };
 })(-1);
 
+type Pool<T extends Record<string, FixPoint<Args, Args>>> = {
+  terminateAll: { (): void };
+  callFunction: FunctionMapType<T>;
+  fastCallFunction: FunctionMapType<T>;
+  send: { (): void };
+};
+
 export const createThreadPool = ({
   threads,
   debug,
@@ -146,7 +155,7 @@ export const createThreadPool = ({
   threads?: number;
   debug?: DebugOptions;
 }) =>
-<T extends FixedPoints>(fixedPoints: T) => {
+<T extends FixedPoints>(fixedPoints: T): Pool<T> => {
   const promisesMap: PromiseMap = new Map();
 
   const { list, ids } = toListAndIds(fixedPoints);
@@ -251,5 +260,5 @@ export const createThreadPool = ({
       fastCall,
     ) as unknown as FunctionMapType<T>,
     send: () => runnable.forEach((fn) => fn()),
-  };
+  } as Pool<T>;
 };
