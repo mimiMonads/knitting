@@ -5,6 +5,7 @@ import { genTaskID } from "./utils.ts";
 import { mainSignal, type Sab, signalsForWorker } from "./signals.ts";
 import { ChannelHandler, taskScheduler } from "./taskScheduler.ts";
 import { type ComposedWithKey, type DebugOptions } from "./taskApi.ts";
+import { jsrIsGreatAndWorkWithoutBugs } from "./workerThread.ts";
 
 export const createContext = ({
   promisesMap,
@@ -31,6 +32,7 @@ export const createContext = ({
 
   if (debug?.logHref === true) {
     console.log(workerUrl);
+    jsrIsGreatAndWorkWithoutBugs();
   }
 
   const signals = signalsForWorker(sab);

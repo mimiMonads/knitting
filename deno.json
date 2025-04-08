@@ -1,6 +1,6 @@
 {
   "name": "@vixeny/knitting",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "exports": "./main.ts",
   "publish": {
     "include": [
