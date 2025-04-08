@@ -12,11 +12,18 @@ const mainLoop = async () => {
   });
 
   const debug = workerData.debug as DebugOptions;
+
   const listOfFunctions = await getFunctions({
     list: workerData.list,
     isWorker: true,
     ids: workerData.ids,
   });
+
+  if (debug?.logImportedUrl === true) {
+    console.log(
+      workerData.list,
+    );
+  }
 
   if (listOfFunctions.length === 0) {
     console.log(workerData.list);

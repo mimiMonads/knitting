@@ -24,9 +24,14 @@ export const createContext = ({
   listOfFunctions: ComposedWithKey[];
 }) => {
   const currentPath = import.meta.url;
+
   const workerUrl = new URL(
     currentPath.replace("threadManager.ts", "workerThread.ts"),
   ).href;
+
+  if (debug?.logHref === true) {
+    console.log(workerUrl);
+  }
 
   const signals = signalsForWorker(sab);
   const signalBox = mainSignal(signals);

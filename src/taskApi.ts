@@ -130,6 +130,8 @@ export const toListAndIds = (
 export type DebugOptions = {
   logMain?: boolean;
   logThreads?: boolean;
+  logHref?: boolean;
+  logImportedUrl?: boolean;
 };
 const loopingBetweenThreads = ((index) => {
   return (functions: Function[]) => {

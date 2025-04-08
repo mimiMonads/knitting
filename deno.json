@@ -1,5 +1,12 @@
 {
   "name": "@vixeny/knitting",
-  "version": "0.0.1",
-  "exports": "./main.ts"
+  "version": "0.0.2",
+  "exports": "./main.ts",
+  "publish": {
+    "include": [
+      "LICENSE",
+      "README.md",
+      "src/**/*.ts"
+    ]
+  }
 }
