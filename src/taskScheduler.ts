@@ -30,17 +30,27 @@ export const taskScheduler = ({
       currentSignal,
     })
     : currentSignal;
+  const loop = ((n) => () => ++n % 2 === 1 ? true : false)(0);
+
   const check = () => {
     switch (getSignal()) {
       case 0:
         resolveTask();
         readyToRead();
+        if (loop()) {
+          queueMicrotask(check);
+          return;
+        }
         channelHandler.scheduleCheck();
         return;
       // Error Case
       case 1:
         resolveTask();
         readyToRead();
+        if (loop()) {
+          queueMicrotask(check);
+          return;
+        }
         channelHandler.scheduleCheck();
         return;
 
@@ -59,13 +69,20 @@ export const taskScheduler = ({
           dispatchToWorker();
           queueMicrotask(check);
         } else {
+          if (loop()) {
+            queueMicrotask(check);
+            return;
+          }
           readyToRead();
           channelHandler.scheduleCheck();
         }
         return;
 
       case 127: {
-        //queueMicrotask(check);
+        if (loop()) {
+          queueMicrotask(check);
+          return;
+        }
         channelHandler.scheduleCheck();
         return;
       }

@@ -1,8 +1,9 @@
 import { fixedPoint } from "../main.ts";
 
+const string = "uwu";
 export const aaa = fixedPoint({
   args: "void",
-  return: "void",
+  return: "string",
   f: async () => {
     // Simulate an expensive operation
     // let a = 1000;
@@ -11,6 +12,7 @@ export const aaa = fixedPoint({
     //   performance.now();
     //   a--;
     // }
+    return string;
   },
 });
 
@@ -36,9 +38,10 @@ export const inLine = fixedPoint({
 });
 
 export const bbb = fixedPoint({
-  args: "uint8",
-  return: "uint8",
-  f: async (arr) => new Uint8Array([2]),
+  args: "void",
+  return: "void",
+  f: async () => {
+  },
 });
 
 export const ccc = fixedPoint({
