@@ -3,6 +3,8 @@
 import { type External } from "./taskApi.ts";
 import { type SignalArguments } from "./signals.ts";
 import type { MainList, QueueListWorker } from "./mainQueueManager.ts";
+import { serialize , deserialize} from "node:v8"
+import { Buffer } from "node:buffer";
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();

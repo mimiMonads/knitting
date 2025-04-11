@@ -10,7 +10,8 @@ export type FixedPoints = Record<string, Composed>;
 type Uint8Literral = "uint8";
 type VoidLiterral = "void";
 type StringLiterral = "string";
-export type External = Uint8Literral | VoidLiterral | StringLiterral;
+type numberArrayLiterral = "number[]";
+export type External = Uint8Literral | VoidLiterral | StringLiterral | numberArrayLiterral;
 type Args = External | undefined;
 
 const symbol = Symbol.for("FIXEDPOINT");
@@ -25,7 +26,8 @@ interface FixPoint<A extends Args, B extends Args> {
 
 type Arguments<A extends Args> = A extends VoidLiterral ? void
   : A extends StringLiterral ? string
-  : Uint8Array;
+  : A extends numberArrayLiterral ?
+  number[] : Uint8Array;
 
 type SecondPart = {
   [symbol]: string;
