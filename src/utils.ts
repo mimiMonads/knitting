@@ -20,7 +20,10 @@ const getCallerFilePathForBun = (n: number) => {
     throw new Error("Unable to determine caller file.");
   }
 
-  return "file://" + caller;
+  if (!caller.startsWith("file://")) {
+    return "file://" + caller;
+  }
+  return caller;
 };
 
 export const getCallerFilePath = (n: number) => {

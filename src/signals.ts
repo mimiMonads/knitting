@@ -24,7 +24,7 @@ export const signalsForWorker = (args?: Sab) => {
     functionToUse: new Int32Array(sab, 12, 1),
     queueState: new Int8Array(sab, 16, 4),
     payload: new Uint8Array(sab, 20),
-    buffer: Buffer.from(sab, 20),
+    buffer: new Uint8Array(sab, 20, sab.byteLength - 20),
   };
 };
 

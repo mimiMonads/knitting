@@ -87,7 +87,8 @@ export function createMainQueue({
   //Parses the information to be sent to the worker
   const sendToWokerArray = listOfFunctions.reduce(
     (acc, fixpoint) => (acc.push(sendToWorkerWithSignal(
-      fixpoint.args ?? "uint8",
+      //@ts-ignore
+      fixpoint.args ?? "serializable",
     )),
       acc),
     [] as ((arg: any) => any)[],
@@ -96,7 +97,8 @@ export function createMainQueue({
   //Parses the information to be sent to the worker
   const readFromWorkerArray = listOfFunctions.reduce(
     (acc, fixpoint) => (acc.push(readFromWorkerWithSignal(
-      fixpoint.args ?? "uint8",
+      //@ts-ignore
+      fixpoint.return ?? "serializable",
     )),
       acc),
     [] as ((arg: any) => any)[],

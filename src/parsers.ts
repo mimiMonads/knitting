@@ -3,7 +3,7 @@
 import { type External } from "./taskApi.ts";
 import { type SignalArguments } from "./signals.ts";
 import type { MainList, QueueListWorker } from "./mainQueueManager.ts";
-import { serialize , deserialize} from "node:v8"
+import { deserialize, serialize } from "node:v8";
 import { Buffer } from "node:buffer";
 
 const textEncoder = new TextEncoder();
@@ -13,6 +13,18 @@ const toWorkerUint8 =
   ({ id, payload, payloadLength }: SignalArguments) => (task: MainList) => {
     payload.set(task[1]);
     payloadLength[0] = task[1].length;
+    id[0] = task[0];
+  };
+
+const toWorkerSerializable =
+  ({ id, buffer, payloadLength }: SignalArguments) => (task: MainList) => {
+    const encoded = serialize(task[1]);
+
+    //@ts-ignore
+    buffer.set(encoded);
+    //@ts-ignore
+    payloadLength[0] = encoded.length;
+
     id[0] = task[0];
   };
 
@@ -31,43 +43,49 @@ const toWorkerVoid =
     id[0] = task[0];
   };
 
-const sendToWorker = (
-  signals: SignalArguments,
-) =>
-(type: External) => {
+const sendToWorker = (signals: SignalArguments) => (type: External) => {
   switch (type) {
     case "uint8":
       return toWorkerUint8(signals);
-
     case "string":
       return toWorkerString(signals);
-
     case "void":
       return toWorkerVoid(signals);
+    case "number[]":
+      return toWorkerSerializable(signals);
+    case "serializable":
+      return toWorkerSerializable(signals);
   }
 };
 
 const readUint8FromWorker =
   ({ payload, payloadLength }: SignalArguments) => () =>
     payload.slice(0, payloadLength[0].valueOf());
+
 const readStringFromWorker =
   ({ payload, payloadLength }: SignalArguments) => () =>
     textDecoder.decode(payload.slice(0, payloadLength[0].valueOf()));
+
 const readVoidFromWorker = ({}: SignalArguments) => () => undefined;
 
-const readFromWorker = (
-  signals: SignalArguments,
-) =>
-(type: External) => {
+const readSerializableFromWorker =
+  ({ buffer, payloadLength }: SignalArguments) => () => {
+    const data = buffer.subarray(0, payloadLength[0].valueOf());
+    return deserialize(data);
+  };
+
+const readFromWorker = (signals: SignalArguments) => (type: External) => {
   switch (type) {
     case "uint8":
       return readUint8FromWorker(signals);
-
     case "string":
       return readStringFromWorker(signals);
-
     case "void":
       return readVoidFromWorker(signals);
+    case "number[]":
+      return readSerializableFromWorker(signals);
+    case "serializable":
+      return readSerializableFromWorker(signals);
   }
 };
 
@@ -83,21 +101,27 @@ const readPayloadWorkerString =
 
 const readPayloadWorkerVoid = ({}: SignalArguments) => () => undefined;
 
-const fromPlayloadToArguments = (
-  signals: SignalArguments,
-) =>
-(type: External) => {
-  switch (type) {
-    case "uint8":
-      return readPayloadWorkerUint8(signals);
-    case "string":
-      return readPayloadWorkerString(signals);
-    case "void":
-      return readPayloadWorkerVoid(signals);
-  }
-};
+const readPayloadWorkerSerializable =
+  ({ buffer, payloadLength }: SignalArguments) => () => {
+    return deserialize(buffer.subarray(0, payloadLength[0].valueOf()));
+  };
 
-// Write a Uint8Array message with task metadata.
+const fromPlayloadToArguments =
+  (signals: SignalArguments) => (type: External) => {
+    switch (type) {
+      case "uint8":
+        return readPayloadWorkerUint8(signals);
+      case "string":
+        return readPayloadWorkerString(signals);
+      case "void":
+        return readPayloadWorkerVoid(signals);
+      case "number[]":
+        return readPayloadWorkerSerializable(signals);
+      case "serializable":
+        return readPayloadWorkerSerializable(signals);
+    }
+  };
+
 const writePayloadUnint8 =
   ({ id, payload, payloadLength }: SignalArguments) =>
   (task: QueueListWorker) => {
@@ -117,17 +141,25 @@ const writePayloadString =
   };
 
 const writePayloadVoid =
-  ({ id, payload, payloadLength }: SignalArguments) =>
-  (task: QueueListWorker) => {
-    //payload.set(task[4], 0);
-    //payloadLength[0] = task[4].length;
+  ({ id }: SignalArguments) => (task: QueueListWorker) => {
+    // No payload needed
     id[0] = task[1];
   };
 
-const fromreturnToMain = (
-  signals: SignalArguments,
-) =>
-(type: External) => {
+const writePayloadSerializable =
+  ({ id, buffer, payloadLength }: SignalArguments) =>
+  (
+    task: QueueListWorker,
+  ) => {
+    const encoded = serialize(task[4]);
+    //@ts-ignore
+    buffer.set(encoded);
+    //@ts-ignore
+    payloadLength[0] = encoded.length;
+    id[0] = task[1];
+  };
+
+const fromreturnToMain = (signals: SignalArguments) => (type: External) => {
   switch (type) {
     case "uint8":
       return writePayloadUnint8(signals);
@@ -135,6 +167,10 @@ const fromreturnToMain = (
       return writePayloadString(signals);
     case "void":
       return writePayloadVoid(signals);
+    case "number[]":
+      return writePayloadSerializable(signals);
+    case "serializable":
+      return writePayloadSerializable(signals);
   }
 };
 

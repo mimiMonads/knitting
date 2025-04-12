@@ -24,11 +24,10 @@ export const createContext = ({
   debug?: DebugOptions;
   listOfFunctions: ComposedWithKey[];
 }) => {
-  const currentPath = import.meta.url;
-
   const workerUrl = new URL(
-    currentPath.replace("threadManager.ts", "workerThread.ts"),
-  ).href;
+    "workerThread.ts",
+    import.meta.url,
+  );
 
   if (debug?.logHref === true) {
     console.log(workerUrl);
@@ -65,17 +64,21 @@ export const createContext = ({
 
   channelHandler.open(check);
 
-  const worker = new Worker(workerUrl, {
-    //@ts-ignore Reason -> This is a Deno only thing
-    type: "module",
-    workerData: {
-      sab: signals.sab,
-      list,
-      ids,
-      thread,
-      debug,
+  const worker = new Worker(
+    //@ts-ignore
+    workerUrl,
+    {
+      //@ts-ignore Reason -> This is a Deno only thing
+      type: "module",
+      workerData: {
+        sab: signals.sab,
+        list,
+        ids,
+        thread,
+        debug,
+      },
     },
-  });
+  );
 
   type CallFunction = {
     fnNumber: number;

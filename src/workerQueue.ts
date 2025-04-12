@@ -46,11 +46,17 @@ export const createWorkerQueue = (
   const fromreturnToMainWitSignal = fromreturnToMain(signals);
 
   const playloadToArgs = listOfFunctions.reduce((acc, fixed) => (
-    acc.push(fromPlayloadToArgumentsWitSignal(fixed.args ?? "uint8")), acc
+    acc.push(fromPlayloadToArgumentsWitSignal(
+      //@ts-ignore
+      fixed.args ?? "serializable",
+    )), acc
   ), [] as Function[]);
 
   const returnToMain = listOfFunctions.reduce((acc, fixed) => (
-    acc.push(fromreturnToMainWitSignal(fixed.return ?? "uint8")), acc
+    acc.push(fromreturnToMainWitSignal(
+      //@ts-ignore
+      fixed.return ?? "serializable",
+    )), acc
   ), [] as Function[]);
 
   return {

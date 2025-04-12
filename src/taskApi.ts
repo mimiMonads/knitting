@@ -7,18 +7,41 @@ import { isMainThread } from "node:worker_threads";
 export const isMain = isMainThread;
 export type FixedPoints = Record<string, Composed>;
 
+export type Serializable =
+  | undefined
+  | null
+  | boolean
+  | number
+  | string
+  | bigint
+  | Date
+  | RegExp
+  | ArrayBuffer
+  | ArrayBufferView
+  | { [key: string]: Serializable }
+  | Serializable[]
+  | Map<Serializable, Serializable>
+  | Set<Serializable>
+  | Error;
+
 type Uint8Literral = "uint8";
 type VoidLiterral = "void";
 type StringLiterral = "string";
 type numberArrayLiterral = "number[]";
-export type External = Uint8Literral | VoidLiterral | StringLiterral | numberArrayLiterral;
-type Args = External | undefined;
+type SerializableLiterral = "serializable";
+export type External =
+  | Uint8Literral
+  | VoidLiterral
+  | StringLiterral
+  | numberArrayLiterral
+  | SerializableLiterral;
+type Args = External | Serializable;
 
 const symbol = Symbol.for("FIXEDPOINT");
 
 interface FixPoint<A extends Args, B extends Args> {
-  args: A;
-  return: B;
+  args?: A;
+  return?: B;
   f: (
     args: Arguments<A>,
   ) => Promise<Arguments<B>>;
@@ -26,8 +49,10 @@ interface FixPoint<A extends Args, B extends Args> {
 
 type Arguments<A extends Args> = A extends VoidLiterral ? void
   : A extends StringLiterral ? string
-  : A extends numberArrayLiterral ?
-  number[] : Uint8Array;
+  : A extends undefined ? (Serializable | undefined)
+  : A extends numberArrayLiterral ? number[]
+  : A extends SerializableLiterral ? Serializable
+  : A;
 
 type SecondPart = {
   [symbol]: string;
@@ -36,16 +61,21 @@ type SecondPart = {
 };
 
 export type Composed = {
-  args: Args;
-  return: Args;
+  args?: Args;
+  return?: Args;
   f: (...args: any) => any;
 } & SecondPart;
 
 export type ComposedWithKey = Composed & { name: string };
 
-type ReturnFixed<A extends Args, B extends Args> = FixPoint<A, B> & SecondPart;
+type ReturnFixed<A extends Args = undefined, B extends Args = undefined> =
+  & FixPoint<A, B>
+  & SecondPart;
 
-export const fixedPoint = <A extends Args, B extends Args>(
+export const fixedPoint = <
+  A extends Args = undefined,
+  B extends Args = undefined,
+>(
   I: FixPoint<A, B>,
 ): ReturnFixed<A, B> => {
   const importedFrom = new URL(getCallerFilePath(2)).href;
