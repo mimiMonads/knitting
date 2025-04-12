@@ -6,6 +6,8 @@ import { mainSignal, type Sab, signalsForWorker } from "./signals.ts";
 import { ChannelHandler, taskScheduler } from "./taskScheduler.ts";
 import { type ComposedWithKey, type DebugOptions } from "./taskApi.ts";
 import { jsrIsGreatAndWorkWithoutBugs } from "./workerThread.ts";
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 export const createContext = ({
   promisesMap,
@@ -24,10 +26,24 @@ export const createContext = ({
   debug?: DebugOptions;
   listOfFunctions: ComposedWithKey[];
 }) => {
-  const workerUrl = new URL(
-    "workerThread.ts",
-    import.meta.url,
+  // Determine worker file URL based on file existence
+  const jsFileUrl = new URL("workerThread.js", import.meta.url);
+  const tsFileUrl = new URL("workerThread.ts", import.meta.url);
+
+  // Convert URL to file path for the file system check
+  const jsFilePath = fileURLToPath(
+    //@ts-ignore
+    jsFileUrl,
   );
+
+  let workerUrl: URL;
+  if (existsSync(jsFilePath)) {
+    // Use the compiled JavaScript file if it exists.
+    workerUrl = jsFileUrl;
+  } else {
+    // Otherwise, fall back to the TypeScript file in development.
+    workerUrl = tsFileUrl;
+  }
 
   if (debug?.logHref === true) {
     console.log(workerUrl);
@@ -65,10 +81,12 @@ export const createContext = ({
   channelHandler.open(check);
 
   const worker = new Worker(
-    //@ts-ignore
-    workerUrl,
+    fileURLToPath(
+      //@ts-ignore
+      workerUrl,
+    ),
     {
-      //@ts-ignore Reason -> This is a Deno only thing
+      //@ts-ignore Reason
       type: "module",
       workerData: {
         sab: signals.sab,

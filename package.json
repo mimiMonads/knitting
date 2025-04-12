@@ -2,8 +2,7 @@
   "devDependencies": {
     "@types/node": "^22.13.5",
     "@types/bun": "latest",
-    "@types/deno": "latest",
-    "mitata": "^1.0.34"
+    "@types/deno": "latest"
   },
   "name": "knitting",
   "module": "index.ts",
