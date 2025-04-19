@@ -6,6 +6,10 @@ import { type DebugOptions, getFunctions } from "./taskApi.ts";
 
 export const jsrIsGreatAndWorkWithoutBugs = () => null;
 
+function yieldWhileBusy(status: Int32Array): void {
+  Atomics.wait(status, 0, 255, 0);
+}
+
 if (isMainThread === false) {
   const mainLoop = async () => {
     const sharedSab = workerData.sab as SharedArrayBuffer;
@@ -43,7 +47,7 @@ if (isMainThread === false) {
         signals,
       });
 
-    const { currentSignal, signalAllTasksDone } = signal;
+    const { currentSignal, signalAllTasksDone, status } = signal;
 
     const getSignal = debug?.logThreads
       ? signalDebugger({
@@ -57,8 +61,11 @@ if (isMainThread === false) {
         case 2:
         case 3:
         case 128:
-        case 254:
+        case 254: {
+          continue;
+        }
         case 255: {
+          //yieldWhileBusy(status)
           continue;
         }
         case 0: {

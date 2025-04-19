@@ -1,29 +1,26 @@
 import { readFromWorker, sendToWorker } from "./parsers.ts";
 import { type MainSignal, type SignalArguments } from "./signals.ts";
 import type { ComposedWithKey } from "./taskApi.ts";
+import type { Serializable } from "./taskApi.ts";
 
 // Task ID is a unique number representing a task.
 type TaskID = number;
 // RawArguments are optional arguments in the form of a Uint8Array.
-type RawArguments = Uint8Array;
+type RawArguments<T extends Serializable = Uint8Array> = T;
 // WorkerResponse is the result of a task, represented as a Uint8Array.
-type WorkerResponse = Uint8Array;
+type WorkerResponse<T extends Serializable = Uint8Array> = T;
 // FunctionID represents a unique identifier for a function to execute.
 type FunctionID = number;
 
 // MainList represents tasks in the main thread.
-export type MainList = [
+export type MainList<
+  A extends Serializable = Uint8Array,
+  B extends Serializable = Uint8Array,
+> = [
   TaskID,
-  RawArguments,
+  RawArguments<A>,
   FunctionID,
-  WorkerResponse,
-];
-
-// PartialQueueListWorker represents a minimal task structure for enqueueing to a queue.
-export type PartialQueueListWorker = [
-  TaskID,
-  RawArguments,
-  FunctionID,
+  WorkerResponse<B>,
 ];
 
 export type PromiseMap = Map<

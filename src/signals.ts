@@ -1,7 +1,6 @@
 export type SignalArguments = ReturnType<typeof signalsForWorker>;
 export type MainSignal = ReturnType<typeof mainSignal>;
 export type WorkerSignal = ReturnType<typeof workerSignal>;
-import { Buffer } from "node:buffer";
 
 type StatusSignalForVoid = 192;
 export type StatusSignal = StatusSignalForVoid;
@@ -14,7 +13,7 @@ export type Sab = {
 export const signalsForWorker = (args?: Sab) => {
   const sab = args?.sharedSab
     ? args.sharedSab
-    : new SharedArrayBuffer(args?.size ?? 4096);
+    : new SharedArrayBuffer(args?.size ?? 65536);
 
   return {
     sab,
@@ -23,8 +22,16 @@ export const signalsForWorker = (args?: Sab) => {
     payloadLength: new Int32Array(sab, 8, 1),
     functionToUse: new Int32Array(sab, 12, 1),
     queueState: new Int8Array(sab, 16, 4),
-    payload: new Uint8Array(sab, 20),
-    buffer: new Uint8Array(sab, 20, sab.byteLength - 20),
+    type: new Int32Array(sab, 20, 1),
+    payload: new Uint8Array(sab, 24, sab.byteLength - 24),
+    buffer: new Uint8Array(sab, 24, sab.byteLength - 24),
+
+    // One byte var
+    bigInt: new BigInt64Array(sab, 24, 1),
+    uBigInt: new BigUint64Array(sab, 24, 1),
+    uInt32: new Uint32Array(sab, 24, 1),
+    int32: new Int32Array(sab, 24, 1),
+    float64: new Float64Array(sab, 24, 1),
   };
 };
 
@@ -49,6 +56,7 @@ export const mainSignal = (
 export const workerSignal = (
   { status, id, functionToUse, queueState }: SignalArguments,
 ) => ({
+  status,
   // Status
   currentSignal: () => status[0],
   messageReady: (): 0 => (status[0] = 0),

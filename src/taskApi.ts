@@ -16,6 +16,7 @@ export type Serializable =
   | bigint
   | Date
   | RegExp
+  | void
   | ArrayBuffer
   | ArrayBufferView
   | { [key: string]: Serializable }
@@ -49,7 +50,8 @@ interface FixPoint<A extends Args, B extends Args> {
 
 type Arguments<A extends Args> = A extends VoidLiterral ? void
   : A extends StringLiterral ? string
-  : A extends undefined ? (Serializable | undefined)
+  : A extends undefined ? (Serializable)
+  : A extends void ? (Serializable)
   : A extends numberArrayLiterral ? number[]
   : A extends SerializableLiterral ? Serializable
   : A;
