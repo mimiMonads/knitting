@@ -33,11 +33,11 @@ export type PromiseMap = Map<
 >;
 
 export type QueueListWorker = [
-  -1 | 0 | 1 | 2,
   TaskID,
   RawArguments,
   FunctionID,
   WorkerResponse,
+  -1 | 0 | 1 | 2,
 ];
 
 export type MultiQueue = ReturnType<typeof createMainQueue>;

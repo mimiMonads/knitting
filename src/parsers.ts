@@ -243,7 +243,7 @@ const readFromWorker = (signals: SignalArguments) => (type: External) => {
     case "number[]":
       return readSerializableFromWorker(signals);
     case "serializable":
-      return readSerializableFromWorker(signals);
+      return readPayloadWorkerAny(signals);
   }
 };
 
@@ -363,25 +363,25 @@ const fromPlayloadToArguments =
 const writePayloadUnint8 =
   ({ id, payload, payloadLength }: SignalArguments) =>
   (task: QueueListWorker) => {
-    payload.set(task[4], 0);
-    payloadLength[0] = task[4].length;
-    id[0] = task[1];
+    payload.set(task[3], 0);
+    payloadLength[0] = task[3].length;
+    id[0] = task[0];
   };
 
 const writePayloadString =
   ({ id, payload, payloadLength }: SignalArguments) =>
   (task: QueueListWorker) => {
     //@ts-ignore
-    const encode = textEncoder.encode(task[4]);
+    const encode = textEncoder.encode(task[3]);
     payload.set(encode, 0);
     payloadLength[0] = encode.length;
-    id[0] = task[1];
+    id[0] = task[0];
   };
 
 const writePayloadVoid =
   ({ id }: SignalArguments) => (task: QueueListWorker) => {
     // No payload needed
-    id[0] = task[1];
+    id[0] = task[0];
   };
 
 const writePayloadSerializable =
@@ -389,12 +389,12 @@ const writePayloadSerializable =
   (
     task: QueueListWorker,
   ) => {
-    const encoded = serialize(task[4]);
+    const encoded = serialize(task[3]);
     //@ts-ignore
     buffer.set(encoded);
     //@ts-ignore
     payloadLength[0] = encoded.length;
-    id[0] = task[1];
+    id[0] = task[0];
   };
 
 const fromreturnToMain = (signals: SignalArguments) => (type: External) => {
@@ -408,7 +408,7 @@ const fromreturnToMain = (signals: SignalArguments) => (type: External) => {
     case "number[]":
       return writePayloadSerializable(signals);
     case "serializable":
-      return writePayloadSerializable(signals);
+      return toWorkerAny(signals);
   }
 };
 
