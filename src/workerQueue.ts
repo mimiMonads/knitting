@@ -59,6 +59,8 @@ export const createWorkerQueue = (
     )), acc
   ), [] as Function[]);
 
+  const status = Array.from({ length: max ?? 3 }, () => -1);
+
   return {
     // Check if any task is solved and ready for writing.
     someHasFinished: () => {
@@ -85,6 +87,7 @@ export const createWorkerQueue = (
       }
 
       if (!inserted) {
+
         queue.push([
           getCurrentID(),
           playloadToArgs[fnNumber](),
@@ -92,6 +95,8 @@ export const createWorkerQueue = (
           new Uint8Array(),
           0,
         ]);
+
+        status.push(0);
       }
 
       readyToWork();

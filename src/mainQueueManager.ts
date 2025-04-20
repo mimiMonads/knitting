@@ -12,17 +12,6 @@ type WorkerResponse<T extends Serializable = Uint8Array> = T;
 // FunctionID represents a unique identifier for a function to execute.
 type FunctionID = number;
 
-// MainList represents tasks in the main thread.
-export type MainList<
-  A extends Serializable = Uint8Array,
-  B extends Serializable = Uint8Array,
-> = [
-  TaskID,
-  RawArguments<A>,
-  FunctionID,
-  WorkerResponse<B>,
-];
-
 export type PromiseMap = Map<
   TaskID,
   {
@@ -32,13 +21,16 @@ export type PromiseMap = Map<
   }
 >;
 
+
 export type QueueListWorker = [
   TaskID,
-  RawArguments,
+  RawArguments<A>,
   FunctionID,
   WorkerResponse,
   -1 | 0 | 1 | 2,
 ];
+
+export type QueueListWorker = MainList;
 
 export type MultiQueue = ReturnType<typeof createMainQueue>;
 
