@@ -243,7 +243,7 @@ const readFromWorker = (signals: SignalArguments) => (type: External) => {
     case "number[]":
       return readSerializableFromWorker(signals);
     case "serializable":
-      return readSerializableFromWorker(signals);
+      return readPayloadWorkerAny(signals);
   }
 };
 
@@ -408,7 +408,7 @@ const fromreturnToMain = (signals: SignalArguments) => (type: External) => {
     case "number[]":
       return writePayloadSerializable(signals);
     case "serializable":
-      return writePayloadSerializable(signals);
+      return toWorkerAny(signals);
   }
 };
 

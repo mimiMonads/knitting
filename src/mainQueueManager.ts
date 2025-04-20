@@ -21,15 +21,13 @@ export type PromiseMap = Map<
   }
 >;
 
-// MainList represents tasks in the main thread.
-export type MainList<
-  A extends Serializable = Uint8Array,
-  B extends Serializable = Uint8Array,
-> = [
+
+export type QueueListWorker = [
   TaskID,
   RawArguments<A>,
   FunctionID,
-  WorkerResponse<B>,
+  WorkerResponse,
+  -1 | 0 | 1 | 2,
 ];
 
 export type QueueListWorker = MainList;

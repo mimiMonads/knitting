@@ -32,6 +32,7 @@ export const createWorkerQueue = (
         new Uint8Array(),
         0,
         new Uint8Array(),
+        -1,
       ] as QueueListWorker,
   );
 
@@ -62,25 +63,37 @@ export const createWorkerQueue = (
 
   return {
     // Check if any task is solved and ready for writing.
-    someHasFinished: () => status.some((task) => task === 2),
+    someHasFinished: () => {
+      for (let i = 0; i < queue.length; i++) {
+        if (queue[i][4] === 2) return true;
+      }
+      return false;
+    },
 
     // enqueue a task to the queue.
     enqueue: () => {
-      const slot = status.indexOf(-1),
-        fnNumber = functionToUse();
+      const fnNumber = functionToUse();
+      let inserted = false;
 
-      if (slot !== 1) {
-        queue[slot][0] = getCurrentID();
-        queue[slot][1] = playloadToArgs[fnNumber]();
-        queue[slot][2] = fnNumber;
+      for (let i = 0; i < queue.length; i++) {
+        if (queue[i][4] === -1) {
+          queue[i][4] = 0;
+          queue[i][0] = getCurrentID();
+          queue[i][1] = playloadToArgs[fnNumber]();
+          queue[i][2] = fnNumber;
+          inserted = true;
+          break;
+        }
+      }
 
-        status[slot] = 0;
-      } else {
+      if (!inserted) {
+
         queue.push([
           getCurrentID(),
           playloadToArgs[fnNumber](),
           fnNumber,
           new Uint8Array(),
+          0,
         ]);
 
         status.push(0);
@@ -91,38 +104,38 @@ export const createWorkerQueue = (
 
     // Write completed tasks to the writer.
     write: () => {
-      const slot = status.indexOf(2);
-
-      if (slot !== 1) {
-        const element = queue[slot];
-
-        returnToMain[element[2]](element);
-        //writer(queue[finishedTaskIndex]);
-        messageReady();
-        status[slot] = -1;
+      for (let i = 0; i < queue.length; i++) {
+        if (queue[i][4] === 2) {
+          const element = queue[i];
+          returnToMain[element[2]](element);
+          messageReady();
+          element[4] = -1;
+          break;
+        }
       }
     },
 
     // Process the next available task.
     nextJob: async () => {
-      const slot = status.indexOf(0);
-
-      if (slot !== -1) {
-        const task = queue[slot];
-
-        status[slot] = 1;
-        try {
-          task[3] = await jobs[task[2]](
-            task[1],
-          );
-        } finally {
-          status[slot] = 2;
+      for (let i = 0; i < queue.length; i++) {
+        if (queue[i][4] === 0) {
+          const task = queue[i];
+          task[4] = 1;
+          try {
+            //@ts-ignore
+            task[3] = await jobs[task[2]](task[1]);
+          } finally {
+            task[4] = 2;
+          }
+          break;
         }
       }
     },
-    allDone: () =>
-      status.every(
-        (task) => task === -1,
-      ),
+    allDone: () => {
+      for (let i = 0; i < queue.length; i++) {
+        if (queue[i][4] !== -1) return false;
+      }
+      return true;
+    },
   };
 };
