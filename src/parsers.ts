@@ -172,8 +172,8 @@ const toWorkerAny = (
       return;
     }
     /**
-     * Object 14 &
-     * null = 14
+     * Object 15 
+     * null = 15
      */
     case "object": {
       let encoded;

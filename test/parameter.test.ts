@@ -120,5 +120,6 @@ Deno.test("Using core  fastcalling wit multiple arguments", async () => {
     null,
   );
 
+
   await terminateAll();
 });

@@ -59,20 +59,28 @@ export const createWorkerQueue = (
     )), acc
   ), [] as Function[]);
 
+  const status = Array.from({ length: max ?? 3 }, () => -1);
+
   return {
     // Check if any task is solved and ready for writing.
-    someHasFinished: () => queue.some((task) => task[0] === 2),
+    someHasFinished: () => status.some((task) => task === 2),
 
     // enqueue a task to the queue.
     enqueue: () => {
-      const freeSlot = queue.find((task) => task[0] === -1),
+      const slot = status.indexOf(-1) ,
         fnNumber = functionToUse();
 
-      if (freeSlot) {
-        freeSlot[0] = 0;
-        freeSlot[1] = getCurrentID();
-        freeSlot[2] = playloadToArgs[fnNumber]();
-        freeSlot[3] = fnNumber;
+       
+      if (slot !== 1) {
+ 
+        //queue[slot][0] = 0;
+        queue[slot][1] = getCurrentID();
+        queue[slot][2] = playloadToArgs[fnNumber]();
+        queue[slot][3] = fnNumber;
+
+        status[slot] = 0
+
+
       } else {
         queue.push([
           0,
@@ -81,6 +89,8 @@ export const createWorkerQueue = (
           fnNumber,
           new Uint8Array(),
         ]);
+
+        status.push(0)
       }
 
       readyToWork();
@@ -88,34 +98,44 @@ export const createWorkerQueue = (
 
     // Write completed tasks to the writer.
     write: () => {
-      const element = queue.find((task) => task[0] === 2);
-      if (element !== undefined) {
+      const slot = status.indexOf(2)
+      
+      if (slot !== 1) {
+
+        const element = queue[slot];
+
         returnToMain[element[3]](element);
         //writer(queue[finishedTaskIndex]);
         messageReady();
-        element[0] = -1;
+        status[slot] = -1
+  
       }
     },
 
     // Process the next available task.
     nextJob: async () => {
-      const task = queue.find((task) => task[0] === 0);
 
-      if (task !== undefined) {
-        task[0] = 1;
+      const slot = status.indexOf(0)
+      
+   
+      if (slot !== -1) {
+      
+        const task = queue[slot];
+
+        status[slot] = 1;
         try {
           //@ts-ignore
           task[4] = await jobs[task[3]](
             task[2],
           );
         } finally {
-          task[0] = 2;
+          status[slot] = 2;
         }
       }
     },
     allDone: () =>
-      queue.every(
-        (task) => task[0] === -1,
+      status.every(
+        (task) => task === -1,
       ),
   };
 };
