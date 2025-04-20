@@ -28,7 +28,6 @@ export const createWorkerQueue = (
     { length: max ?? 3 },
     () =>
       [
-        -1,
         0,
         new Uint8Array(),
         0,
@@ -67,30 +66,24 @@ export const createWorkerQueue = (
 
     // enqueue a task to the queue.
     enqueue: () => {
-      const slot = status.indexOf(-1) ,
+      const slot = status.indexOf(-1),
         fnNumber = functionToUse();
 
-       
       if (slot !== 1) {
- 
-        //queue[slot][0] = 0;
-        queue[slot][1] = getCurrentID();
-        queue[slot][2] = playloadToArgs[fnNumber]();
-        queue[slot][3] = fnNumber;
+        queue[slot][0] = getCurrentID();
+        queue[slot][1] = playloadToArgs[fnNumber]();
+        queue[slot][2] = fnNumber;
 
-        status[slot] = 0
-
-
+        status[slot] = 0;
       } else {
         queue.push([
-          0,
           getCurrentID(),
           playloadToArgs[fnNumber](),
           fnNumber,
           new Uint8Array(),
         ]);
 
-        status.push(0)
+        status.push(0);
       }
 
       readyToWork();
@@ -98,35 +91,29 @@ export const createWorkerQueue = (
 
     // Write completed tasks to the writer.
     write: () => {
-      const slot = status.indexOf(2)
-      
-      if (slot !== 1) {
+      const slot = status.indexOf(2);
 
+      if (slot !== 1) {
         const element = queue[slot];
 
-        returnToMain[element[3]](element);
+        returnToMain[element[2]](element);
         //writer(queue[finishedTaskIndex]);
         messageReady();
-        status[slot] = -1
-  
+        status[slot] = -1;
       }
     },
 
     // Process the next available task.
     nextJob: async () => {
+      const slot = status.indexOf(0);
 
-      const slot = status.indexOf(0)
-      
-   
       if (slot !== -1) {
-      
         const task = queue[slot];
 
         status[slot] = 1;
         try {
-          //@ts-ignore
-          task[4] = await jobs[task[3]](
-            task[2],
+          task[3] = await jobs[task[2]](
+            task[1],
           );
         } finally {
           status[slot] = 2;

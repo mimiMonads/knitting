@@ -6,9 +6,7 @@ import { type DebugOptions, getFunctions } from "./taskApi.ts";
 
 export const jsrIsGreatAndWorkWithoutBugs = () => null;
 
-function yieldWhileBusy(status: Int32Array): void {
-  Atomics.wait(status, 0, 255, 0);
-}
+
 
 if (isMainThread === false) {
   const mainLoop = async () => {
@@ -61,9 +59,7 @@ if (isMainThread === false) {
         case 2:
         case 3:
         case 128:
-        case 254: {
-          continue;
-        }
+        case 254: 
         case 255: {
           //yieldWhileBusy(status)
           continue;

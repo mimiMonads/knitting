@@ -12,6 +12,15 @@ type WorkerResponse<T extends Serializable = Uint8Array> = T;
 // FunctionID represents a unique identifier for a function to execute.
 type FunctionID = number;
 
+export type PromiseMap = Map<
+  TaskID,
+  {
+    promise: Promise<WorkerResponse>;
+    resolve: (val: WorkerResponse) => void;
+    reject: (val: unknown) => void;
+  }
+>;
+
 // MainList represents tasks in the main thread.
 export type MainList<
   A extends Serializable = Uint8Array,
@@ -23,22 +32,7 @@ export type MainList<
   WorkerResponse<B>,
 ];
 
-export type PromiseMap = Map<
-  TaskID,
-  {
-    promise: Promise<WorkerResponse>;
-    resolve: (val: WorkerResponse) => void;
-    reject: (val: unknown) => void;
-  }
->;
-
-export type QueueListWorker = [
-  -1 | 0 | 1 | 2,
-  TaskID,
-  RawArguments,
-  FunctionID,
-  WorkerResponse,
-];
+export type QueueListWorker = MainList;
 
 export type MultiQueue = ReturnType<typeof createMainQueue>;
 
