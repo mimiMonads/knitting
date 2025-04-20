@@ -87,7 +87,6 @@ export const createWorkerQueue = (
       }
 
       if (!inserted) {
-
         queue.push([
           getCurrentID(),
           playloadToArgs[fnNumber](),

@@ -6,8 +6,6 @@ import { type DebugOptions, getFunctions } from "./taskApi.ts";
 
 export const jsrIsGreatAndWorkWithoutBugs = () => null;
 
-
-
 if (isMainThread === false) {
   const mainLoop = async () => {
     const sharedSab = workerData.sab as SharedArrayBuffer;
@@ -59,7 +57,7 @@ if (isMainThread === false) {
         case 2:
         case 3:
         case 128:
-        case 254: 
+        case 254:
         case 255: {
           //yieldWhileBusy(status)
           continue;

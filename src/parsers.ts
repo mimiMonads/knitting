@@ -172,7 +172,7 @@ const toWorkerAny = (
       return;
     }
     /**
-     * Object 15 
+     * Object 15
      * null = 15
      */
     case "object": {

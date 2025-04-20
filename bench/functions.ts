@@ -38,8 +38,6 @@ export const inLine = fixedPoint({
 });
 
 export const bbb = fixedPoint({
-  args: "void",
-  return: "void",
   f: async () => {
   },
 });
