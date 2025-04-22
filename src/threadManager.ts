@@ -119,12 +119,13 @@ export const createContext = ({
     const first = fastEnqueue(fnNumber);
     const enqueue = enqueuePromise(fnNumber);
 
-    return (args: Uint8Array) =>
-      check.isRunning === false
+    return (args: Uint8Array) => {
+      return check.isRunning === false
         ? (
           check.isRunning = true, queueMicrotask(check), first(args)
         )
         : enqueue(args);
+    };
   };
 
   return {

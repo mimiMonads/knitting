@@ -5,13 +5,12 @@ export const aaa = fixedPoint({
   args: "void",
   return: "string",
   f: async () => {
-    // Simulate an expensive operation
-    // let a = 1000;
+    let a = 1000;
 
-    // while (a != 0) {
-    //   performance.now();
-    //   a--;
-    // }
+    while (a != 0) {
+      performance.now();
+      a--;
+    }
     return string;
   },
 });

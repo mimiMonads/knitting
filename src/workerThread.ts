@@ -3,6 +3,7 @@ import { signalDebugger } from "./utils.ts";
 import { createWorkerQueue } from "./workerQueue.ts";
 import { signalsForWorker, workerSignal } from "./signals.ts";
 import { type DebugOptions, getFunctions } from "./taskApi.ts";
+import { setImmediate } from "node:timers";
 
 export const jsrIsGreatAndWorkWithoutBugs = () => null;
 
@@ -52,14 +53,23 @@ if (isMainThread === false) {
       })
       : currentSignal;
 
+    const loop = () =>
+      Promise.resolve().then(() => {
+        if (status[0] === 255) {
+          setImmediate(loop);
+        }
+      });
+
     while (true) {
       switch (getSignal()) {
         case 2:
         case 3:
         case 128:
-        case 254:
+        case 254: {
+          continue;
+        }
         case 255: {
-          //yieldWhileBusy(status)
+          //Atomics.wait(status, 0, 255)
           continue;
         }
         case 0: {

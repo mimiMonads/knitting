@@ -118,4 +118,5 @@ boxplot(async () => {
   });
 });
 await mitataRun();
+await inLine.f().then(console.log);
 await terminateAll();

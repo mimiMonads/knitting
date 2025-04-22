@@ -142,7 +142,13 @@ export function createMainQueue({
       const deferred = Promise.withResolvers<WorkerResponse>();
       promisesMap.set(taskID, deferred);
 
-      if (idx === -1) {
+      if (idx !== -1) {
+        const slot = queue[idx];
+        slot[0] = taskID;
+        slot[1] = rawArgs;
+        slot[2] = functionID;
+        slot[4] = 0;
+      } else {
         queue.push([
           taskID,
           rawArgs,
@@ -150,12 +156,6 @@ export function createMainQueue({
           new Uint8Array(),
           0,
         ]);
-      } else {
-        const slot = queue[idx];
-        slot[0] = taskID;
-        slot[1] = rawArgs;
-        slot[2] = functionID;
-        slot[4] = 0;
       }
 
       return deferred.promise.finally(() => promisesMap.delete(taskID));

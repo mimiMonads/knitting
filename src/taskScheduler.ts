@@ -7,6 +7,7 @@ export const taskScheduler = ({
     currentSignal,
     readyToRead,
     hasNoMoreMessages,
+    status,
   },
   queue: {
     resolveTask,
@@ -88,6 +89,10 @@ export const taskScheduler = ({
       }
       case 192:
         queueMicrotask(check);
+        return;
+
+      case 253:
+        console.log("unrechable");
         return;
 
       case 254:
