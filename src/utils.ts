@@ -67,8 +67,8 @@ export const signalDebugger = ({
   isMain?: true;
   currentSignal: { (arg: void): number };
 }) => {
-  let last = 255;
-  let thisOne = 255;
+  let last = 0;
+  let thisOne = 0;
   const builtAt = performance.now();
 
   const orange = "\x1b[38;5;214m"; // Orange

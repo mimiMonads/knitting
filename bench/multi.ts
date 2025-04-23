@@ -33,9 +33,7 @@ group("1", () => {
     });
 
     bench(threads + " thread -> 1", async () => {
-      const arr = 
-        callFunction.aaa()
-     
+      const arr = callFunction.aaa();
 
       send();
 
@@ -107,20 +105,16 @@ group("4", () => {
         callFunction.aaa(),
         callFunction.aaa(),
         callFunction.aaa(),
-        
       ];
 
       send();
 
       await Promise.all(arr);
     });
-
   });
 
   group("4 * 4", () => {
     summary(() => {
-
-
       bench(" Main -> 16", async () => {
         return await Promise.all([
           fn(),
@@ -141,7 +135,7 @@ group("4", () => {
           fn(),
         ]);
       });
-  
+
       bench(threads + " thread -> 16", async () => {
         const arr = [
           callFunction.aaa(),
@@ -161,15 +155,13 @@ group("4", () => {
           callFunction.aaa(),
           callFunction.aaa(),
         ];
-  
+
         send();
-  
+
         await Promise.all(arr);
       });
-    })
-
     });
-
+  });
 });
 
 await runMitata();

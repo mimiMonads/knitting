@@ -110,7 +110,7 @@ export const createContext = ({
   const send = ((starts: typeof dispatchToWorker) => () => {
     if (check.isRunning === false && canWrite()) {
       starts();
-      Atomics.notify(signalBox.status, 0 ,1);
+      Atomics.notify(signalBox.status, 0, 1);
       check.isRunning = true;
       queueMicrotask(check);
     }
@@ -118,7 +118,7 @@ export const createContext = ({
 
   const notify = () => Atomics.notify(signalBox.status, 0, 1);
 
-  const hasToColdStart = () => check.isRunning === false && canWrite()
+  const hasToColdStart = () => check.isRunning === false && canWrite();
 
   const fastCalling = ({ fnNumber }: CallFunction) => {
     const first = fastEnqueue(fnNumber);

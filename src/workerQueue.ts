@@ -115,7 +115,7 @@ export const createWorkerQueue = (
     },
 
     // Process the next available task.
-    nextJob: () => {
+    nextJob: async () => {
       for (let i = 0; i < queue.length; i++) {
         if (queue[i][4] === 0) {
           const task = queue[i];

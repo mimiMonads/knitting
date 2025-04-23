@@ -1,4 +1,5 @@
 import { fixedPoint } from "../main.ts";
+import { setTimeout as sleep } from "node:timers/promises";
 
 const string = "uwu";
 export const aaa = fixedPoint({
@@ -37,8 +38,7 @@ export const inLine = fixedPoint({
 });
 
 export const bbb = fixedPoint({
-  f: async () => {
-  },
+  f: async () => await sleep(10),
 });
 
 export const ccc = fixedPoint({

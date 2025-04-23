@@ -71,7 +71,7 @@ if (isMainThread === false) {
           continue;
         }
         case 255: {
-            Atomics.wait(status, 0, 255)
+          Atomics.wait(status, 0, 255);
           continue;
         }
         case 0: {

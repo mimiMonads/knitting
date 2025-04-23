@@ -15,9 +15,12 @@ export const signalsForWorker = (args?: Sab) => {
     ? args.sharedSab
     : new SharedArrayBuffer(args?.size ?? 65536);
 
+  const status = new Int32Array(sab, 0, 1);
+  status[0] = 0;
+
   return {
     sab,
-    status: new Int32Array(sab, 0, 1),
+    status,
     id: new Int32Array(sab, 4, 1),
     payloadLength: new Int32Array(sab, 8, 1),
     functionToUse: new Int32Array(sab, 12, 1),
@@ -38,7 +41,6 @@ export const signalsForWorker = (args?: Sab) => {
 export const mainSignal = (
   { status, id, functionToUse, queueState }: SignalArguments,
 ) => {
-
   return ({
     status,
     // Status

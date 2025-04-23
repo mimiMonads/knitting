@@ -11,7 +11,6 @@ const { terminateAll, callFunction, send } = createThreadPool(
   inLine,
 });
 
-
 boxplot(async () => {
   group("1", () => {
     bench("nop", async () => {
@@ -31,8 +30,6 @@ boxplot(async () => {
       send();
 
       await Promise.all(arr);
-
-    
     });
 
     summary(() => {
@@ -41,12 +38,11 @@ boxplot(async () => {
       });
 
       bench(" 1 thread -> 1", async () => {
-        const arr = callFunction.inLine()
-       
+        const arr = callFunction.inLine();
+
         send();
 
         await arr;
-  
       });
 
       bench(" 1 thread -> 2", async () => {

@@ -1,7 +1,6 @@
 import type { MultiQueue } from "./mainQueueManager.ts";
 import type { MainSignal } from "./signals.ts";
-import { signalDebugger } from "./utils.ts"
-
+import { signalDebugger } from "./utils.ts";
 
 export const taskScheduler = ({
   signalBox: {
@@ -33,8 +32,6 @@ export const taskScheduler = ({
     })
     : currentSignal;
   const loop = ((n) => () => ++n % 2 === 1 ? true : false)(0);
-
-
 
   const check = () => {
     switch (getSignal()) {
@@ -110,7 +107,6 @@ export const taskScheduler = ({
 
   return check;
 };
-
 
 export class ChannelHandler {
   public channel: MessageChannel;
