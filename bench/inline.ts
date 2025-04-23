@@ -1,18 +1,16 @@
 import { bench, boxplot, group, run as mitataRun, summary } from "mitata";
 import { createThreadPool } from "../main.ts";
 import { bbb } from "./functions.ts";
-import { deserialize, serialize } from "node:v8";
 
 const inLine = bbb;
-const { terminateAll, fastCallFunction, callFunction, send } = createThreadPool(
+const { terminateAll, callFunction, send } = createThreadPool(
   {
     threads: 1,
   },
 )({
   inLine,
 });
-const textEncoder = new TextEncoder();
-const textDecoder = new TextDecoder();
+
 
 boxplot(async () => {
   group("1", () => {
@@ -34,7 +32,7 @@ boxplot(async () => {
 
       await Promise.all(arr);
 
-      await fastCallFunction.inLine();
+    
     });
 
     summary(() => {
@@ -43,7 +41,12 @@ boxplot(async () => {
       });
 
       bench(" 1 thread -> 1", async () => {
-        await fastCallFunction.inLine();
+        const arr = callFunction.inLine()
+       
+        send();
+
+        await arr;
+  
       });
 
       bench(" 1 thread -> 2", async () => {
@@ -118,5 +121,4 @@ boxplot(async () => {
   });
 });
 await mitataRun();
-await inLine.f().then(console.log);
 await terminateAll();

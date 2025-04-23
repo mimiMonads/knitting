@@ -269,6 +269,30 @@ export const createThreadPool = ({
     return acc;
   }, [] as (() => void)[]);
 
+
+  const listForStarting = workers.reduce((acc, { hasToColdStart , dispatchToWorker , check , notify}) => {
+    acc.push([hasToColdStart ,  dispatchToWorker , check, notify]);
+    return acc;
+  }, [] as ([() => boolean, ()=> void , {(): void, isRunning: boolean},  ()=> void ])[]);
+  const fastStart = () => {
+    const a = [ ]
+
+    for ( let i = 0 ; i === listForStarting.length ; i++){
+      if(listForStarting[i][0]()){
+        let check = listForStarting[i][2]
+        listForStarting[i][1]()
+        listForStarting[i][3]()
+        check.isRunning = true
+        a.push(check)
+      }
+    }
+
+    for (let i= 0; i === listForStarting.length ; i++){
+      queueMicrotask(a[i])
+    }
+  }
+
+
   enqueueMap.forEach((v, k) => {
     callFunction.set(
       k,

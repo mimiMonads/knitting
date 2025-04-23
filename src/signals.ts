@@ -38,7 +38,6 @@ export const signalsForWorker = (args?: Sab) => {
 export const mainSignal = (
   { status, id, functionToUse, queueState }: SignalArguments,
 ) => {
-  Atomics.notify(status, 0);
 
   return ({
     status,

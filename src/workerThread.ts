@@ -64,12 +64,14 @@ if (isMainThread === false) {
       switch (getSignal()) {
         case 2:
         case 3:
+          // Case 9 doest nothing (cirno reference)
+        case 9:
         case 128:
         case 254: {
           continue;
         }
         case 255: {
-          //Atomics.wait(status, 0, 255)
+            Atomics.wait(status, 0, 255)
           continue;
         }
         case 0: {
