@@ -17,14 +17,13 @@ export const aaa = fixedPoint({
 });
 
 export const inLine = fixedPoint({
-  args: "uint8",
-  return: "uint8",
+
   //@ts-ignore
   f: async (args: Uint8Array) => {
     const argsToString = args.toString();
 
     const start = Date.now().toString();
-    let a = 100000;
+    let a = 10000000;
 
     while (a !== 0) {
       Date.now();
@@ -37,9 +36,7 @@ export const inLine = fixedPoint({
   },
 });
 
-export const bbb = fixedPoint({
-  f: async () => await sleep(10),
-});
+
 
 export const ccc = fixedPoint({
   args: "uint8",

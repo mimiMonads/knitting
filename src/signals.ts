@@ -48,7 +48,7 @@ export const mainSignal = (
     send: (): 192 => (status[0] = 192),
     setFunctionSignal: (signal: number) => (functionToUse[0] = signal),
     hasNoMoreMessages: (): 255 => (status[0] = 255),
-    readyToRead: (): 127 => (status[0] = 127),
+    readyToRead: (): 128 => (status[0] = 128),
     // ID
     getCurrentID: () => id[0],
     // Queue state

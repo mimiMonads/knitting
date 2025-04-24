@@ -127,7 +127,7 @@ export const createContext = ({
     return (args: Uint8Array) => {
       return check.isRunning === false
         ? (
-          check.isRunning = true, queueMicrotask(check), first(args)
+           check.isRunning = true, queueMicrotask(check), first(args)
         )
         : enqueue(args);
     };

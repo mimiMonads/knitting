@@ -164,5 +164,13 @@ group("4", () => {
   });
 });
 
+const arr = [
+  callFunction.aaa(),
+  callFunction.aaa(),
+];
+
+send();
+
+await Promise.all(arr).then(console.log);
 await runMitata();
 await terminateAll();

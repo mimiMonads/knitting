@@ -79,7 +79,9 @@ export const taskScheduler = ({
         }
         return;
 
-      case 127: {
+      case 127 :
+      case 128
+      : {
         if (loop()) {
           queueMicrotask(check);
           return;
@@ -94,10 +96,6 @@ export const taskScheduler = ({
       case 254:
         dispatchToWorker();
         queueMicrotask(check);
-        return;
-
-      case 255:
-        check.isRunning = false;
         return;
     }
   };
