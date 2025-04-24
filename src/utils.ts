@@ -67,26 +67,33 @@ export const signalDebugger = ({
   isMain?: true;
   currentSignal: { (arg: void): number };
 }) => {
-  let last = 0;
-  let thisOne = 0;
+  let last = 9;
+  let thisOne = 9;
+  let times = 0;
   const builtAt = performance.now();
+  let lastPerf = builtAt;
 
   const orange = "\x1b[38;5;214m"; // Orange
   const purple = "\x1b[38;5;129m"; // Purple
   const reset = "\x1b[0m";
   const tab = "\t"; // tab
 
+  const color = isMain ? orange : purple;
   return () => {
     thisOne = currentSignal();
+    ++times;
     if (last !== thisOne) {
+      const from = thisOne > 127 ? orange : purple;
+      const perf = performance.now();
       console.log(
-        `${orange}${(isMain ? "M" : "T") + thread}${reset}` + tab +
-          `${purple}${String(thisOne).padStart(3, " ")}${reset}` +
+        `${color}${(isMain ? "M " : "T ") + thread}${reset}` + tab +
+          `${from}${String(thisOne).padStart(3, " ")}${reset}` +
           (isMain === true ? tab : tab + tab) +
-          `${orange}${
-            (performance.now() - builtAt).toFixed(2).padStart(6, " ")
-          }${reset}`,
+          `${color}${(perf - builtAt).toFixed(2).padStart(6, " ")}${reset}` +
+          tab + tab + (perf - lastPerf).toFixed(2).padStart(6, " "),
       );
+      times = 0;
+      lastPerf = perf;
       last = thisOne;
     }
     return thisOne;

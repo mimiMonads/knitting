@@ -114,6 +114,19 @@ export const createWorkerQueue = (
       }
     },
 
+    promify: () => {
+      for (let i = 0; i < queue.length; i++) {
+        if (queue[i][4] === 0) {
+          const task = queue[i];
+          task[4] = 1;
+
+          jobs[task[2]](task[1])
+            .then((res) => res = task[3] = res)
+            .finally(() => task[4] = 2);
+        }
+      }
+    },
+
     // Process the next available task.
     nextJob: async () => {
       for (let i = 0; i < queue.length; i++) {
@@ -121,9 +134,25 @@ export const createWorkerQueue = (
           const task = queue[i];
           task[4] = 1;
 
-          jobs[task[2]](task[1])
-            .then((res) => res = task[3])
+          await jobs[task[2]](task[1])
+            .then((res) => task[3] = res)
             .finally(() => task[4] = 2);
+
+          break;
+        }
+      }
+    },
+    fastResolve: async () => {
+      for (let i = 0; i < queue.length; i++) {
+        if (queue[i][4] === 0) {
+          const task = queue[i];
+          task[4] = 1;
+
+          try {
+            task[3] = await jobs[task[2]](task[1]);
+          } finally {
+            task[4] = 2;
+          }
 
           break;
         }

@@ -4,7 +4,7 @@ import { createMainQueue, type PromiseMap } from "./mainQueueManager.ts";
 import { genTaskID } from "./utils.ts";
 import { mainSignal, type Sab, signalsForWorker } from "./signals.ts";
 import { ChannelHandler, taskScheduler } from "./taskScheduler.ts";
-import { type ComposedWithKey, type DebugOptions } from "./taskApi.ts";
+import type { ComposedWithKey, DebugOptions } from "./taskApi.ts";
 import { jsrIsGreatAndWorkWithoutBugs } from "./workerThread.ts";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -110,15 +110,11 @@ export const createContext = ({
   const send = ((starts: typeof dispatchToWorker) => () => {
     if (check.isRunning === false && canWrite()) {
       starts();
-      Atomics.notify(signalBox.status, 0, 1);
+      //Atomics.notify(signalBox.status, 0, 1);
       check.isRunning = true;
       queueMicrotask(check);
     }
   })(dispatchToWorker);
-
-  const notify = () => Atomics.notify(signalBox.status, 0, 1);
-
-  const hasToColdStart = () => check.isRunning === false && canWrite();
 
   const fastCalling = ({ fnNumber }: CallFunction) => {
     const first = fastEnqueue(fnNumber);
@@ -127,7 +123,7 @@ export const createContext = ({
     return (args: Uint8Array) => {
       return check.isRunning === false
         ? (
-           check.isRunning = true, queueMicrotask(check), first(args)
+          check.isRunning = true, queueMicrotask(check), first(args)
         )
         : enqueue(args);
     };
@@ -136,10 +132,8 @@ export const createContext = ({
   return {
     queue,
     check,
-    hasToColdStart,
     dispatchToWorker,
     send,
-    notify,
     callFunction,
     fastCalling,
     kills: () => (

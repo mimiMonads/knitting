@@ -23,7 +23,6 @@ if (isMainThread === false) {
       ids: workerData.ids,
     });
 
-
     if (debug?.logImportedUrl === true) {
       console.log(
         workerData.list,
@@ -36,17 +35,24 @@ if (isMainThread === false) {
       console.log(listOfFunctions);
       throw "no imports where found uwu";
     }
-    
+
     const signal = workerSignal(signals);
 
-    const { enqueue, nextJob, someHasFinished, write, allDone } =
-      createWorkerQueue({
-        listOfFunctions,
-        signal,
-        signals,
-      });
+    const {
+      enqueue,
+      nextJob,
+      someHasFinished,
+      write,
+      allDone,
+      promify,
+      fastResolve,
+    } = createWorkerQueue({
+      listOfFunctions,
+      signal,
+      signals,
+    });
 
-    const { currentSignal, signalAllTasksDone, status } = signal;
+    const { currentSignal, signalAllTasksDone } = signal;
 
     const getSignal = debug?.logThreads
       ? signalDebugger({
@@ -55,39 +61,32 @@ if (isMainThread === false) {
       })
       : currentSignal;
 
-    const loop = () =>
-      Promise.resolve().then(() => {
-        if (status[0] === 255) {
-          setImmediate(loop);
-        }
-      });
-
     while (true) {
       switch (getSignal()) {
         case 2:
         case 3:
           // Case 9 doest nothing (cirno reference)
-        case 9:
-        case 254: {
+        case 9: {
           continue;
         }
-        case 255: {
-          //Atomics.wait(status, 0, 255);
-          continue;
-        }
+
         case 0: {
-          await nextJob();
+          await fastResolve();
           continue;
+        }
+        // deno-lint-ignore no-fallthrough
+        case 126: {
+          promify();
         }
         case 127:
-          case 128:
-        {
-          await nextJob();
-
+        case 128: {
           if (someHasFinished()) {
             write();
             continue;
           }
+
+          await nextJob();
+
           if (allDone()) {
             signalAllTasksDone();
             continue;
@@ -101,6 +100,11 @@ if (isMainThread === false) {
           }
 
           continue;
+        case 254:
+        case 255: {
+          //Atomics.wait(status, 0, 255);
+          continue;
+        }
       }
     }
   };

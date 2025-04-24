@@ -17,7 +17,6 @@ export const aaa = fixedPoint({
 });
 
 export const inLine = fixedPoint({
-
   //@ts-ignore
   f: async (args: Uint8Array) => {
     const argsToString = args.toString();
@@ -36,10 +35,8 @@ export const inLine = fixedPoint({
   },
 });
 
-
-
-export const ccc = fixedPoint({
-  args: "uint8",
-  return: "uint8",
-  f: async (arr) => new Uint8Array([3]),
+export const bbb = fixedPoint({
+  args: "void",
+  return: "void",
+  f: async () => {},
 });
