@@ -17,6 +17,7 @@ export const createContext = ({
   thread,
   debug,
   listOfFunctions,
+  perf
 }: {
   promisesMap: PromiseMap;
   list: string[];
@@ -25,6 +26,7 @@ export const createContext = ({
   thread: number;
   debug?: DebugOptions;
   listOfFunctions: ComposedWithKey[];
+  perf?: number
 }) => {
   // Determine worker file URL based on file existence
   const jsFileUrl = new URL("workerThread.js", import.meta.url);
@@ -76,6 +78,7 @@ export const createContext = ({
     channelHandler,
     thread,
     debugSignal: debug?.logMain ?? false,
+    perf
   });
 
   channelHandler.open(check);
@@ -110,7 +113,7 @@ export const createContext = ({
   const send = ((starts: typeof dispatchToWorker) => () => {
     if (check.isRunning === false && canWrite()) {
       starts();
-      //Atomics.notify(signalBox.status, 0, 1);
+      Atomics.notify(signalBox.status, 0, 1);
       check.isRunning = true;
       queueMicrotask(check);
     }

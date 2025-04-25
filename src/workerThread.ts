@@ -1,9 +1,8 @@
 import { isMainThread, workerData } from "node:worker_threads";
-import { signalDebugger } from "./utils.ts";
+import { signalDebuggerV2 } from "./utils.ts";
 import { createWorkerQueue } from "./workerQueue.ts";
 import { signalsForWorker, workerSignal } from "./signals.ts";
 import { type DebugOptions, getFunctions } from "./taskApi.ts";
-import { setImmediate } from "node:timers";
 
 export const jsrIsGreatAndWorkWithoutBugs = () => null;
 
@@ -14,6 +13,8 @@ if (isMainThread === false) {
     const signals = signalsForWorker({
       sharedSab,
     });
+
+    const { status }  = signals
 
     const debug = workerData.debug as DebugOptions;
 
@@ -55,9 +56,10 @@ if (isMainThread === false) {
     const { currentSignal, signalAllTasksDone } = signal;
 
     const getSignal = debug?.logThreads
-      ? signalDebugger({
-        thread: workerData.thread,
-        currentSignal,
+      ? signalDebuggerV2(
+        {
+          status: signal.status,
+          thread: workerData.thread,
       })
       : currentSignal;
 
@@ -102,7 +104,7 @@ if (isMainThread === false) {
           continue;
         case 254:
         case 255: {
-          //Atomics.wait(status, 0, 255);
+          Atomics.wait(status, 0, 255);
           continue;
         }
       }

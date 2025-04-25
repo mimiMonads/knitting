@@ -203,6 +203,7 @@ export const createThreadPool = ({
   }))
     .sort((a, b) => a.name.localeCompare(b.name)) as ComposedWithKey[];
 
+  const perf = debug ? performance.now() : undefined
   const workers = Array.from({
     length: threads ?? 1,
   }).map((_, thread) =>
@@ -213,6 +214,7 @@ export const createThreadPool = ({
       thread,
       debug,
       listOfFunctions,
+      perf 
     })
   );
 

@@ -58,44 +58,62 @@ const parseStackTraceFiles = (str: string) =>
       return s.slice(0, next);
     });
 
-export const signalDebugger = ({
+export const signalDebuggerV2 = ({
   thread,
   isMain,
-  currentSignal,
+  status,      
+  perf
 }: {
   thread?: number;
   isMain?: true;
-  currentSignal: { (arg: void): number };
-}) => {
-  let last = 9;
-  let thisOne = 9;
-  let times = 0;
-  const builtAt = performance.now();
-  let lastPerf = builtAt;
+  status: Int32Array;
+  perf?: number
+}): () => number => {
+  // ─── colours & helpers ───────────────────────────────────────────
+  const orange = "\x1b[38;5;214m";
+  const purple = "\x1b[38;5;129m";
+  const reset  = "\x1b[0m";
+  const tab    = "\t";
+  const color  = isMain ? orange : purple;
+  
+  // ─── timing state ────────────────────────────────────────────────
+  let last     = status[0];
+  const born   =  perf ?? performance.now();
+  let lastPerf = born;
 
-  const orange = "\x1b[38;5;214m"; // Orange
-  const purple = "\x1b[38;5;129m"; // Purple
-  const reset = "\x1b[0m";
-  const tab = "\t"; // tab
+  // ─── proxy that logs every read/write of element 0 ───────────────
+  const proxied = new Proxy(status, {
+    get(target, prop, receiver) {
+      if (prop === "0" || prop === 0) {
+        const value = Reflect.get(target, 0, receiver) as number;
+        maybeLog(value);
+        return value;
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+    set(target, prop, value, receiver) {
+      const ok = Reflect.set(target, prop, value, receiver);
+      if (ok && (prop === "0" || prop === 0)) maybeLog(value as number);
+      return ok;
+    },
+  }) as unknown as Int32Array;
 
-  const color = isMain ? orange : purple;
-  return () => {
-    thisOne = currentSignal();
-    ++times;
-    if (last !== thisOne) {
-      const from = thisOne > 127 ? orange : purple;
-      const perf = performance.now();
+  function maybeLog(value: number) {
+    if (value !== last) {
+      const now  = performance.now();
+      const from = value > 127 ? orange : purple;
       console.log(
-        `${color}${(isMain ? "M " : "T ") + thread}${reset}` + tab +
-          `${from}${String(thisOne).padStart(3, " ")}${reset}` +
-          (isMain === true ? tab : tab + tab) +
-          `${color}${(perf - builtAt).toFixed(2).padStart(6, " ")}${reset}` +
-          tab + tab + (perf - lastPerf).toFixed(2).padStart(6, " "),
+        `${color}${(isMain ? "M " : "T ") + (thread ?? "")}${reset}${tab}` +
+        `${from}${String(value).padStart(3, " ")}${reset}` +
+        (isMain ? tab : tab + tab) +
+        `${color}${(now - born).toFixed(2).padStart(6, " ")}${reset}` +
+        tab + tab + (now - lastPerf).toFixed(2).padStart(6, " "),
       );
-      times = 0;
-      lastPerf = perf;
-      last = thisOne;
+      last     = value;
+      lastPerf = now;
     }
-    return thisOne;
-  };
+  }
+
+  // ─── keep the original return type: () => number ────────────────
+  return () => proxied[0];      // read goes through proxy → logs + returns
 };

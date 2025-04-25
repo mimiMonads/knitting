@@ -22,7 +22,7 @@ export const inLine = fixedPoint({
     const argsToString = args.toString();
 
     const start = Date.now().toString();
-    let a = 10000000;
+    let a = 1;
 
     while (a !== 0) {
       Date.now();

@@ -5,7 +5,7 @@ import { inLine } from "./bench/functions.ts";
 const a = new Uint8Array([3]);
 if (isMain) {
   const { terminateAll, callFunction, send } = createThreadPool({
-    threads: 1,
+    threads: 4,
     debug: {
       logMain: true,
       logThreads: true,
@@ -18,6 +18,8 @@ if (isMain) {
     callFunction.inLine(a),
     callFunction.inLine(a),
     callFunction.inLine(a),
+    callFunction.inLine(a),
+  
   ];
 
   send();
