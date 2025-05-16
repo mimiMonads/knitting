@@ -79,6 +79,7 @@ export const fixedPoint = <
   B extends Args = undefined,
 >(
   I: FixPoint<A, B>,
+  thread?: number,
 ): ReturnFixed<A, B> => {
   const importedFrom = new URL(getCallerFilePath(2)).href;
   return ({
@@ -171,8 +172,8 @@ export type DebugOptions = {
 const loopingBetweenThreads = ((index) => {
   return (functions: Function[]) => {
     return (max: number) => {
-      return (args: any) => {
-        return functions[index = (index + 1) % max](args);
+      return (args: any, thread?: number) => {
+        return functions[thread ?? (index = (index + 1) % max)](args);
       };
     };
   };
@@ -203,7 +204,7 @@ export const createThreadPool = ({
   }))
     .sort((a, b) => a.name.localeCompare(b.name)) as ComposedWithKey[];
 
-  const perf = debug ? performance.now() : undefined
+  const perf = debug ? performance.now() : undefined;
   const workers = Array.from({
     length: threads ?? 1,
   }).map((_, thread) =>
@@ -214,7 +215,7 @@ export const createThreadPool = ({
       thread,
       debug,
       listOfFunctions,
-      perf 
+      perf,
     })
   );
 

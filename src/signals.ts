@@ -18,7 +18,6 @@ export const signalsForWorker = (args?: Sab) => {
 
   const status = new Int32Array(sab, 0, 1);
 
-  
   if (isMainThread) {
     status[0] = 255;
   }

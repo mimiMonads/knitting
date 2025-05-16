@@ -1,6 +1,6 @@
 import { createThreadPool, isMain } from "./main.ts";
 
-import { inLine } from "./bench/functions.ts";
+import { aaa } from "./bench/functions.ts";
 
 const a = new Uint8Array([3]);
 if (isMain) {
@@ -11,15 +11,11 @@ if (isMain) {
       logThreads: true,
     },
   })({
-    inLine,
+    aaa,
   });
 
   const arr = [
-    callFunction.inLine(a),
-    callFunction.inLine(a),
-    callFunction.inLine(a),
-    callFunction.inLine(a),
-  
+    callFunction.aaa(),
   ];
 
   send();

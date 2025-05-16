@@ -14,7 +14,7 @@ if (isMainThread === false) {
       sharedSab,
     });
 
-    const { status }  = signals
+    const { status } = signals;
 
     const debug = workerData.debug as DebugOptions;
 
@@ -60,7 +60,8 @@ if (isMainThread === false) {
         {
           status: signal.status,
           thread: workerData.thread,
-      })
+        },
+      )
       : currentSignal;
 
     while (true) {

@@ -61,24 +61,24 @@ const parseStackTraceFiles = (str: string) =>
 export const signalDebuggerV2 = ({
   thread,
   isMain,
-  status,      
-  perf
+  status,
+  perf,
 }: {
   thread?: number;
   isMain?: true;
   status: Int32Array;
-  perf?: number
+  perf?: number;
 }): () => number => {
   // ─── colours & helpers ───────────────────────────────────────────
   const orange = "\x1b[38;5;214m";
   const purple = "\x1b[38;5;129m";
-  const reset  = "\x1b[0m";
-  const tab    = "\t";
-  const color  = isMain ? orange : purple;
-  
+  const reset = "\x1b[0m";
+  const tab = "\t";
+  const color = isMain ? orange : purple;
+
   // ─── timing state ────────────────────────────────────────────────
-  let last     = status[0];
-  const born   =  perf ?? performance.now();
+  let last = status[0];
+  const born = perf ?? performance.now();
   let lastPerf = born;
 
   // ─── proxy that logs every read/write of element 0 ───────────────
@@ -100,20 +100,20 @@ export const signalDebuggerV2 = ({
 
   function maybeLog(value: number) {
     if (value !== last) {
-      const now  = performance.now();
+      const now = performance.now();
       const from = value > 127 ? orange : purple;
       console.log(
         `${color}${(isMain ? "M " : "T ") + (thread ?? "")}${reset}${tab}` +
-        `${from}${String(value).padStart(3, " ")}${reset}` +
-        (isMain ? tab : tab + tab) +
-        `${color}${(now - born).toFixed(2).padStart(6, " ")}${reset}` +
-        tab + tab + (now - lastPerf).toFixed(2).padStart(6, " "),
+          `${from}${String(value).padStart(3, " ")}${reset}` +
+          (isMain ? tab : tab + tab) +
+          `${color}${(now - born).toFixed(2).padStart(6, " ")}${reset}` +
+          tab + tab + (now - lastPerf).toFixed(2).padStart(6, " "),
       );
-      last     = value;
+      last = value;
       lastPerf = now;
     }
   }
 
   // ─── keep the original return type: () => number ────────────────
-  return () => proxied[0];      // read goes through proxy → logs + returns
+  return () => proxied[0]; // read goes through proxy → logs + returns
 };

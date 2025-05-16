@@ -13,19 +13,6 @@ const { terminateAll, callFunction, send } = createThreadPool(
   aaa,
 });
 
-bench(" nop", async () => {
-  const arr = [
-    callFunction.aaa(),
-    callFunction.aaa(),
-    callFunction.aaa(),
-    callFunction.aaa(),
-  ];
-
-  send();
-
-  await Promise.all(arr);
-});
-
 group("1", () => {
   summary(() => {
     bench(" Main -> 1", async () => {
@@ -33,7 +20,7 @@ group("1", () => {
     });
 
     bench(threads + " thread -> 1", async () => {
-      const arr = callFunction.aaa();
+      const arr = callFunction.aaa(undefined, 0);
 
       send();
 
@@ -53,8 +40,8 @@ group("2", () => {
 
     bench(threads + " thread -> 2", async () => {
       const arr = [
-        callFunction.aaa(),
-        callFunction.aaa(),
+        callFunction.aaa(undefined, 0),
+        callFunction.aaa(undefined, 1),
       ];
 
       send();
@@ -164,13 +151,5 @@ group("4", () => {
   });
 });
 
-const arr = [
-  callFunction.aaa(),
-  callFunction.aaa(),
-];
-
-send();
-
-await Promise.all(arr).then(console.log);
 await runMitata();
 await terminateAll();

@@ -17,21 +17,21 @@ export const taskScheduler = ({
   channelHandler,
   debugSignal,
   thread,
-  perf
+  perf,
 }: {
   queue: MultiQueue;
   signalBox: MainSignal;
   channelHandler: ChannelHandler;
   debugSignal?: boolean;
   thread: number;
-  perf?: number
+  perf?: number;
 }) => {
   const getSignal = debugSignal === true
     ? signalDebuggerV2({
       isMain: true,
       thread,
       status,
-      perf
+      perf,
     })
     : currentSignal;
   const loop = ((n) => () => ++n % 2 === 1 ? true : false)(0);
@@ -96,9 +96,8 @@ export const taskScheduler = ({
         return;
       }
       case 192:
-        queueMicrotask(check);
+        channelHandler.scheduleCheck();
         return;
-
     }
   };
 
