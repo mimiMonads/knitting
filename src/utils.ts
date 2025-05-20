@@ -84,7 +84,7 @@ export const signalDebuggerV2 = ({
   // ─── proxy that logs every read/write of element 0 ───────────────
   const proxied = new Proxy(status, {
     get(target, prop, receiver) {
-      if (prop === "0" || prop === 0) {
+      if (prop === "0") {
         const value = Reflect.get(target, 0, receiver) as number;
         maybeLog(value);
         return value;
@@ -93,7 +93,7 @@ export const signalDebuggerV2 = ({
     },
     set(target, prop, value, receiver) {
       const ok = Reflect.set(target, prop, value, receiver);
-      if (ok && (prop === "0" || prop === 0)) maybeLog(value as number);
+      if (ok && (prop === "0")) maybeLog(value as number);
       return ok;
     },
   }) as unknown as Int32Array;
