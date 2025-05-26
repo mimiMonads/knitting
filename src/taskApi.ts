@@ -1,6 +1,6 @@
 import { getCallerFilePath } from "./utils.ts";
 import { genTaskID } from "./utils.ts";
-import { createContext } from "./threadManager.ts";
+import { type CreateContext, createContext } from "./threadManager.ts";
 import type { PromiseMap } from "./mainQueueManager.ts";
 import { isMainThread } from "node:worker_threads";
 
@@ -169,7 +169,7 @@ export type DebugOptions = {
   logImportedUrl?: boolean;
 };
 
-const loopingBetweenThreads = ((index) => {
+const loopingBetweenThreads = ((index) => (_: CreateContext[]) => {
   return (functions: Function[]) => {
     return (max: number) => {
       return (args: any, thread?: number) => {
@@ -178,6 +178,39 @@ const loopingBetweenThreads = ((index) => {
     };
   };
 })(-1);
+
+const firstAvailable = (list: CreateContext[]) => {
+  if (list.length === 0) {
+    throw new Error("No threads available");
+  }
+  if (list.length === 1) {
+    throw new Error(
+      "Unreachable, Looping between threads should not be called with only one thread",
+    );
+  }
+
+  const checkers: (() => boolean)[] = list.map(
+    (ctx) => {
+      const solve = ctx.queue.isEverythingSolved;
+
+      return solve;
+    },
+  );
+
+  let lastIndex = 0;
+
+  return (functions: Function[]) => {
+    return (max: number) => (args: any) => {
+      for (let index = 0; index < functions.length; index++) {
+        if (!checkers[index]()) {
+          return functions[index](args);
+        }
+      }
+
+      return functions[lastIndex = (lastIndex + 1) % max](args);
+    };
+  };
+};
 
 type Pool<T extends Record<string, FixPoint<Args, Args>>> = {
   terminateAll: { (): void };
@@ -205,6 +238,7 @@ export const createThreadPool = ({
     .sort((a, b) => a.name.localeCompare(b.name)) as ComposedWithKey[];
 
   const perf = debug ? performance.now() : undefined;
+
   const workers = Array.from({
     length: threads ?? 1,
   }).map((_, thread) =>
@@ -278,7 +312,7 @@ export const createThreadPool = ({
       k,
       threads === 1
         ? (v[0] as (args: any) => Promise<any>)
-        : loopingBetweenThreads(v)(v.length),
+        : loopingBetweenThreads(workers)(v)(v.length),
     );
   });
 
@@ -287,7 +321,7 @@ export const createThreadPool = ({
       k,
       threads === 1
         ? (v[0] as (args: any) => Promise<any>)
-        : loopingBetweenThreads(v)(v.length),
+        : loopingBetweenThreads(workers)(v)(v.length),
     );
   });
 

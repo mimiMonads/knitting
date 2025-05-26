@@ -89,7 +89,7 @@ export function createMainQueue({
     return false;
   }
 
-  function isEverythingSolve(): boolean {
+  function isEverythingSolved(): boolean {
     for (let i = 0; i < queue.length; i++) {
       if (queue[i][4] === 0) return false;
     }
@@ -110,7 +110,7 @@ export function createMainQueue({
   return {
     rejectAll,
     canWrite,
-    isEverythingSolve,
+    isEverythingSolved,
 
     /* Fast path (always queue[0]) */
     fastEnqueue: (functionID: FunctionID) => (rawArgs: RawArguments) => {

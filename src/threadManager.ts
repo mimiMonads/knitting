@@ -145,3 +145,5 @@ export const createContext = ({
     ),
   };
 };
+
+export type CreateContext = ReturnType<typeof createContext>;

@@ -5,7 +5,7 @@ import { aaa } from "./bench/functions.ts";
 const a = new Uint8Array([3]);
 if (isMain) {
   const { terminateAll, callFunction, send } = createThreadPool({
-    threads: 4,
+    threads: 5,
     debug: {
       logMain: true,
       logThreads: true,
