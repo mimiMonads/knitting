@@ -1,12 +1,13 @@
 import type { MultiQueue } from "./mainQueueManager.ts";
 import type { MainSignal } from "./signals.ts";
-import { signalDebugger } from "./utils.ts";
+import { signalDebuggerV2 } from "./utils.ts";
 
 export const taskScheduler = ({
   signalBox: {
     currentSignal,
     readyToRead,
     hasNoMoreMessages,
+    status,
   },
   queue: {
     resolveTask,
@@ -16,18 +17,21 @@ export const taskScheduler = ({
   channelHandler,
   debugSignal,
   thread,
+  perf,
 }: {
   queue: MultiQueue;
   signalBox: MainSignal;
   channelHandler: ChannelHandler;
   debugSignal?: boolean;
   thread: number;
+  perf?: number;
 }) => {
   const getSignal = debugSignal === true
-    ? signalDebugger({
+    ? signalDebuggerV2({
       isMain: true,
       thread,
-      currentSignal,
+      status,
+      perf,
     })
     : currentSignal;
   const loop = ((n) => () => ++n % 2 === 1 ? true : false)(0);
@@ -78,7 +82,12 @@ export const taskScheduler = ({
         }
         return;
 
-      case 127: {
+      case 126: {
+        queueMicrotask(check);
+        return;
+      }
+      case 127:
+      case 128: {
         if (loop()) {
           queueMicrotask(check);
           return;
@@ -87,16 +96,7 @@ export const taskScheduler = ({
         return;
       }
       case 192:
-        queueMicrotask(check);
-        return;
-
-      case 254:
-        dispatchToWorker();
-        queueMicrotask(check);
-        return;
-
-      case 255:
-        check.isRunning = false;
+        channelHandler.scheduleCheck();
         return;
     }
   };
@@ -109,11 +109,9 @@ export const taskScheduler = ({
 
 export class ChannelHandler {
   public channel: MessageChannel;
-  private isOpen: boolean;
 
   constructor() {
     this.channel = new MessageChannel();
-    this.isOpen = false;
   }
 
   public scheduleCheck(): void {
@@ -125,26 +123,18 @@ export class ChannelHandler {
    * This is the setup so `scheduleCheck` can send a message to the port 1.
    */
   public open(f: () => void): void {
-    if (this.isOpen) {
-      return;
-    }
     this.channel.port1.onmessage = f;
     this.channel.port2.start();
     this.channel.port1.start();
-    this.isOpen = true;
   }
 
   /**
    * Closes the channel if it is open.
    */
   public close(): void {
-    if (!this.isOpen) {
-      return;
-    }
-    this.channel.port1.close();
     this.channel.port1.onmessage = null;
-    this.channel.port2.close();
     this.channel.port2.onmessage = null;
-    this.isOpen = false;
+    this.channel.port1.close();
+    this.channel.port2.close();
   }
 }

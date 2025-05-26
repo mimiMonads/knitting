@@ -41,7 +41,13 @@ const toWorkerVoid =
     id[0] = task[0];
   };
 
-const toWorkerAny = (
+/**
+ * Where:
+ *  1 -> Takes the arguments of a MainList
+ *  3 -> Takes the retun of a MainList
+ */
+const toWorkerAny = (index: 1 | 3 = 1) =>
+(
   {
     id,
     payload,
@@ -57,7 +63,7 @@ const toWorkerAny = (
 (
   task: MainList<Serializable, Serializable>,
 ) => {
-  const args = task[1];
+  const args = task[index];
   id[0] = task[0];
 
   switch (typeof args) {
@@ -172,7 +178,7 @@ const toWorkerAny = (
       return;
     }
     /**
-     * Object 15 
+     * Object 15
      * null = 15
      */
     case "object": {
@@ -212,7 +218,7 @@ const sendToWorker = (signals: SignalArguments) => (type: External) => {
     case "number[]":
       return toWorkerSerializable(signals);
     case "serializable":
-      return toWorkerAny(signals);
+      return toWorkerAny(1)(signals);
   }
 };
 
@@ -408,7 +414,7 @@ const fromreturnToMain = (signals: SignalArguments) => (type: External) => {
     case "number[]":
       return writePayloadSerializable(signals);
     case "serializable":
-      return toWorkerAny(signals);
+      return toWorkerAny(3)(signals);
   }
 };
 

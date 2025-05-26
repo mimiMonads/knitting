@@ -1,12 +1,10 @@
 import { isMainThread, workerData } from "node:worker_threads";
-import { signalDebugger } from "./utils.ts";
+import { signalDebuggerV2 } from "./utils.ts";
 import { createWorkerQueue } from "./workerQueue.ts";
 import { signalsForWorker, workerSignal } from "./signals.ts";
 import { type DebugOptions, getFunctions } from "./taskApi.ts";
 
 export const jsrIsGreatAndWorkWithoutBugs = () => null;
-
-
 
 if (isMainThread === false) {
   const mainLoop = async () => {
@@ -15,6 +13,8 @@ if (isMainThread === false) {
     const signals = signalsForWorker({
       sharedSab,
     });
+
+    const { status } = signals;
 
     const debug = workerData.debug as DebugOptions;
 
@@ -36,45 +36,60 @@ if (isMainThread === false) {
       console.log(listOfFunctions);
       throw "no imports where found uwu";
     }
+
     const signal = workerSignal(signals);
 
-    const { enqueue, nextJob, someHasFinished, write, allDone } =
-      createWorkerQueue({
-        listOfFunctions,
-        signal,
-        signals,
-      });
+    const {
+      enqueue,
+      nextJob,
+      someHasFinished,
+      write,
+      allDone,
+      promify,
+      fastResolve,
+    } = createWorkerQueue({
+      listOfFunctions,
+      signal,
+      signals,
+    });
 
-    const { currentSignal, signalAllTasksDone, status } = signal;
+    const { currentSignal, signalAllTasksDone } = signal;
 
     const getSignal = debug?.logThreads
-      ? signalDebugger({
-        thread: workerData.thread,
-        currentSignal,
-      })
+      ? signalDebuggerV2(
+        {
+          status: signal.status,
+          thread: workerData.thread,
+        },
+      )
       : currentSignal;
 
     while (true) {
       switch (getSignal()) {
         case 2:
         case 3:
-        case 128:
-        case 254: 
-        case 255: {
-          //yieldWhileBusy(status)
+          // Case 9 doest nothing (cirno reference)
+        case 9: {
           continue;
         }
-        case 0: {
-          await nextJob();
-          continue;
-        }
-        case 127: {
-          await nextJob();
 
+        case 0: {
+          await fastResolve();
+          continue;
+        }
+        // deno-lint-ignore no-fallthrough
+        case 126: {
+          promify();
+        }
+        case 127:
+        case 128: {
           if (someHasFinished()) {
             write();
             continue;
           }
+
+          await nextJob();
+
           if (allDone()) {
             signalAllTasksDone();
             continue;
@@ -88,6 +103,11 @@ if (isMainThread === false) {
           }
 
           continue;
+        case 254:
+        case 255: {
+          Atomics.wait(status, 0, 255);
+          continue;
+        }
       }
     }
   };

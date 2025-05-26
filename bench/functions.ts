@@ -1,30 +1,28 @@
 import { fixedPoint } from "../main.ts";
+import { setTimeout as sleep } from "node:timers/promises";
 
 const string = "uwu";
 export const aaa = fixedPoint({
   args: "void",
   return: "string",
   f: async () => {
-    // Simulate an expensive operation
-    // let a = 1000;
-
-    // while (a != 0) {
-    //   performance.now();
-    //   a--;
-    // }
+    let a = 100000;
+    let b = 0;
+    while (a != 0) {
+      b = b + performance.now();
+      a--;
+    }
     return string;
   },
 });
 
 export const inLine = fixedPoint({
-  args: "uint8",
-  return: "uint8",
   //@ts-ignore
   f: async (args: Uint8Array) => {
     const argsToString = args.toString();
 
     const start = Date.now().toString();
-    let a = 100000;
+    let a = 1;
 
     while (a !== 0) {
       Date.now();
@@ -40,12 +38,5 @@ export const inLine = fixedPoint({
 export const bbb = fixedPoint({
   args: "void",
   return: "void",
-  f: async () => {
-  },
-});
-
-export const ccc = fixedPoint({
-  args: "uint8",
-  return: "uint8",
-  f: async (arr) => new Uint8Array([3]),
+  f: async () => {},
 });

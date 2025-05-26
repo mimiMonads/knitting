@@ -4,7 +4,7 @@ import { createMainQueue, type PromiseMap } from "./mainQueueManager.ts";
 import { genTaskID } from "./utils.ts";
 import { mainSignal, type Sab, signalsForWorker } from "./signals.ts";
 import { ChannelHandler, taskScheduler } from "./taskScheduler.ts";
-import { type ComposedWithKey, type DebugOptions } from "./taskApi.ts";
+import type { ComposedWithKey, DebugOptions } from "./taskApi.ts";
 import { jsrIsGreatAndWorkWithoutBugs } from "./workerThread.ts";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -17,6 +17,7 @@ export const createContext = ({
   thread,
   debug,
   listOfFunctions,
+  perf,
 }: {
   promisesMap: PromiseMap;
   list: string[];
@@ -25,6 +26,7 @@ export const createContext = ({
   thread: number;
   debug?: DebugOptions;
   listOfFunctions: ComposedWithKey[];
+  perf?: number;
 }) => {
   // Determine worker file URL based on file existence
   const jsFileUrl = new URL("workerThread.js", import.meta.url);
@@ -76,6 +78,7 @@ export const createContext = ({
     channelHandler,
     thread,
     debugSignal: debug?.logMain ?? false,
+    perf,
   });
 
   channelHandler.open(check);
@@ -109,6 +112,8 @@ export const createContext = ({
 
   const send = ((starts: typeof dispatchToWorker) => () => {
     if (check.isRunning === false && canWrite()) {
+      signalBox.status[0] = 9;
+      Atomics.notify(signalBox.status, 0, 1);
       starts();
       check.isRunning = true;
       queueMicrotask(check);
@@ -119,17 +124,19 @@ export const createContext = ({
     const first = fastEnqueue(fnNumber);
     const enqueue = enqueuePromise(fnNumber);
 
-    return (args: Uint8Array) =>
-      check.isRunning === false
+    return (args: Uint8Array) => {
+      return check.isRunning === false
         ? (
           check.isRunning = true, queueMicrotask(check), first(args)
         )
         : enqueue(args);
+    };
   };
 
   return {
     queue,
     check,
+    dispatchToWorker,
     send,
     callFunction,
     fastCalling,
@@ -138,3 +145,5 @@ export const createContext = ({
     ),
   };
 };
+
+export type CreateContext = ReturnType<typeof createContext>;

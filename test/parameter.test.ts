@@ -1,5 +1,6 @@
 import { assertEquals } from "jsr:@std/assert";
 import { createThreadPool, fixedPoint } from "../main.ts";
+import { cpus } from "node:os";
 
 export const toNumber = fixedPoint<number, number>({
   f: async (a) => a,
@@ -7,6 +8,10 @@ export const toNumber = fixedPoint<number, number>({
 
 export const toString = fixedPoint<string, string>({
   f: async (a) => a,
+});
+
+export const toHelloWorld = fixedPoint<string, string>({
+  f: async (a) => a + " world",
 });
 
 export const toBigInt = fixedPoint<bigint, bigint>({
@@ -25,8 +30,76 @@ export const toObject = fixedPoint({
   f: async (a) => a,
 });
 
-Deno.test("Using core  fastcalling wit multiple arguments", async () => {
-  const { fastCallFunction, terminateAll } = createThreadPool({})({
+Deno.test("Using one thread calling with multiple arguments", async () => {
+  const { callFunction, terminateAll, send } = createThreadPool({})({
+    toNumber,
+    toString,
+    toHelloWorld,
+    toBigInt,
+    toBoolean,
+    toVoid,
+    toObject,
+  });
+
+  const promises = [
+    callFunction.toString("hello"),
+    callFunction.toHelloWorld("hello"),
+    callFunction.toBigInt(-(2n ** 63n - 1n)),
+    callFunction.toBigInt(2n ** 64n - 1n),
+    callFunction.toBoolean(true),
+    callFunction.toBoolean(false),
+    callFunction.toVoid(),
+    callFunction.toNumber(Infinity),
+    callFunction.toNumber(-Infinity),
+    callFunction.toNumber(NaN),
+    callFunction.toNumber(Number.MAX_SAFE_INTEGER),
+    callFunction.toNumber(Number.MIN_SAFE_INTEGER),
+    callFunction.toNumber(Number.MAX_VALUE),
+    callFunction.toNumber(Number.MIN_VALUE),
+    callFunction.toNumber(0),
+    callFunction.toNumber(2.2250738585072014e-308),
+    callFunction.toObject(null),
+  ];
+
+  send();
+
+  const results = await Promise.all(promises);
+
+  const expected = [
+    "hello",
+    "hello world",
+    -(2n ** 63n - 1n),
+    2n ** 64n - 1n,
+    true,
+    false,
+    undefined,
+    Infinity,
+    -Infinity,
+    NaN,
+    Number.MAX_SAFE_INTEGER,
+    Number.MIN_SAFE_INTEGER,
+    Number.MAX_VALUE,
+    Number.MIN_VALUE,
+    0,
+    2.2250738585072014e-308,
+    null,
+  ];
+
+  results.forEach((value, index) => {
+    if (typeof value === "number" && Number.isNaN(value)) {
+      assertEquals(Number.isNaN(expected[index]), true);
+    } else {
+      assertEquals(value, expected[index]);
+    }
+  });
+
+  await terminateAll();
+});
+
+Deno.test("Using all thread calling with multiple arguments", async () => {
+  const { callFunction, terminateAll, send } = createThreadPool({
+    threads: cpus().length - 1,
+  })({
     toNumber,
     toString,
     toBigInt,
@@ -35,90 +108,55 @@ Deno.test("Using core  fastcalling wit multiple arguments", async () => {
     toObject,
   });
 
-  assertEquals(
-    await fastCallFunction.toString("hello"),
+  const promises = [
+    callFunction.toString("hello"),
+    callFunction.toBigInt(-(2n ** 63n - 1n)),
+    callFunction.toBigInt(2n ** 64n - 1n),
+    callFunction.toBoolean(true),
+    callFunction.toBoolean(false),
+    callFunction.toVoid(),
+    callFunction.toNumber(Infinity),
+    callFunction.toNumber(-Infinity),
+    callFunction.toNumber(NaN),
+    callFunction.toNumber(Number.MAX_SAFE_INTEGER),
+    callFunction.toNumber(Number.MIN_SAFE_INTEGER),
+    callFunction.toNumber(Number.MAX_VALUE),
+    callFunction.toNumber(Number.MIN_VALUE),
+    callFunction.toNumber(0),
+    callFunction.toNumber(2.2250738585072014e-308),
+    callFunction.toObject(null),
+  ];
+
+  send();
+
+  const results = await Promise.all(promises);
+
+  const expected = [
     "hello",
-  );
-
-  assertEquals(
-    await fastCallFunction.toBigInt(-(2n ** 63n - 1n)),
     -(2n ** 63n - 1n),
-  );
-
-  assertEquals(
-    await fastCallFunction.toBigInt(2n ** 64n - 1n),
     2n ** 64n - 1n,
-  );
-
-  assertEquals(
-    await fastCallFunction.toBigInt(2n ** 64n - 1n),
-    2n ** 64n - 1n,
-  );
-
-  assertEquals(
-    await fastCallFunction.toBoolean(true),
     true,
-  );
-
-  assertEquals(
-    await fastCallFunction.toBoolean(false),
     false,
-  );
-
-  assertEquals(
-    await fastCallFunction.toVoid(),
     undefined,
-  );
-
-  assertEquals(
-    await fastCallFunction.toNumber(Infinity),
     Infinity,
-  );
-
-  assertEquals(
-    await fastCallFunction.toNumber(-Infinity),
     -Infinity,
-  );
-
-  assertEquals(
-    Number.isNaN(await fastCallFunction.toNumber(NaN)),
-    true,
-  );
-
-  assertEquals(
-    await fastCallFunction.toNumber(Number.MAX_SAFE_INTEGER),
+    NaN,
     Number.MAX_SAFE_INTEGER,
-  );
-
-  assertEquals(
-    await fastCallFunction.toNumber(Number.MIN_SAFE_INTEGER),
     Number.MIN_SAFE_INTEGER,
-  );
-
-  assertEquals(
-    await fastCallFunction.toNumber(Number.MAX_VALUE),
     Number.MAX_VALUE,
-  );
-
-  assertEquals(
-    await fastCallFunction.toNumber(Number.MIN_VALUE),
     Number.MIN_VALUE,
-  );
-
-  assertEquals(
-    await fastCallFunction.toNumber(0),
     0,
-  );
-
-  assertEquals(
-    await fastCallFunction.toNumber(2.2250738585072014e-308),
     2.2250738585072014e-308,
-  );
-
-  assertEquals(
-    await fastCallFunction.toObject(null),
     null,
-  );
+  ];
+
+  results.forEach((value, index) => {
+    if (typeof value === "number" && Number.isNaN(value)) {
+      assertEquals(Number.isNaN(expected[index]), true);
+    } else {
+      assertEquals(value, expected[index]);
+    }
+  });
 
   await terminateAll();
 });

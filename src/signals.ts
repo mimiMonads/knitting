@@ -1,6 +1,7 @@
 export type SignalArguments = ReturnType<typeof signalsForWorker>;
 export type MainSignal = ReturnType<typeof mainSignal>;
 export type WorkerSignal = ReturnType<typeof workerSignal>;
+import { isMainThread } from "node:worker_threads";
 
 type StatusSignalForVoid = 192;
 export type StatusSignal = StatusSignalForVoid;
@@ -15,9 +16,15 @@ export const signalsForWorker = (args?: Sab) => {
     ? args.sharedSab
     : new SharedArrayBuffer(args?.size ?? 65536);
 
+  const status = new Int32Array(sab, 0, 1);
+
+  if (isMainThread) {
+    status[0] = 255;
+  }
+
   return {
     sab,
-    status: new Int32Array(sab, 0, 1),
+    status,
     id: new Int32Array(sab, 4, 1),
     payloadLength: new Int32Array(sab, 8, 1),
     functionToUse: new Int32Array(sab, 12, 1),
@@ -39,12 +46,13 @@ export const mainSignal = (
   { status, id, functionToUse, queueState }: SignalArguments,
 ) => {
   return ({
+    status,
     // Status
     currentSignal: () => (status[0]),
     send: (): 192 => (status[0] = 192),
     setFunctionSignal: (signal: number) => (functionToUse[0] = signal),
     hasNoMoreMessages: (): 255 => (status[0] = 255),
-    readyToRead: (): 127 => (status[0] = 127),
+    readyToRead: (): 128 => (status[0] = 128),
     // ID
     getCurrentID: () => id[0],
     // Queue state
