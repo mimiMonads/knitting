@@ -3,6 +3,7 @@ import { genTaskID } from "./utils.ts";
 import { type CreateContext, createContext } from "./threadManager.ts";
 import type { PromiseMap } from "./mainQueueManager.ts";
 import { isMainThread } from "node:worker_threads";
+import { threadOrder } from "./debug.ts";
 
 export const isMain = isMainThread;
 export type FixedPoints = Record<string, Composed>;
@@ -87,7 +88,7 @@ export const fixedPoint = <
     id: genTaskID(),
     importedFrom,
     [symbol]: "vixeny",
-  });
+  }) as const;
 };
 
 type UnionReturnFixed = ReturnFixed<Args, Args>;
@@ -167,6 +168,7 @@ export type DebugOptions = {
   logThreads?: boolean;
   logHref?: boolean;
   logImportedUrl?: boolean;
+  threadOrder?: Boolean | number;
 };
 
 const loopingBetweenThreads = ((index) => (_: CreateContext[]) => {
@@ -227,17 +229,18 @@ export const createThreadPool = ({
   debug?: DebugOptions;
 }) =>
 <T extends FixedPoints>(fixedPoints: T): Pool<T> => {
-  const promisesMap: PromiseMap = new Map();
-
-  const { list, ids } = toListAndIds(fixedPoints);
-
-  const listOfFunctions = Object.entries(fixedPoints).map(([k, v]) => ({
-    ...v,
-    name: k,
-  }))
-    .sort((a, b) => a.name.localeCompare(b.name)) as ComposedWithKey[];
+  const promisesMap: PromiseMap = new Map(),
+    { list, ids } = toListAndIds(fixedPoints),
+    listOfFunctions = Object.entries(fixedPoints).map(([k, v]) => ({
+      ...v,
+      name: k,
+    }))
+      .sort((a, b) => a.name.localeCompare(b.name)) as ComposedWithKey[];
 
   const perf = debug ? performance.now() : undefined;
+
+  const threadOrderFlag = debug?.threadOrder === true ||
+    (typeof debug?.threadOrder === "number");
 
   const workers = Array.from({
     length: threads ?? 1,
@@ -254,7 +257,7 @@ export const createThreadPool = ({
   );
 
   const fastMap = workers
-    .map((worker) => {
+    .map((worker, workerIndex) => {
       return listOfFunctions
         .map((list, index) => ({ ...list, index }))
         .reduce((acc, v) => {
@@ -277,17 +280,17 @@ export const createThreadPool = ({
     }, new Map<string, Function[]>());
 
   const enqueueMap = workers
-    .map((worker) => {
+    .map((worker, workerIndex) => {
       return listOfFunctions
         .map((list, index) => ({ ...list, index }))
         .reduce((acc, v) => {
-          // The "fastCalling" method is presumably very similar to callFunction
           acc.set(
             v.name,
             worker.callFunction({
               fnNumber: v.index,
             }),
           );
+
           return acc;
         }, new Map<string, ReturnType<typeof worker.fastCalling>>());
     })
