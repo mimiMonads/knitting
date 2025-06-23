@@ -8,6 +8,7 @@ const threads = 4;
 const { terminateAll, callFunction, send } = createThreadPool(
   {
     threads,
+    balancer: "firstAvailable",
   },
 )({
   aaa,
@@ -20,7 +21,7 @@ group("1", () => {
     });
 
     bench(threads + " thread -> 1", async () => {
-      const arr = callFunction.aaa(undefined, 0);
+      const arr = callFunction.aaa();
 
       send();
 
@@ -40,8 +41,8 @@ group("2", () => {
 
     bench(threads + " thread -> 2", async () => {
       const arr = [
-        callFunction.aaa(undefined, 0),
-        callFunction.aaa(undefined, 1),
+        callFunction.aaa(),
+        callFunction.aaa(),
       ];
 
       send();

@@ -4,6 +4,12 @@ import { type CreateContext, createContext } from "./threadManager.ts";
 import type { PromiseMap } from "./mainQueueManager.ts";
 import { isMainThread } from "node:worker_threads";
 import { threadOrder } from "./debug.ts";
+import {
+  type Balancer,
+  firstAvailable,
+  loopingBetweenThreads,
+  manangerMethod,
+} from "./threadBalancer.ts";
 
 export const isMain = isMainThread;
 export type FixedPoints = Record<string, Composed>;
@@ -171,49 +177,6 @@ export type DebugOptions = {
   threadOrder?: Boolean | number;
 };
 
-const loopingBetweenThreads = ((index) => (_: CreateContext[]) => {
-  return (functions: Function[]) => {
-    return (max: number) => {
-      return (args: any, thread?: number) => {
-        return functions[thread ?? (index = (index + 1) % max)](args);
-      };
-    };
-  };
-})(-1);
-
-const firstAvailable = (list: CreateContext[]) => {
-  if (list.length === 0) {
-    throw new Error("No threads available");
-  }
-  if (list.length === 1) {
-    throw new Error(
-      "Unreachable, Looping between threads should not be called with only one thread",
-    );
-  }
-
-  const checkers: (() => boolean)[] = list.map(
-    (ctx) => {
-      const solve = ctx.queue.isEverythingSolved;
-
-      return solve;
-    },
-  );
-
-  let lastIndex = 0;
-
-  return (functions: Function[]) => {
-    return (max: number) => (args: any) => {
-      for (let index = 0; index < functions.length; index++) {
-        if (!checkers[index]()) {
-          return functions[index](args);
-        }
-      }
-
-      return functions[lastIndex = (lastIndex + 1) % max](args);
-    };
-  };
-};
-
 type Pool<T extends Record<string, FixPoint<Args, Args>>> = {
   terminateAll: { (): void };
   callFunction: FunctionMapType<T>;
@@ -224,8 +187,10 @@ type Pool<T extends Record<string, FixPoint<Args, Args>>> = {
 export const createThreadPool = ({
   threads,
   debug,
+  balancer,
 }: {
   threads?: number;
+  balancer?: Balancer;
   debug?: DebugOptions;
 }) =>
 <T extends FixedPoints>(fixedPoints: T): Pool<T> => {
@@ -313,18 +278,22 @@ export const createThreadPool = ({
   enqueueMap.forEach((v, k) => {
     callFunction.set(
       k,
-      threads === 1
-        ? (v[0] as (args: any) => Promise<any>)
-        : loopingBetweenThreads(workers)(v)(v.length),
+      threads === 1 ? (v[0] as (args: any) => Promise<any>) : manangerMethod({
+        contexts: workers,
+        balancer,
+        handlers: v,
+      }),
     );
   });
 
   fastMap.forEach((v, k) => {
     fastCall.set(
       k,
-      threads === 1
-        ? (v[0] as (args: any) => Promise<any>)
-        : loopingBetweenThreads(workers)(v)(v.length),
+      threads === 1 ? (v[0] as (args: any) => Promise<any>) : manangerMethod({
+        contexts: workers,
+        balancer,
+        handlers: v,
+      }),
     );
   });
 
