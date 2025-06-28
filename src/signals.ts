@@ -71,6 +71,7 @@ export const workerSignal = (
   markMessageAsRead: (): 1 => (status[0] = 1),
   signalAllTasksDone: (): 2 => (status[0] = 2),
   waitingForMore: (): 3 => (status[0] = 3),
+  errorWasThrown: (): 100 => (status[0] = 100),
   readyToRead: (): 127 => (status[0] = 127),
   // Queue State
   logWorkStatus: () => queueState[0],

@@ -26,7 +26,7 @@ export type MainList<A = Uint8Array, B = Uint8Array> = [
   RawArguments,
   FunctionID,
   WorkerResponse,
-  -1 | 0 | 1 | 2,
+  -1 | 0 | 1 | 2 | 3,
 ];
 
 export type QueueListWorker = MainList;
@@ -180,6 +180,26 @@ export function createMainQueue({
       sendToWokerArray[job[2]](job);
       setFunctionSignal(job[2]);
       send();
+    },
+
+    resolveError: () => {
+      const currentID = getCurrentID();
+      let idx = -1;
+
+      for (let i = 0; i < queue.length; i++) {
+        if (queue[i][0] === currentID) {
+          idx = i;
+          break;
+        }
+      }
+
+      const job = queue[idx];
+      const promiseEntry = promisesMap.get(job[0]);
+      promiseEntry?.reject( //@ts-ignore
+        readFromWorkerArray[job[2]](),
+      );
+
+      job[4] = -1; // slot free
     },
 
     /* Resolve task whose ID matches currentID */

@@ -54,9 +54,8 @@ export function loopingBetweenThreads(
       let rrCursor = -1;
       return (
         args: any,
-        thread?: number,
       ) => {
-        const index = thread ??
+        const index =
           (rrCursor = (rrCursor + 1) % Math.min(max, handlers.length));
         return handlers[index](args);
       };

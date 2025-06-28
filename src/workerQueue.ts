@@ -21,6 +21,7 @@ export const createWorkerQueue = (
       functionToUse,
       messageReady,
       readyToWork,
+      errorWasThrown,
     },
   }: ArgumentsForCreateWorkerQueue,
 ) => {
@@ -65,7 +66,7 @@ export const createWorkerQueue = (
     // Check if any task is solved and ready for writing.
     someHasFinished: () => {
       for (let i = 0; i < queue.length; i++) {
-        if (queue[i][4] === 2) return true;
+        if (queue[i][4] >= 2) return true;
       }
       return false;
     },
@@ -111,6 +112,13 @@ export const createWorkerQueue = (
           element[4] = -1;
           break;
         }
+        if (queue[i][4] === 3) {
+          const element = queue[i];
+          returnToMain[element[2]](element);
+          errorWasThrown();
+          element[4] = -1;
+          break;
+        }
       }
     },
 
@@ -121,8 +129,14 @@ export const createWorkerQueue = (
           task[4] = 1;
 
           jobs[task[2]](task[1])
-            .then((res) => res = task[3] = res)
-            .finally(() => task[4] = 2);
+            .then((res) => {
+              res = task[3] = res;
+              task[4] = 2;
+            })
+            .catch((err) => {
+              err = task[3] = err;
+              task[4] = 3;
+            });
         }
       }
     },

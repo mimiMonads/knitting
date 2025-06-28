@@ -2,7 +2,7 @@ import { getCallerFilePath } from "./utils.ts";
 import { genTaskID } from "./utils.ts";
 import { type CreateContext, createContext } from "./threadManager.ts";
 import type { PromiseMap } from "./mainQueueManager.ts";
-import { isMainThread } from "node:worker_threads";
+import { isMainThread, workerData } from "node:worker_threads";
 import { threadOrder } from "./debug.ts";
 import {
   type Balancer,
@@ -170,6 +170,7 @@ export const toListAndIds = (
 };
 
 export type DebugOptions = {
+  extras?: boolean;
   logMain?: boolean;
   logThreads?: boolean;
   logHref?: boolean;
@@ -194,6 +195,45 @@ export const createThreadPool = ({
   debug?: DebugOptions;
 }) =>
 <T extends FixedPoints>(fixedPoints: T): Pool<T> => {
+  /**
+   *  This functions is only available in the main thread.
+   *  Also trigers when debug extra is enabled.
+   */
+  if (isMainThread === false) {
+    if (debug?.extras === true) {
+      console.warn(
+        "createThreadPool has been called with : " + JSON.stringify(
+          workerData,
+        ),
+      );
+    }
+    const uwuError = () => {
+      throw new Error(
+        "createThreadPool can only be called in the main thread.",
+      );
+    };
+
+    const base = function () {
+      return uwuError();
+    };
+
+    const handler = {
+      get: function () {
+        return uwuError;
+      },
+    };
+
+    const uwu = new Proxy(base, handler);
+
+    //@ts-ignore
+    return ({
+      terminateAll: uwu,
+      callFunction: uwu,
+      fastCallFunction: uwu,
+      send: uwu,
+    } as Pool<T>);
+  }
+
   const promisesMap: PromiseMap = new Map(),
     { list, ids } = toListAndIds(fixedPoints),
     listOfFunctions = Object.entries(fixedPoints).map(([k, v]) => ({
@@ -203,9 +243,6 @@ export const createThreadPool = ({
       .sort((a, b) => a.name.localeCompare(b.name)) as ComposedWithKey[];
 
   const perf = debug ? performance.now() : undefined;
-
-  const threadOrderFlag = debug?.threadOrder === true ||
-    (typeof debug?.threadOrder === "number");
 
   const workers = Array.from({
     length: threads ?? 1,
@@ -245,7 +282,7 @@ export const createThreadPool = ({
     }, new Map<string, Function[]>());
 
   const enqueueMap = workers
-    .map((worker, workerIndex) => {
+    .map((worker) => {
       return listOfFunctions
         .map((list, index) => ({ ...list, index }))
         .reduce((acc, v) => {
@@ -278,22 +315,26 @@ export const createThreadPool = ({
   enqueueMap.forEach((v, k) => {
     callFunction.set(
       k,
-      threads === 1 ? (v[0] as (args: any) => Promise<any>) : manangerMethod({
-        contexts: workers,
-        balancer,
-        handlers: v,
-      }),
+      (threads === 1 || threads === undefined)
+        ? (v[0] as (args: any) => Promise<any>)
+        : manangerMethod({
+          contexts: workers,
+          balancer,
+          handlers: v,
+        }),
     );
   });
 
   fastMap.forEach((v, k) => {
     fastCall.set(
       k,
-      threads === 1 ? (v[0] as (args: any) => Promise<any>) : manangerMethod({
-        contexts: workers,
-        balancer,
-        handlers: v,
-      }),
+      (threads === 1 || threads === undefined)
+        ? (v[0] as (args: any) => Promise<any>)
+        : manangerMethod({
+          contexts: workers,
+          balancer,
+          handlers: v,
+        }),
     );
   });
 
