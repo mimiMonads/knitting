@@ -61,7 +61,7 @@ const fromReturnToMainError = ({
       error = serilizedError;
     }
 
-    buffer.set(error as Buffer);
+    buffer.set(error as Uint8Array);
     //@ts-ignore
     payloadLength[0] = grow(error.length);
     id[0] = task[0];

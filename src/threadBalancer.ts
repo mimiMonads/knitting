@@ -1,4 +1,4 @@
-import type { CreateContext } from "./threadManager";
+import type { CreateContext } from "./threadManager.ts";
 
 export type Handler<A, R> = (args: A) => R;
 
