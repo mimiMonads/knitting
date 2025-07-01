@@ -13,6 +13,7 @@ export const taskScheduler = ({
     resolveTask,
     canWrite,
     dispatchToWorker,
+    resolveError,
   },
   channelHandler,
   debugSignal,
@@ -47,7 +48,6 @@ export const taskScheduler = ({
         }
         channelHandler.scheduleCheck();
         return;
-      // Error Case
       case 1:
         resolveTask();
         readyToRead();
@@ -81,7 +81,18 @@ export const taskScheduler = ({
           channelHandler.scheduleCheck();
         }
         return;
-
+      case 100: {
+        // Error was thrown in the worker queue
+        resolveError();
+        readyToRead();
+        if (loop()) {
+          queueMicrotask(check);
+          return;
+        } else {
+          channelHandler.scheduleCheck();
+        }
+        return;
+      }
       case 126: {
         queueMicrotask(check);
         return;

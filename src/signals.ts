@@ -11,12 +11,25 @@ export type Sab = {
   sharedSab?: SharedArrayBuffer;
 };
 
+const growIfNeeded = (sab: SharedArrayBuffer) => {
+  let currentSize = sab.byteLength;
+  return (bytes: number) => {
+    if (currentSize < bytes) {
+      sab.grow(bytes - currentSize);
+      return currentSize = bytes;
+    }
+    return bytes;
+  };
+};
+
 export const signalsForWorker = (args?: Sab) => {
   const sab = args?.sharedSab
     ? args.sharedSab
     : new SharedArrayBuffer(args?.size ?? 65536);
 
   const status = new Int32Array(sab, 0, 1);
+
+  const grow = growIfNeeded(sab);
 
   if (isMainThread) {
     status[0] = 255;
@@ -32,7 +45,7 @@ export const signalsForWorker = (args?: Sab) => {
     type: new Int32Array(sab, 20, 1),
     payload: new Uint8Array(sab, 24, sab.byteLength - 24),
     buffer: new Uint8Array(sab, 24, sab.byteLength - 24),
-
+    grow,
     // One byte var
     bigInt: new BigInt64Array(sab, 24, 1),
     uBigInt: new BigUint64Array(sab, 24, 1),
@@ -71,6 +84,7 @@ export const workerSignal = (
   markMessageAsRead: (): 1 => (status[0] = 1),
   signalAllTasksDone: (): 2 => (status[0] = 2),
   waitingForMore: (): 3 => (status[0] = 3),
+  errorWasThrown: (): 100 => (status[0] = 100),
   readyToRead: (): 127 => (status[0] = 127),
   // Queue State
   logWorkStatus: () => queueState[0],

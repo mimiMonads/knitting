@@ -1,7 +1,11 @@
 import type { QueueListWorker } from "./mainQueueManager.ts";
 import { type SignalArguments, type WorkerSignal } from "./signals.ts";
 import type { ComposedWithKey } from "./taskApi.ts";
-import { fromPlayloadToArguments, fromreturnToMain } from "./parsers.ts";
+import {
+  fromPlayloadToArguments,
+  fromreturnToMain,
+  fromReturnToMainError,
+} from "./parsers.ts";
 
 type ArgumentsForCreateWorkerQueue = {
   listOfFunctions: ComposedWithKey[];
@@ -21,6 +25,7 @@ export const createWorkerQueue = (
       functionToUse,
       messageReady,
       readyToWork,
+      errorWasThrown,
     },
   }: ArgumentsForCreateWorkerQueue,
 ) => {
@@ -44,6 +49,7 @@ export const createWorkerQueue = (
 
   const fromPlayloadToArgumentsWitSignal = fromPlayloadToArguments(signals);
   const fromreturnToMainWitSignal = fromreturnToMain(signals);
+  const returnError = fromReturnToMainError(signals);
 
   const playloadToArgs = listOfFunctions.reduce((acc, fixed) => (
     acc.push(fromPlayloadToArgumentsWitSignal(
@@ -65,7 +71,7 @@ export const createWorkerQueue = (
     // Check if any task is solved and ready for writing.
     someHasFinished: () => {
       for (let i = 0; i < queue.length; i++) {
-        if (queue[i][4] === 2) return true;
+        if (queue[i][4] >= 2) return true;
       }
       return false;
     },
@@ -111,6 +117,13 @@ export const createWorkerQueue = (
           element[4] = -1;
           break;
         }
+        if (queue[i][4] === 3) {
+          const element = queue[i];
+          returnError(element);
+          errorWasThrown();
+          element[4] = -1;
+          break;
+        }
       }
     },
 
@@ -121,8 +134,14 @@ export const createWorkerQueue = (
           task[4] = 1;
 
           jobs[task[2]](task[1])
-            .then((res) => res = task[3] = res)
-            .finally(() => task[4] = 2);
+            .then((res) => {
+              res = task[3] = res;
+              task[4] = 2;
+            })
+            .catch((err) => {
+              err = task[3] = err;
+              task[4] = 3;
+            });
         }
       }
     },
@@ -135,8 +154,14 @@ export const createWorkerQueue = (
           task[4] = 1;
 
           await jobs[task[2]](task[1])
-            .then((res) => task[3] = res)
-            .finally(() => task[4] = 2);
+            .then((res) => {
+              res = task[3] = res;
+              task[4] = 2;
+            })
+            .catch((err) => {
+              err = task[3] = err;
+              task[4] = 3;
+            });
 
           break;
         }

@@ -68,6 +68,7 @@ if (isMainThread === false) {
       switch (getSignal()) {
         case 2:
         case 3:
+        case 100:
           // Case 9 doest nothing (cirno reference)
         case 9: {
           continue;
