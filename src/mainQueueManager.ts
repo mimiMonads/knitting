@@ -1,4 +1,4 @@
-import { readFromWorker, sendToWorker } from "./parsers.ts";
+import { readFromWorker, readPayloadUWU, sendToWorker } from "./parsers.ts";
 import { type MainSignal, type SignalArguments } from "./signals.ts";
 import type { ComposedWithKey } from "./taskApi.ts";
 import type { Serializable } from "./taskApi.ts";
@@ -68,6 +68,7 @@ export function createMainQueue({
 
   const sendToWorkerWithSignal = sendToWorker(signals);
   const readFromWorkerWithSignal = readFromWorker(signals);
+  const errorDeserializer = readPayloadUWU(signals);
 
   const sendToWokerArray = listOfFunctions.map((fix) =>
     sendToWorkerWithSignal( //@ts-ignore
@@ -195,8 +196,9 @@ export function createMainQueue({
 
       const job = queue[idx];
       const promiseEntry = promisesMap.get(job[0]);
+
       promiseEntry?.reject( //@ts-ignore
-        readFromWorkerArray[job[2]](),
+        errorDeserializer(),
       );
 
       job[4] = -1; // slot free

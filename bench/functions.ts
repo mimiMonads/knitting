@@ -6,6 +6,7 @@ export const aaa = fixedPoint({
   args: "void",
   return: "string",
   f: async () => {
+    
     let a = 100000;
     let b = 0;
     while (a != 0) {

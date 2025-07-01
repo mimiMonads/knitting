@@ -4,12 +4,7 @@ import { type CreateContext, createContext } from "./threadManager.ts";
 import type { PromiseMap } from "./mainQueueManager.ts";
 import { isMainThread, workerData } from "node:worker_threads";
 import { threadOrder } from "./debug.ts";
-import {
-  type Balancer,
-  firstAvailable,
-  loopingBetweenThreads,
-  manangerMethod,
-} from "./threadBalancer.ts";
+import { type Balancer, manangerMethod } from "./threadBalancer.ts";
 
 export const isMain = isMainThread;
 export type FixedPoints = Record<string, Composed>;
