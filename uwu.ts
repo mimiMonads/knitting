@@ -1,24 +1,34 @@
-import { createThreadPool, isMain } from "./main.ts";
+import { createThreadPool, fixedPoint, isMain } from "./main.ts";
 
-import { aaa } from "./bench/functions.ts";
+export const fn = fixedPoint({
+  f: async () => {
+    let a = 100000;
+    let b = 0;
+    while (a != 0) {
+      b = b + performance.now();
+      a--;
+    }
+    return b;
+  },
+});
 
-const a = new Uint8Array([3]);
+export const { terminateAll, callFunction, send } = createThreadPool({})({
+  fn,
+});
+
 if (isMain) {
-  const { terminateAll, callFunction, send } = createThreadPool({
-    threads: 5,
-    debug: {
-      logMain: true,
-      logThreads: true,
-    },
-  })({
-    aaa,
-  });
-
   const arr = [
-    callFunction.aaa(),
+    callFunction.fn(),
   ];
 
   send();
 
-  await Promise.all(arr).then(terminateAll);
+  await Promise.all(arr)
+    .then((results) => {
+      console.log("Results:", results);
+    })
+    .catch((error) => {
+      console.error("Error:", error);
+    })
+    .finally(terminateAll);
 }

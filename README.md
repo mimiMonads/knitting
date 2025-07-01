@@ -3,20 +3,28 @@
 ```ts
 import { createThreadPool, fixedPoint, isMain } from "@vixeny/knitting";
 
-export const a = fixedPoint({
-  args: "string",
-  f: async (a) => a,
+export const fn = fixedPoint({
+  f: async () => "hello",
+});
+
+export const { terminateAll, callFunction, send } = createThreadPool({})({
+  fn,
 });
 
 if (isMain) {
-  const { terminateAll, fastCallFunction } = createThreadPool({
-    threads: 2,
-  })({
-    a,
-  });
+  const arr = [
+    callFunction.fn(),
+  ];
 
-  await fastCallFunction.a("hello")
-    .then(console.log)
+  send();
+
+  await Promise.all(arr)
+    .then((results) => {
+      console.log("Results:", results);
+    })
+    .catch((error) => {
+      console.error("Error:", error);
+    })
     .finally(terminateAll);
 }
 ```

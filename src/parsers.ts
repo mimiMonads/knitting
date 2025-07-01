@@ -8,14 +8,20 @@ const textDecoder = new TextDecoder();
 const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
 const MIN_SAFE_INTEGER = Number.MIN_SAFE_INTEGER;
 const toWorkerUint8 =
-  ({ id, payload, payloadLength , grow}: SignalArguments) => (task: MainList) => {
+  ({ id, payload, payloadLength, grow }: SignalArguments) =>
+  (
+    task: MainList,
+  ) => {
     payload.set(task[1]);
     payloadLength[0] = grow(task[1].length);
     id[0] = task[0];
   };
 
 const toWorkerSerializable =
-  ({ id, buffer, payloadLength , grow}: SignalArguments) => (task: MainList) => {
+  ({ id, buffer, payloadLength, grow }: SignalArguments) =>
+  (
+    task: MainList,
+  ) => {
     const encoded = serialize(task[1]);
 
     //@ts-ignore
@@ -27,7 +33,10 @@ const toWorkerSerializable =
   };
 
 const toWorkerString =
-  ({ id, payload, payloadLength , grow}: SignalArguments) => (task: MainList) => {
+  ({ id, payload, payloadLength, grow }: SignalArguments) =>
+  (
+    task: MainList,
+  ) => {
     //@ts-ignore
     const encode = textEncoder.encode(task[1]);
     payload.set(encode);
@@ -46,7 +55,7 @@ const fromReturnToMainError = ({
   id,
   buffer,
   payloadLength,
-  grow
+  grow,
 }: SignalArguments) => {
   const serilizedError = serialize(
     new Error("Hte thrown object is not serializable"),
@@ -87,7 +96,7 @@ const toWorkerAny = (index: 1 | 3 = 1) =>
     int32,
     uInt32,
     float64,
-    grow
+    grow,
   }: SignalArguments,
 ) =>
 (
@@ -263,8 +272,7 @@ const readStringFromWorker =
 const readVoidFromWorker = ({}: SignalArguments) => () => undefined;
 
 const readSerializableFromWorker =
-  ({ buffer, payloadLength  }: SignalArguments) => () => {
-
+  ({ buffer, payloadLength }: SignalArguments) => () => {
     return deserialize(buffer.subarray(0, payloadLength[0]));
   };
 
@@ -287,7 +295,7 @@ const readFromWorker = (signals: SignalArguments) => (type: External) => {
 
 const readPayloadWorkerUint8 =
   ({ payload, payloadLength }: SignalArguments) => () =>
-    payload.slice(0,payloadLength[0]);
+    payload.slice(0, payloadLength[0]);
 
 const readPayloadWorkerString =
   ({ payload, payloadLength }: SignalArguments) => () =>
@@ -397,7 +405,7 @@ const fromPlayloadToArguments =
   };
 
 const writePayloadUnint8 =
-  ({ id, payload, payloadLength , grow}: SignalArguments) =>
+  ({ id, payload, payloadLength, grow }: SignalArguments) =>
   (task: QueueListWorker) => {
     payload.set(task[3], 0);
     payloadLength[0] = grow(task[3].length);
@@ -405,7 +413,7 @@ const writePayloadUnint8 =
   };
 
 const writePayloadString =
-  ({ id, payload, payloadLength , grow }: SignalArguments) =>
+  ({ id, payload, payloadLength, grow }: SignalArguments) =>
   (task: QueueListWorker) => {
     //@ts-ignore
     const encode = textEncoder.encode(task[3]);
@@ -421,7 +429,7 @@ const writePayloadVoid =
   };
 
 const writePayloadSerializable =
-  ({ id, buffer, payloadLength , grow}: SignalArguments) =>
+  ({ id, buffer, payloadLength, grow }: SignalArguments) =>
   (
     task: QueueListWorker,
   ) => {
