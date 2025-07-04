@@ -8,7 +8,7 @@ const threads = 4;
 const { terminateAll, callFunction, send } = createThreadPool(
   {
     threads,
-    balancer: "firstAvailable",
+    balancer: "firstAvailable"
   },
 )({
   aaa,
@@ -32,12 +32,7 @@ group("1", () => {
 
 group("2", () => {
   summary(() => {
-    bench(" Main -> 2", async () => {
-      return await Promise.all([
-        fn(),
-        fn(),
-      ]);
-    });
+
 
     bench(threads + " thread -> 2", async () => {
       const arr = [
@@ -54,13 +49,7 @@ group("2", () => {
 
 group("3", () => {
   summary(() => {
-    bench(" Main -> 3", async () => {
-      return await Promise.all([
-        fn(),
-        fn(),
-        fn(),
-      ]);
-    });
+
 
     bench(threads + " thread -> 3", async () => {
       const arr = [
@@ -78,14 +67,7 @@ group("3", () => {
 
 group("4", () => {
   summary(() => {
-    bench(" Main -> 4", async () => {
-      return await Promise.all([
-        fn(),
-        fn(),
-        fn(),
-        fn(),
-      ]);
-    });
+
 
     bench(threads + " thread -> 4", async () => {
       const arr = [
@@ -102,27 +84,7 @@ group("4", () => {
   });
 
   group("4 * 4", () => {
-    summary(() => {
-      bench(" Main -> 16", async () => {
-        return await Promise.all([
-          fn(),
-          fn(),
-          fn(),
-          fn(),
-          fn(),
-          fn(),
-          fn(),
-          fn(),
-          fn(),
-          fn(),
-          fn(),
-          fn(),
-          fn(),
-          fn(),
-          fn(),
-          fn(),
-        ]);
-      });
+ 
 
       bench(threads + " thread -> 16", async () => {
         const arr = [
@@ -149,7 +111,7 @@ group("4", () => {
         await Promise.all(arr);
       });
     });
-  });
+ 
 });
 
 await runMitata();

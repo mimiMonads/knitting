@@ -4,6 +4,9 @@ export const genTaskID = ((counter: number) => () => counter++)(0);
 // Get the current file's path.
 export const currentPath = () => new URL(import.meta.url);
 
+//@ts-ignore 
+const IS_BUN= typeof Bun == "object" && Bun !== null;
+
 const getCallerFilePathForBun = (n: number) => {
   //@ts-ignore Reason -> Types
   const originalStackTrace = Error.prepareStackTrace;
@@ -27,36 +30,39 @@ const getCallerFilePathForBun = (n: number) => {
 };
 
 export const getCallerFilePath = (n: number) => {
-  if (!IS_DENO) {
-    return getCallerFilePathForBun(n);
-  }
+  return getCallerFilePathForBun(IS_BUN ? 2 : 3);
 
-  const err = new Error();
-  const stack = err?.stack;
+  // Old deno code that doesn't work anymore
 
-  if (typeof stack === "undefined") {
-    throw new Error("Unable to determine caller file.");
-  } else {
-    const path = parseStackTraceFiles(stack);
-    return path[path.length - 1];
-  }
+  // const parseStackTraceFiles = (str: string) =>
+  //   str.split(" ")
+  //     .filter((s) => s.includes("://"))
+  //     .map((s) => s.replaceAll("(", "").replaceAll(")", ""))
+  //     .map((s) => {
+  //       // There's not way this will work in the future
+  //       // TODO: make this more robust
+  //       const next = s.indexOf(":", s.indexOf(":") + 1);
+
+  //       return s.slice(0, next);
+  //     });
+
+  // const err = new Error();
+  // const stack = err?.stack;
+
+  // if (typeof stack === "undefined") {
+  //   throw new Error("Unable to determine caller file.");
+  // } else {
+  //   const path = parseStackTraceFiles(stack);
+  //   if (path.length < n + 1) {
+  //     throw new Error(
+  //       `Unable to determine caller file. Expected at least ${
+  //         n + 1
+  //       } stack frames, but got ${path.length}.`,
+  //     );
+  //   }
+  //   return path[path.length - 1];
+  // }
 };
-
-// This thing is annoying asf
-//@ts-ignore -> Reason -> Deno types are not installed
-const IS_DENO = typeof Deno == "object" && Deno !== null;
-
-const parseStackTraceFiles = (str: string) =>
-  str.split(" ")
-    .filter((s) => s.includes("://"))
-    .map((s) => s.replaceAll("(", "").replaceAll(")", ""))
-    .map((s) => {
-      // There's not way this will work in the future
-      // TODO: make this more robust
-      const next = s.indexOf(":", s.indexOf(":") + 1);
-
-      return s.slice(0, next);
-    });
 
 export const signalDebuggerV2 = ({
   thread,

@@ -1,9 +1,9 @@
 import { getCallerFilePath } from "./utils.ts";
 import { genTaskID } from "./utils.ts";
-import { type CreateContext, createContext } from "./threadManager.ts";
+import { createContext } from "./threadManager.ts";
 import type { PromiseMap } from "./mainQueueManager.ts";
 import { isMainThread, workerData } from "node:worker_threads";
-import { threadOrder } from "./debug.ts";
+
 import { type Balancer, manangerMethod } from "./threadBalancer.ts";
 
 export const isMain = isMainThread;
@@ -45,6 +45,7 @@ const symbol = Symbol.for("FIXEDPOINT");
 interface FixPoint<A extends Args, B extends Args> {
   args?: A;
   return?: B;
+  href?: string;
   f: (
     args: Arguments<A>,
   ) => Promise<Arguments<B>>;
@@ -81,9 +82,8 @@ export const fixedPoint = <
   B extends Args = undefined,
 >(
   I: FixPoint<A, B>,
-  thread?: number,
 ): ReturnFixed<A, B> => {
-  const importedFrom = new URL(getCallerFilePath(2)).href;
+  const importedFrom =  I?.href ?? new URL(getCallerFilePath(3)).href;
   return ({
     ...I,
     id: genTaskID(),

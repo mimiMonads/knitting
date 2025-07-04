@@ -9,6 +9,14 @@ import { jsrIsGreatAndWorkWithoutBugs } from "./workerThread.ts";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
+export type WorkerData = {
+  sab: SharedArrayBuffer;
+  list: string[];
+  ids: number[];
+  thread: number;
+  debug?: DebugOptions;
+};
+
 export const createContext = ({
   promisesMap,
   list,
@@ -97,7 +105,7 @@ export const createContext = ({
         ids,
         thread,
         debug,
-      },
+      } as WorkerData,
     },
   );
 

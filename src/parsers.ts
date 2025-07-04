@@ -58,7 +58,7 @@ const fromReturnToMainError = ({
   grow,
 }: SignalArguments) => {
   const serilizedError = serialize(
-    new Error("Hte thrown object is not serializable"),
+    new Error("The thrown object is not serializable"),
   );
 
   return (task: MainList) => {

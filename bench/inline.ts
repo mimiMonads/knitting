@@ -1,15 +1,22 @@
 import { bench, boxplot, group, run as mitataRun, summary } from "mitata";
-import { createThreadPool } from "../main.ts";
-import { bbb } from "./functions.ts";
+import { createThreadPool , fixedPoint , isMain} from "../main.ts";
 
-const inLine = bbb;
-const { terminateAll, callFunction, send } = createThreadPool(
-  {
-    threads: 1,
-  },
+
+export const inLine = fixedPoint({
+  args: "void",
+  return: "void",
+  f: async () => {},
+});
+
+
+const { terminateAll, callFunction , send } = createThreadPool(
+{}
 )({
   inLine,
 });
+if (isMain) {
+ 
+
 
 boxplot(async () => {
   group("1", () => {
@@ -117,4 +124,6 @@ boxplot(async () => {
   });
 });
 await mitataRun();
-await terminateAll();
+await terminateAll()
+
+}

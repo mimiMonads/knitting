@@ -3,13 +3,12 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 const string = "uwu";
 export const aaa = fixedPoint({
-  args: "void",
-  return: "string",
+
   f: async () => {
     let a = 100000;
     let b = 0;
     while (a != 0) {
-      b = b + performance.now();
+      b = b++;
       a--;
     }
     return string;
