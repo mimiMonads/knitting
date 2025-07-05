@@ -9,7 +9,7 @@ export const inLine = fixedPoint({
 });
 
 
-const { terminateAll, callFunction , send } = createThreadPool(
+const { terminateAll, callFunction , fastCallFunction, send } = createThreadPool(
 {}
 )({
   inLine,
@@ -32,11 +32,14 @@ boxplot(async () => {
         callFunction.inLine(),
         callFunction.inLine(),
         callFunction.inLine(),
+       
       ];
 
+      
       send();
 
       await Promise.all(arr);
+      await fastCallFunction.inLine()
     });
 
     summary(() => {
@@ -45,11 +48,9 @@ boxplot(async () => {
       });
 
       bench(" 1 thread -> 1", async () => {
-        const arr = callFunction.inLine();
+    
 
-        send();
-
-        await arr;
+        await fastCallFunction.inLine();
       });
 
       bench(" 1 thread -> 2", async () => {

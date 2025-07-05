@@ -126,6 +126,7 @@ export function createMainQueue({
       isLastElementToSend(false);
       send();
       slot[4] = 1;
+
       return addDeferred(slot[0]);
     },
 

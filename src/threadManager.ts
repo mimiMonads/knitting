@@ -118,27 +118,32 @@ export const createContext = ({
     return (args: Uint8Array) => enqueues(args);
   };
 
-  const send = ((starts: typeof dispatchToWorker) => () => {
+  const send = ( () => {
     if (check.isRunning === false && canWrite()) {
       signalBox.status[0] = 9;
       Atomics.notify(signalBox.status, 0, 1);
-      starts();
+      dispatchToWorker();
       check.isRunning = true;
       queueMicrotask(check);
     }
-  })(dispatchToWorker);
+  });
 
   const fastCalling = ({ fnNumber }: CallFunction) => {
     const first = fastEnqueue(fnNumber);
     const enqueue = enqueuePromise(fnNumber);
 
-    return (args: Uint8Array) => {
-      return check.isRunning === false
+
+    return (args: Uint8Array) => 
+       check.isRunning === false
         ? (
-          check.isRunning = true, queueMicrotask(check), first(args)
+          signalBox.status[0] = 9,
+          Atomics.notify(signalBox.status, 0, 1),
+          check.isRunning = true, 
+          queueMicrotask(check), 
+          first(args)
         )
         : enqueue(args);
-    };
+    
   };
 
   return {

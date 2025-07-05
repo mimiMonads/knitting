@@ -43,12 +43,12 @@ type Args = External | Serializable;
 const symbol = Symbol.for("FIXEDPOINT");
 
 interface FixPoint<A extends Args, B extends Args> {
-  args?: A;
-  return?: B;
-  href?: string;
-  f: (
-    args: Arguments<A>,
-  ) => Promise<Arguments<B>>;
+  readonly args?:  A;
+  readonly return?: B;
+  readonly href?: string;
+  readonly f: (
+    args:  Arguments<A>,
+  ) => Promise<Arguments<B>> ;
 }
 
 type Arguments<A extends Args> = A extends VoidLiterral ? void
@@ -60,15 +60,15 @@ type Arguments<A extends Args> = A extends VoidLiterral ? void
   : A;
 
 type SecondPart = {
-  [symbol]: string;
-  id: number;
-  importedFrom: string;
-};
+  readonly [symbol]: string;
+  readonly id: number;
+  readonly importedFrom: string;
+} ;
 
 export type Composed = {
-  args?: Args;
-  return?: Args;
-  f: (...args: any) => any;
+  readonly args?: Args;
+  readonly return?: Args;
+  readonly f: (...args: any) => any;
 } & SecondPart;
 
 export type ComposedWithKey = Composed & { name: string };
@@ -81,7 +81,7 @@ export const fixedPoint = <
   A extends Args = undefined,
   B extends Args = undefined,
 >(
-  I: FixPoint<A, B>,
+  I:  FixPoint<A, B>,
 ): ReturnFixed<A, B> => {
   const importedFrom =  I?.href ?? new URL(getCallerFilePath(3)).href;
   return ({
@@ -254,11 +254,10 @@ export const createThreadPool = ({
   );
 
   const fastMap = workers
-    .map((worker, workerIndex) => {
+    .map((worker) => {
       return listOfFunctions
         .map((list, index) => ({ ...list, index }))
         .reduce((acc, v) => {
-          // The "fastCalling" method is presumably very similar to callFunction
           acc.set(
             v.name,
             worker.fastCalling({

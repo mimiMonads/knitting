@@ -12,18 +12,18 @@ export const fn = fixedPoint({
   },
 });
 
-export const { terminateAll, callFunction, send } = createThreadPool({})({
+export const { terminateAll, callFunction, fastCallFunction , send } = createThreadPool({
+  debug: {
+    logMain: true,
+    logThreads: true,
+  }
+})({
   fn,
 });
 
 if (isMain) {
-  const arr = [
-    callFunction.fn(),
-  ];
-
-  send();
-
-  await Promise.all(arr)
+  
+  await fastCallFunction.fn()
     .then((results) => {
       console.log("Results:", results);
     })

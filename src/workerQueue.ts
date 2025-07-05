@@ -135,10 +135,12 @@ export const createWorkerQueue = (
 
           jobs[task[2]](task[1])
             .then((res) => {
+              
               res = task[3] = res;
               task[4] = 2;
             })
             .catch((err) => {
+             
               err = task[3] = err;
               task[4] = 3;
             });
@@ -156,10 +158,12 @@ export const createWorkerQueue = (
           await jobs[task[2]](task[1])
             .then((res) => {
               res = task[3] = res;
+          
               task[4] = 2;
             })
             .catch((err) => {
               err = task[3] = err;
+  
               task[4] = 3;
             });
 
@@ -175,10 +179,12 @@ export const createWorkerQueue = (
 
           try {
             task[3] = await jobs[task[2]](task[1]);
-          } finally {
-            task[4] = 2;
+            
+            task[4] = 2
+          } catch (err) {
+            task[3] = err;
+            task[4] = 3;
           }
-
           break;
         }
       }

@@ -107,6 +107,10 @@ export const taskScheduler = ({
         return;
       }
       case 192:
+        if (loop()) {
+          queueMicrotask(check);
+          return;
+        }
         channelHandler.scheduleCheck();
         return;
     }
