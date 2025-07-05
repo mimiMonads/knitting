@@ -12,17 +12,17 @@ export const fn = fixedPoint({
   },
 });
 
-export const { terminateAll, callFunction, fastCallFunction , send } = createThreadPool({
-  debug: {
-    logMain: true,
-    logThreads: true,
-  }
-})({
-  fn,
-});
+export const { terminateAll, callFunction, fastCallFunction, send } =
+  createThreadPool({
+    debug: {
+      logMain: true,
+      logThreads: true,
+    },
+  })({
+    fn,
+  });
 
 if (isMain) {
-  
   await fastCallFunction.fn()
     .then((results) => {
       console.log("Results:", results);

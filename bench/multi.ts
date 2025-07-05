@@ -8,7 +8,7 @@ const threads = 4;
 const { terminateAll, callFunction, send } = createThreadPool(
   {
     threads,
-    balancer: "firstAvailable"
+    balancer: "firstAvailable",
   },
 )({
   aaa,
@@ -32,8 +32,6 @@ group("1", () => {
 
 group("2", () => {
   summary(() => {
-
-
     bench(threads + " thread -> 2", async () => {
       const arr = [
         callFunction.aaa(),
@@ -49,8 +47,6 @@ group("2", () => {
 
 group("3", () => {
   summary(() => {
-
-
     bench(threads + " thread -> 3", async () => {
       const arr = [
         callFunction.aaa(),
@@ -67,8 +63,6 @@ group("3", () => {
 
 group("4", () => {
   summary(() => {
-
-
     bench(threads + " thread -> 4", async () => {
       const arr = [
         callFunction.aaa(),
@@ -84,34 +78,31 @@ group("4", () => {
   });
 
   group("4 * 4", () => {
- 
+    bench(threads + " thread -> 16", async () => {
+      const arr = [
+        callFunction.aaa(),
+        callFunction.aaa(),
+        callFunction.aaa(),
+        callFunction.aaa(),
+        callFunction.aaa(),
+        callFunction.aaa(),
+        callFunction.aaa(),
+        callFunction.aaa(),
+        callFunction.aaa(),
+        callFunction.aaa(),
+        callFunction.aaa(),
+        callFunction.aaa(),
+        callFunction.aaa(),
+        callFunction.aaa(),
+        callFunction.aaa(),
+        callFunction.aaa(),
+      ];
 
-      bench(threads + " thread -> 16", async () => {
-        const arr = [
-          callFunction.aaa(),
-          callFunction.aaa(),
-          callFunction.aaa(),
-          callFunction.aaa(),
-          callFunction.aaa(),
-          callFunction.aaa(),
-          callFunction.aaa(),
-          callFunction.aaa(),
-          callFunction.aaa(),
-          callFunction.aaa(),
-          callFunction.aaa(),
-          callFunction.aaa(),
-          callFunction.aaa(),
-          callFunction.aaa(),
-          callFunction.aaa(),
-          callFunction.aaa(),
-        ];
+      send();
 
-        send();
-
-        await Promise.all(arr);
-      });
+      await Promise.all(arr);
     });
- 
+  });
 });
 
 await runMitata();

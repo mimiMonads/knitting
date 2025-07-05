@@ -12,11 +12,12 @@ export type Sab = {
 };
 
 const growIfNeeded = (sab: SharedArrayBuffer) => {
-  let currentSize = sab.byteLength;
+  let currentSize = sab.byteLength + 24; // 24 bytes for the header
   return (bytes: number) => {
     if (currentSize < bytes) {
-      sab.grow(bytes - currentSize);
-      return currentSize = bytes;
+      sab.grow(bytes - currentSize + 24); // Grow the SharedArrayBuffer
+      currentSize = sab.byteLength + 24; // Update the current size
+      return bytes;
     }
     return bytes;
   };

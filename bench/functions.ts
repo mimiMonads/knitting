@@ -3,7 +3,6 @@ import { setTimeout as sleep } from "node:timers/promises";
 
 const string = "uwu";
 export const aaa = fixedPoint({
-
   f: async () => {
     let a = 100000;
     let b = 0;

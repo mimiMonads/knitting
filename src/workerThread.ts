@@ -106,7 +106,7 @@ export const mainLoop = async (workerData: WorkerData) => {
         continue;
       case 254:
       case 255: {
-        Atomics.wait(status, 0, 255);
+        Atomics.wait(status, 0, 255, 100);
         continue;
       }
     }

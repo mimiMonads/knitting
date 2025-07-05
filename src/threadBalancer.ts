@@ -75,7 +75,7 @@ export function firstAvailable(
   ) => {
     return (max: number) => {
       let rrCursor = 0;
-      
+
       return (args: any) => {
         for (let i = 0; i < handlers.length; i += 1) {
           if (isSolved[i]()) {
@@ -83,7 +83,8 @@ export function firstAvailable(
           }
         }
 
-        return handlers[rrCursor = (rrCursor + 1) % Math.min(max, handlers.length)](args);
+        return handlers
+          [rrCursor = (rrCursor + 1) % Math.min(max, handlers.length)](args);
       };
     };
   };

@@ -43,12 +43,12 @@ type Args = External | Serializable;
 const symbol = Symbol.for("FIXEDPOINT");
 
 interface FixPoint<A extends Args, B extends Args> {
-  readonly args?:  A;
+  readonly args?: A;
   readonly return?: B;
   readonly href?: string;
   readonly f: (
-    args:  Arguments<A>,
-  ) => Promise<Arguments<B>> ;
+    args: Arguments<A>,
+  ) => Promise<Arguments<B>>;
 }
 
 type Arguments<A extends Args> = A extends VoidLiterral ? void
@@ -63,7 +63,7 @@ type SecondPart = {
   readonly [symbol]: string;
   readonly id: number;
   readonly importedFrom: string;
-} ;
+};
 
 export type Composed = {
   readonly args?: Args;
@@ -81,9 +81,9 @@ export const fixedPoint = <
   A extends Args = undefined,
   B extends Args = undefined,
 >(
-  I:  FixPoint<A, B>,
+  I: FixPoint<A, B>,
 ): ReturnFixed<A, B> => {
-  const importedFrom =  I?.href ?? new URL(getCallerFilePath(3)).href;
+  const importedFrom = I?.href ?? new URL(getCallerFilePath(3)).href;
   return ({
     ...I,
     id: genTaskID(),
@@ -184,10 +184,12 @@ export const createThreadPool = ({
   threads,
   debug,
   balancer,
+  source,
 }: {
   threads?: number;
   balancer?: Balancer;
   debug?: DebugOptions;
+  source?: string;
 }) =>
 <T extends FixedPoints>(fixedPoints: T): Pool<T> => {
   /**
@@ -250,6 +252,7 @@ export const createThreadPool = ({
       debug,
       listOfFunctions,
       perf,
+      source,
     })
   );
 

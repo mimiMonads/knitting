@@ -4,8 +4,8 @@ export const genTaskID = ((counter: number) => () => counter++)(0);
 // Get the current file's path.
 export const currentPath = () => new URL(import.meta.url);
 
-//@ts-ignore 
-const IS_BUN= typeof Bun == "object" && Bun !== null;
+//@ts-ignore
+const IS_BUN = typeof Bun == "object" && Bun !== null;
 
 const getCallerFilePathForBun = (n: number) => {
   //@ts-ignore Reason -> Types

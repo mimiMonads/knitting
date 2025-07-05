@@ -1,13 +1,24 @@
 // main.ts
-import { Worker } from "node:worker_threads";
+
 import { createMainQueue, type PromiseMap } from "./mainQueueManager.ts";
 import { genTaskID } from "./utils.ts";
 import { mainSignal, type Sab, signalsForWorker } from "./signals.ts";
 import { ChannelHandler, taskScheduler } from "./taskScheduler.ts";
 import type { ComposedWithKey, DebugOptions } from "./taskApi.ts";
 import { jsrIsGreatAndWorkWithoutBugs } from "./workerThread.ts";
-import { existsSync } from "node:fs";
-import { fileURLToPath } from "node:url";
+
+const isBrowser = typeof window !== "undefined";
+
+let poliWorker: Worker;
+
+if (!isBrowser) {
+  const { Worker } = await import("node:worker_threads");
+  //@ts-ignore
+  poliWorker = Worker;
+} else {
+  //@ts-ignore
+  poliWorker = Worker;
+}
 
 export type WorkerData = {
   sab: SharedArrayBuffer;
@@ -26,6 +37,7 @@ export const createContext = ({
   debug,
   listOfFunctions,
   perf,
+  source,
 }: {
   promisesMap: PromiseMap;
   list: string[];
@@ -35,28 +47,12 @@ export const createContext = ({
   debug?: DebugOptions;
   listOfFunctions: ComposedWithKey[];
   perf?: number;
+  source?: string;
 }) => {
-  // Determine worker file URL based on file existence
-  const jsFileUrl = new URL("workerThread.js", import.meta.url);
   const tsFileUrl = new URL("workerThread.ts", import.meta.url);
 
-  // Convert URL to file path for the file system check
-  const jsFilePath = fileURLToPath(
-    //@ts-ignore
-    jsFileUrl,
-  );
-
-  let workerUrl: URL;
-  if (existsSync(jsFilePath)) {
-    // Use the compiled JavaScript file if it exists.
-    workerUrl = jsFileUrl;
-  } else {
-    // Otherwise, fall back to the TypeScript file in development.
-    workerUrl = tsFileUrl;
-  }
-
   if (debug?.logHref === true) {
-    console.log(workerUrl);
+    console.log(tsFileUrl);
     jsrIsGreatAndWorkWithoutBugs();
   }
 
@@ -91,14 +87,16 @@ export const createContext = ({
 
   channelHandler.open(check);
 
-  const worker = new Worker(
-    fileURLToPath(
-      //@ts-ignore
-      workerUrl,
+  const worker = new poliWorker(
+    source ?? (
+      isBrowser
+        ? tsFileUrl.href // correct in browser
+        : decodeURIComponent(tsFileUrl.pathname) // correct in Node
     ),
     {
       //@ts-ignore Reason
       type: "module",
+      //@ts-ignore
       workerData: {
         sab: signals.sab,
         list,
@@ -118,7 +116,7 @@ export const createContext = ({
     return (args: Uint8Array) => enqueues(args);
   };
 
-  const send = ( () => {
+  const send = () => {
     if (check.isRunning === false && canWrite()) {
       signalBox.status[0] = 9;
       Atomics.notify(signalBox.status, 0, 1);
@@ -126,24 +124,22 @@ export const createContext = ({
       check.isRunning = true;
       queueMicrotask(check);
     }
-  });
+  };
 
   const fastCalling = ({ fnNumber }: CallFunction) => {
     const first = fastEnqueue(fnNumber);
     const enqueue = enqueuePromise(fnNumber);
 
-
-    return (args: Uint8Array) => 
-       check.isRunning === false
+    return (args: Uint8Array) =>
+      check.isRunning === false
         ? (
           signalBox.status[0] = 9,
-          Atomics.notify(signalBox.status, 0, 1),
-          check.isRunning = true, 
-          queueMicrotask(check), 
-          first(args)
+            Atomics.notify(signalBox.status, 0, 1),
+            check.isRunning = true,
+            queueMicrotask(check),
+            first(args)
         )
         : enqueue(args);
-    
   };
 
   return {
