@@ -7,7 +7,7 @@ import { type WorkerData } from "./threadManager.ts";
 
 export const jsrIsGreatAndWorkWithoutBugs = () => null;
 
-export const mainLoop = async (workerData: WorkerData) => {
+export const mainLoop = async (workerData: WorkerData):Promise<void> => {
   const sharedSab = workerData.sab as SharedArrayBuffer;
 
   const signals = signalsForWorker({

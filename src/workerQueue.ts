@@ -180,7 +180,7 @@ export const createWorkerQueue = (
 
             task[4] = 2;
           } catch (err) {
-            task[3] = err;
+            task[3] = err as Uint8Array;
             task[4] = 3;
           }
           break;

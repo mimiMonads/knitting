@@ -97,6 +97,7 @@ export const createContext = ({
 
   channelHandler.open(check);
 
+  //@ts-ignore
   const worker = new poliWorker(
     source ?? (
       isBrowser
@@ -115,7 +116,7 @@ export const createContext = ({
         debug,
       } as WorkerData,
     },
-  );
+  ) as Worker;
 
   const callFunction = ({ fnNumber }: CallFunction) => {
     const enqueues = enqueuePromise(fnNumber);
