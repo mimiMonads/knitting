@@ -82,7 +82,6 @@ export function createMainQueue({
     )
   );
 
-  /*────────────────────────────── Helpers ────────────────────────────────*/
   function canWrite(): boolean {
     for (let i = 0; i < queue.length; i++) {
       if (queue[i][4] === 0) return true;
@@ -107,7 +106,6 @@ export function createMainQueue({
     promisesMap.forEach((def) => def.reject(reason));
   };
 
-  /*──────────────────────────────  API  ───────────────────────────────*/
   return {
     rejectAll,
     canWrite,
@@ -217,7 +215,8 @@ export function createMainQueue({
       }
 
       const job = queue[idx];
-      const promiseEntry = promisesMap.get(job[0]);
+      const promiseEntry = promisesMap.get(currentID);
+
       promiseEntry?.resolve( //@ts-ignore
         readFromWorkerArray[job[2]](),
       );

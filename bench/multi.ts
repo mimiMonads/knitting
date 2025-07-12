@@ -1,8 +1,17 @@
 import { bench, group, run as runMitata, summary } from "mitata";
-import { createThreadPool } from "../src/taskApi.ts";
-import { aaa } from "./functions.ts";
+import { createThreadPool, fixedPoint } from "../src/taskApi.ts";
 
-const fn = aaa.f;
+const fn = fixedPoint({
+  f: async () => {
+    let a = 100000;
+    let b = 0;
+    while (a != 0) {
+      b = b++;
+      a--;
+    }
+    return b;
+  },
+});
 
 const threads = 4;
 const { terminateAll, callFunction, send } = createThreadPool(
@@ -11,17 +20,17 @@ const { terminateAll, callFunction, send } = createThreadPool(
     balancer: "firstAvailable",
   },
 )({
-  aaa,
+  fn,
 });
 
 group("1", () => {
   summary(() => {
     bench(" Main -> 1", async () => {
-      return await fn();
+      return await fn.f();
     });
 
     bench(threads + " thread -> 1", async () => {
-      const arr = callFunction.aaa();
+      const arr = callFunction.fn();
 
       send();
 
@@ -34,8 +43,8 @@ group("2", () => {
   summary(() => {
     bench(threads + " thread -> 2", async () => {
       const arr = [
-        callFunction.aaa(),
-        callFunction.aaa(),
+        callFunction.fn(),
+        callFunction.fn(),
       ];
 
       send();
@@ -49,9 +58,9 @@ group("3", () => {
   summary(() => {
     bench(threads + " thread -> 3", async () => {
       const arr = [
-        callFunction.aaa(),
-        callFunction.aaa(),
-        callFunction.aaa(),
+        callFunction.fn(),
+        callFunction.fn(),
+        callFunction.fn(),
       ];
 
       send();
@@ -65,10 +74,10 @@ group("4", () => {
   summary(() => {
     bench(threads + " thread -> 4", async () => {
       const arr = [
-        callFunction.aaa(),
-        callFunction.aaa(),
-        callFunction.aaa(),
-        callFunction.aaa(),
+        callFunction.fn(),
+        callFunction.fn(),
+        callFunction.fn(),
+        callFunction.fn(),
       ];
 
       send();
@@ -80,22 +89,22 @@ group("4", () => {
   group("4 * 4", () => {
     bench(threads + " thread -> 16", async () => {
       const arr = [
-        callFunction.aaa(),
-        callFunction.aaa(),
-        callFunction.aaa(),
-        callFunction.aaa(),
-        callFunction.aaa(),
-        callFunction.aaa(),
-        callFunction.aaa(),
-        callFunction.aaa(),
-        callFunction.aaa(),
-        callFunction.aaa(),
-        callFunction.aaa(),
-        callFunction.aaa(),
-        callFunction.aaa(),
-        callFunction.aaa(),
-        callFunction.aaa(),
-        callFunction.aaa(),
+        callFunction.fn(),
+        callFunction.fn(),
+        callFunction.fn(),
+        callFunction.fn(),
+        callFunction.fn(),
+        callFunction.fn(),
+        callFunction.fn(),
+        callFunction.fn(),
+        callFunction.fn(),
+        callFunction.fn(),
+        callFunction.fn(),
+        callFunction.fn(),
+        callFunction.fn(),
+        callFunction.fn(),
+        callFunction.fn(),
+        callFunction.fn(),
       ];
 
       send();

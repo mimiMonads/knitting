@@ -2,7 +2,12 @@
 
 import { createMainQueue, type PromiseMap } from "./mainQueueManager.ts";
 import { genTaskID } from "./utils.ts";
-import { mainSignal, type Sab, signalsForWorker } from "./signals.ts";
+import {
+  mainSignal,
+  type Sab,
+  signalsForWorker,
+  SignalStatus,
+} from "./signals.ts";
 import { ChannelHandler, taskScheduler } from "./taskScheduler.ts";
 import type { ComposedWithKey, DebugOptions } from "./taskApi.ts";
 import { jsrIsGreatAndWorkWithoutBugs } from "./workerThread.ts";
@@ -19,6 +24,10 @@ if (!isBrowser) {
   //@ts-ignore
   poliWorker = Worker;
 }
+
+export type CallFunction = {
+  fnNumber: number;
+};
 
 export type WorkerData = {
   sab: SharedArrayBuffer;
@@ -73,6 +82,7 @@ export const createContext = ({
     enqueuePromise,
     canWrite,
     rejectAll,
+    isEverythingSolved,
   } = queue;
   const channelHandler = new ChannelHandler();
 
@@ -107,10 +117,6 @@ export const createContext = ({
     },
   );
 
-  type CallFunction = {
-    fnNumber: number;
-  };
-
   const callFunction = ({ fnNumber }: CallFunction) => {
     const enqueues = enqueuePromise(fnNumber);
     return (args: Uint8Array) => enqueues(args);
@@ -118,7 +124,7 @@ export const createContext = ({
 
   const send = () => {
     if (check.isRunning === false && canWrite()) {
-      signalBox.status[0] = 9;
+      signalBox.status[0] = SignalStatus.DoNothing;
       Atomics.notify(signalBox.status, 0, 1);
       dispatchToWorker();
       check.isRunning = true;
@@ -133,7 +139,7 @@ export const createContext = ({
     return (args: Uint8Array) =>
       check.isRunning === false
         ? (
-          signalBox.status[0] = 9,
+          signalBox.status[0] = SignalStatus.DoNothing,
             Atomics.notify(signalBox.status, 0, 1),
             check.isRunning = true,
             queueMicrotask(check),
@@ -143,9 +149,7 @@ export const createContext = ({
   };
 
   return {
-    queue,
-    check,
-    dispatchToWorker,
+    isEverythingSolved,
     send,
     callFunction,
     fastCalling,

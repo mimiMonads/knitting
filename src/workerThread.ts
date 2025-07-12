@@ -1,7 +1,7 @@
 import { isMainThread, workerData } from "node:worker_threads";
 import { signalDebuggerV2 } from "./utils.ts";
 import { createWorkerQueue } from "./workerQueue.ts";
-import { signalsForWorker, workerSignal } from "./signals.ts";
+import { signalsForWorker, SignalStatus, workerSignal } from "./signals.ts";
 import { type DebugOptions, getFunctions } from "./taskApi.ts";
 import { type WorkerData } from "./threadManager.ts";
 
@@ -65,25 +65,23 @@ export const mainLoop = async (workerData: WorkerData) => {
     : currentSignal;
 
   while (true) {
-    switch (getSignal()) {
-      case 2:
-      case 3:
-      case 100:
-        // Case 9 doest nothing (cirno reference)
-      case 9: {
+    switch (status[0]) {
+      case SignalStatus.AllTasksDone:
+      case SignalStatus.WaitingForMore:
+      case SignalStatus.ErrorThrown:
+      case SignalStatus.DoNothing: {
         continue;
       }
 
-      case 0: {
+      case SignalStatus.WorkerWaiting: {
         await fastResolve();
         continue;
       }
-      // deno-lint-ignore no-fallthrough
-      case 126: {
+
+      case SignalStatus.Promify: {
         promify();
       }
-      case 127:
-      case 128: {
+      case SignalStatus.MainReadyToRead: {
         if (someHasFinished()) {
           write();
           continue;
@@ -98,15 +96,21 @@ export const mainLoop = async (workerData: WorkerData) => {
 
         continue;
       }
-      case 192:
+      case SignalStatus.MainSend:
         {
           enqueue();
         }
 
         continue;
-      case 254:
-      case 255: {
-        Atomics.wait(status, 0, 255, 100);
+      case SignalStatus.MainSemiStop:
+      case SignalStatus.MainStop: {
+        // `SignalStatus.ErrorThrown` is place holderit actually doesnt matter at all
+        Atomics.wait(
+          status,
+          0,
+          SignalStatus.MainStop,
+          SignalStatus.ErrorThrown,
+        );
         continue;
       }
     }

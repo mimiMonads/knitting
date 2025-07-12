@@ -5,6 +5,7 @@ import type { PromiseMap } from "./mainQueueManager.ts";
 import { isMainThread, workerData } from "node:worker_threads";
 
 import { type Balancer, manangerMethod } from "./threadBalancer.ts";
+import { createMainThread } from "./mainThread.ts";
 
 export const isMain = isMainThread;
 export type FixedPoints = Record<string, Composed>;
@@ -184,9 +185,11 @@ export const createThreadPool = ({
   threads,
   debug,
   balancer,
+  main,
   source,
 }: {
   threads?: number;
+  main?: "first" | "last";
   balancer?: Balancer;
   debug?: DebugOptions;
   source?: string;
@@ -241,7 +244,7 @@ export const createThreadPool = ({
 
   const perf = debug ? performance.now() : undefined;
 
-  const workers = Array.from({
+  let workers = Array.from({
     length: threads ?? 1,
   }).map((_, thread) =>
     createContext({
@@ -255,6 +258,26 @@ export const createThreadPool = ({
       source,
     })
   );
+
+  if (main) {
+    const mainThread = createMainThread({
+      fixedPoints,
+      genTaskID,
+    });
+
+    if (main === "first") {
+      workers = [
+        mainThread,
+        ...workers,
+      ];
+    }
+
+    if (main === "last") {
+      workers.push(
+        mainThread,
+      );
+    }
+  }
 
   const fastMap = workers
     .map((worker) => {

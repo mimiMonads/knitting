@@ -1,5 +1,5 @@
 import type { MultiQueue } from "./mainQueueManager.ts";
-import type { MainSignal } from "./signals.ts";
+import { type MainSignal, SignalStatus } from "./signals.ts";
 import { signalDebuggerV2 } from "./utils.ts";
 
 export const taskScheduler = ({
@@ -38,8 +38,8 @@ export const taskScheduler = ({
   const loop = ((n) => () => ++n % 2 === 1 ? true : false)(0);
 
   const check = () => {
-    switch (getSignal()) {
-      case 0:
+    switch (status[0]) {
+      case SignalStatus.WorkerWaiting:
         resolveTask();
         readyToRead();
         if (loop()) {
@@ -48,7 +48,7 @@ export const taskScheduler = ({
         }
         channelHandler.scheduleCheck();
         return;
-      case 1:
+      case SignalStatus.MessageRead:
         resolveTask();
         readyToRead();
         if (loop()) {
@@ -58,7 +58,7 @@ export const taskScheduler = ({
         channelHandler.scheduleCheck();
         return;
 
-      case 2:
+      case SignalStatus.AllTasksDone:
         if (canWrite()) {
           dispatchToWorker();
           queueMicrotask(check);
@@ -68,7 +68,7 @@ export const taskScheduler = ({
         }
         return;
 
-      case 3:
+      case SignalStatus.WaitingForMore:
         if (canWrite()) {
           dispatchToWorker();
           queueMicrotask(check);
@@ -81,7 +81,7 @@ export const taskScheduler = ({
           channelHandler.scheduleCheck();
         }
         return;
-      case 100: {
+      case SignalStatus.ErrorThrown: {
         // Error was thrown in the worker queue
         resolveError();
         readyToRead();
@@ -93,12 +93,8 @@ export const taskScheduler = ({
         }
         return;
       }
-      case 126: {
-        queueMicrotask(check);
-        return;
-      }
-      case 127:
-      case 128: {
+      case SignalStatus.Promify:
+      case SignalStatus.MainReadyToRead: {
         if (loop()) {
           queueMicrotask(check);
           return;
@@ -106,7 +102,7 @@ export const taskScheduler = ({
         channelHandler.scheduleCheck();
         return;
       }
-      case 192:
+      case SignalStatus.MainSend:
         if (loop()) {
           queueMicrotask(check);
           return;

@@ -7,42 +7,52 @@ const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
 const MIN_SAFE_INTEGER = Number.MIN_SAFE_INTEGER;
-const toWorkerUint8 =
-  ({ id, payload, payloadLength, grow }: SignalArguments) =>
-  (
-    task: MainList,
-  ) => {
-    payload.set(task[1]);
-    payloadLength[0] = grow(task[1].length);
-    id[0] = task[0];
-  };
 
-const toWorkerSerializable =
-  ({ id, buffer, payloadLength, grow }: SignalArguments) =>
-  (
-    task: MainList,
-  ) => {
-    const encoded = serialize(task[1]);
+enum PayloadType {
+  Serializable = 0,
+  String = 1,
+  BigUint = 2,
+  BigInt = 3,
+  True = 4,
+  False = 5,
+  Undefined = 6,
+  NaN = 7,
+  Infinity = 8,
+  NegativeInfinity = 9,
+  Float64 = 10,
+  Uint32 = 11,
+  Int32 = 12,
+  Uint64 = 13,
+  Int64 = 14,
+  Null = 15,
+  Json = 16,
+}
 
-    //@ts-ignore
-    buffer.set(encoded);
-    //@ts-ignore
-    payloadLength[0] = grow(encoded.length);
+const toWorkerUint8 = ({ id, setBuffer }: SignalArguments) =>
+(
+  task: MainList,
+) => {
+  setBuffer(task[1]);
+  id[0] = task[0];
+};
 
-    id[0] = task[0];
-  };
+const toWorkerSerializable = ({ id, setBuffer }: SignalArguments) =>
+(
+  task: MainList,
+) => {
+  setBuffer(serialize(task[1]));
+  id[0] = task[0];
+};
 
-const toWorkerString =
-  ({ id, payload, payloadLength, grow }: SignalArguments) =>
-  (
-    task: MainList,
-  ) => {
-    //@ts-ignore
-    const encode = textEncoder.encode(task[1]);
-    payload.set(encode);
-    payloadLength[0] = grow(encode.length);
-    id[0] = task[0];
-  };
+const toWorkerString = ({ id, setBuffer }: SignalArguments) =>
+(
+  task: MainList,
+) => {
+  // @ts-ignore
+  const encode = textEncoder.encode(task[1]);
+  setBuffer(encode);
+  id[0] = task[0];
+};
 
 const toWorkerVoid =
   ({ id, payloadLength }: SignalArguments) => (task: MainList) => {
@@ -53,9 +63,7 @@ const toWorkerVoid =
 const fromReturnToMainError = ({
   type,
   id,
-  buffer,
-  payloadLength,
-  grow,
+  setBuffer,
 }: SignalArguments) => {
   const serilizedError = serialize(
     new Error("The thrown object is not serializable"),
@@ -70,33 +78,30 @@ const fromReturnToMainError = ({
       error = serilizedError;
     }
 
-    buffer.set(error as Uint8Array);
-    //@ts-ignore
-    payloadLength[0] = grow(error.length);
+    setBuffer(error as Uint8Array);
     id[0] = task[0];
+
     // To be parsed with serialize
-    type[0] = 0;
+    type[0] = PayloadType.Serializable;
   };
 };
 
 /**
  * Where:
  *  1 -> Takes the arguments of a MainList
- *  3 -> Takes the retun of a MainList
+ *  3 -> Takes the return of a MainList
  */
 const toWorkerAny = (index: 1 | 3 = 1) =>
 (
   {
     id,
-    payload,
-    payloadLength,
     type,
     uBigInt,
     bigInt,
     int32,
     uInt32,
     float64,
-    grow,
+    setBuffer,
   }: SignalArguments,
 ) =>
 (
@@ -106,79 +111,51 @@ const toWorkerAny = (index: 1 | 3 = 1) =>
   id[0] = task[0];
 
   switch (typeof args) {
-    /**
-     * string -> 1
-     */
+    /** string */
     case "string": {
       const encode = textEncoder.encode(args);
-
-      payload.set(encode);
-      payloadLength[0] = grow(encode.length);
-      type[0] = 1;
-
+      setBuffer(encode);
+      type[0] = PayloadType.String;
       return;
     }
-    /**
-     * bigInt -> 2 & 3
-     *  2 = uBigInt
-     *  3 = bigInt
-     */
+
+    /** bigint */
     case "bigint": {
       if (args > 0n) {
         uBigInt[0] = args;
-        type[0] = 2;
+        type[0] = PayloadType.BigUint;
         return;
       }
       bigInt[0] = args;
-      type[0] = 3;
+      type[0] = PayloadType.BigInt;
       return;
     }
 
-    /**
-     * Boolean -> 4 & 5
-     *  4 = true
-     *  5 = false
-     */
-
+    /** boolean */
     case "boolean": {
-      type[0] = args === true ? 4 : 5;
+      type[0] = args === true ? PayloadType.True : PayloadType.False;
       return;
     }
 
-    /**
-     * undefined -> 6
-     */
-
+    /** undefined */
     case "undefined": {
-      type[0] = 6;
+      type[0] = PayloadType.Undefined;
       return;
     }
 
-    /**
-     * number -> 7 <-> 14
-     * NaN = 7
-     * Infinity = 8
-     * - Infinity = 9
-     * Float64 = 10
-     * Uint32 = 11
-     * Int32 = 12
-     * Uint64 = 13
-     * Int64 = 14
-     */
+    /** number */
     case "number": {
       if (args !== args) {
-        type[0] = 7;
+        type[0] = PayloadType.NaN;
         return;
       }
 
       switch (args) {
         case Infinity:
-          type[0] = 8;
+          type[0] = PayloadType.Infinity;
           return;
-
         case -Infinity:
-          type[0] = 9;
-
+          type[0] = PayloadType.NegativeInfinity;
           return;
       }
 
@@ -186,61 +163,53 @@ const toWorkerAny = (index: 1 | 3 = 1) =>
         if (args > 0) {
           if (args <= 0xFFFFFFFF) {
             uInt32[0] = args;
-            type[0] = 11;
+            type[0] = PayloadType.Uint32;
             return;
           }
-
           if (args <= MAX_SAFE_INTEGER) {
             uBigInt[0] = BigInt(args);
-            type[0] = 13;
+            type[0] = PayloadType.Uint64;
             return;
           }
-
           float64[0] = args;
-          type[0] = 10;
+          type[0] = PayloadType.Float64;
           return;
         }
 
         if (args >= -0x80000000) {
           int32[0] = args;
-          type[0] = 12;
+          type[0] = PayloadType.Int32;
           return;
         } else if (args >= MIN_SAFE_INTEGER) {
           bigInt[0] = BigInt(args);
-          type[0] = 14;
+          type[0] = PayloadType.Int64;
           return;
         }
       }
 
       float64[0] = args;
-      type[0] = 10;
+      type[0] = PayloadType.Float64;
       return;
     }
-    /**
-     * Object 15
-     * null = 15
-     */
+
+    /** object */
     case "object": {
       let encoded;
       if (args === null) {
-        type[0] = 15;
+        type[0] = PayloadType.Null;
         return;
       }
 
       if (args.constructor === Object || args.constructor === Array) {
         encoded = textEncoder.encode(JSON.stringify(args));
-        payload.set(encoded);
-        payloadLength[0] = grow(encoded.length);
-        type[0] = 16;
+        setBuffer(encoded);
+        type[0] = PayloadType.Json;
         return;
       }
 
       encoded = serialize(args);
-      //@ts-ignore
-      payload.set(encoded);
-      //@ts-ignore
-      payloadLength[0] = grow(encoded.length);
-      type[0] = 0;
+      setBuffer(encoded as Uint8Array);
+      type[0] = PayloadType.Serializable;
       return;
     }
   }
@@ -261,20 +230,18 @@ const sendToWorker = (signals: SignalArguments) => (type: External) => {
   }
 };
 
-const readUint8FromWorker =
-  ({ payload, payloadLength }: SignalArguments) => () =>
-    payload.slice(0, payloadLength[0]);
+const readUint8FromWorker = ({ slice, payloadLength }: SignalArguments) => () =>
+  slice(0, payloadLength[0]);
 
 const readStringFromWorker =
-  ({ payload, payloadLength }: SignalArguments) => () =>
-    textDecoder.decode(payload.slice(0, payloadLength[0]));
+  ({ slice, payloadLength }: SignalArguments) => () =>
+    textDecoder.decode(slice(0, payloadLength[0]));
 
 const readVoidFromWorker = ({}: SignalArguments) => () => undefined;
 
 const readSerializableFromWorker =
-  ({ buffer, payloadLength }: SignalArguments) => () => {
-    return deserialize(buffer.subarray(0, payloadLength[0]));
-  };
+  ({ subarray, payloadLength }: SignalArguments) => () =>
+    deserialize(subarray(0, payloadLength[0]));
 
 const readFromWorker = (signals: SignalArguments) => (type: External) => {
   switch (type) {
@@ -294,25 +261,23 @@ const readFromWorker = (signals: SignalArguments) => (type: External) => {
 ///  WORKER ///
 
 const readPayloadWorkerUint8 =
-  ({ payload, payloadLength }: SignalArguments) => () =>
-    payload.slice(0, payloadLength[0]);
+  ({ slice, payloadLength }: SignalArguments) => () =>
+    slice(0, payloadLength[0]);
 
 const readPayloadWorkerString =
-  ({ payload, payloadLength }: SignalArguments) => () =>
-    textDecoder.decode(payload.subarray(0, payloadLength[0]));
+  ({ subarray, payloadLength }: SignalArguments) => () =>
+    textDecoder.decode(subarray(0, payloadLength[0]));
 
 const readPayloadWorkerVoid = ({}: SignalArguments) => () => undefined;
 
 const readPayloadWorkerSerializable =
-  ({ buffer, payloadLength }: SignalArguments) => () => {
-    return deserialize(buffer.subarray(0, payloadLength[0]));
-  };
+  ({ subarray, payloadLength }: SignalArguments) => () =>
+    deserialize(subarray(0, payloadLength[0]));
 
 const readPayloadWorkerAny = (
   {
-    buffer,
     payloadLength,
-    payload,
+    subarray,
     type,
     uBigInt,
     bigInt,
@@ -323,68 +288,47 @@ const readPayloadWorkerAny = (
 ) =>
 () => {
   switch (type[0]) {
-    /**
-     * String case
-     */
-
-    case 1:
+    case PayloadType.String:
       return textDecoder.decode(
-        payload.subarray(0, payloadLength[0]),
+        subarray(0, payloadLength[0]),
       );
-    /**
-     * BigUint case
-     */
-    case 2:
+    case PayloadType.BigUint:
       return uBigInt[0];
-      /**
-       * BigInt case
-       */
-    case 3:
+    case PayloadType.BigInt:
       return bigInt[0];
-    case 4:
+    case PayloadType.True:
       return true;
-    case 5:
+    case PayloadType.False:
       return false;
-    case 6:
+    case PayloadType.Undefined:
       return undefined;
-      /**
-       * number -> 7 & 8 & 9 & 10
-       * NaN = 7
-       * Infinity = 8
-       * - Infinity = 9
-       * Float64 = 10
-       * Uint32 = 11
-       * Int32 = 12
-       * Uint64 = 13
-       * Int64 = 14
-       */
-    case 7:
+    case PayloadType.NaN:
       return NaN;
-    case 8:
+    case PayloadType.Infinity:
       return Infinity;
-    case 9:
+    case PayloadType.NegativeInfinity:
       return -Infinity;
-    case 10:
+    case PayloadType.Float64:
       return float64[0];
-    case 11:
+    case PayloadType.Uint32:
       return uInt32[0];
-    case 12:
+    case PayloadType.Int32:
       return int32[0];
-    case 13:
+    case PayloadType.Uint64:
       return Number(uBigInt[0]);
-    case 14:
+    case PayloadType.Int64:
       return Number(bigInt[0]);
-    case 15:
+    case PayloadType.Null:
       return null;
-    case 16:
+    case PayloadType.Json:
       return JSON.parse(
         textDecoder.decode(
-          payload.subarray(0, payloadLength[0]),
+          subarray(0, payloadLength[0]),
         ),
       );
-    //default
-    case 0:
-      return deserialize(buffer.subarray(0, payloadLength[0]));
+    // default
+    case PayloadType.Serializable:
+      return deserialize(subarray(0, payloadLength[0]));
   }
 };
 
@@ -405,20 +349,16 @@ const fromPlayloadToArguments =
   };
 
 const writePayloadUnint8 =
-  ({ id, payload, payloadLength, grow }: SignalArguments) =>
-  (task: QueueListWorker) => {
-    payload.set(task[3], 0);
-    payloadLength[0] = grow(task[3].length);
+  ({ id, setBuffer }: SignalArguments) => (task: QueueListWorker) => {
+    setBuffer(task[3]);
     id[0] = task[0];
   };
 
 const writePayloadString =
-  ({ id, payload, payloadLength, grow }: SignalArguments) =>
-  (task: QueueListWorker) => {
-    //@ts-ignore
+  ({ id, setBuffer }: SignalArguments) => (task: QueueListWorker) => {
+    // @ts-ignore
     const encode = textEncoder.encode(task[3]);
-    payload.set(encode, 0);
-    payloadLength[0] = grow(encode.length);
+    setBuffer(encode);
     id[0] = task[0];
   };
 
@@ -428,18 +368,14 @@ const writePayloadVoid =
     id[0] = task[0];
   };
 
-const writePayloadSerializable =
-  ({ id, buffer, payloadLength, grow }: SignalArguments) =>
-  (
-    task: QueueListWorker,
-  ) => {
-    const encoded = serialize(task[3]);
-    //@ts-ignore
-    buffer.set(encoded);
-    //@ts-ignore
-    payloadLength[0] = grow(encoded.length);
-    id[0] = task[0];
-  };
+const writePayloadSerializable = ({ id, setBuffer }: SignalArguments) =>
+(
+  task: QueueListWorker,
+) => {
+  const encoded = serialize(task[3]);
+  setBuffer(encoded);
+  id[0] = task[0];
+};
 
 const fromreturnToMain = (signals: SignalArguments) => (type: External) => {
   switch (type) {
@@ -456,10 +392,8 @@ const fromreturnToMain = (signals: SignalArguments) => (type: External) => {
   }
 };
 
-const readPayloadUWU =
-  ({ buffer, payloadLength, grow }: SignalArguments) => () => {
-    return deserialize(buffer.subarray(0, grow(payloadLength[0])));
-  };
+const readPayloadUWU = ({ subarray, payloadLength }: SignalArguments) => () =>
+  deserialize(subarray(0, payloadLength[0]));
 
 export {
   fromPlayloadToArguments,
