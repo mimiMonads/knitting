@@ -65,7 +65,7 @@ export const createContext = ({
     jsrIsGreatAndWorkWithoutBugs();
   }
 
-  const signals = signalsForWorker(sab);
+  const signals = signalsForWorker({sabObject: sab, isMain: true, thread});
   const signalBox = mainSignal(signals);
 
   const queue = createMainQueue({
@@ -126,7 +126,7 @@ export const createContext = ({
   const send = () => {
     if (check.isRunning === false && canWrite()) {
       signalBox.status[0] = SignalStatus.DoNothing;
-      Atomics.notify(signalBox.status, 0, 1);
+      Atomics.notify(signalBox.rawStatus, 0, 1);
       dispatchToWorker();
       check.isRunning = true;
       queueMicrotask(check);
@@ -141,7 +141,7 @@ export const createContext = ({
       check.isRunning === false
         ? (
           signalBox.status[0] = SignalStatus.DoNothing,
-            Atomics.notify(signalBox.status, 0, 1),
+            Atomics.notify(signalBox.rawStatus, 0, 1),
             check.isRunning = true,
             queueMicrotask(check),
             first(args)

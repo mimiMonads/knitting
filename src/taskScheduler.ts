@@ -1,10 +1,8 @@
 import type { MultiQueue } from "./mainQueueManager.ts";
 import { type MainSignal, SignalStatus } from "./signals.ts";
-import { signalDebuggerV2 } from "./utils.ts";
 
 export const taskScheduler = ({
   signalBox: {
-    currentSignal,
     readyToRead,
     hasNoMoreMessages,
     status,
@@ -16,9 +14,6 @@ export const taskScheduler = ({
     resolveError,
   },
   channelHandler,
-  debugSignal,
-  thread,
-  perf,
 }: {
   queue: MultiQueue;
   signalBox: MainSignal;
@@ -27,14 +22,7 @@ export const taskScheduler = ({
   thread: number;
   perf?: number;
 }) => {
-  const getSignal = debugSignal === true
-    ? signalDebuggerV2({
-      isMain: true,
-      thread,
-      status,
-      perf,
-    })
-    : currentSignal;
+
   const loop = ((n) => () => ++n % 2 === 1 ? true : false)(0);
 
   const check = () => {

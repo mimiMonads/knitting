@@ -68,13 +68,11 @@ export const signalDebuggerV2 = ({
   thread,
   isMain,
   status,
-  perf,
 }: {
-  thread?: number;
-  isMain?: true;
+  thread: number;
+  isMain: boolean;
   status: Int32Array;
-  perf?: number;
-}): () => number => {
+}) => {
   // ─── colours & helpers ───────────────────────────────────────────
   const orange = "\x1b[38;5;214m";
   const purple = "\x1b[38;5;129m";
@@ -84,7 +82,7 @@ export const signalDebuggerV2 = ({
 
   // ─── timing state ────────────────────────────────────────────────
   let last = status[0];
-  const born = perf ?? performance.now();
+  const born =  performance.now();
   let lastPerf = born;
 
   // ─── proxy that logs every read/write of element 0 ───────────────
@@ -121,5 +119,5 @@ export const signalDebuggerV2 = ({
   }
 
   // ─── keep the original return type: () => number ────────────────
-  return () => proxied[0]; // read goes through proxy → logs + returns
+   return proxied; // read goes through proxy → logs + returns
 };

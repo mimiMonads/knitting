@@ -86,6 +86,7 @@ export function createMainQueue({
     for (let i = 0; i < queue.length; i++) {
       if (queue[i][4] === 0) return true;
     }
+
     return false;
   }
 

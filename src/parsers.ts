@@ -111,7 +111,6 @@ const toWorkerAny = (index: 1 | 3 = 1) =>
   id[0] = task[0];
 
   switch (typeof args) {
-    /** string */
     case "string": {
       const encode = textEncoder.encode(args);
       setBuffer(encode);
@@ -119,7 +118,6 @@ const toWorkerAny = (index: 1 | 3 = 1) =>
       return;
     }
 
-    /** bigint */
     case "bigint": {
       if (args > 0n) {
         uBigInt[0] = args;
@@ -131,19 +129,16 @@ const toWorkerAny = (index: 1 | 3 = 1) =>
       return;
     }
 
-    /** boolean */
     case "boolean": {
       type[0] = args === true ? PayloadType.True : PayloadType.False;
       return;
     }
 
-    /** undefined */
     case "undefined": {
       type[0] = PayloadType.Undefined;
       return;
     }
 
-    /** number */
     case "number": {
       if (args !== args) {
         type[0] = PayloadType.NaN;
@@ -192,23 +187,23 @@ const toWorkerAny = (index: 1 | 3 = 1) =>
       return;
     }
 
-    /** object */
     case "object": {
-      let encoded;
       if (args === null) {
         type[0] = PayloadType.Null;
         return;
       }
 
-      if (args.constructor === Object || args.constructor === Array) {
-        encoded = textEncoder.encode(JSON.stringify(args));
-        setBuffer(encoded);
-        type[0] = PayloadType.Json;
-        return;
+      switch (args.constructor) {
+        case Object:
+        case Array: {
+          setBuffer(textEncoder.encode(JSON.stringify(args)));
+
+          type[0] = PayloadType.Json;
+          return;
+        }
       }
 
-      encoded = serialize(args);
-      setBuffer(encoded as Uint8Array);
+      setBuffer(serialize(args) as Uint8Array);
       type[0] = PayloadType.Serializable;
       return;
     }

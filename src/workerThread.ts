@@ -1,5 +1,4 @@
 import { isMainThread, workerData } from "node:worker_threads";
-import { signalDebuggerV2 } from "./utils.ts";
 import { createWorkerQueue } from "./workerQueue.ts";
 import { signalsForWorker, SignalStatus, workerSignal } from "./signals.ts";
 import { type DebugOptions, getFunctions } from "./taskApi.ts";
@@ -7,14 +6,18 @@ import { type WorkerData } from "./threadManager.ts";
 
 export const jsrIsGreatAndWorkWithoutBugs = () => null;
 
-export const mainLoop = async (workerData: WorkerData):Promise<void> => {
-  const sharedSab = workerData.sab as SharedArrayBuffer;
+export const mainLoop = async (workerData: WorkerData): Promise<void> => {
 
   const signals = signalsForWorker({
-    sharedSab,
+    sabObject: {
+      sharedSab: workerData.sab
+    } ,
+    isMain: false,
+    thread: workerData.thread
+
   });
 
-  const { status } = signals;
+  const { status , rawStatus} = signals;
 
   const debug = workerData.debug as DebugOptions;
 
@@ -53,16 +56,8 @@ export const mainLoop = async (workerData: WorkerData):Promise<void> => {
     signals,
   });
 
-  const { currentSignal, signalAllTasksDone } = signal;
+  const { signalAllTasksDone } = signal;
 
-  const getSignal = debug?.logThreads
-    ? signalDebuggerV2(
-      {
-        status: signal.status,
-        thread: workerData.thread,
-      },
-    )
-    : currentSignal;
 
   while (true) {
     switch (status[0]) {
@@ -105,12 +100,14 @@ export const mainLoop = async (workerData: WorkerData):Promise<void> => {
       case SignalStatus.MainSemiStop:
       case SignalStatus.MainStop: {
         // `SignalStatus.ErrorThrown` is place holderit actually doesnt matter at all
+
         Atomics.wait(
-          status,
+          rawStatus,
           0,
           SignalStatus.MainStop,
           SignalStatus.ErrorThrown,
         );
+
         continue;
       }
     }

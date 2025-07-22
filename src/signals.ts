@@ -2,6 +2,8 @@ export type SignalArguments = ReturnType<typeof signalsForWorker>;
 export type MainSignal = ReturnType<typeof mainSignal>;
 export type WorkerSignal = ReturnType<typeof workerSignal>;
 import { isMainThread } from "node:worker_threads";
+import { signalDebuggerV2 } from "./utils";
+import { DebugOptions } from "./taskApi";
 
 enum SignalEnumOptions {
   header = 24,
@@ -63,14 +65,32 @@ const allocBuffer = ({ sab, payloadLength }: {
     },
   };
 };
-export const signalsForWorker = (args?: Sab) => {
-  const sab = args?.sharedSab
-    ? args.sharedSab
-    : new SharedArrayBuffer(args?.size ?? SignalEnumOptions.defaultSize, {
+
+signalDebuggerV2
+
+type SignalForWorker = {
+  sabObject?: Sab
+  isMain: boolean,
+  thread: number
+  debbug?: DebugOptions
+}
+export const signalsForWorker = ( { sabObject, isMain, thread, debbug}: SignalForWorker) => {
+
+
+  const sab = sabObject?.sharedSab
+    ? sabObject.sharedSab
+    : new SharedArrayBuffer(sabObject?.size ?? SignalEnumOptions.defaultSize, {
       maxByteLength: SignalEnumOptions.maxByteLength,
     });
 
-  const status = new Int32Array(sab, 0, 1);
+
+
+  const status = 
+    typeof debbug === undefined
+    ? new Int32Array(sab, 0, 1)
+    : signalDebuggerV2({
+     thread,isMain ,status: new Int32Array(sab, 0, 1)
+  })
 
   // Stoping workers
   if (isMainThread) {
@@ -83,6 +103,9 @@ export const signalsForWorker = (args?: Sab) => {
   return {
     sab,
     status,
+    // When we debbug we wrap status in a proxy thus it stop being an array,
+    // There are some JS utils that would complain about it (Atomics)
+    rawStatus: new Int32Array(sab, 0, 1),
     // Headers
     id: new Int32Array(sab, 4, 1),
     functionToUse: new Int32Array(sab, 12, 1),
@@ -104,9 +127,10 @@ export const signalsForWorker = (args?: Sab) => {
 };
 
 export const mainSignal = (
-  { status, id, functionToUse, queueState }: SignalArguments,
+  { status, id, functionToUse, queueState , rawStatus}: SignalArguments,
 ) => ({
   status,
+  rawStatus,
   currentSignal: () => status[0],
   send: () => (status[0] = SignalStatus.MainSend),
   setFunctionSignal: (signal: number) => (functionToUse[0] = signal),
