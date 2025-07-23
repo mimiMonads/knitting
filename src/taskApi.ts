@@ -26,42 +26,24 @@ export type Serializable =
   | Serializable[]
   | Map<Serializable, Serializable>
   | Set<Serializable>
-  | Uint8Array
   | Error;
 
-type Uint8Literral = "uint8";
-type VoidLiterral = "void";
-type StringLiterral = "string";
-type numberArrayLiterral = "number[]";
-type SerializableLiterral = "serializable";
 
-export type External =
-  | Uint8Literral
-  | VoidLiterral
-  | StringLiterral
-  | numberArrayLiterral
-  | SerializableLiterral;
+
+export type External = unknown
   
 type Args = External | Serializable;
 
 const symbol = Symbol.for("FIXEDPOINT");
 
 interface FixPoint<A extends Args, B extends Args> {
-  readonly args?: A;
-  readonly return?: B;
   readonly href?: string;
   readonly f: (
     args: A,
   ) => Promise<B>;
 }
 
-type Arguments<A extends Args> = A extends VoidLiterral ? void
-  : A extends StringLiterral ? string
-  : A extends undefined ? (Serializable)
-  : A extends void ? (Serializable)
-  : A extends numberArrayLiterral ? number[]
-  : A extends SerializableLiterral ? Serializable
-  : A;
+
 
 type SecondPart = {
   readonly [symbol]: string;

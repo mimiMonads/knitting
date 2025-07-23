@@ -29,6 +29,11 @@ export const createWorkerQueue = (
     },
   }: ArgumentsForCreateWorkerQueue,
 ) => {
+
+  const PLACE_HOLDER = (args) => {
+    throw("UNREACHABLE FROM PLACE HOLDER (thread)")
+  }
+
   const queue = Array.from(
     { length: max ?? 3 },
     () =>
@@ -37,8 +42,9 @@ export const createWorkerQueue = (
         new Uint8Array(),
         0,
         new Uint8Array(),
-        -1,
+        -1,PLACE_HOLDER,PLACE_HOLDER
       ] as QueueListWorker,
+      
   );
 
   type AsyncFunction = (...args: any[]) => Promise<any>;
@@ -99,6 +105,7 @@ export const createWorkerQueue = (
           fnNumber,
           new Uint8Array(),
           0,
+          PLACE_HOLDER,PLACE_HOLDER
         ]);
 
         status.push(0);

@@ -1,25 +1,29 @@
-import { readFromWorker, readPayloadUWU, sendToWorker } from "./parsers.ts";
+import { readFromWorker, readPayloadError, sendToWorker } from "./parsers.ts";
 import { type MainSignal, type SignalArguments } from "./signals.ts";
 import type { ComposedWithKey } from "./taskApi.ts";
-import type { Serializable } from "./taskApi.ts";
+
 
 // Task ID is a unique number representing a task.
 type TaskID = number;
 // RawArguments are optional arguments in the form of a Uint8Array.
-type RawArguments<T extends Serializable = Uint8Array> = T;
+type RawArguments = unknown;
 // WorkerResponse is the result of a task, represented as a Uint8Array.
-type WorkerResponse<T extends Serializable = Uint8Array> = T;
+type WorkerResponse = unknown ;
 // FunctionID represents a unique identifier for a function to execute.
 type FunctionID = number;
+
+type Accepted = (val: unknown) => void
+type Rejected = (val: unknown) => void
 
 export type PromiseMap = Map<
   TaskID,
   {
-    promise: Promise<WorkerResponse>;
-    resolve: (val: WorkerResponse) => void;
-    reject: (val: unknown) => void;
+    promise: Promise<unknown>;
+    resolve: Accepted;
+    reject: Rejected;
   }
 >;
+
 
 export type MainList= [
   TaskID,
@@ -27,6 +31,9 @@ export type MainList= [
   FunctionID,
   WorkerResponse,
   -1 | 0 | 1 | 2 | 3,
+  Accepted,
+  Rejected
+  
 ];
 
 export type QueueListWorker = MainList;
@@ -61,14 +68,20 @@ export function createMainQueue({
   signals,
 }: MultipleQueueSingle) {
   /*───────────────────────────────  Queue  ───────────────────────────────*/
+
+  const PLACE_HOLDER = (_) => {
+    throw("UNREACHABLE FROM PLACE HOLDER (main)")
+  }
+
   const queue = Array.from(
     { length: max ?? 5 },
-    () => [0, new Uint8Array(), 0, new Uint8Array(), -1] as MainList,
+    () => [0, new Uint8Array(), 0, new Uint8Array(), -1, PLACE_HOLDER,PLACE_HOLDER] as MainList,
   );
+
 
   const sendToWorkerWithSignal = sendToWorker(signals);
   const readFromWorkerWithSignal = readFromWorker(signals);
-  const errorDeserializer = readPayloadUWU(signals);
+  const errorDeserializer = readPayloadError(signals);
 
   const sendToWokerArray = listOfFunctions.map((fix) =>
     sendToWorkerWithSignal( //@ts-ignore
@@ -156,6 +169,7 @@ export function createMainQueue({
           functionID,
           new Uint8Array(),
           0,
+          PLACE_HOLDER,PLACE_HOLDER
         ]);
       }
 
