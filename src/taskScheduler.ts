@@ -3,13 +3,11 @@ import { type MainSignal, SignalStatus } from "./signals.ts";
 
 export const taskScheduler = ({
   signalBox: {
-    readyToRead,
-    hasNoMoreMessages,
     status,
   },
   queue: {
     resolveTask,
-    canWrite,
+    isThereAnythingToBeSent,
     dispatchToWorker,
     resolveError,
   },
@@ -28,7 +26,8 @@ export const taskScheduler = ({
     switch (status[0]) {
       case SignalStatus.WorkerWaiting:
         resolveTask();
-        readyToRead();
+        status[0] = SignalStatus.MainReadyToRead;
+
         if (loop()) {
           queueMicrotask(check);
           return;
@@ -37,7 +36,7 @@ export const taskScheduler = ({
         return;
       case SignalStatus.MessageRead:
         resolveTask();
-        readyToRead();
+        status[0] = SignalStatus.MainReadyToRead;
         if (loop()) {
           queueMicrotask(check);
           return;
@@ -46,17 +45,17 @@ export const taskScheduler = ({
         return;
 
       case SignalStatus.AllTasksDone:
-        if (canWrite()) {
+        if (isThereAnythingToBeSent()) {
           dispatchToWorker();
           queueMicrotask(check);
         } else {
-          hasNoMoreMessages();
+          status[0] = SignalStatus.MainStop;
           check.isRunning = false;
         }
         return;
 
       case SignalStatus.WaitingForMore:
-        if (canWrite()) {
+        if (isThereAnythingToBeSent()) {
           dispatchToWorker();
           queueMicrotask(check);
         } else {
@@ -64,14 +63,14 @@ export const taskScheduler = ({
             queueMicrotask(check);
             return;
           }
-          readyToRead();
+          status[0] = SignalStatus.MainReadyToRead;
           channelHandler.scheduleCheck();
         }
         return;
       case SignalStatus.ErrorThrown: {
         // Error was thrown in the worker queue
         resolveError();
-        readyToRead();
+        status[0] = SignalStatus.MainReadyToRead;
         if (loop()) {
           queueMicrotask(check);
           return;

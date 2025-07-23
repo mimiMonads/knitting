@@ -2,8 +2,8 @@ export type SignalArguments = ReturnType<typeof signalsForWorker>;
 export type MainSignal = ReturnType<typeof mainSignal>;
 export type WorkerSignal = ReturnType<typeof workerSignal>;
 import { isMainThread } from "node:worker_threads";
-import { signalDebuggerV2 } from "./utils";
-import { DebugOptions } from "./taskApi";
+import { signalDebuggerV2 } from "./utils.ts";
+import { type DebugOptions } from "./taskApi.ts";
 
 enum SignalEnumOptions {
   header = 24,
@@ -81,7 +81,6 @@ export const signalsForWorker = (
       maxByteLength: SignalEnumOptions.maxByteLength,
     });
 
-
   const status = typeof debug !== undefined &&
       // This part just say `match the function on the thread and main parts and the debug parts`
       ((debug?.logMain === isMain && isMain === true) ||
@@ -132,12 +131,8 @@ export const mainSignal = (
 ) => ({
   status,
   rawStatus,
-  currentSignal: () => status[0],
-  send: () => (status[0] = SignalStatus.MainSend),
-  setFunctionSignal: (signal: number) => (functionToUse[0] = signal),
-  hasNoMoreMessages: () => (status[0] = SignalStatus.MainStop),
-  readyToRead: () => (status[0] = SignalStatus.MainReadyToRead),
-  getCurrentID: () => id[0],
+  functionToUse,
+  id,
   isLastElementToSend: (state: boolean) =>
     state === true
       ? (queueState[0] = QueueStateFlag.Last)
@@ -148,7 +143,6 @@ export const workerSignal = (
   { status, id, functionToUse, queueState }: SignalArguments,
 ) => ({
   status,
-  currentSignal: () => status[0],
   messageReady: () => (status[0] = SignalStatus.WorkerWaiting),
   markMessageAsRead: () => (status[0] = SignalStatus.MessageRead),
   signalAllTasksDone: () => (status[0] = SignalStatus.AllTasksDone),

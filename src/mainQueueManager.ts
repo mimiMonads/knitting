@@ -1,5 +1,9 @@
 import { readFromWorker, readPayloadError, sendToWorker } from "./parsers.ts";
-import { type MainSignal, type SignalArguments } from "./signals.ts";
+import {
+  type MainSignal,
+  type SignalArguments,
+  SignalStatus,
+} from "./signals.ts";
 import type { ComposedWithKey } from "./taskApi.ts";
 
 type RawArguments = unknown;
@@ -16,7 +20,6 @@ export type PromiseMap = Map<
     reject: Rejected;
   }
 >;
-
 
 export enum MainListEnum {
   // Task ID is a unique number representing a task.
@@ -67,10 +70,10 @@ interface MultipleQueueSingle {
  */
 export function createMainQueue({
   signalBox: {
-    setFunctionSignal,
-    getCurrentID,
+    status,
+    functionToUse,
+    id,
     isLastElementToSend,
-    send,
   },
   max,
   genTaskID,
@@ -114,38 +117,20 @@ export function createMainQueue({
     )
   );
 
-  function canWrite(): boolean {
-    for (let i = 0; i < queue.length; i++) {
-      if (queue[i][MainListEnum.State] === MainListState.ToBeSent) return true;
-    }
+  let toBeSentCount = 0;
 
-    return false;
-  }
+  const isThereAnythingToBeSent = () => toBeSentCount > 0;
+  const hasEverythingBeenSent = () => toBeSentCount === 0;
+  const addDeferred = () => {
+    const deferred = Promise.withResolvers<
+      WorkerResponse
+    >();
 
-  function isEverythingSolved(): boolean {
-    for (let i = 0; i < queue.length; i++) {
-      if (queue[i][MainListEnum.State] === MainListState.ToBeSent) return false;
-    }
-    return true;
-  }
+    queue[0][MainListEnum.OnResolve] = deferred.resolve;
+    queue[0][MainListEnum.OnReject] = deferred.reject;
 
-  function addDeferred(taskID: number) {
-    const { promise, resolve, reject } = Promise.withResolvers<
-        WorkerResponse
-      >(),
-      task = queue[0];
-
-    task[MainListEnum.OnResolve] = resolve;
-    task[MainListEnum.OnReject] = reject;
-
-    promisesMap.set(taskID, {
-      promise,
-      resolve,
-      reject,
-    });
-
-    return promise.finally(() => promisesMap.delete(taskID));
-  }
+    return deferred.promise;
+  };
 
   const rejectAll = (reason: string) => {
     promisesMap.forEach((def) => def.reject(reason));
@@ -153,8 +138,8 @@ export function createMainQueue({
 
   return {
     rejectAll,
-    canWrite,
-    isEverythingSolved,
+    isThereAnythingToBeSent,
+    hasEverythingBeenSent,
 
     /* Fast path (always queue[0]) */
     fastEnqueue: (functionID: FunctionID) => (rawArgs: RawArguments) => {
@@ -165,12 +150,12 @@ export function createMainQueue({
       slot[MainListEnum.FunctionID] = functionID;
 
       sendToWokerArray[0](slot);
-      setFunctionSignal(functionID);
+      functionToUse[0] = functionID;
       isLastElementToSend(false);
-      send();
+      status[0] = SignalStatus.MainSend;
       slot[MainListEnum.State] = MainListState.Sent;
 
-      return addDeferred(slot[0]);
+      return addDeferred();
     },
 
     /* General enqueue with promise */
@@ -185,7 +170,7 @@ export function createMainQueue({
 
       const taskID = genTaskID();
       const deferred = Promise.withResolvers<WorkerResponse>();
-      promisesMap.set(taskID, deferred);
+      toBeSentCount++;
 
       if (idx !== -1) {
         const slot = queue[idx];
@@ -193,8 +178,8 @@ export function createMainQueue({
         slot[MainListEnum.RawArguments] = rawArgs;
         slot[MainListEnum.FunctionID] = functionID;
         slot[MainListEnum.State] = MainListState.ToBeSent;
-        slot[MainListEnum.OnResolve] = deferred.resolve
-        slot[MainListEnum.OnReject] =  deferred.reject
+        slot[MainListEnum.OnResolve] = deferred.resolve;
+        slot[MainListEnum.OnReject] = deferred.reject;
       } else {
         queue.push([
           taskID,
@@ -207,70 +192,50 @@ export function createMainQueue({
         ]);
       }
 
-      return deferred.promise.finally(() => promisesMap.delete(taskID));
+      return deferred.promise;
     },
-
-    count: () => queue.length,
-
     /* Dispatch first pending (status==0) */
     dispatchToWorker: () => {
-      let idx = -1;
       for (let i = 0; i < queue.length; i++) {
         if (queue[i][MainListEnum.State] === MainListState.ToBeSent) {
-          idx = i;
+          const job = queue[i];
+          job[MainListEnum.State] = MainListState.Sent;
+          isLastElementToSend(toBeSentCount > 0);
+          sendToWokerArray[job[MainListEnum.FunctionID]](job);
+          functionToUse[0] = job[MainListEnum.FunctionID];
+          status[0] = SignalStatus.MainSend;
+          toBeSentCount--;
           break;
         }
       }
-
-      const job = queue[idx];
-      job[MainListEnum.State] = MainListState.Sent; 
-
-      isLastElementToSend(canWrite());
-      sendToWokerArray[job[MainListEnum.FunctionID]](job);
-      setFunctionSignal(job[MainListEnum.FunctionID]);
-      send();
     },
 
     resolveError: () => {
-      const currentID = getCurrentID();
-      let idx = -1;
+      const currentID = id[0];
 
       for (let i = 0; i < queue.length; i++) {
         if (queue[i][MainListEnum.TaskID] === currentID) {
-          idx = i;
+          const slot = queue[i];
+          slot[MainListEnum.OnReject](errorDeserializer());
+          slot[MainListEnum.State] = MainListState.Free;
           break;
         }
       }
-
-      const slot = queue[idx];
-      const promiseEntry = promisesMap.get(slot[MainListEnum.TaskID]);
-
-      promiseEntry?.reject( 
-        errorDeserializer(),
-      );
-
-      slot[MainListEnum.State] = MainListState.Free; 
     },
 
     /* Resolve task whose ID matches currentID */
     resolveTask: () => {
-      const currentID = getCurrentID();
-      let idx = -1;
+      const currentID = id[0];
       for (let i = 0; i < queue.length; i++) {
         if (queue[i][MainListEnum.TaskID] === currentID) {
-          idx = i;
-          break;
+          const job = queue[i];
+          job[MainListEnum.OnResolve](
+            readFromWorkerArray[job[MainListEnum.FunctionID]](),
+          );
+          job[MainListEnum.State] = MainListState.Free;
+          return;
         }
       }
-
-      const job = queue[idx];
-      const promiseEntry = promisesMap.get(currentID);
-
-      promiseEntry?.resolve( 
-        readFromWorkerArray[job[MainListEnum.FunctionID]](),
-      );
-
-      job[MainListEnum.State] = MainListState.Free; 
     },
   };
 }

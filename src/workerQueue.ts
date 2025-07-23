@@ -29,12 +29,15 @@ export const createWorkerQueue = (
     },
   }: ArgumentsForCreateWorkerQueue,
 ) => {
-  const PLACE_HOLDER = (args) => {
+  const PLACE_HOLDER = () => {
     throw ("UNREACHABLE FROM PLACE HOLDER (thread)");
   };
 
+  let isThereAnythingToResolve = 0;
+  let hasAnythingFinished = 0;
+
   const queue = Array.from(
-    { length: max ?? 3 },
+    { length: 10 },
     () =>
       [
         0,
@@ -71,28 +74,22 @@ export const createWorkerQueue = (
     )), acc
   ), [] as Function[]);
 
-  const status = Array.from({ length: max ?? 3 }, () => -1);
-
   return {
     // Check if any task is solved and ready for writing.
-    someHasFinished: () => {
-      for (let i = 0; i < queue.length; i++) {
-        if (queue[i][4] >= 2) return true;
-      }
-      return false;
-    },
+    someHasFinished: () => hasAnythingFinished !== 0,
 
     // enqueue a task to the queue.
     enqueue: () => {
       const fnNumber = functionToUse();
       let inserted = false;
-
+      isThereAnythingToResolve++;
       for (let i = 0; i < queue.length; i++) {
         if (queue[i][4] === -1) {
-          queue[i][4] = 0;
-          queue[i][0] = getCurrentID();
-          queue[i][1] = playloadToArgs[fnNumber]();
-          queue[i][2] = fnNumber;
+          const slot = queue[i];
+          slot[4] = 0;
+          slot[0] = getCurrentID();
+          slot[1] = playloadToArgs[0]();
+          slot[2] = fnNumber;
           inserted = true;
           break;
         }
@@ -108,8 +105,6 @@ export const createWorkerQueue = (
           PLACE_HOLDER,
           PLACE_HOLDER,
         ]);
-
-        status.push(0);
       }
 
       readyToWork();
@@ -123,6 +118,8 @@ export const createWorkerQueue = (
           returnToMain[element[2]](element);
           messageReady();
           element[4] = -1;
+          isThereAnythingToResolve--;
+          hasAnythingFinished--;
           break;
         }
         if (queue[i][4] === 3) {
@@ -130,6 +127,8 @@ export const createWorkerQueue = (
           returnError(element);
           errorWasThrown();
           element[4] = -1;
+          isThereAnythingToResolve--;
+          hasAnythingFinished--;
           break;
         }
       }
@@ -145,10 +144,12 @@ export const createWorkerQueue = (
             .then((res) => {
               res = task[3] = res;
               task[4] = 2;
+              hasAnythingFinished++;
             })
             .catch((err) => {
               err = task[3] = err;
               task[4] = 3;
+              hasAnythingFinished++;
             });
         }
       }
@@ -164,12 +165,12 @@ export const createWorkerQueue = (
           await jobs[task[2]](task[1])
             .then((res) => {
               res = task[3] = res;
-
+              hasAnythingFinished++;
               task[4] = 2;
             })
             .catch((err) => {
               err = task[3] = err;
-
+              hasAnythingFinished++;
               task[4] = 3;
             });
 
@@ -185,21 +186,17 @@ export const createWorkerQueue = (
 
           try {
             task[3] = await jobs[task[2]](task[1]);
-
+            hasAnythingFinished++;
             task[4] = 2;
           } catch (err) {
-            task[3] = err as Uint8Array;
+            task[3] = err;
             task[4] = 3;
+            hasAnythingFinished++;
           }
           break;
         }
       }
     },
-    allDone: () => {
-      for (let i = 0; i < queue.length; i++) {
-        if (queue[i][4] !== -1) return false;
-      }
-      return true;
-    },
+    allDone: () => isThereAnythingToResolve === 0,
   };
 };

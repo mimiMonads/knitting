@@ -85,9 +85,9 @@ export const createContext = ({
     dispatchToWorker,
     fastEnqueue,
     enqueuePromise,
-    canWrite,
+    isThereAnythingToBeSent,
     rejectAll,
-    isEverythingSolved,
+    hasEverythingBeenSent,
   } = queue;
   const channelHandler = new ChannelHandler();
 
@@ -129,7 +129,7 @@ export const createContext = ({
   };
 
   const send = () => {
-    if (check.isRunning === false && canWrite()) {
+    if (check.isRunning === false && isThereAnythingToBeSent()) {
       signalBox.status[0] = SignalStatus.DoNothing;
       Atomics.notify(signalBox.rawStatus, 0, 1);
       dispatchToWorker();
@@ -155,7 +155,7 @@ export const createContext = ({
   };
 
   return {
-    isEverythingSolved,
+    hasEverythingBeenSent,
     send,
     callFunction,
     fastCalling,

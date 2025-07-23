@@ -2,7 +2,7 @@ import { bench, group, run as runMitata, summary } from "mitata";
 import { createThreadPool, fixedPoint } from "../src/taskApi.ts";
 
 const fn = fixedPoint({
-  f: async () => {
+  f: async (_: void) => {
     let a = 100000;
     let b = 0;
     while (a != 0) {

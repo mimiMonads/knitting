@@ -2,9 +2,7 @@ import { bench, boxplot, group, run as mitataRun, summary } from "mitata";
 import { createThreadPool, fixedPoint, isMain } from "../main.ts";
 
 export const inLine = fixedPoint({
-  args: "void",
-  return: "void",
-  f: async () => {},
+  f: async (_: void) => {},
 });
 
 const { terminateAll, callFunction, fastCallFunction, send } = createThreadPool(

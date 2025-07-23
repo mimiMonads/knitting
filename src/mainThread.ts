@@ -51,7 +51,7 @@ export const createMainThread = ({
 
   // This pool is meant to be dynamic `5` is just a random value
   const queue = Array.from(
-    { length: 5 },
+    { length: 10 },
     () => [0, null, 0, null, SlotState.Free] as Slot,
   );
 
@@ -148,7 +148,7 @@ export const createMainThread = ({
     }
   };
 
-  const isEverythingSolved = () => working === 0;
+  const hasEverythingBeenSent = () => working === 0;
 
   const send = () => {
     if (working === 0) {
@@ -167,7 +167,7 @@ export const createMainThread = ({
     kills,
     callFunction,
     send,
-    isEverythingSolved,
+    hasEverythingBeenSent,
     fastCalling: (ar: CallFunction) => {
       const composed = callFunction(ar);
 

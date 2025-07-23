@@ -54,8 +54,6 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
     signals,
   });
 
-  const { signalAllTasksDone } = signal;
-
   while (true) {
     switch (status[0]) {
       case SignalStatus.AllTasksDone:
@@ -82,7 +80,7 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
         await nextJob();
 
         if (allDone()) {
-          signalAllTasksDone();
+          status[0] = SignalStatus.AllTasksDone;
           continue;
         }
 
@@ -102,7 +100,6 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
           rawStatus,
           0,
           SignalStatus.MainStop,
-          SignalStatus.ErrorThrown,
         );
 
         continue;

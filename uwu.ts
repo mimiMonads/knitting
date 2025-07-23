@@ -30,10 +30,13 @@ const threads = 1;
 export const { terminateAll, callFunction, fastCallFunction, send } =
   createThreadPool({
     threads,
+    debug: {
+      logMain: true,
+    },
   })({ fn });
 
 const LIMIT = 1_000_000; // Highest number to test
-const CHUNK = 10000_000;
+const CHUNK = 100_000;
 
 if (isMain) {
   const tasks: Promise<number[]>[] = [];

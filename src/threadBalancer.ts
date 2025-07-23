@@ -67,7 +67,7 @@ export function firstAvailable(
   contexts: readonly CreateContext[],
 ) {
   const isSolved: Array<() => boolean> = contexts.map(
-    (ctx) => ctx.isEverythingSolved,
+    (ctx) => ctx.hasEverythingBeenSent,
   );
 
   return (
@@ -109,7 +109,7 @@ export function firstAvailableRandom(
   contexts: readonly CreateContext[],
 ) {
   const isSolved: Array<() => boolean> = contexts.map(
-    (ctx) => ctx.isEverythingSolved,
+    (ctx) => ctx.hasEverythingBeenSent,
   );
 
   return (
