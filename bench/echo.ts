@@ -1,4 +1,4 @@
-import { Worker } from 'node:worker_threads';
+import { Worker } from "node:worker_threads";
 
 const workerCode = `
   import { parentPort } from 'node:worker_threads';
@@ -19,8 +19,8 @@ const workerCode = `
 
 const worker = new Worker(workerCode, {
   eval: true,
-  type: 'module',       
-  name: 'echo-worker',  
+  type: "module",
+  name: "echo-worker",
 });
 
 type Deferred = {
@@ -31,18 +31,20 @@ type Deferred = {
 const map = new Map<number, Deferred>();
 
 // message handler: either resolve or reject the right promise
-worker.on('message', (msg: { id: number; result?: unknown; error?: string }) => {
-  const entry = map.get(msg.id);
-  if (!entry) return;
-  map.delete(msg.id);
+worker.on(
+  "message",
+  (msg: { id: number; result?: unknown; error?: string }) => {
+    const entry = map.get(msg.id);
+    if (!entry) return;
+    map.delete(msg.id);
 
-  if (msg.error != null) {
-    entry.reject(new Error(msg.error));
-  } else {
-    entry.resolve(msg.result);
-  }
-});
-
+    if (msg.error != null) {
+      entry.reject(new Error(msg.error));
+    } else {
+      entry.resolve(msg.result);
+    }
+  },
+);
 
 let nextId = 0;
 

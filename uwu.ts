@@ -30,6 +30,9 @@ const threads = 1;
 export const { terminateAll, callFunction, fastCallFunction, send } =
   createThreadPool({
     threads,
+    debug: {
+      logMain: true
+    }
   })({ fn });
 
 const LIMIT = 1_000_000; // Highest number to test
@@ -55,7 +58,7 @@ if (isMain) {
   const primes = chunkPrimes.flat().sort((a, b) => a - b);
 
   console.log(`Found ${primes.length} primes ≤ ${LIMIT}`);
-  console.log("Last 5 elements:", primes.slice(-6, -1) )
+  console.log("Last 5 elements:", primes.slice(-6, -1));
   console.log("Largest prime:", primes.at(-1));
 
   // Quick demo of fastCallFunction with a small range.

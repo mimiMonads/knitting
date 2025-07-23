@@ -7,17 +7,15 @@ import { type WorkerData } from "./threadManager.ts";
 export const jsrIsGreatAndWorkWithoutBugs = () => null;
 
 export const mainLoop = async (workerData: WorkerData): Promise<void> => {
-
   const signals = signalsForWorker({
     sabObject: {
-      sharedSab: workerData.sab
-    } ,
+      sharedSab: workerData.sab,
+    },
     isMain: false,
-    thread: workerData.thread
-
+    thread: workerData.thread,
   });
 
-  const { status , rawStatus} = signals;
+  const { status, rawStatus } = signals;
 
   const debug = workerData.debug as DebugOptions;
 
@@ -57,7 +55,6 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
   });
 
   const { signalAllTasksDone } = signal;
-
 
   while (true) {
     switch (status[0]) {

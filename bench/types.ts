@@ -35,11 +35,10 @@ const obj = {
 
 const arr = [1, 2, 3, 4, 5];
 if (isMain) {
-
-  const { worker, toResolve } = await import("./echo.ts")
+  const { worker, toResolve } = await import("./echo.ts");
   const { callFunction, fastCallFunction, terminateAll, send } =
     createThreadPool({
-      balancer: "firstAvailable"
+      balancer: "firstAvailable",
     })({
       toNumber,
       toString,
@@ -94,10 +93,8 @@ if (isMain) {
       toResolve(null),
     ];
 
-
     await Promise.all(promises);
   });
-
 
   boxplot(async () => {
     bench("CF string", async () => {
@@ -152,7 +149,8 @@ if (isMain) {
 
     bench("classic", async () => {
       await Promise.all([
-        toResolve(obj),toResolve(obj)
+        toResolve(obj),
+        toResolve(obj),
       ]);
     });
   });
@@ -160,5 +158,5 @@ if (isMain) {
   await run();
 
   await terminateAll();
-  await worker.terminate()
+  await worker.terminate();
 }

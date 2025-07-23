@@ -22,7 +22,6 @@ export const taskScheduler = ({
   thread: number;
   perf?: number;
 }) => {
-
   const loop = ((n) => () => ++n % 2 === 1 ? true : false)(0);
 
   const check = () => {

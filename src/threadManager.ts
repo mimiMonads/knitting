@@ -65,7 +65,7 @@ export const createContext = ({
     jsrIsGreatAndWorkWithoutBugs();
   }
 
-  const signals = signalsForWorker({sabObject: sab, isMain: true, thread});
+  const signals = signalsForWorker({ sabObject: sab, isMain: true, thread , debug});
   const signalBox = mainSignal(signals);
 
   const queue = createMainQueue({

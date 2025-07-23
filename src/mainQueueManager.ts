@@ -21,7 +21,7 @@ export type PromiseMap = Map<
   }
 >;
 
-export type MainList<A = Uint8Array, B = Uint8Array> = [
+export type MainList= [
   TaskID,
   RawArguments,
   FunctionID,

@@ -80,10 +80,13 @@ export const signalDebuggerV2 = ({
   const tab = "\t";
   const color = isMain ? orange : purple;
 
-  // ─── timing state ────────────────────────────────────────────────
+  // ─── timing & counting state ─────────────────────────────────────
   let last = status[0];
-  const born =  performance.now();
+  const born = performance.now();
   let lastPerf = born;
+
+  let hitsTotal = 0;
+  const hitsPerValue: Record<number, number> = { [last]: 0 };
 
   // ─── proxy that logs every read/write of element 0 ───────────────
   const proxied = new Proxy(status, {
@@ -97,27 +100,34 @@ export const signalDebuggerV2 = ({
     },
     set(target, prop, value, receiver) {
       const ok = Reflect.set(target, prop, value, receiver);
-      if (ok && (prop === "0")) maybeLog(value as number);
+      if (ok && prop === "0") maybeLog(value as number);
       return ok;
     },
   }) as unknown as Int32Array;
 
   function maybeLog(value: number) {
+    hitsTotal++;
+    hitsPerValue[value] = (hitsPerValue[value] ?? 0) + 1;
+
     if (value !== last) {
       const now = performance.now();
       const from = value > 127 ? orange : purple;
+
       console.log(
-        `${color}${(isMain ? "M " : "T ") + (thread ?? "")}${reset}${tab}` +
-          `${from}${String(value).padStart(3, " ")}${reset}` +
+        `${color}${(isMain ? "M " : "T ") + (thread ?? "")}${reset}${tab}` + // thread
+          `${from}${String(value).padStart(3, " ")}${reset}` + // new value
           (isMain ? tab : tab + tab) +
-          `${color}${(now - born).toFixed(2).padStart(6, " ")}${reset}` +
-          tab + tab + (now - lastPerf).toFixed(2).padStart(6, " "),
+          `${color}${(now - born).toFixed(2).padStart(6, " ")}${reset}` + // since born
+          tab + tab + (now - lastPerf).toFixed(2).padStart(6, " ") + tab +
+          tab + // since last change
+          String(hitsPerValue[value]).padStart(4, " ") + // per-value hits
+          tab + String(hitsTotal).padStart(6, " "), // total hits
       );
+
       last = value;
       lastPerf = now;
     }
   }
 
-  // ─── keep the original return type: () => number ────────────────
-   return proxied; // read goes through proxy → logs + returns
+  return proxied;
 };

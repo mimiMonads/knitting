@@ -26,6 +26,7 @@ enum PayloadType {
   Int64 = 14,
   Null = 15,
   Json = 16,
+  Uint8Array = 17
 }
 
 const toWorkerUint8 = ({ id, setBuffer }: SignalArguments) =>
@@ -105,7 +106,7 @@ const toWorkerAny = (index: 1 | 3 = 1) =>
   }: SignalArguments,
 ) =>
 (
-  task: MainList<Serializable, Serializable>,
+  task: MainList,
 ) => {
   const args = task[index];
   id[0] = task[0];
@@ -200,6 +201,10 @@ const toWorkerAny = (index: 1 | 3 = 1) =>
 
           type[0] = PayloadType.Json;
           return;
+        }
+        case Uint8Array:{
+          setBuffer(args)
+          type[0] = PayloadType.Uint8Array;
         }
       }
 
@@ -321,6 +326,8 @@ const readPayloadWorkerAny = (
           subarray(0, payloadLength[0]),
         ),
       );
+    case PayloadType.Uint8Array:
+      return subarray(0, payloadLength[0])
     // default
     case PayloadType.Serializable:
       return deserialize(subarray(0, payloadLength[0]));
@@ -343,48 +350,12 @@ const fromPlayloadToArguments =
     }
   };
 
-const writePayloadUnint8 =
-  ({ id, setBuffer }: SignalArguments) => (task: QueueListWorker) => {
-    setBuffer(task[3]);
-    id[0] = task[0];
-  };
 
-const writePayloadString =
-  ({ id, setBuffer }: SignalArguments) => (task: QueueListWorker) => {
-    // @ts-ignore
-    const encode = textEncoder.encode(task[3]);
-    setBuffer(encode);
-    id[0] = task[0];
-  };
-
-const writePayloadVoid =
-  ({ id }: SignalArguments) => (task: QueueListWorker) => {
-    // No payload needed
-    id[0] = task[0];
-  };
-
-const writePayloadSerializable = ({ id, setBuffer }: SignalArguments) =>
-(
-  task: QueueListWorker,
-) => {
-  const encoded = serialize(task[3]);
-  setBuffer(encoded);
-  id[0] = task[0];
-};
 
 const fromreturnToMain = (signals: SignalArguments) => (type: External) => {
-  switch (type) {
-    case "uint8":
-      return writePayloadUnint8(signals);
-    case "string":
-      return writePayloadString(signals);
-    case "void":
-      return writePayloadVoid(signals);
-    case "number[]":
-      return writePayloadSerializable(signals);
-    case "serializable":
+
       return toWorkerAny(3)(signals);
-  }
+  
 };
 
 const readPayloadUWU = ({ subarray, payloadLength }: SignalArguments) => () =>
