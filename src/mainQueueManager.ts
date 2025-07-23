@@ -2,21 +2,14 @@ import { readFromWorker, readPayloadError, sendToWorker } from "./parsers.ts";
 import { type MainSignal, type SignalArguments } from "./signals.ts";
 import type { ComposedWithKey } from "./taskApi.ts";
 
-
-// Task ID is a unique number representing a task.
-type TaskID = number;
-// RawArguments are optional arguments in the form of a Uint8Array.
 type RawArguments = unknown;
-// WorkerResponse is the result of a task, represented as a Uint8Array.
-type WorkerResponse = unknown ;
-// FunctionID represents a unique identifier for a function to execute.
+type WorkerResponse = unknown;
 type FunctionID = number;
-
-type Accepted = (val: unknown) => void
-type Rejected = (val: unknown) => void
+type Accepted = (val: unknown) => void;
+type Rejected = (val: unknown) => void;
 
 export type PromiseMap = Map<
-  TaskID,
+  number,
   {
     promise: Promise<unknown>;
     resolve: Accepted;
@@ -25,15 +18,33 @@ export type PromiseMap = Map<
 >;
 
 
-export type MainList= [
-  TaskID,
-  RawArguments,
+export enum MainListEnum {
+  // Task ID is a unique number representing a task.
+  TaskID = 0,
+  RawArguments = 1,
+  FunctionID = 2,
+  WorkerResponse = 3,
+  State = 4,
+  OnResolve = 5,
+  OnReject = 6,
+}
+
+export enum MainListState {
+  Free = -1,
+  ToBeSent = 0,
+  Sent = 1,
+  Accepted = 2,
+  Rejected = 3,
+}
+
+export type MainList = [
+  number,
+  unknown,
   FunctionID,
   WorkerResponse,
-  -1 | 0 | 1 | 2 | 3,
+  MainListState,
   Accepted,
-  Rejected
-  
+  Rejected,
 ];
 
 export type QueueListWorker = MainList;
@@ -70,14 +81,22 @@ export function createMainQueue({
   /*───────────────────────────────  Queue  ───────────────────────────────*/
 
   const PLACE_HOLDER = (_) => {
-    throw("UNREACHABLE FROM PLACE HOLDER (main)")
-  }
+    throw ("UNREACHABLE FROM PLACE HOLDER (main)");
+  };
 
   const queue = Array.from(
     { length: max ?? 5 },
-    () => [0, new Uint8Array(), 0, new Uint8Array(), -1, PLACE_HOLDER,PLACE_HOLDER] as MainList,
+    () =>
+      [
+        0,
+        new Uint8Array(),
+        0,
+        new Uint8Array(),
+        -1,
+        PLACE_HOLDER,
+        PLACE_HOLDER,
+      ] as MainList,
   );
-
 
   const sendToWorkerWithSignal = sendToWorker(signals);
   const readFromWorkerWithSignal = readFromWorker(signals);
@@ -97,7 +116,7 @@ export function createMainQueue({
 
   function canWrite(): boolean {
     for (let i = 0; i < queue.length; i++) {
-      if (queue[i][4] === 0) return true;
+      if (queue[i][MainListEnum.State] === MainListState.ToBeSent) return true;
     }
 
     return false;
@@ -105,15 +124,27 @@ export function createMainQueue({
 
   function isEverythingSolved(): boolean {
     for (let i = 0; i < queue.length; i++) {
-      if (queue[i][4] === 0) return false;
+      if (queue[i][MainListEnum.State] === MainListState.ToBeSent) return false;
     }
     return true;
   }
 
   function addDeferred(taskID: number) {
-    const deferred = Promise.withResolvers<WorkerResponse>();
-    promisesMap.set(taskID, deferred);
-    return deferred.promise.finally(() => promisesMap.delete(taskID));
+    const { promise, resolve, reject } = Promise.withResolvers<
+        WorkerResponse
+      >(),
+      task = queue[0];
+
+    task[MainListEnum.OnResolve] = resolve;
+    task[MainListEnum.OnReject] = reject;
+
+    promisesMap.set(taskID, {
+      promise,
+      resolve,
+      reject,
+    });
+
+    return promise.finally(() => promisesMap.delete(taskID));
   }
 
   const rejectAll = (reason: string) => {
@@ -129,15 +160,15 @@ export function createMainQueue({
     fastEnqueue: (functionID: FunctionID) => (rawArgs: RawArguments) => {
       const slot = queue[0];
 
-      slot[0] = genTaskID();
-      slot[1] = rawArgs;
-      slot[2] = functionID;
+      slot[MainListEnum.TaskID] = genTaskID();
+      slot[MainListEnum.RawArguments] = rawArgs;
+      slot[MainListEnum.FunctionID] = functionID;
 
       sendToWokerArray[0](slot);
       setFunctionSignal(functionID);
       isLastElementToSend(false);
       send();
-      slot[4] = 1;
+      slot[MainListEnum.State] = MainListState.Sent;
 
       return addDeferred(slot[0]);
     },
@@ -146,7 +177,7 @@ export function createMainQueue({
     enqueuePromise: (functionID: FunctionID) => (rawArgs: RawArguments) => {
       let idx = -1;
       for (let i = 0; i < queue.length; i++) {
-        if (queue[i][4] === -1) {
+        if (queue[i][MainListEnum.State] === MainListState.Free) {
           idx = i;
           break;
         }
@@ -158,18 +189,21 @@ export function createMainQueue({
 
       if (idx !== -1) {
         const slot = queue[idx];
-        slot[0] = taskID;
-        slot[1] = rawArgs;
-        slot[2] = functionID;
-        slot[4] = 0;
+        slot[MainListEnum.TaskID] = taskID;
+        slot[MainListEnum.RawArguments] = rawArgs;
+        slot[MainListEnum.FunctionID] = functionID;
+        slot[MainListEnum.State] = MainListState.ToBeSent;
+        slot[MainListEnum.OnResolve] = deferred.resolve
+        slot[MainListEnum.OnReject] =  deferred.reject
       } else {
         queue.push([
           taskID,
           rawArgs,
           functionID,
           new Uint8Array(),
-          0,
-          PLACE_HOLDER,PLACE_HOLDER
+          MainListState.ToBeSent,
+          deferred.resolve,
+          deferred.reject,
         ]);
       }
 
@@ -182,18 +216,18 @@ export function createMainQueue({
     dispatchToWorker: () => {
       let idx = -1;
       for (let i = 0; i < queue.length; i++) {
-        if (queue[i][4] === 0) {
+        if (queue[i][MainListEnum.State] === MainListState.ToBeSent) {
           idx = i;
           break;
         }
       }
 
       const job = queue[idx];
-      job[4] = 1; // sent to worker
+      job[MainListEnum.State] = MainListState.Sent; 
 
       isLastElementToSend(canWrite());
-      sendToWokerArray[job[2]](job);
-      setFunctionSignal(job[2]);
+      sendToWokerArray[job[MainListEnum.FunctionID]](job);
+      setFunctionSignal(job[MainListEnum.FunctionID]);
       send();
     },
 
@@ -202,20 +236,20 @@ export function createMainQueue({
       let idx = -1;
 
       for (let i = 0; i < queue.length; i++) {
-        if (queue[i][0] === currentID) {
+        if (queue[i][MainListEnum.TaskID] === currentID) {
           idx = i;
           break;
         }
       }
 
-      const job = queue[idx];
-      const promiseEntry = promisesMap.get(job[0]);
+      const slot = queue[idx];
+      const promiseEntry = promisesMap.get(slot[MainListEnum.TaskID]);
 
-      promiseEntry?.reject( //@ts-ignore
+      promiseEntry?.reject( 
         errorDeserializer(),
       );
 
-      job[4] = -1; // slot free
+      slot[MainListEnum.State] = MainListState.Free; 
     },
 
     /* Resolve task whose ID matches currentID */
@@ -223,7 +257,7 @@ export function createMainQueue({
       const currentID = getCurrentID();
       let idx = -1;
       for (let i = 0; i < queue.length; i++) {
-        if (queue[i][0] === currentID) {
+        if (queue[i][MainListEnum.TaskID] === currentID) {
           idx = i;
           break;
         }
@@ -232,11 +266,11 @@ export function createMainQueue({
       const job = queue[idx];
       const promiseEntry = promisesMap.get(currentID);
 
-      promiseEntry?.resolve( //@ts-ignore
-        readFromWorkerArray[job[2]](),
+      promiseEntry?.resolve( 
+        readFromWorkerArray[job[MainListEnum.FunctionID]](),
       );
 
-      job[4] = -1; // slot free
+      job[MainListEnum.State] = MainListState.Free; 
     },
   };
 }

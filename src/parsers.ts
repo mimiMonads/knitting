@@ -26,9 +26,8 @@ enum PayloadType {
   Int64 = 14,
   Null = 15,
   Json = 16,
-  Uint8Array = 17
+  Uint8Array = 17,
 }
-
 
 const fromReturnToMainError = ({
   type,
@@ -163,7 +162,6 @@ const toWorkerAny = (index: 1 | 3 = 1) =>
         return;
       }
 
-
       switch (args.constructor) {
         case Object:
         case Array: {
@@ -182,18 +180,12 @@ const toWorkerAny = (index: 1 | 3 = 1) =>
 };
 
 const sendToWorker = (signals: SignalArguments) => (type: External) => {
- 
-      return toWorkerAny(1)(signals);
-  
+  return toWorkerAny(1)(signals);
 };
-
 
 const readFromWorker = (signals: SignalArguments) => (type: External) => {
-
-      return readPayloadWorkerAny(signals);
-  
+  return readPayloadWorkerAny(signals);
 };
-
 
 const readPayloadWorkerAny = (
   {
@@ -248,7 +240,7 @@ const readPayloadWorkerAny = (
         ),
       );
     case PayloadType.Uint8Array:
-      return subarray(0, payloadLength[0])
+      return subarray(0, payloadLength[0]);
     // default
     case PayloadType.Serializable:
       return deserialize(subarray(0, payloadLength[0]));
@@ -257,17 +249,11 @@ const readPayloadWorkerAny = (
 
 const fromPlayloadToArguments =
   (signals: SignalArguments) => (type: External) => {
-
-        return readPayloadWorkerAny(signals);
-    
+    return readPayloadWorkerAny(signals);
   };
 
-
-
 const fromreturnToMain = (signals: SignalArguments) => (type: External) => {
-
-      return toWorkerAny(3)(signals);
-  
+  return toWorkerAny(3)(signals);
 };
 
 const readPayloadError = ({ subarray, payloadLength }: SignalArguments) => () =>

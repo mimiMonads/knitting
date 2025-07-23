@@ -66,7 +66,6 @@ const allocBuffer = ({ sab, payloadLength }: {
   };
 };
 
-
 type SignalForWorker = {
   sabObject?: Sab;
   isMain: boolean;
@@ -87,12 +86,12 @@ export const signalsForWorker = (
       // This part just say `match the function on the thread and main parts and the debug parts`
       ((debug?.logMain === isMain && isMain === true) ||
         (debug?.logThreads === true && isMain === false))
-    ? new Int32Array(sab, 0, 1)
-    : signalDebuggerV2({
+    ? signalDebuggerV2({
       thread,
       isMain,
       status: new Int32Array(sab, 0, 1),
-    });
+    })
+    : new Int32Array(sab, 0, 1);
 
   // Stoping Threads
   if (isMainThread) {

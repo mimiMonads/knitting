@@ -28,10 +28,8 @@ export type Serializable =
   | Set<Serializable>
   | Error;
 
+export type External = unknown;
 
-
-export type External = unknown
-  
 type Args = External | Serializable;
 
 const symbol = Symbol.for("FIXEDPOINT");
@@ -42,8 +40,6 @@ interface FixPoint<A extends Args, B extends Args> {
     args: A,
   ) => Promise<B>;
 }
-
-
 
 type SecondPart = {
   readonly [symbol]: string;
