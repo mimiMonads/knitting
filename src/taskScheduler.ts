@@ -22,17 +22,20 @@ export const taskScheduler = ({
 }) => {
   const loop = ((n) => () => ++n % 2 === 1 ? true : false)(0);
 
+  let catchEarly = true;
+
   const check = () => {
     switch (status[0]) {
+      case SignalStatus.FastResolve: {
+        resolveTask();
+        status[0] = SignalStatus.AllTasksDone;
+        queueMicrotask(check);
+        return;
+      }
       case SignalStatus.WorkerWaiting:
         resolveTask();
         status[0] = SignalStatus.MainReadyToRead;
-
-        if (loop()) {
-          queueMicrotask(check);
-          return;
-        }
-        channelHandler.scheduleCheck();
+        queueMicrotask(check);
         return;
       case SignalStatus.MessageRead:
         resolveTask();
@@ -51,6 +54,7 @@ export const taskScheduler = ({
         } else {
           status[0] = SignalStatus.MainStop;
           check.isRunning = false;
+          catchEarly = true;
         }
         return;
 
@@ -59,7 +63,8 @@ export const taskScheduler = ({
           dispatchToWorker();
           queueMicrotask(check);
         } else {
-          if (loop()) {
+          if (catchEarly === true) {
+            catchEarly = false;
             queueMicrotask(check);
             return;
           }
@@ -71,17 +76,21 @@ export const taskScheduler = ({
         // Error was thrown in the worker queue
         resolveError();
         status[0] = SignalStatus.MainReadyToRead;
-        if (loop()) {
+        if (catchEarly === true) {
+          catchEarly = false;
           queueMicrotask(check);
           return;
-        } else {
-          channelHandler.scheduleCheck();
         }
+
+        channelHandler.scheduleCheck();
+
         return;
       }
-      case SignalStatus.Promify:
+
+      case SignalStatus.HighPriotityResolve:
       case SignalStatus.MainReadyToRead: {
-        if (loop()) {
+        if (catchEarly === true) {
+          catchEarly = false;
           queueMicrotask(check);
           return;
         }
@@ -89,11 +98,7 @@ export const taskScheduler = ({
         return;
       }
       case SignalStatus.MainSend:
-        if (loop()) {
-          queueMicrotask(check);
-          return;
-        }
-        channelHandler.scheduleCheck();
+        queueMicrotask(check);
         return;
     }
   };

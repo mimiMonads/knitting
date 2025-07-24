@@ -1,5 +1,5 @@
 import { bench, boxplot, group, run as mitataRun, summary } from "mitata";
-import { createThreadPool, fixedPoint, isMain } from "../main.ts";
+import { createThreadPool, fixedPoint, isMain } from "../knitting.ts";
 
 export const inLine = fixedPoint({
   f: async (_: void) => {},
@@ -30,7 +30,7 @@ if (isMain) {
         send();
 
         await Promise.all(arr);
-        await fastCallFunction.inLine();
+        //await fastCallFunction.inLine();
       });
 
       summary(() => {

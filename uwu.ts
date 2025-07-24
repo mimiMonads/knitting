@@ -1,4 +1,4 @@
-import { createThreadPool, fixedPoint, isMain } from "./main.ts";
+import { createThreadPool, fixedPoint, isMain } from "./knitting.ts";
 
 /**
  * Worker‑side function: given `[start, end]`, return all primes in that range.
@@ -32,6 +32,7 @@ export const { terminateAll, callFunction, fastCallFunction, send } =
     threads,
     debug: {
       logMain: true,
+      logThreads: true,
     },
   })({ fn });
 

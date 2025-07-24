@@ -1,13 +1,13 @@
 {
   "name": "@vixeny/knitting",
   "version": "0.0.9",
-  "exports": "./main.ts",
+  "exports": "./knitting.ts",
   "publish": {
     "include": [
       "LICENSE",
       "README.md",
       "src/**/*.ts",
-      "./main.ts"
+      "./knitting.ts"
     ]
   }
 }

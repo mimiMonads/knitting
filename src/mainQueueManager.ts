@@ -152,7 +152,7 @@ export function createMainQueue({
       sendToWokerArray[0](slot);
       functionToUse[0] = functionID;
       isLastElementToSend(false);
-      status[0] = SignalStatus.MainSend;
+      status[0] = SignalStatus.HighPriotityResolve;
       slot[MainListEnum.State] = MainListState.Sent;
 
       return addDeferred();

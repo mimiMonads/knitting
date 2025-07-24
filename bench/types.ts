@@ -1,9 +1,9 @@
-import { createThreadPool, fixedPoint, isMain } from "../main.ts";
+import { createThreadPool, fixedPoint, isMain } from "../knitting.ts";
 import { bench, boxplot, group, run, summary } from "mitata";
 import { worker } from "./echo.ts";
 
-export const toNumber = fixedPoint<number, number>({
-  f: async (a) => a,
+export const toNumber = fixedPoint({
+  f: async (a: number) => a,
 });
 
 export const toString = fixedPoint<string, string>({
@@ -136,6 +136,9 @@ if (isMain) {
       send();
       await res;
     });
+    bench("FF simple arr", async () => {
+      await fastCallFunction.toObject(arr);
+    });
 
     bench("CF obj", async () => {
       const res = callFunction.toObject(obj);
@@ -143,7 +146,7 @@ if (isMain) {
       await res;
     });
 
-    bench("CF obj", async () => {
+    bench("FF obj", async () => {
       await fastCallFunction.toObject(obj);
     });
 
@@ -155,8 +158,10 @@ if (isMain) {
     });
   });
 
-  await run();
+  (async () => {
+    await run();
 
-  await terminateAll();
-  await worker.terminate();
+    await terminateAll();
+    await worker.terminate();
+  })();
 }

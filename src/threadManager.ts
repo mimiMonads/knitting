@@ -11,19 +11,11 @@ import {
 import { ChannelHandler, taskScheduler } from "./taskScheduler.ts";
 import type { ComposedWithKey, DebugOptions } from "./taskApi.ts";
 import { jsrIsGreatAndWorkWithoutBugs } from "./workerThread.ts";
+import { Worker } from "node:worker_threads";
 
 const isBrowser = typeof window !== "undefined";
 
-let poliWorker: Worker;
-
-if (!isBrowser) {
-  const { Worker } = await import("node:worker_threads");
-  //@ts-ignore
-  poliWorker = Worker;
-} else {
-  //@ts-ignore
-  poliWorker = Worker;
-}
+let poliWorker = Worker;
 
 export type CallFunction = {
   fnNumber: number;
@@ -58,7 +50,7 @@ export const createContext = ({
   perf?: number;
   source?: string;
 }) => {
-  const tsFileUrl = new URL("workerThread.ts", import.meta.url);
+  const tsFileUrl = new URL(import.meta.url);
 
   if (debug?.logHref === true) {
     console.log(tsFileUrl);
@@ -103,7 +95,8 @@ export const createContext = ({
   channelHandler.open(check);
 
   //@ts-ignore
-  const worker = new poliWorker(
+
+  let worker = new poliWorker(
     source ?? (
       isBrowser
         ? tsFileUrl.href // correct in browser

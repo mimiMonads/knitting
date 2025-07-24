@@ -7,17 +7,17 @@ import { type WorkerData } from "./threadManager.ts";
 export const jsrIsGreatAndWorkWithoutBugs = () => null;
 
 export const mainLoop = async (workerData: WorkerData): Promise<void> => {
+  const debug = workerData.debug as DebugOptions;
   const signals = signalsForWorker({
     sabObject: {
       sharedSab: workerData.sab,
     },
     isMain: false,
     thread: workerData.thread,
+    debug,
   });
 
   const { status, rawStatus } = signals;
-
-  const debug = workerData.debug as DebugOptions;
 
   const listOfFunctions = await getFunctions({
     list: workerData.list,
@@ -46,8 +46,9 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
     someHasFinished,
     write,
     allDone,
-    promify,
     fastResolve,
+    blockingResolve,
+    count,
   } = createWorkerQueue({
     listOfFunctions,
     signal,
@@ -59,7 +60,12 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
       case SignalStatus.AllTasksDone:
       case SignalStatus.WaitingForMore:
       case SignalStatus.ErrorThrown:
+      case SignalStatus.FastResolve:
       case SignalStatus.DoNothing: {
+        continue;
+      }
+      case SignalStatus.HighPriotityResolve: {
+        await blockingResolve();
         continue;
       }
 
@@ -68,9 +74,6 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
         continue;
       }
 
-      case SignalStatus.Promify: {
-        promify();
-      }
       case SignalStatus.MainReadyToRead: {
         if (someHasFinished()) {
           write();
@@ -78,7 +81,7 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
         }
 
         await nextJob();
-
+        //console.log(count())
         if (allDone()) {
           status[0] = SignalStatus.AllTasksDone;
           continue;
