@@ -25,7 +25,7 @@ export const fn = fixedPoint({
   },
 });
 
-const threads = 4;
+const threads = 1;
 
 export const { terminateAll, callFunction, fastCallFunction, send } =
   createThreadPool({

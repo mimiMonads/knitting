@@ -10,6 +10,7 @@ export const taskScheduler = ({
     isThereAnythingToBeSent,
     dispatchToWorker,
     resolveError,
+    fastResolveTask,
   },
   channelHandler,
 }: {
@@ -27,7 +28,7 @@ export const taskScheduler = ({
   const check = () => {
     switch (status[0]) {
       case SignalStatus.FastResolve: {
-        resolveTask();
+        fastResolveTask();
         status[0] = SignalStatus.AllTasksDone;
         queueMicrotask(check);
         return;

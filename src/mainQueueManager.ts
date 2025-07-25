@@ -1,4 +1,9 @@
-import { readFromWorker, readPayloadError, sendToWorker } from "./parsers.ts";
+import {
+  PayloadType,
+  readFromWorker,
+  readPayloadError,
+  sendToWorker,
+} from "./parsers.ts";
 import {
   type MainSignal,
   QueueStateFlag,
@@ -31,6 +36,7 @@ export enum MainListEnum {
   State = 4,
   OnResolve = 5,
   OnReject = 6,
+  PlayloadType = 7,
 }
 
 export enum MainListState {
@@ -49,6 +55,7 @@ export type MainList = [
   MainListState,
   Accepted,
   Rejected,
+  PayloadType,
 ];
 
 export type QueueListWorker = MainList;
@@ -98,6 +105,7 @@ export function createMainQueue({
         -1,
         PLACE_HOLDER,
         PLACE_HOLDER,
+        PayloadType.Undefined,
       ] as MainList,
   );
 
@@ -143,7 +151,12 @@ export function createMainQueue({
     rejectAll,
     isThereAnythingToBeSent,
     hasEverythingBeenSent,
-
+    fastResolveTask: () => {
+      slotZero[MainListEnum.OnResolve](
+        readFromWorkerArray[slotZero[MainListEnum.FunctionID]](),
+      );
+      slotZero[MainListEnum.State] = MainListState.Free;
+    },
     /* Fast path (always queue[0]) */
     fastEnqueue: (functionID: FunctionID) => (rawArgs: RawArguments) => {
       slotZero[MainListEnum.TaskID] = genID++;
@@ -187,6 +200,7 @@ export function createMainQueue({
           MainListState.ToBeSent,
           deferred.resolve,
           deferred.reject,
+          PayloadType.Undefined,
         ]);
       }
 

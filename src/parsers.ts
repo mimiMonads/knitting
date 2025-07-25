@@ -8,7 +8,7 @@ const textDecoder = new TextDecoder();
 const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
 const MIN_SAFE_INTEGER = Number.MIN_SAFE_INTEGER;
 
-enum PayloadType {
+export enum PayloadType {
   Serializable = 0,
   String = 1,
   BigUint = 2,

@@ -97,7 +97,7 @@ func findPrimes(start, end int) []int {
 
 func main() {
 	const (
-		Limit  = 100_000_000
+		Limit  = 1_000_000
 		Chunk  = 10_000
 		Threads = 3
 	)

@@ -11,6 +11,7 @@ import {
   fromPlayloadToArguments,
   fromreturnToMain,
   fromReturnToMainError,
+  PayloadType,
 } from "./parsers.ts";
 
 type ArgumentsForCreateWorkerQueue = {
@@ -52,6 +53,7 @@ export const createWorkerQueue = (
         -1,
         PLACE_HOLDER,
         PLACE_HOLDER,
+        PayloadType.Undefined,
       ] as QueueListWorker,
   );
 
@@ -63,6 +65,7 @@ export const createWorkerQueue = (
     -1,
     PLACE_HOLDER,
     PLACE_HOLDER,
+    PayloadType.Undefined,
   ] as QueueListWorker;
 
   type AsyncFunction = (...args: any[]) => Promise<any>;
@@ -138,6 +141,7 @@ export const createWorkerQueue = (
           MainListState.ToBeSent,
           PLACE_HOLDER,
           PLACE_HOLDER,
+          PayloadType.Undefined,
         ]);
       }
     },
