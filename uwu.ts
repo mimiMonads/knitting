@@ -25,19 +25,19 @@ export const fn = fixedPoint({
   },
 });
 
-const threads = 1;
+const threads = 4;
 
 export const { terminateAll, callFunction, fastCallFunction, send } =
   createThreadPool({
     threads,
     debug: {
-      logMain: true,
-      logThreads: true,
+      //logMain: true,
+      //logThreads: true,
     },
   })({ fn });
 
 const LIMIT = 1_000_000; // Highest number to test
-const CHUNK = 100_000;
+const CHUNK = 10_000;
 
 if (isMain) {
   const tasks: Promise<number[]>[] = [];
@@ -63,8 +63,8 @@ if (isMain) {
   console.log("Largest prime:", primes.at(-1));
 
   // Quick demo of fastCallFunction with a small range.
-  const smallPrimes = await fastCallFunction.fn([2, 30]);
-  console.log("Primes between 2 and 30:", smallPrimes);
+  //const smallPrimes = await fastCallFunction.fn([2, 30]);
+  //console.log("Primes between 2 and 30:", smallPrimes);
 
   terminateAll();
 }

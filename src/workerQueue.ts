@@ -1,6 +1,7 @@
 import { type QueueListWorker } from "./mainQueueManager.ts";
 import { MainListEnum, MainListState } from "./mainQueueManager.ts";
 import {
+  QueueStateFlag,
   type SignalArguments,
   SignalStatus,
   type WorkerSignal,
@@ -27,11 +28,9 @@ export const createWorkerQueue = (
     signals,
     signal: {
       status,
-      getCurrentID,
+      id,
       functionToUse,
-      messageReady,
-      readyToWork,
-      errorWasThrown,
+      queueState,
     },
   }: ArgumentsForCreateWorkerQueue,
 ) => {
@@ -93,32 +92,37 @@ export const createWorkerQueue = (
     someHasFinished: () => hasAnythingFinished !== 0,
     count: () => [isThereAnythingToResolve, hasAnythingFinished],
     blockingResolve: async () => {
-      blockingSlot[MainListEnum.TaskID] = getCurrentID();
+      blockingSlot[MainListEnum.TaskID] = id[0];
 
       try {
         blockingSlot[MainListEnum.WorkerResponse] = await jobs[blockingSlot[2]](
           playloadToArgs[0](),
         );
-        returnToMain[functionToUse()](blockingSlot);
+        returnToMain[functionToUse[0]](blockingSlot);
         status[0] = SignalStatus.FastResolve;
       } catch (err) {
         blockingSlot[MainListEnum.WorkerResponse] = err;
         returnError(blockingSlot);
-        errorWasThrown();
+        status[0] = SignalStatus.ErrorThrown;
       }
     },
 
     // enqueue a task to the queue.
     enqueue: () => {
-      const fnNumber = functionToUse();
+      const fnNumber = functionToUse[0],
+        args = playloadToArgs[0](),
+        currentID = id[0];
       let inserted = false;
+      queueState[0] === QueueStateFlag.Last
+        ? (status[0] = SignalStatus.WaitingForMore)
+        : (status[0] = SignalStatus.MainReadyToRead);
       isThereAnythingToResolve++;
       for (let i = 0; i < queue.length; i++) {
         if (queue[i][MainListEnum.State] === MainListState.Free) {
           const slot = queue[i];
           slot[MainListEnum.State] = MainListState.ToBeSent;
-          slot[MainListEnum.TaskID] = getCurrentID();
-          slot[MainListEnum.RawArguments] = playloadToArgs[0]();
+          slot[MainListEnum.TaskID] = currentID;
+          slot[MainListEnum.RawArguments] = args;
           slot[MainListEnum.FunctionID] = fnNumber;
           inserted = true;
           break;
@@ -127,8 +131,8 @@ export const createWorkerQueue = (
 
       if (!inserted) {
         queue.push([
-          getCurrentID(),
-          playloadToArgs[fnNumber](),
+          currentID,
+          args,
           fnNumber,
           new Uint8Array(),
           MainListState.ToBeSent,
@@ -136,8 +140,6 @@ export const createWorkerQueue = (
           PLACE_HOLDER,
         ]);
       }
-
-      readyToWork();
     },
 
     // Write completed tasks to the writer.
@@ -146,7 +148,7 @@ export const createWorkerQueue = (
         if (queue[i][MainListEnum.State] === MainListState.Accepted) {
           const element = queue[i];
           returnToMain[element[MainListEnum.FunctionID]](element);
-          messageReady();
+          status[0] = SignalStatus.WorkerWaiting;
           element[MainListEnum.State] = MainListState.Free;
           isThereAnythingToResolve--;
           hasAnythingFinished--;
@@ -155,7 +157,7 @@ export const createWorkerQueue = (
         if (queue[i][MainListEnum.State] === MainListState.Rejected) {
           const element = queue[i];
           returnError(element);
-          errorWasThrown();
+          status[0] = SignalStatus.ErrorThrown;
           element[MainListEnum.State] = MainListState.Free;
           isThereAnythingToResolve--;
           hasAnythingFinished--;
@@ -170,7 +172,9 @@ export const createWorkerQueue = (
           const task = queue[i];
           task[MainListEnum.State] = MainListState.Sent;
 
-          await jobs[task[2]](task[1])
+          await jobs[task[MainListEnum.FunctionID]](
+            task[MainListEnum.RawArguments],
+          )
             .then((res) => {
               task[MainListEnum.WorkerResponse] = res;
               hasAnythingFinished++;
@@ -188,12 +192,13 @@ export const createWorkerQueue = (
     },
     fastResolve: async () => {
       for (let i = 0; i < queue.length; i++) {
-        if (queue[i][MainListEnum.State] === 0) {
+        if (queue[i][MainListEnum.State] === MainListState.ToBeSent) {
           const task = queue[i];
           task[MainListEnum.State] = MainListState.Sent;
 
           try {
-            task[MainListEnum.WorkerResponse] = await jobs[task[2]](task[1]);
+            task[MainListEnum.WorkerResponse] = await jobs
+              [task[MainListEnum.FunctionID]](task[MainListEnum.RawArguments]);
             hasAnythingFinished++;
             task[MainListEnum.State] = MainListState.Accepted;
           } catch (err) {

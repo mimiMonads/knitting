@@ -63,7 +63,14 @@ export const getCallerFilePath = (n: number) => {
   //   return path[path.length - 1];
   // }
 };
+import { hrtime } from "node:process";
 
+const beat = (): number => Number(hrtime.bigint()) / 1e6;
+
+/**
+ * Debug reads & writes to status[0] without touching `performance.now()`.
+ * “Time” columns are driven by the `beat()` heart‑beat instead.
+ */
 export const signalDebuggerV2 = ({
   thread,
   isMain,
@@ -82,13 +89,13 @@ export const signalDebuggerV2 = ({
 
   // ─── timing & counting state ─────────────────────────────────────
   let last = status[0];
-  const born = performance.now();
-  let lastPerf = born;
+  const born = beat(); // ms since heart‑beat origin
+  let lastBeat = born; // last change time
 
   let hitsTotal = 0;
   const hitsPerValue: Record<number, number> = { [last]: 0 };
 
-  // ─── proxy that logs every read/write of element 0 ───────────────
+  // ─── proxy that logs every read/write of element 0 ───────────────
   const proxied = new Proxy(status, {
     get(target, prop, receiver) {
       if (prop === "0") {
@@ -105,27 +112,28 @@ export const signalDebuggerV2 = ({
     },
   }) as unknown as Int32Array;
 
+  // ─── log when the tracked slot’s value changes ──────────────────
   function maybeLog(value: number) {
     hitsTotal++;
     hitsPerValue[value] = (hitsPerValue[value] ?? 0) + 1;
 
     if (value !== last) {
-      const now = performance.now();
-      const from = value > 127 ? orange : purple;
+      const now = beat();
+      const from = last > 127 ? orange : purple; // colour by *old* value
+      const hits = hitsPerValue[last]; // hits of the run we’re finishing
 
       console.log(
         `${color}${(isMain ? "M " : "T ") + (thread ?? "")}${reset}${tab}` + // thread
-          `${from}${String(value).padStart(3, " ")}${reset}` + // new value
+          `${from}${String(last).padStart(3, " ")}${reset}` + // previous value
           (isMain ? tab : tab + tab) +
           `${color}${(now - born).toFixed(2).padStart(6, " ")}${reset}` + // since born
-          tab + tab + (now - lastPerf).toFixed(2).padStart(6, " ") + tab +
-          tab + // since last change
-          String(hitsPerValue[value]).padStart(4, " ") + // per-value hits
+          tab + tab + (now - lastBeat).toFixed(2).padStart(6, " ") + tab + // since last change
+          tab + String(hits).padStart(4, " ") + // hits of prev value
           tab + String(hitsTotal).padStart(6, " "), // total hits
       );
 
       last = value;
-      lastPerf = now;
+      lastBeat = now;
     }
   }
 

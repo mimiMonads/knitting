@@ -30,7 +30,7 @@ export enum SignalStatus {
 // ───────────────────────────────────────────────
 // Queue State Flags
 // ───────────────────────────────────────────────
-enum QueueStateFlag {
+export enum QueueStateFlag {
   NotLast = 0,
   Last = 1,
 }
@@ -135,27 +135,14 @@ export const mainSignal = (
   rawStatus,
   functionToUse,
   id,
-  isLastElementToSend: (state: boolean) =>
-    state === true
-      ? (queueState[0] = QueueStateFlag.Last)
-      : (queueState[0] = QueueStateFlag.NotLast),
+  queueState,
 });
 
 export const workerSignal = (
   { status, id, functionToUse, queueState }: SignalArguments,
 ) => ({
   status,
-  messageReady: () => (status[0] = SignalStatus.WorkerWaiting),
-  markMessageAsRead: () => (status[0] = SignalStatus.MessageRead),
-  signalAllTasksDone: () => (status[0] = SignalStatus.AllTasksDone),
-  waitingForMore: () => (status[0] = SignalStatus.WaitingForMore),
-  errorWasThrown: () => (status[0] = SignalStatus.ErrorThrown),
-  readyToRead: () => (status[0] = SignalStatus.MainReadyToRead),
-  logWorkStatus: () => queueState[0],
-  readyToWork: () =>
-    queueState[0] === QueueStateFlag.Last
-      ? (status[0] = SignalStatus.WaitingForMore)
-      : (status[0] = SignalStatus.MainReadyToRead),
-  getCurrentID: () => id[0],
-  functionToUse: () => functionToUse[0],
+  id,
+  functionToUse,
+  queueState,
 });

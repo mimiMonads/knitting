@@ -1,6 +1,7 @@
 import { readFromWorker, readPayloadError, sendToWorker } from "./parsers.ts";
 import {
   type MainSignal,
+  QueueStateFlag,
   type SignalArguments,
   SignalStatus,
 } from "./signals.ts";
@@ -73,10 +74,9 @@ export function createMainQueue({
     status,
     functionToUse,
     id,
-    isLastElementToSend,
+    queueState,
   },
   max,
-  genTaskID,
   promisesMap,
   listOfFunctions,
   signals,
@@ -117,8 +117,11 @@ export function createMainQueue({
     )
   );
 
+  let genID = 0;
+
   let toBeSentCount = 0;
 
+  const slotZero = queue[0];
   const isThereAnythingToBeSent = () => toBeSentCount > 0;
   const hasEverythingBeenSent = () => toBeSentCount === 0;
   const addDeferred = () => {
@@ -126,8 +129,8 @@ export function createMainQueue({
       WorkerResponse
     >();
 
-    queue[0][MainListEnum.OnResolve] = deferred.resolve;
-    queue[0][MainListEnum.OnReject] = deferred.reject;
+    slotZero[MainListEnum.OnResolve] = deferred.resolve;
+    slotZero[MainListEnum.OnReject] = deferred.reject;
 
     return deferred.promise;
   };
@@ -143,17 +146,13 @@ export function createMainQueue({
 
     /* Fast path (always queue[0]) */
     fastEnqueue: (functionID: FunctionID) => (rawArgs: RawArguments) => {
-      const slot = queue[0];
-
-      slot[MainListEnum.TaskID] = genTaskID();
-      slot[MainListEnum.RawArguments] = rawArgs;
-      slot[MainListEnum.FunctionID] = functionID;
-
-      sendToWokerArray[0](slot);
+      slotZero[MainListEnum.TaskID] = genID++;
+      slotZero[MainListEnum.RawArguments] = rawArgs;
+      slotZero[MainListEnum.FunctionID] = functionID;
+      sendToWokerArray[0](slotZero);
       functionToUse[0] = functionID;
-      isLastElementToSend(false);
       status[0] = SignalStatus.HighPriotityResolve;
-      slot[MainListEnum.State] = MainListState.Sent;
+      slotZero[MainListEnum.State] = MainListState.Sent;
 
       return addDeferred();
     },
@@ -168,13 +167,12 @@ export function createMainQueue({
         }
       }
 
-      const taskID = genTaskID();
       const deferred = Promise.withResolvers<WorkerResponse>();
       toBeSentCount++;
 
       if (idx !== -1) {
         const slot = queue[idx];
-        slot[MainListEnum.TaskID] = taskID;
+        slot[MainListEnum.TaskID] = genID++;
         slot[MainListEnum.RawArguments] = rawArgs;
         slot[MainListEnum.FunctionID] = functionID;
         slot[MainListEnum.State] = MainListState.ToBeSent;
@@ -182,7 +180,7 @@ export function createMainQueue({
         slot[MainListEnum.OnReject] = deferred.reject;
       } else {
         queue.push([
-          taskID,
+          genID++,
           rawArgs,
           functionID,
           new Uint8Array(),
@@ -200,8 +198,10 @@ export function createMainQueue({
         if (queue[i][MainListEnum.State] === MainListState.ToBeSent) {
           const job = queue[i];
           job[MainListEnum.State] = MainListState.Sent;
-          isLastElementToSend(toBeSentCount > 0);
-          sendToWokerArray[job[MainListEnum.FunctionID]](job);
+          toBeSentCount > 0
+            ? (queueState[0] = QueueStateFlag.Last)
+            : (queueState[0] = QueueStateFlag.NotLast),
+            sendToWokerArray[job[MainListEnum.FunctionID]](job);
           functionToUse[0] = job[MainListEnum.FunctionID];
           status[0] = SignalStatus.MainSend;
           toBeSentCount--;

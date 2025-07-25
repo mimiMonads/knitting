@@ -48,7 +48,6 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
     allDone,
     fastResolve,
     blockingResolve,
-    count,
   } = createWorkerQueue({
     listOfFunctions,
     signal,
@@ -81,7 +80,7 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
         }
 
         await nextJob();
-        //console.log(count())
+
         if (allDone()) {
           status[0] = SignalStatus.AllTasksDone;
           continue;
