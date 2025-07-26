@@ -1,5 +1,5 @@
 import { bench, boxplot, group, run as mitataRun, summary } from "mitata";
-import { createThreadPool, fixedPoint, isMain } from "../knitting.ts";
+import { createThreadPool, fixedPoint, isMain } from "../out/knitting.js";
 
 export const inLine = fixedPoint({
   f: async (_: void) => {},

@@ -6,6 +6,7 @@
   },
   "name": "knitting",
   "module": "index.ts",
+  "license": "SEE LICENSE IN LICENSE",
   "type": "module",
   "scripts": {
     "toNode": "bun build main.ts --outdir  dest   --target node"

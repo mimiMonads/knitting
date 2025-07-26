@@ -7,7 +7,6 @@ import {
 import type { MainList } from "./mainQueueManager.ts";
 import { deserialize, serialize } from "node:v8";
 
-const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
 const MIN_SAFE_INTEGER = Number.MIN_SAFE_INTEGER;
@@ -75,6 +74,7 @@ const toWorkerAny = (index: 1 | 3 = 1) =>
     uInt32,
     float64,
     setBuffer,
+    setString
   }: SignalArguments,
 ) =>
 (
@@ -85,8 +85,7 @@ const toWorkerAny = (index: 1 | 3 = 1) =>
 
   switch (typeof args) {
     case "string": {
-      const encode = textEncoder.encode(args);
-      setBuffer(encode);
+      setString(args)
       type[0] = PayloadType.String;
       return;
     }
@@ -169,8 +168,7 @@ const toWorkerAny = (index: 1 | 3 = 1) =>
       switch (args.constructor) {
         case Object:
         case Array: {
-          setBuffer(textEncoder.encode(JSON.stringify(args)));
-
+          setString(JSON.stringify(args))
           type[0] = PayloadType.Json;
           return;
         }

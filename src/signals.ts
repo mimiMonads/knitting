@@ -39,6 +39,8 @@ export type Sab = {
   size?: number;
   sharedSab?: SharedArrayBuffer;
 };
+const textEncode = new TextEncoder()
+
 
 const allocBuffer = ({ sab, payloadLength }: {
   sab: SharedArrayBuffer;
@@ -53,6 +55,18 @@ const allocBuffer = ({ sab, payloadLength }: {
     },
     subarray: (start: number, end: number) => {
       return uInt8.subarray(start, end);
+    },
+    setString: (str:string) => {
+      const required = str.length + SignalEnumOptions.header;
+
+      if (currentSize < required) {
+        sab.grow(required);
+        currentSize = sab.byteLength + SignalEnumOptions.header;
+        uInt8 = new Uint8Array(sab, SignalEnumOptions.header);
+      }
+
+      textEncode.encodeInto(str,uInt8)
+      payloadLength[0] = str.length;
     },
     setBuffer: (buffer: Uint8Array) => {
       const required = buffer.length + SignalEnumOptions.header;
@@ -100,7 +114,7 @@ export const signalsForWorker = (
   }
 
   const payloadLength = new Int32Array(sab, 8, 1);
-  const { setBuffer, slice, subarray } = allocBuffer({ sab, payloadLength });
+  const { setBuffer, slice, subarray , setString} = allocBuffer({ sab, payloadLength });
 
   return {
     sab,
@@ -117,6 +131,7 @@ export const signalsForWorker = (
     payloadLength,
     // Modifing shared memory
     setBuffer,
+    setString,
     slice,
     subarray,
     // One byte var

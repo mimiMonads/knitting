@@ -1,6 +1,6 @@
-import { createThreadPool, fixedPoint, isMain } from "../knitting.ts";
+import { createThreadPool, fixedPoint, isMain } from "../out/knitting.js";
 import { bench, boxplot, group, run, summary } from "mitata";
-import { worker } from "./echo.ts";
+
 
 export const toNumber = fixedPoint({
   f: async (a: number) => a,
@@ -152,7 +152,6 @@ if (isMain) {
 
     bench("classic", async () => {
       await Promise.all([
-        toResolve(obj),
         toResolve(obj),
       ]);
     });

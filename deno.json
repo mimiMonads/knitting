@@ -2,6 +2,7 @@
   "name": "@vixeny/knitting",
   "version": "0.1.0",
   "exports": "./knitting.ts",
+  "license": "SEE LICENSE IN LICENSE",
   "publish": {
     "include": [
       "LICENSE",
