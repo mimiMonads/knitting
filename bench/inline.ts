@@ -30,7 +30,7 @@ if (isMain) {
         send();
 
         await Promise.all(arr);
-        //await fastCallFunction.inLine();
+        await fastCallFunction.inLine();
       });
 
       summary(() => {

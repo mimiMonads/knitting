@@ -35,12 +35,10 @@ export const taskScheduler = ({
       }
       case SignalStatus.WorkerWaiting:
         resolveTask();
-        status[0] = SignalStatus.MainReadyToRead;
         queueMicrotask(check);
         return;
       case SignalStatus.MessageRead:
         resolveTask();
-        status[0] = SignalStatus.MainReadyToRead;
         if (loop()) {
           queueMicrotask(check);
           return;

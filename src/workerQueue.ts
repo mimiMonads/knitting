@@ -12,6 +12,7 @@ import {
   fromreturnToMain,
   fromReturnToMainError,
   PayloadType,
+  readPayloadWorkerBulk,
 } from "./parsers.ts";
 
 type ArgumentsForCreateWorkerQueue = {
@@ -90,6 +91,11 @@ export const createWorkerQueue = (
     )), acc
   ), [] as Function[]);
 
+  const reader = readPayloadWorkerBulk({
+    ...signals,
+    specialType: "thread",
+  });
+
   return {
     // Check if any task is solved and ready for writing.
     someHasFinished: () => hasAnythingFinished !== 0,
@@ -113,12 +119,11 @@ export const createWorkerQueue = (
     // enqueue a task to the queue.
     enqueue: () => {
       const fnNumber = functionToUse[0],
-        args = playloadToArgs[0](),
-        currentID = id[0];
+        currentID = id[0],
+        args = reader();
+
       let inserted = false;
-      queueState[0] === QueueStateFlag.Last
-        ? (status[0] = SignalStatus.WaitingForMore)
-        : (status[0] = SignalStatus.MainReadyToRead);
+
       isThereAnythingToResolve++;
       for (let i = 0; i < queue.length; i++) {
         if (queue[i][MainListEnum.State] === MainListState.Free) {

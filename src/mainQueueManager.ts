@@ -2,6 +2,8 @@ import {
   PayloadType,
   readFromWorker,
   readPayloadError,
+  readPayloadWorkerAny,
+  readPayloadWorkerBulk,
   sendToWorker,
 } from "./parsers.ts";
 import {
@@ -109,6 +111,10 @@ export function createMainQueue({
       ] as MainList,
   );
 
+  const reader = readPayloadWorkerBulk({
+    ...signals,
+    specialType: "main",
+  });
   const sendToWorkerWithSignal = sendToWorker(signals);
   const readFromWorkerWithSignal = readFromWorker(signals);
   const errorDeserializer = readPayloadError(signals);
@@ -239,12 +245,13 @@ export function createMainQueue({
 
     /* Resolve task whose ID matches currentID */
     resolveTask: () => {
-      const currentID = id[0];
+      const currentID = id[0], args = reader();
+
       for (let i = 0; i < queue.length; i++) {
         if (queue[i][MainListEnum.TaskID] === currentID) {
           const job = queue[i];
           job[MainListEnum.OnResolve](
-            readFromWorkerArray[job[MainListEnum.FunctionID]](),
+            args,
           );
           job[MainListEnum.State] = MainListState.Free;
           return;

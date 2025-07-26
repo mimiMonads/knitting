@@ -1,5 +1,9 @@
 import type { External, Serializable } from "./taskApi.ts";
-import { type SignalArguments } from "./signals.ts";
+import {
+  QueueStateFlag,
+  type SignalArguments,
+  SignalStatus,
+} from "./signals.ts";
 import type { MainList } from "./mainQueueManager.ts";
 import { deserialize, serialize } from "node:v8";
 
@@ -247,6 +251,106 @@ const readPayloadWorkerAny = (
   }
 };
 
+const readPayloadWorkerBulk = (
+  {
+    payloadLength,
+    subarray,
+    slice,
+    type,
+    uBigInt,
+    bigInt,
+    uInt32,
+    int32,
+    float64,
+    specialType,
+    queueState,
+    status,
+  }: SignalArguments & {
+    specialType: "main" | "thread";
+  },
+) => {
+  const changeOwnership = specialType === "main"
+    ? () => status[0] = SignalStatus.MainReadyToRead
+    : () =>
+      queueState[0] === QueueStateFlag.Last
+        ? (status[0] = SignalStatus.WaitingForMore)
+        : (status[0] = SignalStatus.MainReadyToRead);
+  let text;
+  return () => {
+    switch (type[0]) {
+      case PayloadType.String:
+        text = textDecoder.decode(
+          subarray(0, payloadLength[0]),
+        );
+        changeOwnership();
+        return text;
+      case PayloadType.BigUint:
+        changeOwnership();
+        return uBigInt[0];
+
+      case PayloadType.BigInt:
+        changeOwnership();
+        return bigInt[0];
+      case PayloadType.True:
+        changeOwnership();
+        return true;
+      case PayloadType.False:
+        changeOwnership();
+        return false;
+      case PayloadType.Undefined:
+        changeOwnership();
+        return undefined;
+      case PayloadType.NaN:
+        changeOwnership();
+        return NaN;
+      case PayloadType.Infinity:
+        changeOwnership();
+        return Infinity;
+      case PayloadType.NegativeInfinity:
+        changeOwnership();
+        return -Infinity;
+      case PayloadType.Float64:
+        changeOwnership();
+        return float64[0];
+      case PayloadType.Uint32:
+        changeOwnership();
+        return uInt32[0];
+      case PayloadType.Int32:
+        changeOwnership();
+        return int32[0];
+      case PayloadType.Uint64:
+        changeOwnership();
+        return Number(uBigInt[0]);
+      case PayloadType.Int64:
+        changeOwnership();
+        return Number(bigInt[0]);
+      case PayloadType.Null:
+        changeOwnership();
+        return null;
+      case PayloadType.Json:
+        text = textDecoder.decode(
+          subarray(0, payloadLength[0]),
+        );
+
+        changeOwnership();
+
+        return JSON.parse(
+          text,
+        );
+
+      case PayloadType.Uint8Array:
+        text = slice(0, payloadLength[0]);
+        changeOwnership();
+        return text;
+      // default
+      case PayloadType.Serializable:
+        text = deserialize(subarray(0, payloadLength[0]));
+        changeOwnership();
+        return text;
+    }
+  };
+};
+
 const fromPlayloadToArguments =
   (signals: SignalArguments) => (type: External) => {
     return readPayloadWorkerAny(signals);
@@ -265,5 +369,7 @@ export {
   fromReturnToMainError,
   readFromWorker,
   readPayloadError,
+  readPayloadWorkerAny,
+  readPayloadWorkerBulk,
   sendToWorker,
 };

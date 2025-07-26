@@ -1,29 +1,17 @@
 import { createThreadPool, fixedPoint, isMain } from "../knitting.ts";
 import { bench, boxplot, group, run, summary } from "mitata";
 
-export const toNumber = fixedPoint({
-  f: async (a: number) => a,
-});
-
-export const toString = fixedPoint<string, string>({
-  f: async (a) => a,
-});
-
-export const toBigInt = fixedPoint<bigint, bigint>({
-  f: async (a) => a,
-});
-
-export const toBoolean = fixedPoint<boolean, boolean>({
-  f: async (a) => a,
-});
-
-export const toVoid = fixedPoint({
-  f: async (a) => a,
-});
-
 export const toObject = fixedPoint({
-  f: async (a) => a,
+  f: async (a: Object) => a,
 });
+
+
+
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
+
+const desser =   (o: Object) => textEncoder.encode(JSON.stringify(o))
+const enser =  (o: Uint8Array<ArrayBufferLike>) => JSON.parse(textDecoder.decode(o))
 
 const obj = {
   number: 123,
@@ -42,6 +30,16 @@ if (isMain) {
   bench("FF obj", async () => {
     await fastCallFunction.toObject(obj);
   });
+
+  bench("classic", async () => {
+    await Promise.all([
+      toResolve(obj),
+    ]);
+  });
+
+  bench(" ser cost", () => {
+    enser(desser(obj))
+  })
 
   bench("classic", async () => {
     await Promise.all([
@@ -72,7 +70,15 @@ if (isMain) {
     ]);
   });
 
-  bench("5  obj", async () => {
+  bench(" ser cost 5", () => {
+    enser(desser(obj))
+    enser(desser(obj))
+    enser(desser(obj))
+    enser(desser(obj))
+    enser(desser(obj))
+  })
+
+  bench("10  obj", async () => {
     const arr = [
       callFunction.toObject(obj),
       callFunction.toObject(obj),
@@ -103,6 +109,20 @@ if (isMain) {
       toResolve(obj),
       toResolve(obj),
     ]);
+  });
+
+  
+  bench(" ser cost 5", () => {
+    enser(desser(obj))
+    enser(desser(obj))
+    enser(desser(obj))
+    enser(desser(obj))
+    enser(desser(obj))
+    enser(desser(obj))
+    enser(desser(obj))
+    enser(desser(obj))
+    enser(desser(obj))
+    enser(desser(obj))
   });
 
   (async () => {
