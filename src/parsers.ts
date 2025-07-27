@@ -7,7 +7,6 @@ import {
 import type { MainList } from "./mainQueueManager.ts";
 import { deserialize, serialize } from "node:v8";
 
-const textDecoder = new TextDecoder();
 const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
 const MIN_SAFE_INTEGER = Number.MIN_SAFE_INTEGER;
 
@@ -74,7 +73,7 @@ const toWorkerAny = (index: 1 | 3 = 1) =>
     uInt32,
     float64,
     setBuffer,
-    setString
+    setString,
   }: SignalArguments,
 ) =>
 (
@@ -85,7 +84,7 @@ const toWorkerAny = (index: 1 | 3 = 1) =>
 
   switch (typeof args) {
     case "string": {
-      setString(args)
+      setString(args);
       type[0] = PayloadType.String;
       return;
     }
@@ -168,7 +167,7 @@ const toWorkerAny = (index: 1 | 3 = 1) =>
       switch (args.constructor) {
         case Object:
         case Array: {
-          setString(JSON.stringify(args))
+          setString(JSON.stringify(args));
           type[0] = PayloadType.Json;
           return;
         }
@@ -199,14 +198,13 @@ const readPayloadWorkerAny = (
     uInt32,
     int32,
     float64,
+    buffToString,
   }: SignalArguments,
 ) =>
 () => {
   switch (type[0]) {
     case PayloadType.String:
-      return textDecoder.decode(
-        subarray(0, payloadLength[0]),
-      );
+      return buffToString(0, payloadLength[0]);
     case PayloadType.BigUint:
       return uBigInt[0];
     case PayloadType.BigInt:
@@ -237,9 +235,7 @@ const readPayloadWorkerAny = (
       return null;
     case PayloadType.Json:
       return JSON.parse(
-        textDecoder.decode(
-          subarray(0, payloadLength[0]),
-        ),
+        buffToString(0, payloadLength[0]),
       );
     case PayloadType.Uint8Array:
       return subarray(0, payloadLength[0]);
@@ -254,6 +250,7 @@ const readPayloadWorkerBulk = (
     payloadLength,
     subarray,
     slice,
+    buffToString,
     type,
     uBigInt,
     bigInt,
@@ -277,9 +274,7 @@ const readPayloadWorkerBulk = (
   return () => {
     switch (type[0]) {
       case PayloadType.String:
-        text = textDecoder.decode(
-          subarray(0, payloadLength[0]),
-        );
+        text = buffToString(0, payloadLength[0]);
         changeOwnership();
         return text;
       case PayloadType.BigUint:
@@ -326,9 +321,7 @@ const readPayloadWorkerBulk = (
         changeOwnership();
         return null;
       case PayloadType.Json:
-        text = textDecoder.decode(
-          subarray(0, payloadLength[0]),
-        );
+        text = buffToString(0, payloadLength[0]);
 
         changeOwnership();
 

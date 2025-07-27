@@ -1,20 +1,19 @@
-import { createThreadPool, fixedPoint, isMain } from "../out/knitting.js";
+import { createThreadPool, fixedPoint, isMain } from "../knitting.ts";
 import { bench, boxplot, group, run, summary } from "mitata";
-
 
 export const toNumber = fixedPoint({
   f: async (a: number) => a,
 });
 
-export const toString = fixedPoint<string, string>({
+export const toString = fixedPoint({
   f: async (a) => a,
 });
 
-export const toBigInt = fixedPoint<bigint, bigint>({
+export const toBigInt = fixedPoint({
   f: async (a) => a,
 });
 
-export const toBoolean = fixedPoint<boolean, boolean>({
+export const toBoolean = fixedPoint({
   f: async (a) => a,
 });
 
@@ -98,7 +97,7 @@ if (isMain) {
 
   boxplot(async () => {
     bench("CF string", async () => {
-      const res = callFunction.toString("sss");
+      const res = callFunction.toString("hello");
       send();
       await res;
     });

@@ -2,7 +2,6 @@ import {
   PayloadType,
   readFromWorker,
   readPayloadError,
-  readPayloadWorkerAny,
   readPayloadWorkerBulk,
   sendToWorker,
 } from "./parsers.ts";

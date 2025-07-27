@@ -54,6 +54,8 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
     signals,
   });
 
+  const SUPPORTS_PAUSE = "pause" in Atomics;
+
   while (true) {
     switch (status[0]) {
       case SignalStatus.AllTasksDone:
@@ -61,6 +63,9 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
       case SignalStatus.ErrorThrown:
       case SignalStatus.FastResolve:
       case SignalStatus.DoNothing: {
+        if (SUPPORTS_PAUSE) {
+          Atomics.pause(10);
+        }
         continue;
       }
       case SignalStatus.HighPriotityResolve: {

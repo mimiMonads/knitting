@@ -4,6 +4,7 @@ export type WorkerSignal = ReturnType<typeof workerSignal>;
 import { isMainThread } from "node:worker_threads";
 import { signalDebuggerV2 } from "./utils.ts";
 import { type DebugOptions } from "./taskApi.ts";
+import { Buffer as NodeBuffer } from "node:buffer";
 
 enum SignalEnumOptions {
   header = 24,
@@ -35,12 +36,13 @@ export enum QueueStateFlag {
   Last = 1,
 }
 
+const IS_DENO = typeof Deno == "object" && Deno !== null;
+
 export type Sab = {
   size?: number;
   sharedSab?: SharedArrayBuffer;
 };
-const textEncode = new TextEncoder()
-
+const textEncode = new TextEncoder();
 
 const allocBuffer = ({ sab, payloadLength }: {
   sab: SharedArrayBuffer;
@@ -48,24 +50,29 @@ const allocBuffer = ({ sab, payloadLength }: {
 }) => {
   let currentSize = sab.byteLength + SignalEnumOptions.header;
   let uInt8 = new Uint8Array(sab, SignalEnumOptions.header);
+  let buff = NodeBuffer.from(sab, SignalEnumOptions.header);
+  const textDecoder = new TextDecoder();
+
+  const buffToString = IS_DENO
+    ? (start: number, end: number) =>
+      textDecoder.decode(uInt8.subarray(start, end))
+    : (start: number, end: number) => buff.toString("utf8", start, end);
 
   return {
-    slice: (start: number, end: number) => {
-      return uInt8.slice(start, end);
-    },
-    subarray: (start: number, end: number) => {
-      return uInt8.subarray(start, end);
-    },
-    setString: (str:string) => {
+    buffToString,
+    slice: (start: number, end: number) => uInt8.slice(start, end),
+    subarray: (start: number, end: number) => uInt8.subarray(start, end),
+    setString: (str: string) => {
       const required = str.length + SignalEnumOptions.header;
 
       if (currentSize < required) {
         sab.grow(required);
         currentSize = sab.byteLength + SignalEnumOptions.header;
         uInt8 = new Uint8Array(sab, SignalEnumOptions.header);
+        buff = NodeBuffer.from(sab, SignalEnumOptions.header);
       }
 
-      textEncode.encodeInto(str,uInt8)
+      textEncode.encodeInto(str, uInt8);
       payloadLength[0] = str.length;
     },
     setBuffer: (buffer: Uint8Array) => {
@@ -75,6 +82,7 @@ const allocBuffer = ({ sab, payloadLength }: {
         sab.grow(required);
         currentSize = sab.byteLength + SignalEnumOptions.header;
         uInt8 = new Uint8Array(sab, SignalEnumOptions.header);
+        buff = NodeBuffer.from(sab, SignalEnumOptions.header);
       }
       uInt8.set(buffer, 0);
       payloadLength[0] = buffer.length;
@@ -114,7 +122,10 @@ export const signalsForWorker = (
   }
 
   const payloadLength = new Int32Array(sab, 8, 1);
-  const { setBuffer, slice, subarray , setString} = allocBuffer({ sab, payloadLength });
+  const { setBuffer, slice, subarray, setString, buffToString } = allocBuffer({
+    sab,
+    payloadLength,
+  });
 
   return {
     sab,
@@ -134,6 +145,7 @@ export const signalsForWorker = (
     setString,
     slice,
     subarray,
+    buffToString,
     // One byte var
     bigInt: new BigInt64Array(sab, SignalEnumOptions.header, 1),
     uBigInt: new BigUint64Array(sab, SignalEnumOptions.header, 1),

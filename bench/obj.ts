@@ -5,12 +5,10 @@ export const toObject = fixedPoint({
   f: async (a: Object) => a,
 });
 
-
-
-const obj = [1,2,3,4,5,6,7,{
+const obj = [1, 2, 3, 4, 5, 6, 7, {
   hello: 1,
-  hi: "string"
-}]
+  hi: "string",
+}];
 
 if (isMain) {
   const { worker, toResolve } = await import("./echo.ts");
@@ -22,7 +20,6 @@ if (isMain) {
   bench("FF obj", async () => {
     await fastCallFunction.toObject(obj);
   });
-
 
   bench("classic", async () => {
     await Promise.all([
@@ -52,7 +49,6 @@ if (isMain) {
       toResolve(obj),
     ]);
   });
-
 
   bench("10  obj", async () => {
     const arr = [
@@ -86,7 +82,6 @@ if (isMain) {
       toResolve(obj),
     ]);
   });
-
 
   bench("50  obj", async () => {
     const arr = [
@@ -146,7 +141,6 @@ if (isMain) {
     await Promise.all(arr);
   });
 
-  
   bench("50 classic", async () => {
     await Promise.all([
       toResolve(obj),

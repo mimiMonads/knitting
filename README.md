@@ -12,13 +12,7 @@ export const { terminateAll, callFunction, send } = createThreadPool({})({
 });
 
 if (isMain) {
-  const arr = [
-    callFunction.fn(),
-  ];
-
-  send();
-
-  await Promise.all(arr)
+  await fastCallFunction.fn()
     .then((results) => {
       console.log("Results:", results);
     })
@@ -28,3 +22,16 @@ if (isMain) {
     .finally(terminateAll);
 }
 ```
+
+## License
+
+This software is licensed under a modified MIT License with a **No-Derivatives
+clause**.
+
+- ✅ Commercial use is **permitted**
+- ✅ Personal use and copying are **permitted**
+- ❌ Forking, modifying, or redistributing the code is **not allowed**
+- ❌ Republishing under a different license is **not allowed**
+- ✉️ Written permission is required for any derivative or redistributed work
+
+See the [LICENSE](./LICENSE) file for full terms.
