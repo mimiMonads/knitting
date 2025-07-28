@@ -78,7 +78,7 @@ export const createMainThread = ({
           promisesMap.get(queue[index][Position.TaskID])?.reject(error);
         }
 
-        break;
+        return;
       }
     }
   };
@@ -91,7 +91,6 @@ export const createMainThread = ({
 
   // It is killed by a higer order function
   const kills = () => {
-    console.log("this messages displats");
     channel.port1.onmessage = null;
     channel.port1.close();
     channel.port2.onmessage = null;

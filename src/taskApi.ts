@@ -316,7 +316,7 @@ export const createThreadPool = ({
   enqueueMap.forEach((v, k) => {
     callFunction.set(
       k,
-      (threads === 1 || threads === undefined)
+      (threads === 1 || threads === undefined) && typeof main !== "string"
         ? (v[0] as (args: any) => Promise<any>)
         : manangerMethod({
           contexts: workers,
@@ -329,7 +329,7 @@ export const createThreadPool = ({
   fastMap.forEach((v, k) => {
     fastCall.set(
       k,
-      (threads === 1 || threads === undefined)
+      (threads === 1 || threads === undefined) && typeof main !== "string"
         ? (v[0] as (args: any) => Promise<any>)
         : manangerMethod({
           contexts: workers,
