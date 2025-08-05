@@ -4,13 +4,13 @@ const workerCode = `
   import { parentPort } from 'node:worker_threads';
 
   // function simulation
-  const fn = (arg) => arg
+  const fn = async (arg) => arg
 
 
-  parentPort.on('message', ({ id, payload }) => {
+  parentPort.on('message', async ({ id, payload }) => {
     try {
       // your real logic goes here. we just echo back:
-      parentPort.postMessage(fn({ id, result: payload }));
+      parentPort.postMessage(await fn({ id, result: payload }));
     } catch (err) {
       parentPort.postMessage({ id, error: (err instanceof Error ? err.message : String(err)) });
     }

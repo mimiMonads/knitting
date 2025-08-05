@@ -21,7 +21,6 @@ export const taskScheduler = ({
   thread: number;
   perf?: number;
 }) => {
-  const loop = ((n) => () => ++n % 2 === 1 ? true : false)(0);
 
   let catchEarly = true;
 
@@ -37,15 +36,6 @@ export const taskScheduler = ({
         resolveTask();
         queueMicrotask(check);
         return;
-      case SignalStatus.MessageRead:
-        resolveTask();
-        if (loop()) {
-          queueMicrotask(check);
-          return;
-        }
-        channelHandler.scheduleCheck();
-        return;
-
       case SignalStatus.AllTasksDone:
         if (isThereAnythingToBeSent()) {
           dispatchToWorker();

@@ -1,183 +1,155 @@
-import type { Composed, FixedPoints, Serializable } from "./taskApi.ts";
+import type { Composed, FixedPoints } from "./taskApi.ts";
 import { type CallFunction } from "./threadManager.ts";
 
 type TaskID = number;
 type FunctionID = number;
-type WorkerResponse<T extends Serializable = Uint8Array> = T;
 
-type PromiseMap = Map<
-  TaskID,
-  {
-    promise: Promise<any>;
-    resolve: (val: any) => void;
-    reject: (val: any) => void;
-  }
->;
+interface Deferred {
+  promise: Promise<unknown>;
+  resolve: (v: unknown) => void;
+  reject: (v: unknown) => void;
+}
 
-enum SlotState {
+const enum SlotStateMacro {
   Free = -1,
   Pending = 0,
 }
 
-enum Position {
+const enum SlotPos {
   TaskID = 0,
   Args = 1,
   FunctionID = 2,
-  UnUsed = 3,
-  SlotState = 4,
+  _Unused = 3,
+  State = 4,
 }
 
-type Slot = [
-  number,
+type SlotMacro = [
+  TaskID,
   unknown,
-  number,
+  FunctionID,
   unknown,
-  SlotState,
+  SlotStateMacro,
 ];
 
 export const createMainThread = ({
   fixedPoints,
   genTaskID,
-}: { fixedPoints: FixedPoints; genTaskID: () => number }) => {
-  // We do this to ensure that the function taken always have the same order
-  const ArrayOfPoints = Object.keys(fixedPoints)
-    .reduce((acc, x) => (
-      acc.push(fixedPoints[x]), acc
-    ), [] as Composed[])
+}: {
+  fixedPoints: FixedPoints;
+  genTaskID: () => number;
+}) => {
+  const funcs = Object.values(fixedPoints)
     .sort((a, b) => a.id - b.id)
-    .map((points) => points.f);
+    .map((p) => p.f as (...args: any[]) => Promise<any>);
 
-  const promisesMap: PromiseMap = new Map();
+  const initCap = 16;
+  const newSlot = (): SlotMacro => [0, null, 0, null, SlotStateMacro.Free];
+  const queue: SlotMacro[] = Array.from({ length: initCap }, newSlot);
+  let stateArr = new Int8Array(initCap).fill(SlotStateMacro.Free);
+  const freeStack: number[] = [];
+  for (let i = initCap - 1; i >= 0; --i) freeStack.push(i);
+  const pendingQueue: number[] = [];
 
-  // This pool is meant to be dynamic `5` is just a random value
-  const queue = Array.from(
-    { length: 10 },
-    () => [0, null, 0, null, SlotState.Free] as Slot,
-  );
+  const promisesMap = new Map<TaskID, Deferred>();
+  let working = 0;
+  let isInMacro = false;
 
   const channel = new MessageChannel();
+  channel.port1.onmessage = processNext; // initial hookup
 
-  // Helps to avoid a O(n) reading slots
-  let working = 0;
+  function allocIndex(): number {
+    if (freeStack.length) return freeStack.pop()!;
 
-  let isInMacro: boolean = false;
-
-  // It would be resolve in the macroqueue
-  const runSlot = async () => {
-    for (let index = 0; index < queue.length; index++) {
-      // Checks for a pending slot and it breaks after it
-      // This force it to have to await for another macroqueue cycle
-      if (queue[index][Position.SlotState] === SlotState.Pending) {
-        try {
-          const slot = queue[index];
-          const result = await ArrayOfPoints[slot[Position.FunctionID]](
-            slot[Position.Args],
-          );
-          promisesMap.get(slot[Position.TaskID])?.resolve(result);
-        } catch (error) {
-          promisesMap.get(queue[index][Position.TaskID])?.reject(error);
-        }
-
-        return;
-      }
+    // grow ×2
+    const oldCap = queue.length;
+    const newCap = oldCap * 2;
+    for (let i = oldCap; i < newCap; ++i) {
+      queue.push(newSlot());
+      freeStack.push(i);
     }
-  };
-  const open = () => {
-    channel.port1.onmessage = runSlot;
-  };
+    const newStates = new Int8Array(newCap);
+    newStates.set(stateArr);
+    newStates.fill(SlotStateMacro.Free, oldCap);
+    stateArr = newStates;
+    return freeStack.pop()!;
+  }
 
-  // Opens since the start
-  open();
-
-  // It is killed by a higer order function
-  const kills = () => {
-    channel.port1.onmessage = null;
-    channel.port1.close();
-    channel.port2.onmessage = null;
-    channel.port2.close();
-  };
-
-  // This function also chains till queue is free
-  const cleanup = (slot: Slot, taskID: TaskID) => {
-    working--;
-    slot[Position.SlotState] = SlotState.Free;
-    promisesMap.delete(taskID);
-    // Chains
+  async function processNext() {
+    if (!pendingQueue.length) return;
+    const idx = pendingQueue.shift()!;
+    const slot = queue[idx];
+    try {
+      const res = await funcs[slot[SlotPos.FunctionID]](slot[SlotPos.Args]);
+      promisesMap.get(slot[SlotPos.TaskID])?.resolve(res);
+    } catch (err) {
+      promisesMap.get(slot[SlotPos.TaskID])?.reject(err);
+    } finally {
+      cleanup(idx);
+    }
+    // Schedule next task if chain continues
     if (working > 0) channel.port2.postMessage(null);
-    // Exits the chain
-    else isInMacro = false;
-  };
+  }
 
+  function cleanup(idx: number) {
+    const slot = queue[idx];
+    const taskID = slot[SlotPos.TaskID];
+    working--;
+    slot[SlotPos.State] = SlotStateMacro.Free;
+    stateArr[idx] = SlotStateMacro.Free;
+    freeStack.push(idx);
+    promisesMap.delete(taskID);
+    if (working === 0) isInMacro = false;
+  }
+
+  /*──────────────────────────────  API  ────────────────────────────────*/
   const callFunction = ({ fnNumber }: CallFunction) => (args: unknown) => {
-    let idx = -1;
-    for (let i = 0; i < queue.length; i++) {
-      if (queue[i][Position.SlotState] === SlotState.Free) {
-        idx = i;
-        break;
-      }
-    }
-
     const taskID = genTaskID();
-    const deferred = Promise.withResolvers<WorkerResponse>();
+    const deferred = Promise.withResolvers();
     promisesMap.set(taskID, deferred);
 
+    const idx = allocIndex();
+    const slot = queue[idx];
+    slot[SlotPos.TaskID] = taskID;
+    slot[SlotPos.Args] = args;
+    slot[SlotPos.FunctionID] = fnNumber;
+    slot[SlotPos.State] = SlotStateMacro.Pending;
+    stateArr[idx] = SlotStateMacro.Pending;
+    pendingQueue.push(idx);
     working++;
 
-    if (idx !== -1) {
-      const slot = queue[idx];
-      slot[Position.TaskID] = taskID;
-      slot[Position.Args] = args as Uint8Array;
-      slot[Position.FunctionID] = fnNumber;
-      slot[Position.SlotState] = SlotState.Pending;
+    // Start macro‑chain if idle
+    if (!isInMacro) send();
 
-      return deferred.promise.finally(() => cleanup(slot, taskID));
-    } else {
-      // We are using the returned length of the array reason why we need to substract one
-      const slot = queue[
-        queue.push([
-          taskID,
-          args as Uint8Array,
-          fnNumber,
-          null,
-          SlotState.Pending,
-        ]) - 1
-      ];
-
-      return deferred.promise.finally(() => cleanup(slot, taskID));
-    }
+    return deferred.promise
   };
 
-  const hasEverythingBeenSent = () => working === 0;
-
   const send = () => {
-    if (working === 0) {
-      return;
-    }
-
-    if (isInMacro === true) {
-      return;
-    }
-    // Starts the chain
+    if (working === 0 || isInMacro) return;
     isInMacro = true;
     channel.port2.postMessage(null);
   };
 
   return {
-    kills,
+    kills: () => {
+      channel.port1.onmessage = null;
+      channel.port1.close();
+      channel.port2.onmessage = null;
+      channel.port2.close();
+      pendingQueue.length = 0;
+      freeStack.length = 0;
+      promisesMap.clear();
+      stateArr.fill(SlotStateMacro.Free);
+    },
     callFunction,
     send,
-    hasEverythingBeenSent,
-    fastCalling: (ar: CallFunction) => {
-      const composed = callFunction(ar);
-
-      return (args: unknown) => {
-        const deferred = composed(args);
-
-        // Check if is an element in the macroqueue
-        if (isInMacro === false) send();
-
-        return deferred;
+    hasEverythingBeenSent: () => working === 0,
+    fastCalling: (cf: CallFunction) => {
+      const fn = callFunction(cf);
+      return (a: unknown) => {
+        const p = fn(a);
+        if (!isInMacro) send();
+        return p;
       };
     },
-  };
+  } as const;
 };

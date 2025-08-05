@@ -248,6 +248,7 @@ export const createThreadPool = ({
 
     if (main === "first") {
       workers = [
+        //@ts-ignore
         mainThread,
         ...workers,
       ];
@@ -255,6 +256,7 @@ export const createThreadPool = ({
 
     if (main === "last") {
       workers.push(
+        //@ts-ignore
         mainThread,
       );
     }

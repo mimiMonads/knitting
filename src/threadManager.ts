@@ -13,7 +13,7 @@ import type { ComposedWithKey, DebugOptions } from "./taskApi.ts";
 import { jsrIsGreatAndWorkWithoutBugs } from "./workerThread.ts";
 import { Worker } from "node:worker_threads";
 
-const isBrowser = typeof window !== "undefined";
+//const isBrowser = typeof window !== "undefined";
 
 let poliWorker = Worker;
 
@@ -98,9 +98,10 @@ export const createContext = ({
 
   let worker = new poliWorker(
     source ?? (
-      isBrowser
-        ? tsFileUrl.href // correct in browser
-        : decodeURIComponent(tsFileUrl.pathname) // correct in Node
+      // isBrowser
+      //   ? tsFileUrl.href // correct in browser
+      //   :
+      decodeURIComponent(tsFileUrl.pathname)
     ),
     {
       //@ts-ignore Reason

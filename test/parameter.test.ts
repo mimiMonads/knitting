@@ -1,5 +1,5 @@
 import { assertEquals } from "jsr:@std/assert";
-import { createThreadPool, fixedPoint } from "../main.ts";
+import { createThreadPool, fixedPoint } from "../knitting.ts";
 import { cpus } from "node:os";
 
 export const toNumber = fixedPoint<number, number>({
@@ -27,7 +27,7 @@ export const toVoid = fixedPoint({
 });
 
 export const toObject = fixedPoint({
-  f: async (a) => a,
+  f: async (a: object | null) => a,
 });
 
 Deno.test("Using one thread calling with multiple arguments", async () => {
@@ -48,7 +48,7 @@ Deno.test("Using one thread calling with multiple arguments", async () => {
     callFunction.toBigInt(2n ** 64n - 1n),
     callFunction.toBoolean(true),
     callFunction.toBoolean(false),
-    callFunction.toVoid(),
+    callFunction.toVoid(undefined),
     callFunction.toNumber(Infinity),
     callFunction.toNumber(-Infinity),
     callFunction.toNumber(NaN),
@@ -114,7 +114,7 @@ Deno.test("Using all thread calling with multiple arguments", async () => {
     callFunction.toBigInt(2n ** 64n - 1n),
     callFunction.toBoolean(true),
     callFunction.toBoolean(false),
-    callFunction.toVoid(),
+    callFunction.toVoid(undefined),
     callFunction.toNumber(Infinity),
     callFunction.toNumber(-Infinity),
     callFunction.toNumber(NaN),

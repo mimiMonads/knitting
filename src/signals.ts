@@ -7,25 +7,25 @@ import { type DebugOptions } from "./taskApi.ts";
 import { Buffer as NodeBuffer } from "node:buffer";
 
 enum SignalEnumOptions {
-  header = 24,
+  header = 32,
   maxByteLength = 64 * 1024 * 1024,
-  defaultSize = 6550036,
+  defaultSize = 1024,
+  safePadding = 512,
 }
 
 export enum SignalStatus {
-  WorkerWaiting = 0,
-  MessageRead = 1,
+  WorkerWaiting = 1,
   AllTasksDone = 2,
   WaitingForMore = 3,
   HighPriotityResolve = 4,
-  DoNothing = 9,
-  ErrorThrown = 100,
-  Promify = 126,
-  MainReadyToRead = 127,
-  FastResolve = 180,
-  MainSend = 192,
-  MainSemiStop = 254,
-  MainStop = 255,
+  DoNothing = 5,
+  ErrorThrown = 6,
+  Promify = 7,
+  MainReadyToRead = 8,
+  FastResolve = 9,
+  MainSend = 10,
+  MainSemiStop = 11,
+  MainStop = 12,
 }
 
 // ───────────────────────────────────────────────
@@ -63,9 +63,12 @@ const allocBuffer = ({ sab, payloadLength }: {
     slice: (start: number, end: number) => uInt8.slice(start, end),
     subarray: (start: number, end: number) => uInt8.subarray(start, end),
     setString: (str: string) => {
-      const required = str.length + SignalEnumOptions.header;
-
-      if (currentSize < required) {
+      if (
+        currentSize <
+          str.length + SignalEnumOptions.header + SignalEnumOptions.safePadding
+      ) {
+        const required = str.length + SignalEnumOptions.header +
+          SignalEnumOptions.safePadding;
         sab.grow(required);
         currentSize = sab.byteLength + SignalEnumOptions.header;
         uInt8 = new Uint8Array(sab, SignalEnumOptions.header);
@@ -76,9 +79,13 @@ const allocBuffer = ({ sab, payloadLength }: {
       payloadLength[0] = str.length;
     },
     setBuffer: (buffer: Uint8Array) => {
-      const required = buffer.length + SignalEnumOptions.header;
-
-      if (currentSize < required) {
+      if (
+        currentSize <
+          buffer.length + SignalEnumOptions.header +
+            SignalEnumOptions.safePadding
+      ) {
+        const required = buffer.length + SignalEnumOptions.header +
+          SignalEnumOptions.safePadding;
         sab.grow(required);
         currentSize = sab.byteLength + SignalEnumOptions.header;
         uInt8 = new Uint8Array(sab, SignalEnumOptions.header);
@@ -136,8 +143,9 @@ export const signalsForWorker = (
     // Headers
     id: new Int32Array(sab, 4, 1),
     functionToUse: new Int32Array(sab, 12, 1),
-    queueState: new Int8Array(sab, 16, 4),
+    queueState: new Int32Array(sab, 16, 1),
     type: new Int32Array(sab, 20, 1),
+    slotIndex: new Int32Array(sab, 24, 1),
     // Access to the current length of the payload
     payloadLength,
     // Modifing shared memory
@@ -156,20 +164,23 @@ export const signalsForWorker = (
 };
 
 export const mainSignal = (
-  { status, id, functionToUse, queueState, rawStatus }: SignalArguments,
+  { status, id, functionToUse, queueState, rawStatus, slotIndex }:
+    SignalArguments,
 ) => ({
   status,
   rawStatus,
   functionToUse,
   id,
+  slotIndex,
   queueState,
 });
 
 export const workerSignal = (
-  { status, id, functionToUse, queueState }: SignalArguments,
+  { status, id, functionToUse, queueState, slotIndex }: SignalArguments,
 ) => ({
   status,
   id,
+  slotIndex,
   functionToUse,
   queueState,
 });

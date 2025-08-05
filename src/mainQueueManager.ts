@@ -41,11 +41,11 @@ export enum MainListEnum {
 }
 
 export enum MainListState {
-  Free = -1,
-  ToBeSent = 0,
-  Sent = 1,
-  Accepted = 2,
-  Rejected = 3,
+  Free = 0,
+  ToBeSent = 1,
+  Sent = 2,
+  Accepted = 3,
+  Rejected = 4,
 }
 
 export type MainList = [
@@ -83,6 +83,7 @@ export function createMainQueue({
     functionToUse,
     id,
     queueState,
+    slotIndex,
   },
   max,
   promisesMap,
@@ -91,24 +92,33 @@ export function createMainQueue({
 }: MultipleQueueSingle) {
   /*───────────────────────────────  Queue  ───────────────────────────────*/
 
-  const PLACE_HOLDER = (_) => {
+  const PLACE_HOLDER = (_: void) => {
     throw ("UNREACHABLE FROM PLACE HOLDER (main)");
   };
 
+  const newSlot = () =>
+    [
+      0,
+      ,
+      0,
+      ,
+      MainListState.Free,
+      PLACE_HOLDER,
+      PLACE_HOLDER,
+      PayloadType.Undefined,
+    ] as MainList;
+
   const queue = Array.from(
-    { length: max ?? 5 },
-    () =>
-      [
-        0,
-        new Uint8Array(),
-        0,
-        new Uint8Array(),
-        -1,
-        PLACE_HOLDER,
-        PLACE_HOLDER,
-        PayloadType.Undefined,
-      ] as MainList,
+    { length: max ?? 10 },
+    newSlot,
   );
+
+  const freeSockets = Array.from(
+    { length: max ?? 10 },
+    (_, i) => i,
+  );
+
+  const toBeSent: number[] = [];
 
   const reader = readPayloadWorkerBulk({
     ...signals,
@@ -131,8 +141,8 @@ export function createMainQueue({
   );
 
   let genID = 0;
-
   let toBeSentCount = 0;
+  let inUsed = 0;
 
   const slotZero = queue[0];
   const isThereAnythingToBeSent = () => toBeSentCount > 0;
@@ -160,83 +170,82 @@ export function createMainQueue({
       slotZero[MainListEnum.OnResolve](
         readFromWorkerArray[slotZero[MainListEnum.FunctionID]](),
       );
-      slotZero[MainListEnum.State] = MainListState.Free;
     },
-    /* Fast path (always queue[0]) */
+
     fastEnqueue: (functionID: FunctionID) => (rawArgs: RawArguments) => {
-      slotZero[MainListEnum.TaskID] = genID++;
+     
       slotZero[MainListEnum.RawArguments] = rawArgs;
       slotZero[MainListEnum.FunctionID] = functionID;
       sendToWokerArray[0](slotZero);
       functionToUse[0] = functionID;
+
+      // Blocks the queue ensuring this is the only function solving
       status[0] = SignalStatus.HighPriotityResolve;
-      slotZero[MainListEnum.State] = MainListState.Sent;
 
       return addDeferred();
     },
 
     /* General enqueue with promise */
     enqueuePromise: (functionID: FunctionID) => (rawArgs: RawArguments) => {
-      let idx = -1;
-      for (let i = 0; i < queue.length; i++) {
-        if (queue[i][MainListEnum.State] === MainListState.Free) {
-          idx = i;
-          break;
+      // Expanding size if needed
+      if (inUsed === queue.length) {
+        const newSize = inUsed + 50;
+        let current = queue.length;
+
+        while (newSize > current) {
+          queue.push(newSlot());
+          freeSockets.push(current);
+          current++;
         }
       }
 
-      const deferred = Promise.withResolvers<WorkerResponse>();
-      toBeSentCount++;
+      const index = freeSockets.pop()!,
+        slot = queue[index],
+        deferred = Promise.withResolvers<WorkerResponse>();
 
-      if (idx !== -1) {
-        const slot = queue[idx];
-        slot[MainListEnum.TaskID] = genID++;
-        slot[MainListEnum.RawArguments] = rawArgs;
-        slot[MainListEnum.FunctionID] = functionID;
-        slot[MainListEnum.State] = MainListState.ToBeSent;
-        slot[MainListEnum.OnResolve] = deferred.resolve;
-        slot[MainListEnum.OnReject] = deferred.reject;
-      } else {
-        queue.push([
-          genID++,
-          rawArgs,
-          functionID,
-          new Uint8Array(),
-          MainListState.ToBeSent,
-          deferred.resolve,
-          deferred.reject,
-          PayloadType.Undefined,
-        ]);
-      }
+      // Set info
+      slot[MainListEnum.TaskID] = genID++;
+      slot[MainListEnum.RawArguments] = rawArgs;
+      slot[MainListEnum.FunctionID] = functionID;
+      slot[MainListEnum.OnResolve] = deferred.resolve;
+      slot[MainListEnum.OnReject] = deferred.reject;
+
+      // Change states:
+      toBeSent.push(index);
+      toBeSentCount++;
+      inUsed++;
 
       return deferred.promise;
     },
-    /* Dispatch first pending (status==0) */
+
     dispatchToWorker: () => {
-      for (let i = 0; i < queue.length; i++) {
-        if (queue[i][MainListEnum.State] === MainListState.ToBeSent) {
-          const job = queue[i];
-          job[MainListEnum.State] = MainListState.Sent;
-          toBeSentCount > 0
-            ? (queueState[0] = QueueStateFlag.Last)
-            : (queueState[0] = QueueStateFlag.NotLast),
-            sendToWokerArray[job[MainListEnum.FunctionID]](job);
-          functionToUse[0] = job[MainListEnum.FunctionID];
-          status[0] = SignalStatus.MainSend;
-          toBeSentCount--;
-          break;
-        }
-      }
+      const index = toBeSent.pop()!,
+        job = queue[index];
+
+      // Checks if this is the last Element to be sent
+      toBeSentCount > 0
+        ? (queueState[0] = QueueStateFlag.Last)
+        : (queueState[0] = QueueStateFlag.NotLast);
+
+      sendToWokerArray[job[MainListEnum.FunctionID]](job);
+      functionToUse[0] = job[MainListEnum.FunctionID];
+      slotIndex[0] = index;
+
+      // Changes ownership of the sab
+      status[0] = SignalStatus.MainSend;
+
+      toBeSentCount--;
     },
 
     resolveError: () => {
-      const currentID = id[0];
+      const currentID = id[0], index = slotIndex[0];
 
       for (let i = 0; i < queue.length; i++) {
         if (queue[i][MainListEnum.TaskID] === currentID) {
           const slot = queue[i];
           slot[MainListEnum.OnReject](errorDeserializer());
-          slot[MainListEnum.State] = MainListState.Free;
+          inUsed--;
+          freeSockets.push(index);
           break;
         }
       }
@@ -244,18 +253,14 @@ export function createMainQueue({
 
     /* Resolve task whose ID matches currentID */
     resolveTask: () => {
-      const currentID = id[0], args = reader();
+      const index = slotIndex[0], job = queue[index], args = reader();
 
-      for (let i = 0; i < queue.length; i++) {
-        if (queue[i][MainListEnum.TaskID] === currentID) {
-          const job = queue[i];
-          job[MainListEnum.OnResolve](
-            args,
-          );
-          job[MainListEnum.State] = MainListState.Free;
-          return;
-        }
-      }
+      job[MainListEnum.OnResolve](
+        args,
+      );
+      inUsed--;
+      freeSockets.push(index);
+      return;
     },
   };
 }
