@@ -4,7 +4,7 @@ import { createContext } from "./threadManager.ts";
 import type { PromiseMap } from "./mainQueueManager.ts";
 import { isMainThread, workerData } from "node:worker_threads";
 
-import { type Balancer, manangerMethod } from "./threadBalancer.ts";
+import { type Balancer, managerMethod } from "./threadBalancer.ts";
 import { createMainThread } from "./mainThread.ts";
 
 export const isMain = isMainThread;
@@ -60,8 +60,8 @@ type ReturnFixed<A extends Args = undefined, B extends Args = undefined> =
   & SecondPart;
 
 export const fixedPoint = <
-  A extends Args = undefined,
-  B extends Args = undefined,
+  A extends Args = void,
+  B extends Args = void,
 >(
   I: FixPoint<A, B>,
 ): ReturnFixed<A, B> => {
@@ -178,7 +178,7 @@ export const createThreadPool = ({
 <T extends FixedPoints>(fixedPoints: T): Pool<T> => {
   /**
    *  This functions is only available in the main thread.
-   *  Also trigers when debug extra is enabled.
+   *  Also triggers when debug extra is enabled.
    */
   if (isMainThread === false) {
     if (debug?.extras === true) {
@@ -320,7 +320,7 @@ export const createThreadPool = ({
       k,
       (threads === 1 || threads === undefined) && typeof main !== "string"
         ? (v[0] as (args: any) => Promise<any>)
-        : manangerMethod({
+        : managerMethod({
           contexts: workers,
           balancer,
           handlers: v,
@@ -333,7 +333,7 @@ export const createThreadPool = ({
       k,
       (threads === 1 || threads === undefined) && typeof main !== "string"
         ? (v[0] as (args: any) => Promise<any>)
-        : manangerMethod({
+        : managerMethod({
           contexts: workers,
           balancer,
           handlers: v,

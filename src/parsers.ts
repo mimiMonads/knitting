@@ -5,13 +5,15 @@ import {
   SignalStatus,
 } from "./signals.ts";
 import type { MainList } from "./mainQueueManager.ts";
+import { MainListEnum } from "./mainQueueManager.ts";
+
 import { deserialize, serialize } from "node:v8";
 
 const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
 const MIN_SAFE_INTEGER = Number.MIN_SAFE_INTEGER;
 
 export enum PayloadType {
-  Serializable = 0,
+  StringToJson = 0,
   String = 1,
   BigUint = 2,
   BigInt = 3,
@@ -29,11 +31,12 @@ export enum PayloadType {
   Null = 15,
   Json = 16,
   Uint8Array = 17,
+  Serializable = 18,
+  UNREACHABLE = 19,
 }
 
 const fromReturnToMainError = ({
   type,
-  id,
   setBuffer,
 }: SignalArguments) => {
   const serilizedError = serialize(
@@ -44,28 +47,32 @@ const fromReturnToMainError = ({
     let error: Serializable;
 
     try {
-      error = serialize(task[3]);
+      error = serialize(task[MainListEnum.WorkerResponse]);
     } catch (_) {
       error = serilizedError;
     }
 
     setBuffer(error as Uint8Array);
-    id[0] = task[0];
 
-    // To be parsed with serialize
     type[0] = PayloadType.Serializable;
   };
 };
+
+type PossibleIndexes = MainListEnum.RawArguments | MainListEnum.WorkerResponse;
 
 /**
  * Where:
  *  1 -> Takes the arguments of a MainList
  *  3 -> Takes the return of a MainList
  */
-const toWorkerAny = (index: 1 | 3 = 1) =>
+const writeToShareMemory = (
+  { index, jsonString }: {
+    index: PossibleIndexes;
+    jsonString?: boolean;
+  },
+) =>
 (
   {
-    id,
     type,
     uBigInt,
     bigInt,
@@ -75,116 +82,127 @@ const toWorkerAny = (index: 1 | 3 = 1) =>
     setBuffer,
     setString,
   }: SignalArguments,
-) =>
-(
-  task: MainList,
 ) => {
-  const args = task[index];
-  id[0] = task[0];
+  const at = index;
+  const preProcessed = Boolean(jsonString);
 
-  switch (typeof args) {
-    case "string": {
-      setString(args);
-      type[0] = PayloadType.String;
-      return;
-    }
+  return (
+    task: MainList,
+  ) => {
+    const args = task[at];
 
-    case "bigint": {
-      if (args > 0n) {
-        uBigInt[0] = args;
-        type[0] = PayloadType.BigUint;
-        return;
-      }
-      bigInt[0] = args;
-      type[0] = PayloadType.BigInt;
-      return;
-    }
-
-    case "boolean": {
-      type[0] = args === true ? PayloadType.True : PayloadType.False;
-      return;
-    }
-
-    case "undefined": {
-      type[0] = PayloadType.Undefined;
-      return;
-    }
-
-    case "number": {
-      if (args !== args) {
-        type[0] = PayloadType.NaN;
-        return;
-      }
-
-      switch (args) {
-        case Infinity:
-          type[0] = PayloadType.Infinity;
-          return;
-        case -Infinity:
-          type[0] = PayloadType.NegativeInfinity;
-          return;
-      }
-
-      if (args % 1 === 0) {
-        if (args > 0) {
-          if (args <= 0xFFFFFFFF) {
-            uInt32[0] = args;
-            type[0] = PayloadType.Uint32;
-            return;
-          }
-          if (args <= MAX_SAFE_INTEGER) {
-            uBigInt[0] = BigInt(args);
-            type[0] = PayloadType.Uint64;
-            return;
-          }
-          float64[0] = args;
-          type[0] = PayloadType.Float64;
-          return;
-        }
-
-        if (args >= -0x80000000) {
-          int32[0] = args;
-          type[0] = PayloadType.Int32;
-          return;
-        } else if (args >= MIN_SAFE_INTEGER) {
-          bigInt[0] = BigInt(args);
-          type[0] = PayloadType.Int64;
-          return;
-        }
-      }
-
-      float64[0] = args;
-      type[0] = PayloadType.Float64;
-      return;
-    }
-
-    case "object": {
-      if (args === null) {
-        type[0] = PayloadType.Null;
-        return;
-      }
-
-      switch (args.constructor) {
-        case Object:
-        case Array: {
-          setString(JSON.stringify(args));
+    // Warning: types are not clean after being resolved
+    // you must ensure that this `writeToShareMemory` is on
+    // a different stack
+    if (preProcessed === true) {
+      switch (task[MainListEnum.PlayloadType]) {
+        case PayloadType.StringToJson:
+          setBuffer(args as Uint8Array);
           type[0] = PayloadType.Json;
           return;
-        }
+      }
+    }
+
+    switch (typeof args) {
+      case "string": {
+        setString(args);
+        type[0] = PayloadType.String;
+        return;
       }
 
-      setBuffer(serialize(args) as Uint8Array);
-      type[0] = PayloadType.Serializable;
-      return;
+      case "bigint": {
+        if (args > 0n) {
+          uBigInt[0] = args;
+          type[0] = PayloadType.BigUint;
+          return;
+        }
+        bigInt[0] = args;
+        type[0] = PayloadType.BigInt;
+        return;
+      }
+
+      case "boolean": {
+        type[0] = args === true ? PayloadType.True : PayloadType.False;
+        return;
+      }
+
+      case "undefined": {
+        type[0] = PayloadType.Undefined;
+        return;
+      }
+
+      case "number": {
+        if (args !== args) {
+          type[0] = PayloadType.NaN;
+          return;
+        }
+
+        switch (args) {
+          case Infinity:
+            type[0] = PayloadType.Infinity;
+            return;
+          case -Infinity:
+            type[0] = PayloadType.NegativeInfinity;
+            return;
+        }
+
+        if (args % 1 === 0) {
+          if (args > 0) {
+            if (args <= 0xFFFFFFFF) {
+              uInt32[0] = args;
+              type[0] = PayloadType.Uint32;
+              return;
+            }
+            if (args <= MAX_SAFE_INTEGER) {
+              uBigInt[0] = BigInt(args);
+              type[0] = PayloadType.Uint64;
+              return;
+            }
+            float64[0] = args;
+            type[0] = PayloadType.Float64;
+            return;
+          }
+
+          if (args >= -0x80000000) {
+            int32[0] = args;
+            type[0] = PayloadType.Int32;
+            return;
+          } else if (args >= MIN_SAFE_INTEGER) {
+            bigInt[0] = BigInt(args);
+            type[0] = PayloadType.Int64;
+            return;
+          }
+        }
+
+        float64[0] = args;
+        type[0] = PayloadType.Float64;
+        return;
+      }
+
+      case "object": {
+        if (args === null) {
+          type[0] = PayloadType.Null;
+          return;
+        }
+
+        switch (args.constructor) {
+          case Object:
+          case Array: {
+            setString(JSON.stringify(args));
+            type[0] = PayloadType.Json;
+            return;
+          }
+        }
+
+        setBuffer(serialize(args) as Uint8Array);
+        type[0] = PayloadType.Serializable;
+        return;
+      }
     }
-  }
+  };
 };
 
-const sendToWorker = (signals: SignalArguments) => (type: External) => {
-  return toWorkerAny(1)(signals);
-};
-
-const readFromWorker = (signals: SignalArguments) => (type: External) => {
+const readFromWorker = (signals: SignalArguments) => {
   return readPayloadWorkerAny(signals);
 };
 
@@ -204,7 +222,7 @@ const readPayloadWorkerAny = (
 () => {
   switch (type[0]) {
     case PayloadType.String:
-      return buffToString(0, payloadLength[0]);
+      return buffToString();
     case PayloadType.BigUint:
       return uBigInt[0];
     case PayloadType.BigInt:
@@ -235,13 +253,18 @@ const readPayloadWorkerAny = (
       return null;
     case PayloadType.Json:
       return JSON.parse(
-        buffToString(0, payloadLength[0]),
+        buffToString(),
       );
     case PayloadType.Uint8Array:
-      return subarray(0, payloadLength[0]);
+      return subarray();
+    case PayloadType.UNREACHABLE:
+      throw new Error(
+        "something when wrong :( , probably you are not reseting the type correctly",
+      );
+
     // default
     case PayloadType.Serializable:
-      return deserialize(subarray(0, payloadLength[0]));
+      return deserialize(subarray());
   }
 };
 
@@ -270,11 +293,11 @@ const readPayloadWorkerBulk = (
       queueState[0] === QueueStateFlag.Last
         ? (status[0] = SignalStatus.WaitingForMore)
         : (status[0] = SignalStatus.MainReadyToRead);
-  let text;
+  let text: unknown;
   return () => {
     switch (type[0]) {
       case PayloadType.String:
-        text = buffToString(0, payloadLength[0]);
+        text = buffToString();
         changeOwnership();
         return text;
       case PayloadType.BigUint:
@@ -321,46 +344,40 @@ const readPayloadWorkerBulk = (
         changeOwnership();
         return null;
       case PayloadType.Json:
-        text = buffToString(0, payloadLength[0]);
+        text = buffToString();
 
         changeOwnership();
 
         return JSON.parse(
-          text,
+          text as string,
         );
 
       case PayloadType.Uint8Array:
-        text = slice(0, payloadLength[0]);
+        text = slice();
         changeOwnership();
         return text;
       // default
       case PayloadType.Serializable:
-        text = deserialize(subarray(0, payloadLength[0]));
+        text = deserialize(subarray());
         changeOwnership();
         return text;
     }
   };
 };
 
-const fromPlayloadToArguments =
-  (signals: SignalArguments) => (type: External) => {
-    return readPayloadWorkerAny(signals);
-  };
-
-const fromreturnToMain = (signals: SignalArguments) => (type: External) => {
-  return toWorkerAny(3)(signals);
+const fromPlayloadToArguments = (signals: SignalArguments) => {
+  return readPayloadWorkerAny(signals);
 };
 
 const readPayloadError = ({ subarray, payloadLength }: SignalArguments) => () =>
-  deserialize(subarray(0, payloadLength[0]));
+  deserialize(subarray());
 
 export {
   fromPlayloadToArguments,
-  fromreturnToMain,
   fromReturnToMainError,
   readFromWorker,
   readPayloadError,
   readPayloadWorkerAny,
   readPayloadWorkerBulk,
-  sendToWorker,
+  writeToShareMemory,
 };

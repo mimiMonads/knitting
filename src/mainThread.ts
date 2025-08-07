@@ -55,7 +55,7 @@ export const createMainThread = ({
   let isInMacro = false;
 
   const channel = new MessageChannel();
-  channel.port1.onmessage = processNext; // initial hookup
+  channel.port1.onmessage = processNext;
 
   function allocIndex(): number {
     if (freeStack.length) return freeStack.pop()!;
@@ -76,51 +76,49 @@ export const createMainThread = ({
 
   async function processNext() {
     if (!pendingQueue.length) return;
-    const idx = pendingQueue.shift()!;
-    const slot = queue[idx];
+    const index = pendingQueue.shift()!;
+    const slot = queue[index];
     try {
       const res = await funcs[slot[SlotPos.FunctionID]](slot[SlotPos.Args]);
       promisesMap.get(slot[SlotPos.TaskID])?.resolve(res);
     } catch (err) {
       promisesMap.get(slot[SlotPos.TaskID])?.reject(err);
     } finally {
-      cleanup(idx);
+      cleanup(index);
     }
-    // Schedule next task if chain continues
     if (working > 0) channel.port2.postMessage(null);
   }
 
-  function cleanup(idx: number) {
-    const slot = queue[idx];
+  function cleanup(index: number) {
+    const slot = queue[index];
     const taskID = slot[SlotPos.TaskID];
     working--;
     slot[SlotPos.State] = SlotStateMacro.Free;
-    stateArr[idx] = SlotStateMacro.Free;
-    freeStack.push(idx);
+    stateArr[index] = SlotStateMacro.Free;
+    freeStack.push(index);
     promisesMap.delete(taskID);
     if (working === 0) isInMacro = false;
   }
 
-  /*──────────────────────────────  API  ────────────────────────────────*/
   const callFunction = ({ fnNumber }: CallFunction) => (args: unknown) => {
     const taskID = genTaskID();
     const deferred = Promise.withResolvers();
     promisesMap.set(taskID, deferred);
 
-    const idx = allocIndex();
-    const slot = queue[idx];
+    const index = allocIndex();
+    const slot = queue[index];
     slot[SlotPos.TaskID] = taskID;
     slot[SlotPos.Args] = args;
     slot[SlotPos.FunctionID] = fnNumber;
     slot[SlotPos.State] = SlotStateMacro.Pending;
-    stateArr[idx] = SlotStateMacro.Pending;
-    pendingQueue.push(idx);
+    stateArr[index] = SlotStateMacro.Pending;
+    pendingQueue.push(index);
     working++;
 
     // Start macro‑chain if idle
     if (!isInMacro) send();
 
-    return deferred.promise
+    return deferred.promise;
   };
 
   const send = () => {

@@ -5,10 +5,12 @@ export const toObject = fixedPoint({
   f: async (a: Object) => a,
 });
 
-const obj = [1, 2, 3, 4, 5, 6, 7, {
+const obj = {
   hello: 1,
   hi: "string",
-}];
+  nullish: null,
+  arr: [1, 2, 3, 4],
+};
 
 if (isMain) {
   const { worker, toResolve } = await import("./echo.ts");

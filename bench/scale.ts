@@ -6,7 +6,7 @@ export const fn = fixedPoint({
 });
 
 const threads = 1;
-const { terminateAll, callFunction, send, fastCallFunction } = createThreadPool(
+const { terminateAll, callFunction, send } = createThreadPool(
   {
     threads,
   },
@@ -14,21 +14,23 @@ const { terminateAll, callFunction, send, fastCallFunction } = createThreadPool(
   fn,
 });
 
-const obj = [1, 2, 3, 4, 5, 6, 7, {
+const obj = {
   hello: 1,
   hi: "string",
-  xd: null,
-}];
+  nullish: null,
+  arr: [1, 2, 3, 4],
+};
+
 const timesFun = async (n: number) => {
   const arr = [
-    callFunction.fn(),
+    callFunction.fn(obj),
   ];
 
   let i = 0;
 
   while (i !== n) {
     arr.push(
-      callFunction.fn(),
+      callFunction.fn(obj),
     );
     i++;
   }
@@ -40,14 +42,14 @@ const timesFun = async (n: number) => {
 
 const meh = async (n: number) => {
   const arr = [
-    toResolve(),
+    toResolve(obj),
   ];
 
   let i = 0;
 
   while (i !== n) {
     arr.push(
-      toResolve(),
+      toResolve(obj),
     );
     i++;
   }
@@ -57,9 +59,6 @@ const meh = async (n: number) => {
 
 if (isMain) {
   summary(() => {
-    bench(threads + " thread -> 1", async () => {
-      await timesFun(1);
-    });
     bench(threads + " thread -> 10", async () => {
       await timesFun(10);
     });
@@ -68,12 +67,6 @@ if (isMain) {
       await meh(10);
     });
 
-    bench(threads + " thread -> 50", async () => {
-      await timesFun(50);
-    });
-    bench(threads + " thread -> 100", async () => {
-      await timesFun(100);
-    });
     bench(threads + " thread -> 1000", async () => {
       await timesFun(1000);
     });
@@ -82,12 +75,12 @@ if (isMain) {
       await meh(1000);
     });
 
-    bench(threads + " thread -> 10000", async () => {
-      await timesFun(10000);
+    bench(threads + " thread -> 100_000", async () => {
+      await timesFun(100000);
     });
 
-    bench(threads + " thread (to beat) -> 10000", async () => {
-      await meh(10000);
+    bench(threads + " thread (to beat) -> 100_000", async () => {
+      await meh(100000);
     });
   });
 

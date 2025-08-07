@@ -8,13 +8,13 @@ export type Balancer =
   | "randomBetweenThreads"
   | "firstAvailableRandom";
 
-type Mananger = {
+type manager = {
   contexts: readonly CreateContext[];
   balancer?: Balancer;
   handlers: Function[];
 };
 
-export const manangerMethod = ({ contexts, balancer, handlers }: Mananger) => {
+export const managerMethod = ({ contexts, balancer, handlers }: manager) => {
   const max = handlers.length;
 
   if (contexts.length < 2) {

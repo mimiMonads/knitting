@@ -17,7 +17,7 @@ export enum SignalStatus {
   WorkerWaiting = 1,
   AllTasksDone = 2,
   WaitingForMore = 3,
-  HighPriotityResolve = 4,
+  HighPriorityResolve = 4,
   DoNothing = 5,
   ErrorThrown = 6,
   Promify = 7,
@@ -54,14 +54,13 @@ const allocBuffer = ({ sab, payloadLength }: {
   const textDecoder = new TextDecoder();
 
   const buffToString = IS_DENO
-    ? (start: number, end: number) =>
-      textDecoder.decode(uInt8.subarray(start, end))
-    : (start: number, end: number) => buff.toString("utf8", start, end);
+    ? () => textDecoder.decode(uInt8.subarray(0, payloadLength[0]))
+    : () => buff.toString("utf8", 0, payloadLength[0]);
 
   return {
     buffToString,
-    slice: (start: number, end: number) => uInt8.slice(start, end),
-    subarray: (start: number, end: number) => uInt8.subarray(start, end),
+    slice: () => uInt8.slice(0, payloadLength[0]),
+    subarray: () => uInt8.subarray(0, payloadLength[0]),
     setString: (str: string) => {
       if (
         currentSize <
@@ -123,7 +122,7 @@ export const signalsForWorker = (
     })
     : new Int32Array(sab, 0, 1);
 
-  // Stoping Threads
+  // Stopping Threads
   if (isMainThread) {
     status[0] = SignalStatus.MainStop;
   }
@@ -148,7 +147,7 @@ export const signalsForWorker = (
     slotIndex: new Int32Array(sab, 24, 1),
     // Access to the current length of the payload
     payloadLength,
-    // Modifing shared memory
+    // Modifying shared memory
     setBuffer,
     setString,
     slice,

@@ -31,45 +31,15 @@ const getCallerFilePathForBun = (n: number) => {
 
 export const getCallerFilePath = (n: number) => {
   return getCallerFilePathForBun(IS_BUN ? 2 : 3);
-
-  // Old deno code that doesn't work anymore
-
-  // const parseStackTraceFiles = (str: string) =>
-  //   str.split(" ")
-  //     .filter((s) => s.includes("://"))
-  //     .map((s) => s.replaceAll("(", "").replaceAll(")", ""))
-  //     .map((s) => {
-  //       // There's not way this will work in the future
-  //       // TODO: make this more robust
-  //       const next = s.indexOf(":", s.indexOf(":") + 1);
-
-  //       return s.slice(0, next);
-  //     });
-
-  // const err = new Error();
-  // const stack = err?.stack;
-
-  // if (typeof stack === "undefined") {
-  //   throw new Error("Unable to determine caller file.");
-  // } else {
-  //   const path = parseStackTraceFiles(stack);
-  //   if (path.length < n + 1) {
-  //     throw new Error(
-  //       `Unable to determine caller file. Expected at least ${
-  //         n + 1
-  //       } stack frames, but got ${path.length}.`,
-  //     );
-  //   }
-  //   return path[path.length - 1];
-  // }
 };
+
 import { hrtime } from "node:process";
 
 const beat = (): number => Number(hrtime.bigint()) / 1e6;
 
 /**
  * Debug reads & writes to status[0] without touching `performance.now()`.
- * “Time” columns are driven by the `beat()` heart‑beat instead.
+ * “Time” columns are driven by the `beat()` heart-beat instead.
  */
 export const signalDebuggerV2 = ({
   thread,
@@ -89,53 +59,66 @@ export const signalDebuggerV2 = ({
 
   // ─── timing & counting state ─────────────────────────────────────
   let last = status[0];
-  const born = beat(); // ms since heart‑beat origin
-  let lastBeat = born; // last change time
-
+  const born = beat(); // ms since heart-beat origin
+  let lastBeat = born;
   let hitsTotal = 0;
   const hitsPerValue: Record<number, number> = { [last]: 0 };
 
-  // ─── proxy that logs every read/write of element 0 ───────────────
-  const proxied = new Proxy(status, {
-    get(target, prop, receiver) {
-      if (prop === "0") {
-        const value = Reflect.get(target, 0, receiver) as number;
-        maybeLog(value);
-        return value;
-      }
-      return Reflect.get(target, prop, receiver);
-    },
-    set(target, prop, value, receiver) {
-      const ok = Reflect.set(target, prop, value, receiver);
-      if (ok && prop === "0") maybeLog(value as number);
-      return ok;
-    },
-  }) as unknown as Int32Array;
+  // ─── header row ─────────────────────────────────────────────────
+  if (thread = 0) {
+    console.log(
+      `${color}Thread${tab}Tag${tab}Value${tab}SinceBorn${tab}SinceLast${tab}HitsPrev${tab}TotalHits${reset}`,
+    );
+  }
 
   // ─── log when the tracked slot’s value changes ──────────────────
-  function maybeLog(value: number) {
+  function maybeLog(value: number, tag: string) {
     hitsTotal++;
     hitsPerValue[value] = (hitsPerValue[value] ?? 0) + 1;
 
     if (value !== last) {
       const now = beat();
-      const from = last > 127 ? orange : purple; // colour by *old* value
-      const hits = hitsPerValue[last]; // hits of the run we’re finishing
+      const hits = hitsPerValue[last];
 
       console.log(
-        `${color}${(isMain ? "M " : "T ") + (thread ?? "")}${reset}${tab}` + // thread
-          `${from}${String(last).padStart(3, " ")}${reset}` + // previous value
-          (isMain ? tab : tab + tab) +
-          `${color}${(now - born).toFixed(2).padStart(6, " ")}${reset}` + // since born
-          tab + tab + (now - lastBeat).toFixed(2).padStart(6, " ") + tab + // since last change
-          tab + String(hits).padStart(4, " ") + // hits of prev value
-          tab + String(hitsTotal).padStart(6, " "), // total hits
+        `${color}${isMain ? "M" : "T"}${thread}${reset}${tab}` + // thread
+          `${tag}${String(last).padStart(6, " ")}${reset}${tab}` + // tag + prev value
+          `${(now - born).toFixed(2).padStart(9)}${tab}` + // since born
+          `${(now - lastBeat).toFixed(2).padStart(9)}${tab}` + // since last
+          `${hits.toString().padStart(8)}${tab}` + // hits of prev
+          `${hitsTotal.toString().padStart(9)}`, // total hits
       );
 
       last = value;
       lastBeat = now;
     }
   }
+
+  // ─── proxy that logs reads/writes of element 0 & .set() ─────────
+  const proxied = new Proxy(status, {
+    get(target, prop, receiver) {
+      // intercept .set()
+      if (prop === "set") {
+        const orig = target.set;
+        return function (arr: ArrayLike<number>, offset = 0) {
+          const res = orig.call(target, arr, offset);
+          if (offset === 0 && arr.length > 0) maybeLog(arr[0], "SET() ");
+          return res;
+        };
+      }
+      // direct index read
+      if (prop === "0") {
+        const v = Reflect.get(target, 0, receiver) as number;
+        maybeLog(v, "GET   ");
+        return v;
+      }
+      return Reflect.get(target, prop, receiver);
+    },
+    set(target, prop, value, receiver) {
+      if (prop === "0") maybeLog(value as number, "PUT   ");
+      return Reflect.set(target, prop, value, receiver);
+    },
+  }) as unknown as Int32Array;
 
   return proxied;
 };

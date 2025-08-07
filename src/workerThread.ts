@@ -54,8 +54,6 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
     signals,
   });
 
-
-
   while (true) {
     switch (status[0]) {
       case SignalStatus.AllTasksDone:
@@ -65,7 +63,7 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
       case SignalStatus.DoNothing: {
         continue;
       }
-      case SignalStatus.HighPriotityResolve: {
+      case SignalStatus.HighPriorityResolve: {
         await blockingResolve();
         continue;
       }

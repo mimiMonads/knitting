@@ -72,7 +72,7 @@ if (isMain) {
     await Promise.all(promises);
   });
 
-  bench("clasic", async () => {
+  bench("classic", async () => {
     const promises = [
       toResolve("hello"),
       toResolve(-(2n ** 63n - 1n)),

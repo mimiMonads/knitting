@@ -17,13 +17,8 @@ export const taskScheduler = ({
   queue: MultiQueue;
   signalBox: MainSignal;
   channelHandler: ChannelHandler;
-  debugSignal?: boolean;
-  thread: number;
-  perf?: number;
 }) => {
-
   let catchEarly = true;
-
   const check = () => {
     switch (status[0]) {
       case SignalStatus.FastResolve: {
@@ -76,7 +71,7 @@ export const taskScheduler = ({
         return;
       }
 
-      case SignalStatus.HighPriotityResolve:
+      case SignalStatus.HighPriorityResolve:
       case SignalStatus.MainReadyToRead: {
         if (catchEarly === true) {
           catchEarly = false;
