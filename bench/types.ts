@@ -6,23 +6,23 @@ export const toNumber = fixedPoint({
 });
 
 export const toString = fixedPoint({
-  f: async (a) => a,
+  f: async (a: string) => a,
 });
 
 export const toBigInt = fixedPoint({
-  f: async (a) => a,
+  f: async (a: bigint) => a,
 });
 
 export const toBoolean = fixedPoint({
-  f: async (a) => a,
+  f: async (a: boolean) => a,
 });
 
 export const toVoid = fixedPoint({
-  f: async (a) => a,
+  f: async (_: void) => {},
 });
 
 export const toObject = fixedPoint({
-  f: async (a) => a,
+  f: async (a: object) => a,
 });
 
 const obj = {
@@ -34,7 +34,9 @@ const obj = {
 
 const arr = [1, 2, 3, 4, 5];
 if (isMain) {
-  const { worker, toResolve } = await import("./echo.ts");
+  const { terminateAllWorkers, toResolve } = await import(
+    "./postmessage/single.ts"
+  );
   const { callFunction, fastCallFunction, terminateAll, send } =
     createThreadPool({
       balancer: "firstAvailable",
@@ -64,7 +66,7 @@ if (isMain) {
       callFunction.toNumber(Number.MIN_VALUE),
       callFunction.toNumber(0),
       callFunction.toNumber(2.2250738585072014e-308),
-      callFunction.toObject(null),
+      callFunction.toObject(obj),
     ];
 
     send();
@@ -89,7 +91,7 @@ if (isMain) {
       toResolve(Number.MIN_VALUE),
       toResolve(0),
       toResolve(2.2250738585072014e-308),
-      toResolve(null),
+      toResolve(obj),
     ];
 
     await Promise.all(promises);
@@ -160,6 +162,6 @@ if (isMain) {
     await run();
 
     await terminateAll();
-    await worker.terminate();
+    await terminateAllWorkers();
   })();
 }

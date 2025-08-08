@@ -90,6 +90,7 @@ export const createWorkerQueue = (
   return {
     // Check if any task is solved and ready for writing.
     someHasFinished: () => hasAnythingFinished !== 0,
+    isThereWorkToDO: () => toWork.length !== 0,
     blockingResolve: async () => {
       try {
         blockingSlot[MainListEnum.WorkerResponse] = await jobs
@@ -171,10 +172,8 @@ export const createWorkerQueue = (
       }
     },
     fastResolve: async () => {
-      const index = toWork.pop();
-
-      if (index !== undefined) {
-        const task = queue[index];
+      const index = toWork.pop()!,
+      task = queue[index];
         try {
           task[MainListEnum.WorkerResponse] = await jobs
             [task[MainListEnum.FunctionID]](task[MainListEnum.RawArguments]);
@@ -185,7 +184,7 @@ export const createWorkerQueue = (
           hasAnythingFinished++;
           errorStack.push(index);
         }
-      }
+      
     },
     allDone: () => isThereAnythingToResolve === 0,
   };

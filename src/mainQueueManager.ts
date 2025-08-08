@@ -3,7 +3,6 @@ import {
   readFromWorker,
   readPayloadError,
   readPayloadWorkerBulk,
-  stringifyObjects,
   writeToShareMemory,
 } from "./parsers.ts";
 import {

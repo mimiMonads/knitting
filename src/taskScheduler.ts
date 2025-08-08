@@ -28,7 +28,10 @@ export const taskScheduler = ({
         return;
       }
       case SignalStatus.WorkerWaiting:
-        resolveTask();
+        do {
+          resolveTask();
+        } while (status[0] === SignalStatus.WorkerWaiting);
+
         queueMicrotask(check);
         return;
       case SignalStatus.AllTasksDone:
@@ -44,7 +47,10 @@ export const taskScheduler = ({
 
       case SignalStatus.WaitingForMore:
         if (isThereAnythingToBeSent()) {
+        
           dispatchToWorker();
+      
+
           queueMicrotask(check);
         } else {
           if (catchEarly === true) {

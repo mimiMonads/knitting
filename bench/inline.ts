@@ -1,5 +1,6 @@
 import { bench, boxplot, group, run as mitataRun, summary } from "mitata";
 import { createThreadPool, fixedPoint, isMain } from "../knitting.ts";
+import { terminateAllWorkers, toResolve } from "./postmessage/single.ts";
 
 export const inLine = fixedPoint({
   f: async (_: void) => {},
@@ -12,7 +13,108 @@ const { terminateAll, callFunction, fastCallFunction, send } = createThreadPool(
 });
 if (isMain) {
   boxplot(async () => {
-    group("1", () => {
+    group("worker", () => {
+      bench("nop", async () => {
+        const arr = [
+          toResolve(),
+          toResolve(),
+          toResolve(),
+          toResolve(),
+          toResolve(),
+          toResolve(),
+          toResolve(),
+          toResolve(),
+          toResolve(),
+          toResolve(),
+        ];
+
+        send();
+
+        await Promise.all(arr);
+        await toResolve();
+      });
+
+      summary(() => {
+        bench("main", async () => {
+          await inLine.f();
+        });
+
+        bench(" 1 thread -> 1", async () => {
+          await toResolve();
+        });
+
+        bench(" 1 thread -> 2", async () => {
+          const arr = [
+            toResolve(),
+            toResolve(),
+          ];
+
+          send();
+
+          await Promise.all(arr);
+        });
+
+        bench(" 1 thread -> 3", async () => {
+          const arr = [
+            toResolve(),
+            toResolve(),
+            toResolve(),
+          ];
+
+          send();
+
+          await Promise.all(arr);
+        });
+
+        bench(" 1 thread -> 4", async () => {
+          const arr = [
+            toResolve(),
+            toResolve(),
+            toResolve(),
+            toResolve(),
+          ];
+
+          send();
+
+          await Promise.all(arr);
+        });
+
+        bench(" 1 thread -> 5", async () => {
+          const arr = [
+            toResolve(),
+            toResolve(),
+            toResolve(),
+            toResolve(),
+            toResolve(),
+          ];
+
+          send();
+
+          await Promise.all(arr);
+        });
+
+        bench(" 1 thread -> 10", async () => {
+          const arr = [
+            toResolve(),
+            toResolve(),
+            toResolve(),
+            toResolve(),
+            toResolve(),
+            toResolve(),
+            toResolve(),
+            toResolve(),
+            toResolve(),
+            toResolve(),
+          ];
+
+          send();
+
+          await Promise.all(arr);
+        });
+      });
+    });
+
+    group("knitting", () => {
       bench("nop", async () => {
         const arr = [
           callFunction.inLine(),
@@ -113,6 +215,9 @@ if (isMain) {
       });
     });
   });
-  await mitataRun();
+  await mitataRun({
+    format: "markdown",
+  });
+  await terminateAllWorkers();
   await terminateAll();
 }

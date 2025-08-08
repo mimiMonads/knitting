@@ -208,7 +208,6 @@ const readFromWorker = (signals: SignalArguments) => {
 
 const readPayloadWorkerAny = (
   {
-    payloadLength,
     subarray,
     type,
     uBigInt,
@@ -270,7 +269,6 @@ const readPayloadWorkerAny = (
 
 const readPayloadWorkerBulk = (
   {
-    payloadLength,
     subarray,
     slice,
     buffToString,
@@ -369,7 +367,7 @@ const fromPlayloadToArguments = (signals: SignalArguments) => {
   return readPayloadWorkerAny(signals);
 };
 
-const readPayloadError = ({ subarray, payloadLength }: SignalArguments) => () =>
+const readPayloadError = ({ subarray }: SignalArguments) => () =>
   deserialize(subarray());
 
 export {

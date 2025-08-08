@@ -13,20 +13,26 @@ const obj = {
 };
 
 if (isMain) {
-  const { worker, toResolve } = await import("./echo.ts");
+  const { terminateAllWorkers, toResolve } = await import(
+    "./postmessage/single.ts"
+  );
   const { callFunction, fastCallFunction, terminateAll, send } =
     createThreadPool({})({
       toObject,
     });
 
-  bench("FF obj", async () => {
-    await fastCallFunction.toObject(obj);
-  });
+  group("Single", () => {
+    summary(() => {
+      bench("FF obj", async () => {
+        await fastCallFunction.toObject(obj);
+      });
 
-  bench("classic", async () => {
-    await Promise.all([
-      toResolve(obj),
-    ]);
+      bench("classic", async () => {
+        await Promise.all([
+          toResolve(obj),
+        ]);
+      });
+    });
   });
 
   bench("5  obj", async () => {
@@ -199,9 +205,11 @@ if (isMain) {
   });
 
   (async () => {
-    await run();
+    await run({
+      format: "markdown",
+    });
 
     await terminateAll();
-    await worker.terminate();
+    await terminateAllWorkers();
   })();
 }

@@ -1,6 +1,6 @@
 import { bench, run as runMitata, summary } from "mitata";
 import { createThreadPool, fixedPoint, isMain } from "../knitting.ts";
-import { toResolve, worker } from "./echo.ts";
+import { terminateAllWorkers, toResolve } from "./postmessage/single.ts";
 export const fn = fixedPoint({
   f: async (a: object) => a,
 });
@@ -84,7 +84,9 @@ if (isMain) {
     });
   });
 
-  await runMitata();
+  await runMitata({
+    format: "markdown",
+  });
   await terminateAll();
-  await worker.terminate();
+  await terminateAllWorkers();
 }
