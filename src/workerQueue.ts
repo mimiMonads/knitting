@@ -11,6 +11,7 @@ import {
   fromReturnToMainError,
   PayloadType,
   readPayloadWorkerBulk,
+  simplifyJson,
   writeToShareMemory,
 } from "./parsers.ts";
 
@@ -47,7 +48,7 @@ export const createWorkerQueue = (
       ,
       PLACE_HOLDER,
       PLACE_HOLDER,
-      PayloadType.Undefined,
+      PayloadType.UNREACHABLE,
     ] as QueueListWorker;
 
   const queue = Array.from(
@@ -61,7 +62,7 @@ export const createWorkerQueue = (
     ,
     PLACE_HOLDER,
     PLACE_HOLDER,
-    PayloadType.Undefined,
+    PayloadType.UNREACHABLE,
   ] as QueueListWorker;
 
   type AsyncFunction = (...args: any[]) => Promise<any>;
@@ -70,11 +71,17 @@ export const createWorkerQueue = (
     acc.push(fixed.f), acc
   ), [] as AsyncFunction[]);
 
+  // Parser
+  const simplifies = simplifyJson({
+    index: MainListEnum.WorkerResponse,
+  });
+
   // Writers
   const returnError = fromReturnToMainError(signals);
   const playloadToArgs = fromPlayloadToArguments(signals);
   const returnToMain = writeToShareMemory({
     index: MainListEnum.WorkerResponse,
+    jsonString: true,
   })(signals);
 
   // Readers
@@ -86,6 +93,7 @@ export const createWorkerQueue = (
   const resolvedStack: number[] = [];
   const errorStack: number[] = [];
   const toWork: number[] = [];
+  const optimzedStack: number[] = [];
 
   return {
     // Check if any task is solved and ready for writing.
@@ -106,6 +114,14 @@ export const createWorkerQueue = (
       }
     },
 
+    preResolve: () => {
+      const index = resolvedStack.pop();
+
+      if (index !== undefined) {
+        simplifies(queue[index]);
+        optimzedStack.push(index);
+      }
+    },
     // enqueue a task to the queue.
     enqueue: () => {
       const currentIndex = slotIndex[0],
@@ -121,7 +137,6 @@ export const createWorkerQueue = (
       }
       toWork.push(currentIndex);
       const slot = queue[currentIndex];
-      slot[MainListEnum.PlayloadType] = currentIndex;
       slot[MainListEnum.RawArguments] = args;
       slot[MainListEnum.FunctionID] = fnNumber;
       isThereAnythingToResolve++;
@@ -129,9 +144,20 @@ export const createWorkerQueue = (
 
     write: () => {
       if (resolvedStack.length > 0) {
-        const index = resolvedStack.pop()!;
-        const slot = queue[index];
-        slotIndex[0] = slot[MainListEnum.PlayloadType];
+        const index = resolvedStack.pop()!,
+          slot = queue[index];
+        slotIndex[0] = index;
+        returnToMain(slot);
+        status[0] = SignalStatus.WorkerWaiting;
+        isThereAnythingToResolve--;
+        hasAnythingFinished--;
+        return;
+      }
+
+      if (optimzedStack.length > 0) {
+        const index = optimzedStack.pop()!,
+          slot = queue[index];
+        slotIndex[0] = index;
         returnToMain(slot);
         status[0] = SignalStatus.WorkerWaiting;
         isThereAnythingToResolve--;
@@ -140,9 +166,9 @@ export const createWorkerQueue = (
       }
 
       if (errorStack.length > 0) {
-        const index = errorStack.pop()!;
-        const slot = queue[index];
-        slotIndex[0] = slot[MainListEnum.PlayloadType];
+        const index = errorStack.pop()!,
+          slot = queue[index];
+        slotIndex[0] = index;
         returnError(slot);
         status[0] = SignalStatus.ErrorThrown;
         isThereAnythingToResolve--;
@@ -173,18 +199,17 @@ export const createWorkerQueue = (
     },
     fastResolve: async () => {
       const index = toWork.pop()!,
-      task = queue[index];
-        try {
-          task[MainListEnum.WorkerResponse] = await jobs
-            [task[MainListEnum.FunctionID]](task[MainListEnum.RawArguments]);
-          hasAnythingFinished++;
-          resolvedStack.push(index);
-        } catch (err) {
-          task[MainListEnum.WorkerResponse] = err;
-          hasAnythingFinished++;
-          errorStack.push(index);
-        }
-      
+        task = queue[index];
+      try {
+        task[MainListEnum.WorkerResponse] = await jobs
+          [task[MainListEnum.FunctionID]](task[MainListEnum.RawArguments]);
+        hasAnythingFinished++;
+        resolvedStack.push(index);
+      } catch (err) {
+        task[MainListEnum.WorkerResponse] = err;
+        hasAnythingFinished++;
+        errorStack.push(index);
+      }
     },
     allDone: () => isThereAnythingToResolve === 0,
   };

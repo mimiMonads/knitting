@@ -1,4 +1,4 @@
-import type { External, Serializable } from "./taskApi.ts";
+import type { Serializable } from "./taskApi.ts";
 import {
   QueueStateFlag,
   type SignalArguments,
@@ -13,7 +13,7 @@ const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
 const MIN_SAFE_INTEGER = Number.MIN_SAFE_INTEGER;
 
 export enum PayloadType {
-  StringToJson = 0,
+  UNREACHABLE = 0,
   String = 1,
   BigUint = 2,
   BigInt = 3,
@@ -32,7 +32,7 @@ export enum PayloadType {
   Json = 16,
   Uint8Array = 17,
   Serializable = 18,
-  UNREACHABLE = 19,
+  StringToJson = 19,
 }
 
 const fromReturnToMainError = ({
@@ -59,6 +59,26 @@ const fromReturnToMainError = ({
 };
 
 type PossibleIndexes = MainListEnum.RawArguments | MainListEnum.WorkerResponse;
+
+const encode = new TextEncoder();
+const simplifyJson = (
+  { index }: {
+    index: PossibleIndexes;
+  },
+) => {
+  const at = index;
+
+  return (task: MainList) => {
+    const args = task[at];
+
+    if (typeof args === "object") {
+      if (args === null) return;
+
+      task[at] = encode.encode(JSON.stringify(args));
+      task[MainListEnum.PlayloadType] = PayloadType.StringToJson;
+    }
+  };
+};
 
 /**
  * Where:
@@ -95,11 +115,10 @@ const writeToShareMemory = (
     // you must ensure that this `writeToShareMemory` is on
     // a different stack
     if (preProcessed === true) {
-      switch (task[MainListEnum.PlayloadType]) {
-        case PayloadType.StringToJson:
-          setBuffer(args as Uint8Array);
-          type[0] = PayloadType.Json;
-          return;
+      if (task[MainListEnum.PlayloadType] === PayloadType.StringToJson) {
+        setBuffer(args as Uint8Array);
+        task[MainListEnum.PlayloadType] = PayloadType.Json;
+        return;
       }
     }
 
@@ -377,5 +396,6 @@ export {
   readPayloadError,
   readPayloadWorkerAny,
   readPayloadWorkerBulk,
+  simplifyJson,
   writeToShareMemory,
 };

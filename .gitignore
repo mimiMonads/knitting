@@ -5,6 +5,8 @@
 
 dest/
 
+results/
+
 # Logs
 
 logs

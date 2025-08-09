@@ -49,6 +49,7 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
     fastResolve,
     isThereWorkToDO,
     blockingResolve,
+    preResolve,
   } = createWorkerQueue({
     listOfFunctions,
     signal,
@@ -70,10 +71,12 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
       }
 
       case SignalStatus.WorkerWaiting: {
-        if(isThereWorkToDO()){
-          await fastResolve()
+        if (isThereWorkToDO()) {
+          await fastResolve();
+        } else {
+          //preResolve()
         }
-       
+
         continue;
       }
 

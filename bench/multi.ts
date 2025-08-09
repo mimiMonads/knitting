@@ -18,117 +18,47 @@ const { terminateAll, callFunction, send } = createThreadPool(
 )({
   inLine,
 });
+
 if (isMain) {
+  const sizes = [10, 100, 1000, 10000];
+
   boxplot(async () => {
     group("worker", () => {
       summary(() => {
-        bench(" 4 thread -> 40", async () => {
-          const arr = [
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-            toResolve(obj),
-          ];
+        for (const size of sizes) {
+          bench(`4 thread → ${size}`, async () => {
+            // build an array of `size` promises
+            const arr = Array(size)
+              .fill(0)
+              .map(() => toResolve(obj));
 
-          send();
+            // kick off workers
+            send();
 
-          await Promise.all(arr);
-        });
+            // wait for all to resolve
+            await Promise.all(arr);
+          });
+        }
       });
     });
 
     group("knitting", () => {
       summary(() => {
-        bench(" 4 thread -> 40", async () => {
-          const arr = [
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-            callFunction.inLine(obj),
-          ];
+        for (const size of sizes) {
+          bench(`4 thread → ${size}`, async () => {
+            const arr = Array(size)
+              .fill(0)
+              .map(() => callFunction.inLine(obj));
 
-          send();
-
-          await Promise.all(arr);
-        });
+            send();
+            await Promise.all(arr);
+          });
+        }
       });
     });
   });
-  await mitataRun({
-    format: "markdown",
-  });
+
+  await mitataRun({ format: "markdown" });
   await terminateAllWorkers();
   await terminateAll();
 }

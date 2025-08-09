@@ -1,16 +1,13 @@
-import { bench, run as runMitata, summary } from "mitata";
+import { bench, boxplot, group, run as runMitata, summary } from "mitata";
 import { createThreadPool, fixedPoint, isMain } from "../knitting.ts";
 import { terminateAllWorkers, toResolve } from "./postmessage/single.ts";
+
 export const fn = fixedPoint({
   f: async (a: object) => a,
 });
 
 const threads = 1;
-const { terminateAll, callFunction, send } = createThreadPool(
-  {
-    threads,
-  },
-)({
+const { terminateAll, callFunction, send } = createThreadPool({ threads })({
   fn,
 });
 
@@ -22,71 +19,42 @@ const obj = {
 };
 
 const timesFun = async (n: number) => {
-  const arr = [
-    callFunction.fn(obj),
-  ];
-
-  let i = 0;
-
-  while (i !== n) {
-    arr.push(
-      callFunction.fn(obj),
-    );
-    i++;
-  }
-
+  const arr = Array.from({ length: n }, () => callFunction.fn(obj));
   send();
-
   await Promise.all(arr);
 };
 
 const meh = async (n: number) => {
-  const arr = [
-    toResolve(obj),
-  ];
-
-  let i = 0;
-
-  while (i !== n) {
-    arr.push(
-      toResolve(obj),
-    );
-    i++;
-  }
-
+  const arr = Array.from({ length: n }, () => toResolve(obj));
   await Promise.all(arr);
 };
 
 if (isMain) {
-  summary(() => {
-    bench(threads + " thread -> 10", async () => {
-      await timesFun(10);
+  const sizes = [10, 100, 1000, 5000];
+
+  boxplot(async () => {
+    group("worker", () => {
+      summary(() => {
+        for (const size of sizes) {
+          bench(`${threads} thread (to beat) → ${size}`, async () => {
+            await meh(size);
+          });
+        }
+      });
     });
 
-    bench(threads + " thread  (to beat)-> 10", async () => {
-      await meh(10);
-    });
-
-    bench(threads + " thread -> 1000", async () => {
-      await timesFun(1000);
-    });
-
-    bench(threads + " thread (to beat) -> 1000", async () => {
-      await meh(1000);
-    });
-
-    bench(threads + " thread -> 100_000", async () => {
-      await timesFun(100000);
-    });
-
-    bench(threads + " thread (to beat) -> 100_000", async () => {
-      await meh(100000);
+    group("knitting", () => {
+      summary(() => {
+        for (const size of sizes) {
+          bench(`${threads} thread → ${size}`, async () => {
+            await timesFun(size);
+          });
+        }
+      });
     });
   });
 
-  await runMitata({
-    format: "markdown",
-  });
+  await runMitata({ format: "markdown" });
   await terminateAll();
   await terminateAllWorkers();
 }

@@ -97,10 +97,12 @@ func findPrimes(start, end int) []int {
 
 func main() {
 	const (
-		Limit  = 50_000_000
-		Chunk  = 10_000
+		Limit  = 10_000_000
+		Chunk  = 100_000
 		Threads = 6
 	)
+
+	startTime := time.Now()
 
 	// Create a pool with enough buffer to hold all tasks if you like.
 	pool := NewThreadPool(Threads, Limit/Chunk+1)
@@ -115,8 +117,7 @@ func main() {
 		resultChans = append(resultChans, pool.Submit(start, end))
 	}
 
-	// Now spin up the workers.
-	startTime := time.Now()
+	
 	pool.Start()
 
 	// No more tasks.
@@ -131,14 +132,15 @@ func main() {
 
 	// Wait for workers to exit cleanly.
 	pool.Wait()
-	elapsed := time.Since(startTime)
+	
 
 	sort.Ints(allPrimes)
+
+	elapsed := time.Since(startTime)
+
 	fmt.Printf("Found %d primes ≤ %d\n", len(allPrimes), Limit)
 	fmt.Printf("Largest prime: %d\n", allPrimes[len(allPrimes)-1])
 	fmt.Printf("Time taken: %v\n\n", elapsed)
 
-	// Quick demo of FastCall
-	small := FastCall(2, 30)
-	fmt.Printf("Primes between 2 and 30: %v\n", small)
+
 }

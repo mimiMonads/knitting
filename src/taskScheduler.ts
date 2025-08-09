@@ -47,9 +47,7 @@ export const taskScheduler = ({
 
       case SignalStatus.WaitingForMore:
         if (isThereAnythingToBeSent()) {
-        
           dispatchToWorker();
-      
 
           queueMicrotask(check);
         } else {

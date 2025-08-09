@@ -65,7 +65,7 @@ export const signalDebuggerV2 = ({
   const hitsPerValue: Record<number, number> = { [last]: 0 };
 
   // ─── header row ─────────────────────────────────────────────────
-  if (thread = 0) {
+  if (thread === 0) {
     console.log(
       `${color}Thread${tab}Tag${tab}Value${tab}SinceBorn${tab}SinceLast${tab}HitsPrev${tab}TotalHits${reset}`,
     );
