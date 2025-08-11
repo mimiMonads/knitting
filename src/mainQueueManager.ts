@@ -35,6 +35,7 @@ export enum MainListEnum {
   OnResolve = 3,
   OnReject = 4,
   PlayloadType = 5,
+  slotIndex = 6,
 }
 
 export enum MainListState {
@@ -52,6 +53,7 @@ export type MainList = [
   Accepted,
   Rejected,
   PayloadType,
+  number
 ];
 
 export type QueueListWorker = MainList;
@@ -81,6 +83,7 @@ export function createMainQueue({
     throw ("UNREACHABLE FROM PLACE HOLDER (main)");
   };
 
+  let countSlot = 0;
   const newSlot = () =>
     [
       ,
@@ -89,6 +92,7 @@ export function createMainQueue({
       PLACE_HOLDER,
       PLACE_HOLDER,
       PayloadType.Undefined,
+      countSlot++
     ] as MainList;
 
   const queue = Array.from(

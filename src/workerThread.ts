@@ -49,7 +49,6 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
     fastResolve,
     isThereWorkToDO,
     blockingResolve,
-    preResolve,
   } = createWorkerQueue({
     listOfFunctions,
     signal,

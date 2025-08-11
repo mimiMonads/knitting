@@ -41,6 +41,7 @@ export const createWorkerQueue = (
   let isThereAnythingToResolve = 0;
   let hasAnythingFinished = 0;
 
+  let countSlot = 0;
   const newSlot = () =>
     [
       ,
@@ -49,12 +50,14 @@ export const createWorkerQueue = (
       PLACE_HOLDER,
       PLACE_HOLDER,
       PayloadType.UNREACHABLE,
+      countSlot++
     ] as QueueListWorker;
 
   const queue = Array.from(
     { length: 15 },
     newSlot,
   );
+
 
   const blockingSlot = [
     ,
@@ -63,6 +66,7 @@ export const createWorkerQueue = (
     PLACE_HOLDER,
     PLACE_HOLDER,
     PayloadType.UNREACHABLE,
+    countSlot++
   ] as QueueListWorker;
 
   type AsyncFunction = (...args: any[]) => Promise<any>;
@@ -81,7 +85,7 @@ export const createWorkerQueue = (
   const playloadToArgs = fromPlayloadToArguments(signals);
   const returnToMain = writeToShareMemory({
     index: MainListEnum.WorkerResponse,
-    jsonString: true,
+    //jsonString: true,
   })(signals);
 
   // Readers
@@ -114,15 +118,15 @@ export const createWorkerQueue = (
       }
     },
 
-    preResolve: () => {
-      const index = resolvedStack.pop();
+    // preResolve: () => {
+    //   const index = resolvedStack.pop();
 
-      if (index !== undefined) {
-        simplifies(queue[index]);
-        optimzedStack.push(index);
-      }
-    },
-    // enqueue a task to the queue.
+    //   if (index !== undefined) {
+    //     simplifies(queue[index]);
+    //     optimzedStack.push(index);
+    //   }
+    // },
+    //enqueue a task to the queue.
     enqueue: () => {
       const currentIndex = slotIndex[0],
         fnNumber = functionToUse[0],
@@ -139,6 +143,7 @@ export const createWorkerQueue = (
       const slot = queue[currentIndex];
       slot[MainListEnum.RawArguments] = args;
       slot[MainListEnum.FunctionID] = fnNumber;
+      slot[MainListEnum.slotIndex] = currentIndex
       isThereAnythingToResolve++;
     },
 
@@ -154,16 +159,16 @@ export const createWorkerQueue = (
         return;
       }
 
-      if (optimzedStack.length > 0) {
-        const index = optimzedStack.pop()!,
-          slot = queue[index];
-        slotIndex[0] = index;
-        returnToMain(slot);
-        status[0] = SignalStatus.WorkerWaiting;
-        isThereAnythingToResolve--;
-        hasAnythingFinished--;
-        return;
-      }
+      // if (optimzedStack.length > 0) {
+      //   const index = optimzedStack.pop()!,
+      //     slot = queue[index];
+      //   slotIndex[0] = index;
+      //   returnToMain(slot);
+      //   status[0] = SignalStatus.WorkerWaiting;
+      //   isThereAnythingToResolve--;
+      //   hasAnythingFinished--;
+      //   return;
+      // }
 
       if (errorStack.length > 0) {
         const index = errorStack.pop()!,

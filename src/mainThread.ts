@@ -76,16 +76,17 @@ export const createMainThread = ({
 
   async function processNext() {
     if (!pendingQueue.length) return;
-    const index = pendingQueue.shift()!;
+    const index = pendingQueue.pop()!;
     const slot = queue[index];
     try {
       const res = await funcs[slot[SlotPos.FunctionID]](slot[SlotPos.Args]);
       promisesMap.get(slot[SlotPos.TaskID])?.resolve(res);
     } catch (err) {
       promisesMap.get(slot[SlotPos.TaskID])?.reject(err);
-    } finally {
+    } 
+    
       cleanup(index);
-    }
+    
     if (working > 0) channel.port2.postMessage(null);
   }
 

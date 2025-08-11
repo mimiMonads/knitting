@@ -1,6 +1,15 @@
 import { bench, boxplot, group, run as mitataRun, summary } from "mitata";
 import { createThreadPool, fixedPoint, isMain } from "../knitting.ts";
 
+const  json = { debug: false, samples: false } 
+const format = 
+  process.argv.includes("--json")
+  ? {
+    json
+  }
+  : "markdown"
+
+
 export const fn = fixedPoint({
   f: async ([start, end]: [number, number]): Promise<number[]> => {
     const primes: number[] = [];
@@ -84,5 +93,5 @@ if (isMain) {
     );
   });
 
-  await mitataRun({ format: "markdown" });
+  await mitataRun({ format });
 }

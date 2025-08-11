@@ -19,6 +19,7 @@ export const taskScheduler = ({
   channelHandler: ChannelHandler;
 }) => {
   let catchEarly = true;
+  const nextTick = process.nextTick
   const check = () => {
     switch (status[0]) {
       case SignalStatus.FastResolve: {
@@ -49,7 +50,7 @@ export const taskScheduler = ({
         if (isThereAnythingToBeSent()) {
           dispatchToWorker();
 
-          queueMicrotask(check);
+          nextTick(check);
         } else {
           if (catchEarly === true) {
             catchEarly = false;
@@ -86,7 +87,7 @@ export const taskScheduler = ({
         return;
       }
       case SignalStatus.MainSend:
-        queueMicrotask(check);
+        nextTick(check);
         return;
     }
   };

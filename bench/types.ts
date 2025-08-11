@@ -10,6 +10,14 @@ export const toBoolean = fixedPoint({ f: async (a: boolean) => a });
 export const toVoid = fixedPoint({ f: async (_: void) => {} });
 export const toObject = fixedPoint({ f: async (a: object) => a });
 
+const  json = { debug: false, samples: false } 
+const format = 
+  process.argv.includes("--json")
+  ? {
+    json
+  }
+  : "markdown"
+
 // ───────────────────────── payloads ─────────────────────────────
 const obj = {
   number: 123,
@@ -238,7 +246,7 @@ if (isMain) {
     });
   });
 
-  await mitataRun({ format: "markdown" });
+  await mitataRun({ format });
   await terminateAll();
   await terminateAllWorkers();
 }

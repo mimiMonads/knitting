@@ -52,12 +52,12 @@ export function loopingBetweenThreads(
   ) => {
     return (max: number) => {
       let rrCursor = -1;
+      const toIndex = max - 1
       return (
         args: any,
       ) => {
-        const index =
-          (rrCursor = (rrCursor + 1) % Math.min(max, handlers.length));
-        return handlers[index](args);
+     
+        return handlers[rrCursor === toIndex ? rrCursor = 0 : ++rrCursor](args);
       };
     };
   };

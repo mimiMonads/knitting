@@ -122,13 +122,15 @@ export const createContext = ({
     return (args: Uint8Array) => enqueues(args);
   };
 
+  const nextTick = process.nextTick
+
   const send = () => {
     if (check.isRunning === false && isThereAnythingToBeSent()) {
       signalBox.status[0] = SignalStatus.DoNothing;
       Atomics.notify(signalBox.rawStatus, 0, 1);
       dispatchToWorker();
       check.isRunning = true;
-      queueMicrotask(check);
+      nextTick(check);
     }
   };
 
@@ -142,7 +144,7 @@ export const createContext = ({
           signalBox.status[0] = SignalStatus.DoNothing,
             Atomics.notify(signalBox.rawStatus, 0, 1),
             check.isRunning = true,
-            queueMicrotask(check),
+            nextTick(check),
             first(args)
         )
         : enqueue(args);

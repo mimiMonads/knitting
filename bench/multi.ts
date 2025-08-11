@@ -2,6 +2,15 @@ import { bench, boxplot, group, run as mitataRun, summary } from "mitata";
 import { createThreadPool, fixedPoint, isMain } from "../knitting.ts";
 import { terminateAllWorkers, toResolve } from "./postmessage/multi.ts";
 
+
+const  json = { debug: false, samples: false } 
+const format = 
+  process.argv.includes("--json")
+  ? {
+    json
+  }
+  : "markdown"
+
 export const inLine = fixedPoint({
   f: async (a?: object | void) => a,
 });
@@ -20,7 +29,7 @@ const { terminateAll, callFunction, send } = createThreadPool(
 });
 
 if (isMain) {
-  const sizes = [10, 100, 1000, 10000];
+  const sizes = [40, 400, 4000, 40_000, 400_000];
 
   boxplot(async () => {
     group("worker", () => {
@@ -58,7 +67,7 @@ if (isMain) {
     });
   });
 
-  await mitataRun({ format: "markdown" });
+  await mitataRun({ format });
   await terminateAllWorkers();
   await terminateAll();
 }
