@@ -1,14 +1,12 @@
 import { bench, boxplot, group, run as mitataRun, summary } from "mitata";
 import { createThreadPool, fixedPoint, isMain } from "../knitting.ts";
 
-const  json = { debug: false, samples: false } 
-const format = 
-  process.argv.includes("--json")
+const json = { debug: false, samples: false };
+const format = process.argv.includes("--json")
   ? {
-    json
+    json,
   }
-  : "markdown"
-
+  : "markdown";
 
 export const fn = fixedPoint({
   f: async ([start, end]: [number, number]): Promise<number[]> => {
@@ -34,7 +32,7 @@ export const fn = fixedPoint({
 
 if (isMain) {
   const N = 10_000_000; // search range: [1..N]
-  const CHUNK_SIZE = 100_000; // tune for load: 50 chunks for 10M
+  const CHUNK_SIZE = 100_000;
   const THREADS = [2, 3, 4, 5, 6]; // extra worker threads to compare
 
   const partition = (end: number, chunk: number): [number, number][] => {

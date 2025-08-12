@@ -2,14 +2,12 @@ import { bench, boxplot, group, run as mitataRun, summary } from "mitata";
 import { createThreadPool, fixedPoint, isMain } from "../knitting.ts";
 import { terminateAllWorkers, toResolve } from "./postmessage/multi.ts";
 
-
-const  json = { debug: false, samples: false } 
-const format = 
-  process.argv.includes("--json")
+const json = { debug: false, samples: false };
+const format = process.argv.includes("--json")
   ? {
-    json
+    json,
   }
-  : "markdown"
+  : "markdown";
 
 export const inLine = fixedPoint({
   f: async (a?: object | void) => a,
@@ -29,13 +27,13 @@ const { terminateAll, callFunction, send } = createThreadPool(
 });
 
 if (isMain) {
-  const sizes = [40, 400, 4000, 40_000, 400_000];
+  const sizes = [10, 100, 1000];
 
   boxplot(async () => {
     group("worker", () => {
       summary(() => {
         for (const size of sizes) {
-          bench(`4 thread → ${size}`, async () => {
+          bench(`4 thread → (${size})`, async () => {
             // build an array of `size` promises
             const arr = Array(size)
               .fill(0)
@@ -54,7 +52,7 @@ if (isMain) {
     group("knitting", () => {
       summary(() => {
         for (const size of sizes) {
-          bench(`4 thread → ${size}`, async () => {
+          bench(`4 thread → (${size})`, async () => {
             const arr = Array(size)
               .fill(0)
               .map(() => callFunction.inLine(obj));

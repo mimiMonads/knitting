@@ -26,6 +26,7 @@ export type WorkerData = {
   list: string[];
   ids: number[];
   thread: number;
+  totalNumberOfThread: number;
   debug?: DebugOptions;
 };
 
@@ -37,7 +38,7 @@ export const createContext = ({
   thread,
   debug,
   listOfFunctions,
-  perf,
+  totalNumberOfThread,
   source,
 }: {
   promisesMap: PromiseMap;
@@ -46,6 +47,7 @@ export const createContext = ({
   sab?: Sab;
   thread: number;
   debug?: DebugOptions;
+  totalNumberOfThread: number;
   listOfFunctions: ComposedWithKey[];
   perf?: number;
   source?: string;
@@ -87,9 +89,9 @@ export const createContext = ({
     signalBox,
     queue,
     channelHandler,
-    thread,
-    debugSignal: debug?.logMain ?? false,
-    perf,
+    //thread,
+    //debugSignal: debug?.logMain ?? false,
+    //perf,
   });
 
   channelHandler.open(check);
@@ -113,6 +115,7 @@ export const createContext = ({
         ids,
         thread,
         debug,
+        totalNumberOfThread,
       } as WorkerData,
     },
   ) as Worker;
@@ -122,7 +125,7 @@ export const createContext = ({
     return (args: Uint8Array) => enqueues(args);
   };
 
-  const nextTick = process.nextTick
+  const nextTick = process.nextTick;
 
   const send = () => {
     if (check.isRunning === false && isThereAnythingToBeSent()) {
@@ -137,12 +140,12 @@ export const createContext = ({
   const fastCalling = ({ fnNumber }: CallFunction) => {
     const first = fastEnqueue(fnNumber);
     const enqueue = enqueuePromise(fnNumber);
-
+    const thisSignal = signalBox.rawStatus;
     return (args: Uint8Array) =>
       check.isRunning === false
         ? (
-          signalBox.status[0] = SignalStatus.DoNothing,
-            Atomics.notify(signalBox.rawStatus, 0, 1),
+          thisSignal[0] = SignalStatus.DoNothing,
+            Atomics.notify(thisSignal, 0, 1),
             check.isRunning = true,
             nextTick(check),
             first(args)

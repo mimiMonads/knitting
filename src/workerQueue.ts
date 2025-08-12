@@ -18,11 +18,13 @@ import {
 type ArgumentsForCreateWorkerQueue = {
   listOfFunctions: ComposedWithKey[];
   max?: number;
+  moreThanOneThread: boolean;
   signal: WorkerSignal;
   signals: SignalArguments;
 };
 
-// Create and manage a working queue.
+// Create and manage a
+// working queue.
 export const createWorkerQueue = (
   {
     listOfFunctions,
@@ -32,6 +34,7 @@ export const createWorkerQueue = (
       functionToUse,
       slotIndex,
     },
+    moreThanOneThread,
   }: ArgumentsForCreateWorkerQueue,
 ) => {
   const PLACE_HOLDER = () => {
@@ -41,7 +44,6 @@ export const createWorkerQueue = (
   let isThereAnythingToResolve = 0;
   let hasAnythingFinished = 0;
 
-  let countSlot = 0;
   const newSlot = () =>
     [
       ,
@@ -50,7 +52,7 @@ export const createWorkerQueue = (
       PLACE_HOLDER,
       PLACE_HOLDER,
       PayloadType.UNREACHABLE,
-      countSlot++
+      0,
     ] as QueueListWorker;
 
   const queue = Array.from(
@@ -58,16 +60,7 @@ export const createWorkerQueue = (
     newSlot,
   );
 
-
-  const blockingSlot = [
-    ,
-    0,
-    ,
-    PLACE_HOLDER,
-    PLACE_HOLDER,
-    PayloadType.UNREACHABLE,
-    countSlot++
-  ] as QueueListWorker;
+  const blockingSlot = newSlot();
 
   type AsyncFunction = (...args: any[]) => Promise<any>;
 
@@ -85,7 +78,7 @@ export const createWorkerQueue = (
   const playloadToArgs = fromPlayloadToArguments(signals);
   const returnToMain = writeToShareMemory({
     index: MainListEnum.WorkerResponse,
-    //jsonString: true,
+    jsonString: moreThanOneThread,
   })(signals);
 
   // Readers
@@ -94,10 +87,10 @@ export const createWorkerQueue = (
     specialType: "thread",
   });
 
-  const resolvedStack: number[] = [];
-  const errorStack: number[] = [];
-  const toWork: number[] = [];
-  const optimzedStack: number[] = [];
+  const resolvedStack: QueueListWorker[] = [];
+  const errorStack: QueueListWorker[] = [];
+  const toWork: QueueListWorker[] = [];
+  const optimzedStack: QueueListWorker[] = [];
 
   return {
     // Check if any task is solved and ready for writing.
@@ -118,102 +111,103 @@ export const createWorkerQueue = (
       }
     },
 
-    // preResolve: () => {
-    //   const index = resolvedStack.pop();
+    preResolve: () => {
+      const slot = resolvedStack.pop();
 
-    //   if (index !== undefined) {
-    //     simplifies(queue[index]);
-    //     optimzedStack.push(index);
-    //   }
-    // },
+      if (slot !== undefined) {
+        simplifies(slot);
+        optimzedStack.push(slot);
+      }
+    },
     //enqueue a task to the queue.
     enqueue: () => {
       const currentIndex = slotIndex[0],
         fnNumber = functionToUse[0],
         args = reader();
 
-      if (queue.length < currentIndex) {
-        const newSize = currentIndex + 50;
+      if (queue.length === 0) {
+        let i = 0;
 
-        while (newSize > queue.length) {
+        while (i !== 15) {
           queue.push(newSlot());
+          i++;
         }
       }
-      toWork.push(currentIndex);
-      const slot = queue[currentIndex];
+
+      const slot = queue.pop()!;
       slot[MainListEnum.RawArguments] = args;
       slot[MainListEnum.FunctionID] = fnNumber;
-      slot[MainListEnum.slotIndex] = currentIndex
+      slot[MainListEnum.slotIndex] = currentIndex;
+      toWork.push(slot);
       isThereAnythingToResolve++;
     },
 
     write: () => {
       if (resolvedStack.length > 0) {
-        const index = resolvedStack.pop()!,
-          slot = queue[index];
-        slotIndex[0] = index;
+        const slot = resolvedStack.pop()!;
+        slotIndex[0] = slot[MainListEnum.slotIndex];
         returnToMain(slot);
         status[0] = SignalStatus.WorkerWaiting;
+        queue.push(slot);
+        isThereAnythingToResolve--;
+        hasAnythingFinished--;
+
+        return;
+      }
+
+      if (optimzedStack.length > 0) {
+        const slot = optimzedStack.pop()!;
+        slotIndex[0] = slot[MainListEnum.slotIndex];
+        returnToMain(slot);
+        status[0] = SignalStatus.WorkerWaiting;
+        queue.push(slot);
         isThereAnythingToResolve--;
         hasAnythingFinished--;
         return;
       }
 
-      // if (optimzedStack.length > 0) {
-      //   const index = optimzedStack.pop()!,
-      //     slot = queue[index];
-      //   slotIndex[0] = index;
-      //   returnToMain(slot);
-      //   status[0] = SignalStatus.WorkerWaiting;
-      //   isThereAnythingToResolve--;
-      //   hasAnythingFinished--;
-      //   return;
-      // }
-
       if (errorStack.length > 0) {
-        const index = errorStack.pop()!,
-          slot = queue[index];
-        slotIndex[0] = index;
+        const slot = errorStack.pop()!;
+        slotIndex[0] = slot[MainListEnum.slotIndex];
         returnError(slot);
         status[0] = SignalStatus.ErrorThrown;
+        queue.push(slot);
         isThereAnythingToResolve--;
         hasAnythingFinished--;
       }
     },
     // Process the next available task.
     nextJob: async () => {
-      const index = toWork.pop();
+      const slot = toWork.pop();
 
-      if (index !== undefined) {
-        const task = queue[index];
-
-        await jobs[task[MainListEnum.FunctionID]](
-          task[MainListEnum.RawArguments],
+      if (slot !== undefined) {
+        await jobs[slot[MainListEnum.FunctionID]](
+          slot[MainListEnum.RawArguments],
         )
           .then((res) => {
-            task[MainListEnum.WorkerResponse] = res;
+            slot[MainListEnum.WorkerResponse] = res;
             hasAnythingFinished++;
-            resolvedStack.push(index);
+            resolvedStack.push(slot);
           })
           .catch((err) => {
-            task[MainListEnum.WorkerResponse] = err;
+            slot[MainListEnum.WorkerResponse] = err;
             hasAnythingFinished++;
-            errorStack.push(index);
+            errorStack.push(slot);
           });
       }
     },
     fastResolve: async () => {
-      const index = toWork.pop()!,
-        task = queue[index];
+      const slot = toWork.pop()!;
+
       try {
-        task[MainListEnum.WorkerResponse] = await jobs
-          [task[MainListEnum.FunctionID]](task[MainListEnum.RawArguments]);
+        slot[MainListEnum.WorkerResponse] = await jobs
+          [slot[MainListEnum.FunctionID]](slot[MainListEnum.RawArguments]);
         hasAnythingFinished++;
-        resolvedStack.push(index);
+        resolvedStack.push(slot);
       } catch (err) {
-        task[MainListEnum.WorkerResponse] = err;
+        slot[MainListEnum.WorkerResponse] = err;
         hasAnythingFinished++;
-        errorStack.push(index);
+        errorStack.push(slot);
       }
     },
     allDone: () => isThereAnythingToResolve === 0,

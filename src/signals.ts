@@ -9,7 +9,7 @@ import { Buffer as NodeBuffer } from "node:buffer";
 enum SignalEnumOptions {
   header = 32,
   maxByteLength = 64 * 1024 * 1024,
-  defaultSize = 1024,
+  defaultSize = 1024 * 64,
   safePadding = 512,
 }
 

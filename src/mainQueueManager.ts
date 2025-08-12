@@ -53,7 +53,7 @@ export type MainList = [
   Accepted,
   Rejected,
   PayloadType,
-  number
+  number,
 ];
 
 export type QueueListWorker = MainList;
@@ -92,7 +92,7 @@ export function createMainQueue({
       PLACE_HOLDER,
       PLACE_HOLDER,
       PayloadType.Undefined,
-      countSlot++
+      countSlot++,
     ] as MainList;
 
   const queue = Array.from(
@@ -184,7 +184,7 @@ export function createMainQueue({
     enqueuePromise: (functionID: FunctionID) => (rawArgs: RawArguments) => {
       // Expanding size if needed
       if (inUsed === queue.length) {
-        const newSize = inUsed + 50;
+        const newSize = inUsed + 10;
         let current = queue.length;
 
         while (newSize > current) {
@@ -221,9 +221,9 @@ export function createMainQueue({
         ? (queueState[0] = QueueStateFlag.Last)
         : (queueState[0] = QueueStateFlag.NotLast);
 
-      write(slot);
       functionToUse[0] = slot[MainListEnum.FunctionID];
       slotIndex[0] = index;
+      write(slot);
 
       // Changes ownership of the sab
       status[0] = SignalStatus.MainSend;

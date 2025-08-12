@@ -10,22 +10,12 @@ export const toBoolean = fixedPoint({ f: async (a: boolean) => a });
 export const toVoid = fixedPoint({ f: async (_: void) => {} });
 export const toObject = fixedPoint({ f: async (a: object) => a });
 
-const  json = { debug: false, samples: false } 
-const format = 
-  process.argv.includes("--json")
+const json = { debug: false, samples: false };
+const format = process.argv.includes("--json")
   ? {
-    json
+    json,
   }
-  : "markdown"
-
-// ───────────────────────── payloads ─────────────────────────────
-const obj = {
-  number: 123,
-  string: "helloWorld",
-  nullable: null,
-  arr: [1, 2, 3, 4, 5],
-};
-const arrSmall = [1, 2, 3, 4, 5];
+  : "markdown";
 
 if (isMain) {
   const { callFunction, fastCallFunction, terminateAll, send } =
@@ -38,7 +28,7 @@ if (isMain) {
       toObject,
     });
 
-  const sizes = [1, 10];
+  const sizes = [1, 10, 100];
 
   // helpers
   const runCF = async <T>(n: number, fn: () => Promise<T>) => {
@@ -47,203 +37,226 @@ if (isMain) {
     await Promise.all(promises);
   };
   const runFF = async <T>(n: number, fn: () => Promise<T>) => {
-    if (n === 1) {
-      return await fn();
-    }
     await Promise.all(Array.from({ length: n }, fn));
   };
   const runClassic = async <T>(n: number, val: T) => {
     await Promise.all(Array.from({ length: n }, () => toResolve(val)));
   };
 
-  // quick smoke: run once across many types (useful to warm things up)
-  bench("smoke: all types (1 each)", async () => {
-    const promises = [
-      callFunction.toString("hello"),
-      callFunction.toBigInt(-(2n ** 63n - 1n)),
-      callFunction.toBigInt(2n ** 64n - 1n),
-      callFunction.toBoolean(true),
-      callFunction.toBoolean(false),
-      callFunction.toVoid(),
-      callFunction.toNumber(Infinity),
-      callFunction.toNumber(-Infinity),
-      callFunction.toNumber(NaN),
-      callFunction.toNumber(Number.MAX_SAFE_INTEGER),
-      callFunction.toNumber(Number.MIN_SAFE_INTEGER),
-      callFunction.toNumber(Number.MAX_VALUE),
-      callFunction.toNumber(Number.MIN_VALUE),
-      callFunction.toNumber(0),
-      callFunction.toNumber(2.2250738585072014e-308),
-      callFunction.toObject(obj),
-    ];
-    send();
-    await Promise.all(promises);
-    await Promise.all([
-      fastCallFunction.toString("hello"),
-      fastCallFunction.toBigInt(-(2n ** 63n - 1n)),
-      fastCallFunction.toBigInt(2n ** 64n - 1n),
-      fastCallFunction.toBoolean(true),
-      fastCallFunction.toBoolean(false),
-      fastCallFunction.toVoid(),
-      fastCallFunction.toNumber(Infinity),
-      fastCallFunction.toNumber(-Infinity),
-      fastCallFunction.toNumber(NaN),
-      fastCallFunction.toNumber(Number.MAX_SAFE_INTEGER),
-      fastCallFunction.toNumber(Number.MIN_SAFE_INTEGER),
-      fastCallFunction.toNumber(Number.MAX_VALUE),
-      fastCallFunction.toNumber(Number.MIN_VALUE),
-      fastCallFunction.toNumber(0),
-      fastCallFunction.toNumber(2.2250738585072014e-308),
-      fastCallFunction.toObject(obj),
-    ]);
+  const string = "helloWorld";
+  const bigString = "helloWorld".repeat(1000);
+  const num = 77777;
+  const min = -(2n ** 63n - 1n);
+  const max = 2n ** 64n - 1n;
+  const smallArray = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+  const bigArray = Array.from({ length: 500 }, (_, i) => i);
+  const obj = {
+    number: 123,
+    string: "helloWorld",
+    nullable: null,
+    arr: [1, 2, 3, 4, 5],
+  };
+  const bigObj = {
+    users: Array.from({ length: 5 }, (_, i) => ({
+      id: i,
+      name: `User ${i}`,
+      age: Math.floor(Math.random() * 80),
+      tags: Array.from(
+        { length: 10 },
+        () => Math.random().toString(36).slice(2),
+      ),
+      address: {
+        city: "Testville",
+        zip: Math.floor(Math.random() * 90000 + 10000),
+      },
+    })),
+  };
+
+  group("knitting fast", () => {
+    bench(`string -> (1)`, async () => {
+      await fastCallFunction.toString(string);
+    });
+    bench(`large string -> (1)`, async () => {
+      await fastCallFunction.toString(bigString);
+    });
+    bench(`number -> (1)`, async () => {
+      await fastCallFunction.toNumber(num);
+    });
+    bench(
+      `min bigint -> (1)`,
+      async () => await fastCallFunction.toBigInt(min),
+    );
+    bench(
+      `max bigint -> (1)`,
+      async () => await fastCallFunction.toBigInt(max),
+    );
+    bench(
+      `boolean true -> (1)`,
+      async () => await fastCallFunction.toBoolean(true),
+    );
+    bench(
+      `boolean false -> (1)`,
+      async () => await fastCallFunction.toBoolean(false),
+    );
+    bench(`void -> (1)`, async () => await fastCallFunction.toVoid());
+    bench(
+      `small array -> (1)`,
+      async () => await fastCallFunction.toObject(smallArray),
+    );
+    bench(
+      `big Array -> (1)`,
+      async () => await fastCallFunction.toObject(bigArray),
+    );
+    bench(`object -> (1)`, async () => await fastCallFunction.toObject(obj));
+    bench(
+      `big object -> (1)`,
+      async () => await fastCallFunction.toObject(bigObj),
+    );
+
+    const firstRemoved = sizes.slice(1);
+
+    for (const n of firstRemoved) {
+      bench(`string -> (${n})`, async () => {
+        await runFF(n, async () => fastCallFunction.toString(string));
+      });
+      bench(`large string -> (${n})`, async () => {
+        await runFF(n, async () => fastCallFunction.toString(bigString));
+      });
+      bench(`number -> (${n})`, async () => {
+        await runFF(n, async () => fastCallFunction.toNumber(num));
+      });
+      bench(
+        `min bigint -> (${n})`,
+        async () => await runFF(n, async () => fastCallFunction.toBigInt(min)),
+      );
+
+      bench(
+        `max bigint -> (${n})`,
+        async () => await runFF(n, async () => fastCallFunction.toBigInt(max)),
+      );
+      bench(
+        `boolean true -> (${n})`,
+        async () =>
+          await runFF(n, async () => fastCallFunction.toBoolean(true)),
+      );
+
+      bench(
+        `boolean false -> (${n})`,
+        async () =>
+          await runFF(n, async () => fastCallFunction.toBoolean(false)),
+      );
+
+      bench(
+        `void -> (${n})`,
+        async () => await runFF(n, async () => fastCallFunction.toVoid()),
+      );
+      bench(
+        `small array -> (${n})`,
+        async () =>
+          await runFF(n, async () => fastCallFunction.toObject(smallArray)),
+      );
+
+      bench(
+        `big Array -> (${n})`,
+        async () =>
+          await runFF(n, async () => fastCallFunction.toObject(bigArray)),
+      );
+      bench(
+        `object -> (${n})`,
+        async () => await runFF(n, async () => fastCallFunction.toObject(obj)),
+      );
+      bench(
+        `big object -> (${n})`,
+        async () =>
+          await runFF(n, async () => fastCallFunction.toObject(bigObj)),
+      );
+    }
   });
 
-  // ───────────────────────── boxplots by type ─────────────────────────
+  group("knitting", () => {
+    for (const n of sizes) {
+      bench(`string -> (${n})`, async () => {
+        await runCF(n, async () => callFunction.toString(string));
+      });
+      bench(`large string -> (${n})`, async () => {
+        await runCF(n, async () => callFunction.toString(bigString));
+      });
+      bench(`number -> (${n})`, async () => {
+        await runCF(n, async () => callFunction.toNumber(num));
+      });
+      bench(
+        `min bigint -> (${n})`,
+        async () => await runCF(n, async () => callFunction.toBigInt(min)),
+      );
 
-  boxplot(async () => {
-    // STRING
+      bench(
+        `max bigint -> (${n})`,
+        async () => await runCF(n, async () => callFunction.toBigInt(max)),
+      );
+      bench(
+        `boolean true -> (${n})`,
+        async () => await runCF(n, async () => callFunction.toBoolean(true)),
+      );
 
-    summary(() => {
-      for (const n of sizes) {
-        const string = "helloWorld";
-        group("string: " + n.toString(), () => {
-          bench(`FF string `, async () => {
-            await runFF(n, () => fastCallFunction.toString(string));
-          });
-          bench(`CF string`, async () => {
-            await runCF(n, () => callFunction.toString(string));
-          });
-          bench(`classic string`, async () => {
-            await runClassic(n, string);
-          });
-        });
-      }
-    });
+      bench(
+        `boolean false -> (${n})`,
+        async () => await runCF(n, async () => callFunction.toBoolean(false)),
+      );
 
-    // NUMBER (finite)
+      bench(
+        `void -> (${n})`,
+        async () => await runCF(n, async () => callFunction.toVoid()),
+      );
+      bench(
+        `small array -> (${n})`,
+        async () =>
+          await runCF(n, async () => callFunction.toObject(smallArray)),
+      );
 
-    const num = 77777;
-    summary(() => {
-      for (const n of sizes) {
-        group("number (finite):" + n, () => {
-          bench(`CF number`, async () => {
-            await runCF(n, () => callFunction.toNumber(num));
-          });
-          bench(`FF number`, async () => {
-            await runFF(n, () => fastCallFunction.toNumber(num));
-          });
-          bench(`classic number`, async () => {
-            await runClassic(n, num);
-          });
-        });
-      }
-    });
+      bench(
+        `big Array -> (${n})`,
+        async () => await runCF(n, async () => callFunction.toObject(bigArray)),
+      );
+      bench(
+        `object -> (${n})`,
+        async () => await runCF(n, async () => callFunction.toObject(obj)),
+      );
+      bench(
+        `big object -> (${n})`,
+        async () => await runCF(n, async () => callFunction.toObject(bigObj)),
+      );
+    }
+  });
 
-    // BIGINT
+  group("worker", () => {
+    for (const n of sizes) {
+      bench(`string -> (${n})`, async () => {
+        await runClassic(n, string);
+      });
+      bench(`large string -> (${n})`, async () => {
+        await runClassic(n, bigString);
+      });
+      bench(`number -> (${n})`, async () => {
+        await runClassic(n, num);
+      });
+      bench(`min bigint -> (${n})`, async () => await runClassic(n, min));
 
-    summary(() => {
-      const min = -(2n ** 63n - 1n);
-      const max = 2n ** 64n - 1n;
-      for (const n of sizes) {
-        group("bigint: " + n, () => {
-          bench(`FF bigint (min)`, async () => {
-            await runFF(n, () => fastCallFunction.toBigInt(min));
-          });
-          bench(`FF bigint (max)`, async () => {
-            await runFF(n, () => fastCallFunction.toBigInt(max));
-          });
-          bench(`CF bigint (min)`, async () => {
-            await runCF(n, () => callFunction.toBigInt(min));
-          });
-          bench(`CF bigint (max)`, async () => {
-            await runCF(n, () => callFunction.toBigInt(max));
-          });
-          bench(`classic bigint (min)`, async () => {
-            await runClassic(n, min);
-          });
-          bench(`classic bigint (max)`, async () => {
-            await runClassic(n, max);
-          });
-        });
-      }
-    });
+      bench(`max bigint -> (${n})`, async () => await runClassic(n, max));
+      bench(`boolean true -> (${n})`, async () => await runClassic(n, true));
 
-    // BOOLEAN
+      bench(`boolean false -> (${n})`, async () => await runClassic(n, false));
 
-    summary(() => {
-      for (const n of sizes) {
-        group("boolean:" + n.toString(), () => {
-          bench(`FF boolean (true)`, async () => {
-            await runFF(n, () => fastCallFunction.toBoolean(true));
-          });
-          bench(`CF boolean (true)`, async () => {
-            await runCF(n, () => callFunction.toBoolean(true));
-          });
-          bench(`classic boolean (true)`, async () => {
-            await runClassic(n, true);
-          });
-        });
-        group("boolean: " + n.toString(), () => {
-          bench(`FF boolean (false)`, async () => {
-            await runFF(n, () => fastCallFunction.toBoolean(false));
-          });
-          bench(`CF boolean (false)`, async () => {
-            await runCF(n, () => callFunction.toBoolean(false));
-          });
-          bench(`classic boolean (false)`, async () => {
-            await runClassic(n, false);
-          });
-        });
-      }
-    });
+      bench(`void -> (${n})`, async () => await runClassic(n, undefined));
 
-    // VOID
+      bench(
+        `small array -> (${n})`,
+        async () => await runClassic(n, smallArray),
+      );
 
-    summary(() => {
-      for (const n of sizes) {
-        group("void/undefined: " + n.toString(), () => {
-          bench(`FF void`, async () => {
-            await runFF(n, () => fastCallFunction.toVoid());
-          });
-          bench(`CF void`, async () => {
-            await runCF(n, () => callFunction.toVoid());
-          });
-          bench(`classic undefined`, async () => {
-            await runClassic(n, undefined);
-          });
-        });
-      }
-    });
-
-    // OBJECT & ARRAY
-
-    summary(() => {
-      for (const n of sizes) {
-        group("object/array: " + n.toString(), () => {
-          bench(`FF array (small)`, async () => {
-            await runFF(n, () => fastCallFunction.toObject(arrSmall));
-          });
-          bench(`CF array (small)`, async () => {
-            await runCF(n, () => callFunction.toObject(arrSmall));
-          });
-          bench(`classic array (small)`, async () => {
-            await runClassic(n, arrSmall);
-          });
-        });
-        group("object/array: " + n.toString(), () => {
-          bench(`FF object`, async () => {
-            await runFF(n, () => fastCallFunction.toObject(obj));
-          });
-          bench(`CF object`, async () => {
-            await runCF(n, () => callFunction.toObject(obj));
-          });
-
-          bench(`classic object`, async () => {
-            await runClassic(n, obj);
-          });
-        });
-      }
-    });
+      bench(`big Array -> (${n})`, async () => await runClassic(n, bigArray));
+      bench(`object -> (${n})`, async () => await runClassic(n, obj));
+      bench(`big object -> (${n})`, async () => await runClassic(n, bigObj));
+    }
   });
 
   await mitataRun({ format });

@@ -2,14 +2,12 @@ import { bench, boxplot, group, run as runMitata, summary } from "mitata";
 import { createThreadPool, fixedPoint, isMain } from "../knitting.ts";
 import { terminateAllWorkers, toResolve } from "./postmessage/single.ts";
 
-const  json = { debug: false, samples: false } 
-const format = 
-  process.argv.includes("--json")
+const json = { debug: false, samples: false };
+const format = process.argv.includes("--json")
   ? {
-    json
+    json,
   }
-  : "markdown"
-
+  : "markdown";
 
 export const fn = fixedPoint({
   f: async (a: object) => a,
@@ -39,13 +37,13 @@ const meh = async (n: number) => {
 };
 
 if (isMain) {
-  const sizes = [10, 100, 1000, 10_000,100_000];
+  const sizes = [10, 100, 1000];
 
   boxplot(async () => {
     group("worker", () => {
       summary(() => {
         for (const size of sizes) {
-          bench(`${threads} thread (to beat) → ${size}`, async () => {
+          bench(`${threads} thread → (${size})`, async () => {
             await meh(size);
           });
         }
@@ -55,7 +53,7 @@ if (isMain) {
     group("knitting", () => {
       summary(() => {
         for (const size of sizes) {
-          bench(`${threads} thread → ${size}`, async () => {
+          bench(`${threads} thread → (${size})`, async () => {
             await timesFun(size);
           });
         }
@@ -63,7 +61,7 @@ if (isMain) {
     });
   });
 
-  await runMitata({ format});
+  await runMitata({ format });
   await terminateAll();
   await terminateAllWorkers();
 }

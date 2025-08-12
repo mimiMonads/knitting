@@ -83,10 +83,10 @@ export const createMainThread = ({
       promisesMap.get(slot[SlotPos.TaskID])?.resolve(res);
     } catch (err) {
       promisesMap.get(slot[SlotPos.TaskID])?.reject(err);
-    } 
-    
+    } finally {
       cleanup(index);
-    
+    }
+
     if (working > 0) channel.port2.postMessage(null);
   }
 

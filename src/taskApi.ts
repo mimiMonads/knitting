@@ -225,6 +225,9 @@ export const createThreadPool = ({
 
   const perf = debug ? performance.now() : undefined;
 
+  const totalNumberOfThread = (threads ?? 1) +
+    ((typeof main === "string") ? 1 : 0);
+
   let workers = Array.from({
     length: threads ?? 1,
   }).map((_, thread) =>
@@ -236,6 +239,7 @@ export const createThreadPool = ({
       debug,
       listOfFunctions,
       perf,
+      totalNumberOfThread,
       source,
     })
   );

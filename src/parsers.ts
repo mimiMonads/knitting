@@ -74,7 +74,7 @@ const simplifyJson = (
     if (typeof args === "object") {
       if (args === null) return;
 
-      task[at] = encode.encode(JSON.stringify(args));
+      task[at] = JSON.stringify(args);
       task[MainListEnum.PlayloadType] = PayloadType.StringToJson;
     }
   };
@@ -116,7 +116,7 @@ const writeToShareMemory = (
     // a different stack
     if (preProcessed === true) {
       if (task[MainListEnum.PlayloadType] === PayloadType.StringToJson) {
-        setBuffer(args as Uint8Array);
+        setString(args as string);
         task[MainListEnum.PlayloadType] = PayloadType.Json;
         return;
       }

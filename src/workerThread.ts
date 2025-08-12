@@ -17,6 +17,9 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
     debug,
   });
 
+  const totalNumberOfThread = workerData.totalNumberOfThread;
+  const moreThanOneThread = totalNumberOfThread > 1;
+
   const { status, rawStatus } = signals;
 
   const listOfFunctions = await getFunctions({
@@ -49,10 +52,12 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
     fastResolve,
     isThereWorkToDO,
     blockingResolve,
+    preResolve,
   } = createWorkerQueue({
     listOfFunctions,
     signal,
     signals,
+    moreThanOneThread,
   });
 
   while (true) {
@@ -60,7 +65,6 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
       case SignalStatus.AllTasksDone:
       case SignalStatus.WaitingForMore:
       case SignalStatus.ErrorThrown:
-      case SignalStatus.FastResolve:
       case SignalStatus.DoNothing: {
         continue;
       }
@@ -73,7 +77,9 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
         if (isThereWorkToDO()) {
           await fastResolve();
         } else {
-          //preResolve()
+          if (moreThanOneThread === true) {
+            preResolve();
+          }
         }
 
         continue;
@@ -100,7 +106,25 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
         }
 
         continue;
-      case SignalStatus.MainSemiStop:
+      case SignalStatus.FastResolve: {
+        Atomics.wait(
+          rawStatus,
+          0,
+          SignalStatus.FastResolve,
+          5,
+        );
+        continue;
+      }
+      case SignalStatus.MainSemiStop: {
+        Atomics.wait(
+          rawStatus,
+          0,
+          SignalStatus.MainSemiStop,
+          50,
+        );
+
+        continue;
+      }
       case SignalStatus.MainStop: {
         // `SignalStatus.ErrorThrown` is place holderit actually doesnt matter at all
 
@@ -108,6 +132,7 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
           rawStatus,
           0,
           SignalStatus.MainStop,
+          50,
         );
 
         continue;
