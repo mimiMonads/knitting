@@ -80,9 +80,9 @@ if (isMain) {
           });
           for (const t of THREADS) {
             bench(
-              `main + ${t -1} extra thread${t > 1 ? "s" : ""} → full range`,
+              `main + ${t - 1} extra thread${t > 1 ? "s" : ""} → full range`,
               async () => {
-                await runPrimes(t -1 );
+                await runPrimes(t - 1);
               },
             );
           }

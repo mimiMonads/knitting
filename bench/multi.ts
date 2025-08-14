@@ -27,7 +27,7 @@ const { terminateAll, callFunction, send } = createThreadPool(
 });
 
 if (isMain) {
-  const sizes = [10, 100, 1000];
+  const sizes = [10, 100, 1000, 10000];
 
   boxplot(async () => {
     group("worker", () => {

@@ -106,14 +106,15 @@ export function createMainQueue({
     (_, i) => i,
   );
 
-   const preRresolve = simplifyJson({
-    index: MainListEnum.RawArguments
-   })
+  const preRresolve = simplifyJson({
+    index: MainListEnum.RawArguments,
+  });
   // Writers
   const errorDeserializer = readPayloadError(signals);
   const write = writeToShareMemory({
     index: MainListEnum.RawArguments,
-    jsonString: true
+    //jsonString: true,
+    from: "main",
   })(signals);
 
   // Readers
@@ -209,7 +210,7 @@ export function createMainQueue({
       slot[MainListEnum.OnResolve] = deferred.resolve;
       slot[MainListEnum.OnReject] = deferred.reject;
 
-      // preRresolve(slot)
+      //preRresolve(slot)
       // Change states:
       toBeSent.push(index);
       toBeSentCount++;

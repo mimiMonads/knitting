@@ -3,7 +3,8 @@ import { type MainSignal, SignalStatus } from "./signals.ts";
 
 export const taskScheduler = ({
   signalBox: {
-    rawStatus , status,
+    rawStatus,
+    status,
   },
   queue: {
     resolveTask,

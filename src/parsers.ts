@@ -60,7 +60,6 @@ const fromReturnToMainError = ({
 
 type PossibleIndexes = MainListEnum.RawArguments | MainListEnum.WorkerResponse;
 
-
 const simplifyJson = (
   { index }: {
     index: PossibleIndexes;
@@ -85,9 +84,10 @@ const simplifyJson = (
  *  3 -> Takes the return of a MainList
  */
 const writeToShareMemory = (
-  { index, jsonString }: {
+  { index, jsonString, from }: {
     index: PossibleIndexes;
     jsonString?: boolean;
+    from: "main" | "thread";
   },
 ) =>
 (
@@ -104,7 +104,7 @@ const writeToShareMemory = (
 ) => {
   const at = index;
   const preProcessed = Boolean(jsonString);
-
+  const payloadTo = from;
   return (
     task: MainList,
   ) => {
@@ -116,7 +116,16 @@ const writeToShareMemory = (
     if (preProcessed === true) {
       if (task[MainListEnum.PlayloadType] === PayloadType.StringToJson) {
         setString(args as string);
-        task[MainListEnum.PlayloadType] = PayloadType.Json;
+        switch (payloadTo) {
+          case "main": {
+            type[0] = PayloadType.Json;
+            break;
+          }
+          case "thread": {
+            task[MainListEnum.PlayloadType] = PayloadType.Json;
+            break;
+          }
+        }
         return;
       }
     }
@@ -309,6 +318,7 @@ const readPayloadWorkerBulk = (
       queueState[0] === QueueStateFlag.Last
         ? (status[0] = SignalStatus.WaitingForMore)
         : (status[0] = SignalStatus.MainReadyToRead);
+
   let text: unknown;
   return () => {
     switch (type[0]) {
@@ -361,7 +371,6 @@ const readPayloadWorkerBulk = (
         return null;
       case PayloadType.Json:
         text = buffToString();
-
         changeOwnership();
 
         return JSON.parse(

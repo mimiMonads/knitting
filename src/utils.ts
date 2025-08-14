@@ -35,7 +35,7 @@ export const getCallerFilePath = (n: number) => {
 
 import { hrtime } from "node:process";
 
-const beat = (): number => Number(hrtime.bigint()) / 1e6;
+export const beat = (): number => Number(hrtime.bigint()) / 1e4;
 
 /**
  * Debug reads & writes to status[0] without touching `performance.now()`.
@@ -45,10 +45,12 @@ export const signalDebuggerV2 = ({
   thread,
   isMain,
   status,
+  startAt,
 }: {
   thread: number;
   isMain: boolean;
   status: Int32Array;
+  startAt: number;
 }) => {
   // ─── colours & helpers ───────────────────────────────────────────
   const orange = "\x1b[38;5;214m";
@@ -58,8 +60,9 @@ export const signalDebuggerV2 = ({
   const color = isMain ? orange : purple;
 
   // ─── timing & counting state ─────────────────────────────────────
+
   let last = status[0];
-  const born = beat(); // ms since heart-beat origin
+  const born = startAt;
   let lastBeat = born;
   let hitsTotal = 0;
   const hitsPerValue: Record<number, number> = { [last]: 0 };
@@ -77,7 +80,7 @@ export const signalDebuggerV2 = ({
     hitsPerValue[value] = (hitsPerValue[value] ?? 0) + 1;
 
     if (value !== last) {
-      const now = beat();
+      const now = isMain ? beat() : beat() + born;
       const hits = hitsPerValue[last];
 
       console.log(

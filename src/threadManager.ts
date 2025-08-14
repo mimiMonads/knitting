@@ -1,7 +1,7 @@
 // main.ts
 
 import { createMainQueue, type PromiseMap } from "./mainQueueManager.ts";
-import { genTaskID } from "./utils.ts";
+import { beat, genTaskID } from "./utils.ts";
 import {
   mainSignal,
   type Sab,
@@ -28,6 +28,7 @@ export type WorkerData = {
   thread: number;
   totalNumberOfThread: number;
   debug?: DebugOptions;
+  startAt: number;
 };
 
 export const createContext = ({
@@ -116,6 +117,7 @@ export const createContext = ({
         thread,
         debug,
         totalNumberOfThread,
+        startAt: signalBox.startAt,
       } as WorkerData,
     },
   ) as Worker;

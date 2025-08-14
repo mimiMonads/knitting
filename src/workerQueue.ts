@@ -79,6 +79,7 @@ export const createWorkerQueue = (
   const returnToMain = writeToShareMemory({
     index: MainListEnum.WorkerResponse,
     jsonString: moreThanOneThread,
+    from: "thread",
   })(signals);
 
   // Readers

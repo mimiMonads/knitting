@@ -15,6 +15,7 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
     isMain: false,
     thread: workerData.thread,
     debug,
+    startTime: workerData.startAt,
   });
 
   const totalNumberOfThread = workerData.totalNumberOfThread;

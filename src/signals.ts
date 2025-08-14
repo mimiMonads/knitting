@@ -2,7 +2,7 @@ export type SignalArguments = ReturnType<typeof signalsForWorker>;
 export type MainSignal = ReturnType<typeof mainSignal>;
 export type WorkerSignal = ReturnType<typeof workerSignal>;
 import { isMainThread } from "node:worker_threads";
-import { signalDebuggerV2 } from "./utils.ts";
+import { beat, signalDebuggerV2 } from "./utils.ts";
 import { type DebugOptions } from "./taskApi.ts";
 import { Buffer as NodeBuffer } from "node:buffer";
 
@@ -53,7 +53,7 @@ const allocBuffer = ({ sab, payloadLength }: {
   const buffToString = () => buff.toString("utf8", 0, payloadLength[0]);
   const setBuffer = (buffer: Uint8Array) => {
     if (
-      currentSize < buffer.length 
+      currentSize < buffer.length
     ) {
       const required = buffer.length + SignalEnumOptions.header +
         SignalEnumOptions.safePadding;
@@ -64,20 +64,19 @@ const allocBuffer = ({ sab, payloadLength }: {
     }
     uInt8.set(buffer, 0);
     payloadLength[0] = buffer.length;
-  }
+  };
   return {
     buffToString,
     setBuffer,
     slice: () => uInt8.slice(0, payloadLength[0]),
     subarray: () => uInt8.subarray(0, payloadLength[0]),
     setString: (str: string) => {
-  
-      const { written }  = textEncode.encodeInto(str, uInt8)
-
-      if(written >= currentSize){
-        return setBuffer(textEncode.encode(str))
-      }
+      const { written } = textEncode.encodeInto(str, uInt8);
       payloadLength[0] = written;
+
+      if (written >= currentSize) {
+        return setBuffer(textEncode.encode(str));
+      }
     },
   };
 };
@@ -87,15 +86,18 @@ type SignalForWorker = {
   isMain: boolean;
   thread: number;
   debug?: DebugOptions;
+  startTime?: number;
 };
 export const signalsForWorker = (
-  { sabObject, isMain, thread, debug }: SignalForWorker,
+  { sabObject, isMain, thread, debug, startTime }: SignalForWorker,
 ) => {
   const sab = sabObject?.sharedSab
     ? sabObject.sharedSab
     : new SharedArrayBuffer(sabObject?.size ?? SignalEnumOptions.defaultSize, {
       maxByteLength: SignalEnumOptions.maxByteLength,
     });
+
+  const startAt = beat();
 
   const status = typeof debug !== "undefined" &&
       // This part just say `match the function on the thread and main parts and the debug parts`
@@ -104,6 +106,7 @@ export const signalsForWorker = (
     ? signalDebuggerV2({
       thread,
       isMain,
+      startAt: startTime ?? startAt,
       status: new Int32Array(sab, 0, 1),
     })
     : new Int32Array(sab, 0, 1);
@@ -122,6 +125,7 @@ export const signalsForWorker = (
   return {
     sab,
     status,
+    startAt,
     // When we debug we wrap status in a proxy thus it stop being an array,
     // There are some JS utils that would complain about it (Atomics)
     rawStatus: new Int32Array(sab, 0, 1),
@@ -131,6 +135,7 @@ export const signalsForWorker = (
     queueState: new Int32Array(sab, 16, 1),
     type: new Int32Array(sab, 20, 1),
     slotIndex: new Int32Array(sab, 24, 1),
+    workerStatus: new Int32Array(sab, 28, 1),
     // Access to the current length of the payload
     payloadLength,
     // Modifying shared memory
@@ -149,7 +154,7 @@ export const signalsForWorker = (
 };
 
 export const mainSignal = (
-  { status, id, functionToUse, queueState, rawStatus, slotIndex }:
+  { status, id, functionToUse, queueState, rawStatus, slotIndex, startAt }:
     SignalArguments,
 ) => ({
   status,
@@ -158,6 +163,7 @@ export const mainSignal = (
   id,
   slotIndex,
   queueState,
+  startAt,
 });
 
 export const workerSignal = (
