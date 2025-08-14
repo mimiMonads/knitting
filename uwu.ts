@@ -1,13 +1,30 @@
-import { bench , run} from "mitata";
+import { createThreadPool, fixedPoint, isMain } from "./knitting.ts";
 
+export const hello = fixedPoint({
+  f: async () => "hello",
+});
+export const world = fixedPoint({
+  f: async () => "world",
+});
 
-const str = "helloWorld".repeat(1000);
-bench (() => {
-  const need = Buffer.byteLength(str)
-})
-bench (() => {
-  const need = (str.length * 4)
-})
+export const { terminateAll, fastCallFunction } = createThreadPool({
+  threads: 1,
+  debug: {
+    logMain: true,
+    logThreads: true,
+  },
+})({
+  hello,
+  world,
+});
 
-console.log(Buffer.byteLength(("😀")))
-run()
+if (isMain) {
+  await Promise.all([
+    fastCallFunction.hello(),
+    fastCallFunction.world(),
+  ])
+    .then((results) => {
+      console.log("Results:", results);
+    })
+    .finally(terminateAll);
+}
