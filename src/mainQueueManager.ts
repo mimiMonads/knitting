@@ -3,6 +3,7 @@ import {
   readFromWorker,
   readPayloadError,
   readPayloadWorkerBulk,
+  simplifyJson,
   writeToShareMemory,
 } from "./parsers.ts";
 import {
@@ -105,10 +106,14 @@ export function createMainQueue({
     (_, i) => i,
   );
 
+   const preRresolve = simplifyJson({
+    index: MainListEnum.RawArguments
+   })
   // Writers
   const errorDeserializer = readPayloadError(signals);
   const write = writeToShareMemory({
     index: MainListEnum.RawArguments,
+    jsonString: true
   })(signals);
 
   // Readers
@@ -204,6 +209,7 @@ export function createMainQueue({
       slot[MainListEnum.OnResolve] = deferred.resolve;
       slot[MainListEnum.OnReject] = deferred.reject;
 
+      // preRresolve(slot)
       // Change states:
       toBeSent.push(index);
       toBeSentCount++;

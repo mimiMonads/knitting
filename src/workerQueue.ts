@@ -90,7 +90,7 @@ export const createWorkerQueue = (
   const resolvedStack: QueueListWorker[] = [];
   const errorStack: QueueListWorker[] = [];
   const toWork: QueueListWorker[] = [];
-  const optimzedStack: QueueListWorker[] = [];
+  const optimizedStack: QueueListWorker[] = [];
 
   return {
     // Check if any task is solved and ready for writing.
@@ -116,7 +116,7 @@ export const createWorkerQueue = (
 
       if (slot !== undefined) {
         simplifies(slot);
-        optimzedStack.push(slot);
+        optimizedStack.push(slot);
       }
     },
     //enqueue a task to the queue.
@@ -155,8 +155,8 @@ export const createWorkerQueue = (
         return;
       }
 
-      if (optimzedStack.length > 0) {
-        const slot = optimzedStack.pop()!;
+      if (optimizedStack.length > 0) {
+        const slot = optimizedStack.pop()!;
         slotIndex[0] = slot[MainListEnum.slotIndex];
         returnToMain(slot);
         status[0] = SignalStatus.WorkerWaiting;

@@ -3,7 +3,7 @@ import { type MainSignal, SignalStatus } from "./signals.ts";
 
 export const taskScheduler = ({
   signalBox: {
-    status,
+    rawStatus , status,
   },
   queue: {
     resolveTask,
@@ -37,7 +37,7 @@ export const taskScheduler = ({
         return;
       case SignalStatus.AllTasksDone:
         if (isThereAnythingToBeSent()) {
-          Atomics.notify(status, 0, 1);
+          Atomics.notify(rawStatus, 0, 1);
           dispatchToWorker();
           queueMicrotask(check);
         } else {

@@ -44,7 +44,7 @@ if (isMain) {
   };
 
   const string = "helloWorld";
-  const bigString = "helloWorld".repeat(1000);
+  const bigString = "helloWorld".repeat(100);
   const num = 77777;
   const min = -(2n ** 63n - 1n);
   const max = 2n ** 64n - 1n;

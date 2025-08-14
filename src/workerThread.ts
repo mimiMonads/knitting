@@ -65,7 +65,7 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
       case SignalStatus.AllTasksDone:
       case SignalStatus.WaitingForMore:
       case SignalStatus.ErrorThrown:
-      case SignalStatus.DoNothing: {
+      case SignalStatus.WakeUp: {
         continue;
       }
       case SignalStatus.HighPriorityResolve: {

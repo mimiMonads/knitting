@@ -18,7 +18,7 @@ export enum SignalStatus {
   AllTasksDone = 2,
   WaitingForMore = 3,
   HighPriorityResolve = 4,
-  DoNothing = 5,
+  WakeUp = 5,
   ErrorThrown = 6,
   Promify = 7,
   MainReadyToRead = 8,
@@ -36,8 +36,6 @@ export enum QueueStateFlag {
   Last = 1,
 }
 
-const IS_DENO = typeof Deno == "object" && Deno !== null;
-
 export type Sab = {
   size?: number;
   sharedSab?: SharedArrayBuffer;
@@ -51,47 +49,35 @@ const allocBuffer = ({ sab, payloadLength }: {
   let currentSize = sab.byteLength + SignalEnumOptions.header;
   let uInt8 = new Uint8Array(sab, SignalEnumOptions.header);
   let buff = NodeBuffer.from(sab, SignalEnumOptions.header);
-  const textDecoder = new TextDecoder();
 
-  const buffToString = IS_DENO
-    ? () => textDecoder.decode(uInt8.subarray(0, payloadLength[0]))
-    : () => buff.toString("utf8", 0, payloadLength[0]);
-
+  const buffToString = () => buff.toString("utf8", 0, payloadLength[0]);
+  const setBuffer = (buffer: Uint8Array) => {
+    if (
+      currentSize < buffer.length 
+    ) {
+      const required = buffer.length + SignalEnumOptions.header +
+        SignalEnumOptions.safePadding;
+      sab.grow(required);
+      currentSize = sab.byteLength - SignalEnumOptions.header;
+      uInt8 = new Uint8Array(sab, SignalEnumOptions.header);
+      buff = NodeBuffer.from(sab, SignalEnumOptions.header);
+    }
+    uInt8.set(buffer, 0);
+    payloadLength[0] = buffer.length;
+  }
   return {
     buffToString,
+    setBuffer,
     slice: () => uInt8.slice(0, payloadLength[0]),
     subarray: () => uInt8.subarray(0, payloadLength[0]),
     setString: (str: string) => {
-      if (
-        currentSize <
-          str.length + SignalEnumOptions.header + SignalEnumOptions.safePadding
-      ) {
-        const required = str.length + SignalEnumOptions.header +
-          SignalEnumOptions.safePadding;
-        sab.grow(required);
-        currentSize = sab.byteLength + SignalEnumOptions.header;
-        uInt8 = new Uint8Array(sab, SignalEnumOptions.header);
-        buff = NodeBuffer.from(sab, SignalEnumOptions.header);
-      }
+  
+      const { written }  = textEncode.encodeInto(str, uInt8)
 
-      textEncode.encodeInto(str, uInt8);
-      payloadLength[0] = str.length;
-    },
-    setBuffer: (buffer: Uint8Array) => {
-      if (
-        currentSize <
-          buffer.length + SignalEnumOptions.header +
-            SignalEnumOptions.safePadding
-      ) {
-        const required = buffer.length + SignalEnumOptions.header +
-          SignalEnumOptions.safePadding;
-        sab.grow(required);
-        currentSize = sab.byteLength + SignalEnumOptions.header;
-        uInt8 = new Uint8Array(sab, SignalEnumOptions.header);
-        buff = NodeBuffer.from(sab, SignalEnumOptions.header);
+      if(written >= currentSize){
+        return setBuffer(textEncode.encode(str))
       }
-      uInt8.set(buffer, 0);
-      payloadLength[0] = buffer.length;
+      payloadLength[0] = written;
     },
   };
 };
@@ -111,7 +97,7 @@ export const signalsForWorker = (
       maxByteLength: SignalEnumOptions.maxByteLength,
     });
 
-  const status = typeof debug !== undefined &&
+  const status = typeof debug !== "undefined" &&
       // This part just say `match the function on the thread and main parts and the debug parts`
       ((debug?.logMain === isMain && isMain === true) ||
         (debug?.logThreads === true && isMain === false))

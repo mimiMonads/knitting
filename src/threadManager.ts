@@ -126,11 +126,11 @@ export const createContext = ({
   };
 
   const nextTick = process.nextTick;
-
+  const thisSignal = signalBox.rawStatus;
   const send = () => {
     if (check.isRunning === false && isThereAnythingToBeSent()) {
-      signalBox.status[0] = SignalStatus.DoNothing;
-      Atomics.notify(signalBox.rawStatus, 0, 1);
+      thisSignal[0] = SignalStatus.WakeUp;
+      Atomics.notify(thisSignal, 0, 1);
       dispatchToWorker();
       check.isRunning = true;
       nextTick(check);
@@ -144,7 +144,7 @@ export const createContext = ({
     return (args: Uint8Array) =>
       check.isRunning === false
         ? (
-          thisSignal[0] = SignalStatus.DoNothing,
+          thisSignal[0] = SignalStatus.WakeUp,
             Atomics.notify(thisSignal, 0, 1),
             check.isRunning = true,
             nextTick(check),

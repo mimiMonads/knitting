@@ -31,9 +31,9 @@ export const fn = fixedPoint({
 });
 
 if (isMain) {
-  const N = 10_000_000; // search range: [1..N]
+  const N = 5_000_000; // search range: [1..N]
   const CHUNK_SIZE = 100_000;
-  const THREADS = [2, 3, 4, 5, 6]; // extra worker threads to compare
+  const THREADS = [2, 3, 4, 5]; // extra worker threads to compare
 
   const partition = (end: number, chunk: number): [number, number][] => {
     const ranges: [number, number][] = [];
@@ -80,9 +80,9 @@ if (isMain) {
           });
           for (const t of THREADS) {
             bench(
-              `main + ${t - 1} extra thread${t > 1 ? "s" : ""} → full range`,
+              `main + ${t -1} extra thread${t > 1 ? "s" : ""} → full range`,
               async () => {
-                await runPrimes(t - 1);
+                await runPrimes(t -1 );
               },
             );
           }

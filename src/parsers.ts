@@ -60,7 +60,7 @@ const fromReturnToMainError = ({
 
 type PossibleIndexes = MainListEnum.RawArguments | MainListEnum.WorkerResponse;
 
-const encode = new TextEncoder();
+
 const simplifyJson = (
   { index }: {
     index: PossibleIndexes;
@@ -73,7 +73,6 @@ const simplifyJson = (
 
     if (typeof args === "object") {
       if (args === null) return;
-
       task[at] = JSON.stringify(args);
       task[MainListEnum.PlayloadType] = PayloadType.StringToJson;
     }
