@@ -5,7 +5,7 @@ import {
   SignalStatus,
   type WorkerSignal,
 } from "./signals.ts";
-import type { ComposedWithKey } from "./taskApi.ts";
+import type { ComposedWithKey } from "./api.ts";
 import {
   fromPlayloadToArguments,
   fromReturnToMainError,

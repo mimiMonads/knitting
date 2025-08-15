@@ -9,8 +9,8 @@ import {
   SignalStatus,
 } from "./signals.ts";
 import { ChannelHandler, taskScheduler } from "./taskScheduler.ts";
-import type { ComposedWithKey, DebugOptions } from "./taskApi.ts";
-import { jsrIsGreatAndWorkWithoutBugs } from "./workerThread.ts";
+import type { ComposedWithKey, DebugOptions } from "./api.ts";
+import { jsrIsGreatAndWorkWithoutBugs } from "./worker/loop.ts";
 import { Worker } from "node:worker_threads";
 
 //const isBrowser = typeof window !== "undefined";

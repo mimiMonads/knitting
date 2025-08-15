@@ -3,7 +3,7 @@ export type MainSignal = ReturnType<typeof mainSignal>;
 export type WorkerSignal = ReturnType<typeof workerSignal>;
 import { isMainThread } from "node:worker_threads";
 import { beat, signalDebuggerV2 } from "./utils.ts";
-import { type DebugOptions } from "./taskApi.ts";
+import { type DebugOptions } from "./api.ts";
 import { Buffer as NodeBuffer } from "node:buffer";
 
 enum SignalEnumOptions {
@@ -24,8 +24,7 @@ export enum SignalStatus {
   MainReadyToRead = 8,
   FastResolve = 9,
   MainSend = 10,
-  MainSemiStop = 11,
-  MainStop = 12,
+  MainStop = 11,
 }
 
 // ───────────────────────────────────────────────
@@ -46,7 +45,7 @@ const allocBuffer = ({ sab, payloadLength }: {
   sab: SharedArrayBuffer;
   payloadLength: Int32Array;
 }) => {
-  let currentSize = sab.byteLength + SignalEnumOptions.header;
+  let currentSize = sab.byteLength - SignalEnumOptions.header;
   let uInt8 = new Uint8Array(sab, SignalEnumOptions.header);
   let buff = NodeBuffer.from(sab, SignalEnumOptions.header);
 
@@ -71,10 +70,10 @@ const allocBuffer = ({ sab, payloadLength }: {
     slice: () => uInt8.slice(0, payloadLength[0]),
     subarray: () => uInt8.subarray(0, payloadLength[0]),
     setString: (str: string) => {
-      const { written } = textEncode.encodeInto(str, uInt8);
+      const { written  , read} = textEncode.encodeInto(str, uInt8);
       payloadLength[0] = written;
 
-      if (written >= currentSize) {
+      if (read < str.length) {
         return setBuffer(textEncode.encode(str));
       }
     },

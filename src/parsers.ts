@@ -1,4 +1,4 @@
-import type { Serializable } from "./taskApi.ts";
+import type { Serializable } from "./api.ts";
 import {
   QueueStateFlag,
   type SignalArguments,
@@ -116,16 +116,8 @@ const writeToShareMemory = (
     if (preProcessed === true) {
       if (task[MainListEnum.PlayloadType] === PayloadType.StringToJson) {
         setString(args as string);
-        switch (payloadTo) {
-          case "main": {
-            type[0] = PayloadType.Json;
-            break;
-          }
-          case "thread": {
-            task[MainListEnum.PlayloadType] = PayloadType.Json;
-            break;
-          }
-        }
+        task[MainListEnum.PlayloadType] = PayloadType.Json;
+        type[0] = PayloadType.Json;
         return;
       }
     }
@@ -285,7 +277,7 @@ const readPayloadWorkerAny = (
       return subarray();
     case PayloadType.UNREACHABLE:
       throw new Error(
-        "something when wrong :( , probably you are not reseting the type correctly",
+        "something when wrong :( , probably you are not resetting the type correctly",
       );
 
     // default

@@ -1,10 +1,29 @@
 import { isMainThread, workerData } from "node:worker_threads";
-import { createWorkerQueue } from "./workerQueue.ts";
-import { signalsForWorker, SignalStatus, workerSignal } from "./signals.ts";
-import { type DebugOptions, getFunctions } from "./taskApi.ts";
-import { type WorkerData } from "./threadManager.ts";
+import { createWorkerQueue } from "../workerQueue.ts";
+import { signalsForWorker, SignalStatus, workerSignal } from "../signals.ts";
+import { type DebugOptions, getFunctions } from "../api.ts";
+import { type WorkerData } from "../threadManager.ts";
 
 export const jsrIsGreatAndWorkWithoutBugs = () => null;
+
+const pause = "pause" in Atomics
+    // 300 nanos apx
+    ? () => Atomics.pause(300)
+    : () => {}
+  
+const goToSleep = (sab: Int32Array, at: number, value: number , usTime: number) => {
+
+    const until = performance.now() + ( usTime / 1000)
+
+    do{
+      if (Atomics.load(sab, at) !== value) return false
+      pause()
+    }while(
+      performance.now() < until
+    )
+
+    return true
+}
 
 export const mainLoop = async (workerData: WorkerData): Promise<void> => {
   const debug = workerData.debug as DebugOptions;
@@ -67,6 +86,7 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
       case SignalStatus.WaitingForMore:
       case SignalStatus.ErrorThrown:
       case SignalStatus.WakeUp: {
+        pause()
         continue;
       }
       case SignalStatus.HighPriorityResolve: {
@@ -108,6 +128,9 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
 
         continue;
       case SignalStatus.FastResolve: {
+
+        if(goToSleep(rawStatus, 0 ,SignalStatus.FastResolve,15) === false) continue;
+
         Atomics.wait(
           rawStatus,
           0,
@@ -116,18 +139,10 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
         );
         continue;
       }
-      case SignalStatus.MainSemiStop: {
-        Atomics.wait(
-          rawStatus,
-          0,
-          SignalStatus.MainSemiStop,
-          50,
-        );
-
-        continue;
-      }
       case SignalStatus.MainStop: {
-        // `SignalStatus.ErrorThrown` is place holderit actually doesnt matter at all
+       
+
+        if(goToSleep(rawStatus, 0 , SignalStatus.MainStop ,15) === false) continue;
 
         Atomics.wait(
           rawStatus,

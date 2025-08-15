@@ -12,7 +12,7 @@ import {
   type SignalArguments,
   SignalStatus,
 } from "./signals.ts";
-import type { ComposedWithKey } from "./taskApi.ts";
+import type { ComposedWithKey } from "./api.ts";
 
 type RawArguments = unknown;
 type WorkerResponse = unknown;
@@ -106,14 +106,10 @@ export function createMainQueue({
     (_, i) => i,
   );
 
-  const preRresolve = simplifyJson({
-    index: MainListEnum.RawArguments,
-  });
   // Writers
   const errorDeserializer = readPayloadError(signals);
   const write = writeToShareMemory({
     index: MainListEnum.RawArguments,
-    //jsonString: true,
     from: "main",
   })(signals);
 

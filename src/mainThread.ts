@@ -1,4 +1,4 @@
-import type { Composed, FixedPoints } from "./taskApi.ts";
+import type { Composed, FixedPoints } from "./api.ts";
 import { type CallFunction } from "./threadManager.ts";
 
 type TaskID = number;

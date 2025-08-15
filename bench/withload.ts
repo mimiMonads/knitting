@@ -33,7 +33,7 @@ export const fn = fixedPoint({
 if (isMain) {
   const N = 5_000_000; // search range: [1..N]
   const CHUNK_SIZE = 100_000;
-  const THREADS = [2, 3, 4, 5]; // extra worker threads to compare
+  const THREADS = [2, 3, 4]; // extra worker threads to compare
 
   const partition = (end: number, chunk: number): [number, number][] => {
     const ranges: [number, number][] = [];
