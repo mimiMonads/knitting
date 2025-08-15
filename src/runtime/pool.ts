@@ -1,16 +1,16 @@
 // main.ts
 
-import { createMainQueue, type PromiseMap } from "./mainQueueManager.ts";
-import { beat, genTaskID } from "./utils.ts";
+import { createHostTxQueue, type PromiseMap } from "./tx-queue.ts";
+import { beat, genTaskID } from "../common/time.ts";
 import {
   mainSignal,
   type Sab,
-  signalsForWorker,
-  SignalStatus,
-} from "./signals.ts";
-import { ChannelHandler, taskScheduler } from "./taskScheduler.ts";
-import type { ComposedWithKey, DebugOptions } from "./api.ts";
-import { jsrIsGreatAndWorkWithoutBugs } from "./worker/loop.ts";
+  createSharedMemoryTransport,
+  OP,
+} from "../ipc/transport/shared-memory.ts";
+import { ChannelHandler, hostDispatcherLoop } from "./dispatcher.ts";
+import type { ComposedWithKey, DebugOptions } from "../api.ts";
+import { jsrIsGreatAndWorkWithoutBugs } from "../worker/loop.ts";
 import { Worker } from "node:worker_threads";
 
 //const isBrowser = typeof window !== "undefined";
@@ -31,7 +31,7 @@ export type WorkerData = {
   startAt: number;
 };
 
-export const createContext = ({
+export const spawnWorkerContext = ({
   promisesMap,
   list,
   ids,
@@ -60,7 +60,7 @@ export const createContext = ({
     jsrIsGreatAndWorkWithoutBugs();
   }
 
-  const signals = signalsForWorker({
+  const signals = createSharedMemoryTransport({
     sabObject: sab,
     isMain: true,
     thread,
@@ -68,7 +68,7 @@ export const createContext = ({
   });
   const signalBox = mainSignal(signals);
 
-  const queue = createMainQueue({
+  const queue = createHostTxQueue({
     signalBox,
     genTaskID,
     promisesMap,
@@ -77,16 +77,16 @@ export const createContext = ({
   });
 
   const {
-    dispatchToWorker,
-    fastEnqueue,
-    enqueuePromise,
-    isThereAnythingToBeSent,
+    flushToWorker,
+    postImmediate,
+    enqueue,
+    hasPendingFrames,
     rejectAll,
-    hasEverythingBeenSent,
+    txIdle,
   } = queue;
   const channelHandler = new ChannelHandler();
 
-  const check = taskScheduler({
+  const check = hostDispatcherLoop({
     signalBox,
     queue,
     channelHandler,
@@ -123,40 +123,42 @@ export const createContext = ({
   ) as Worker;
 
   const callFunction = ({ fnNumber }: CallFunction) => {
-    const enqueues = enqueuePromise(fnNumber);
+    const enqueues = enqueue(fnNumber);
     return (args: Uint8Array) => enqueues(args);
   };
 
   const nextTick = process.nextTick;
-  const thisSignal = signalBox.rawStatus;
+  const thisSignal = signalBox.opView;
   const send = () => {
-    if (check.isRunning === false && isThereAnythingToBeSent()) {
-      thisSignal[0] = SignalStatus.WakeUp;
+    if (check.isRunning === false && hasPendingFrames()) {
+      thisSignal[0] = OP.WakeUp;
       Atomics.notify(thisSignal, 0, 1);
-      dispatchToWorker();
+      flushToWorker();
       check.isRunning = true;
       nextTick(check);
     }
   };
 
   const fastCalling = ({ fnNumber }: CallFunction) => {
-    const first = fastEnqueue(fnNumber);
-    const enqueue = enqueuePromise(fnNumber);
-    const thisSignal = signalBox.rawStatus;
+    const first = postImmediate(fnNumber);
+    const enqueued = enqueue(fnNumber);
+    const thisSignal = signalBox.opView;
     return (args: Uint8Array) =>
       check.isRunning === false
-        ? (
-          thisSignal[0] = SignalStatus.WakeUp,
-            Atomics.notify(thisSignal, 0, 1),
-            check.isRunning = true,
-            nextTick(check),
-            first(args)
+        ? 
+        // Avoid weird optimizations from the runtime
+        (
+          thisSignal[0] = OP.WakeUp,
+          Atomics.notify(thisSignal, 0, 1),
+          check.isRunning = true,
+          nextTick(check),
+          first(args)
         )
-        : enqueue(args);
+        : enqueued(args);
   };
 
   return {
-    hasEverythingBeenSent,
+    txIdle,
     send,
     callFunction,
     fastCalling,
@@ -166,4 +168,4 @@ export const createContext = ({
   };
 };
 
-export type CreateContext = ReturnType<typeof createContext>;
+export type CreateContext = ReturnType<typeof spawnWorkerContext>;

@@ -8,10 +8,10 @@ export const world = fixedPoint({
 });
 
 export const { terminateAll, fastCallFunction } = createThreadPool({
-  threads: 1,
+  threads: 3,
   debug: {
     logMain: true,
-    logThreads: true,
+    //logThreads: true,
   },
 })({
   hello,
@@ -22,9 +22,11 @@ if (isMain) {
   await Promise.all([
     fastCallFunction.hello(),
     fastCallFunction.world(),
+    fastCallFunction.world(),
   ])
     .then((results) => {
       console.log("Results:", results);
     })
-    .finally(terminateAll);
+    .finally(terminateAll)
+
 }

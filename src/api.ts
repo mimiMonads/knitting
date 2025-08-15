@@ -1,11 +1,11 @@
-import { getCallerFilePath } from "./utils.ts";
-import { genTaskID } from "./utils.ts";
-import { createContext } from "./threadManager.ts";
-import type { PromiseMap } from "./mainQueueManager.ts";
+import { getCallerFilePath } from "./common/time.ts";
+import { genTaskID } from "./common/time.ts";
+import { spawnWorkerContext } from "./runtime/pool.ts";
+import type { PromiseMap } from "./runtime/tx-queue.ts";
 import { isMainThread, workerData } from "node:worker_threads";
 
-import { type Balancer, managerMethod } from "./threadBalancer.ts";
-import { createMainThread } from "./mainThread.ts";
+import { type Balancer, managerMethod } from "./runtime/balancer.ts";
+import { createInlineExecutor } from "./runtime/inline-executor.ts";
 
 export const isMain = isMainThread;
 export type FixedPoints = Record<string, Composed>;
@@ -32,7 +32,7 @@ export type External = unknown;
 
 type Args = External | Serializable;
 
-const symbol = Symbol.for("FIXEDPOINT");
+const endpointSymbol = Symbol.for("FIXEDPOINT");
 
 interface FixPoint<A extends Args, B extends Args> {
   readonly href?: string;
@@ -42,7 +42,7 @@ interface FixPoint<A extends Args, B extends Args> {
 }
 
 type SecondPart = {
-  readonly [symbol]: string;
+  readonly [endpointSymbol]: string;
   readonly id: number;
   readonly importedFrom: string;
 };
@@ -70,7 +70,7 @@ export const fixedPoint = <
     ...I,
     id: genTaskID(),
     importedFrom,
-    [symbol]: "vixeny",
+    [endpointSymbol]: "vixeny",
   }) as const;
 };
 
@@ -100,7 +100,7 @@ export const getFunctions = async ({ list, ids }: {
             value !== null &&
             !Array.isArray(value) &&
             Object.getOwnPropertySymbols(value).some(
-              (sym) => sym === Symbol.for("FIXEDPOINT"),
+              (sym) => sym === endpointSymbol,
             ),
         )
         .map(([name, value]) => ({
@@ -231,7 +231,7 @@ export const createThreadPool = ({
   let workers = Array.from({
     length: threads ?? 1,
   }).map((_, thread) =>
-    createContext({
+    spawnWorkerContext({
       promisesMap,
       list,
       ids,
@@ -245,7 +245,7 @@ export const createThreadPool = ({
   );
 
   if (main) {
-    const mainThread = createMainThread({
+    const mainThread = createInlineExecutor({
       fixedPoints,
       genTaskID,
     });

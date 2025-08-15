@@ -1,12 +1,12 @@
-import type { CreateContext } from "./threadManager.ts";
+import type { CreateContext } from "./pool.ts";
 
 export type Handler<A, R> = (args: A) => R;
 
 export type Balancer =
   | "robinRound"
-  | "firstAvailable"
-  | "randomBetweenThreads"
-  | "firstAvailableRandom";
+  | "firstIdle"
+  | "randomLane"
+  | "firstIdleOrRandom";
 
 type manager = {
   contexts: readonly CreateContext[];
@@ -31,20 +31,20 @@ export const managerMethod = ({ contexts, balancer, handlers }: manager) => {
 
   switch (balancer ?? "robinRound") {
     case "robinRound":
-      return loopingBetweenThreads(contexts)(handlers)(max ?? handlers.length);
-    case "firstAvailable":
-      return firstAvailable(contexts)(handlers)(max ?? handlers.length);
-    case "randomBetweenThreads":
-      return randomBetweenThreads(contexts)(handlers)(max ?? handlers.length);
-    case "firstAvailableRandom":
-      return firstAvailableRandom(contexts)(handlers)(max ?? handlers.length);
+      return roundRobin(contexts)(handlers)(max ?? handlers.length);
+    case "firstIdle":
+      return firstIdle(contexts)(handlers)(max ?? handlers.length);
+    case "randomLane":
+      return randomLane(contexts)(handlers)(max ?? handlers.length);
+    case "firstIdleOrRandom":
+      return firstIdleRandom(contexts)(handlers)(max ?? handlers.length);
   }
 
   // Unreachable code, but just in case uwu
   throw new Error(`Unknown balancer: ${balancer}`);
 };
 
-export function loopingBetweenThreads(
+export function roundRobin(
   _contexts: readonly CreateContext[],
 ) {
   return (
@@ -62,11 +62,11 @@ export function loopingBetweenThreads(
   };
 }
 
-export function firstAvailable(
+export function firstIdle(
   contexts: readonly CreateContext[],
 ) {
   const isSolved: Array<() => boolean> = contexts.map(
-    (ctx) => ctx.hasEverythingBeenSent,
+    (ctx) => ctx.txIdle,
   );
 
   return (
@@ -89,7 +89,7 @@ export function firstAvailable(
   };
 }
 
-export const randomBetweenThreads = (_: readonly CreateContext[]) => {
+export const randomLane = (_: readonly CreateContext[]) => {
   return (
     handlers: Function[],
   ) => {
@@ -104,11 +104,11 @@ export const randomBetweenThreads = (_: readonly CreateContext[]) => {
   };
 };
 
-export function firstAvailableRandom(
+export function firstIdleRandom(
   contexts: readonly CreateContext[],
 ) {
   const isSolved: Array<() => boolean> = contexts.map(
-    (ctx) => ctx.hasEverythingBeenSent,
+    (ctx) => ctx.txIdle,
   );
 
   return (

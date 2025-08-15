@@ -1,19 +1,19 @@
-import { type QueueListWorker } from "./mainQueueManager.ts";
-import { MainListEnum } from "./mainQueueManager.ts";
+import { type QueueListWorker } from "./tx-queue.ts";
+import { MainListEnum } from "./tx-queue.ts";
 import {
   type SignalArguments,
-  SignalStatus,
+  OP,
   type WorkerSignal,
-} from "./signals.ts";
-import type { ComposedWithKey } from "./api.ts";
+} from "../ipc/transport/shared-memory.ts";
+import type { ComposedWithKey } from "../api.ts";
 import {
-  fromPlayloadToArguments,
+  decodeArgs,
   fromReturnToMainError,
   PayloadType,
-  readPayloadWorkerBulk,
-  simplifyJson,
-  writeToShareMemory,
-} from "./parsers.ts";
+  readFramePayload,
+  preencodeJsonString,
+  writeFramePayload,
+} from "../ipc/protocol/codec.ts";
 
 type ArgumentsForCreateWorkerQueue = {
   listOfFunctions: ComposedWithKey[];
@@ -25,13 +25,13 @@ type ArgumentsForCreateWorkerQueue = {
 
 // Create and manage a
 // working queue.
-export const createWorkerQueue = (
+export const createWorkerRxQueue = (
   {
     listOfFunctions,
     signals,
     signal: {
-      status,
-      functionToUse,
+      op,
+      rpcId,
       slotIndex,
     },
     moreThanOneThread,
@@ -69,61 +69,61 @@ export const createWorkerQueue = (
   ), [] as AsyncFunction[]);
 
   // Parser
-  const simplifies = simplifyJson({
+  const simplifies = preencodeJsonString({
     index: MainListEnum.WorkerResponse,
   });
 
   // Writers
   const returnError = fromReturnToMainError(signals);
-  const playloadToArgs = fromPlayloadToArguments(signals);
-  const returnToMain = writeToShareMemory({
+  const playloadToArgs = decodeArgs(signals);
+  const writeFrame = writeFramePayload({
     index: MainListEnum.WorkerResponse,
     jsonString: moreThanOneThread,
     from: "thread",
   })(signals);
 
   // Readers
-  const reader = readPayloadWorkerBulk({
+  const reader = readFramePayload({
     ...signals,
     specialType: "thread",
   });
 
-  const resolvedStack: QueueListWorker[] = [];
-  const errorStack: QueueListWorker[] = [];
+  const completedFrames: QueueListWorker[] = [];
+  const errorFrames: QueueListWorker[] = [];
   const toWork: QueueListWorker[] = [];
-  const optimizedStack: QueueListWorker[] = [];
+  const optimizedFrames: QueueListWorker[] = [];
 
   return {
     // Check if any task is solved and ready for writing.
-    someHasFinished: () => hasAnythingFinished !== 0,
-    isThereWorkToDO: () => toWork.length !== 0,
+    hasCompleted: () => hasAnythingFinished !== 0,
+    hasPending: () => toWork.length !== 0,
     blockingResolve: async () => {
       try {
         blockingSlot[MainListEnum.WorkerResponse] = await jobs
           [blockingSlot[MainListEnum.FunctionID]](
             playloadToArgs(),
           );
-        returnToMain(blockingSlot);
-        status[0] = SignalStatus.FastResolve;
+        writeFrame(blockingSlot);
+        op[0] = OP.FastResolve;
       } catch (err) {
         blockingSlot[MainListEnum.WorkerResponse] = err;
         returnError(blockingSlot);
-        status[0] = SignalStatus.ErrorThrown;
+        op[0] = OP.ErrorThrown;
       }
     },
 
     preResolve: () => {
-      const slot = resolvedStack.pop();
+      const slot = completedFrames.pop();
 
       if (slot !== undefined) {
         simplifies(slot);
-        optimizedStack.push(slot);
+        optimizedFrames.push(slot);
       }
     },
     //enqueue a task to the queue.
     enqueue: () => {
       const currentIndex = slotIndex[0],
-        fnNumber = functionToUse[0],
+        fnNumber = rpcId[0],
         args = reader();
 
       if (queue.length === 0) {
@@ -144,11 +144,11 @@ export const createWorkerQueue = (
     },
 
     write: () => {
-      if (resolvedStack.length > 0) {
-        const slot = resolvedStack.pop()!;
+      if (completedFrames.length > 0) {
+        const slot = completedFrames.pop()!;
         slotIndex[0] = slot[MainListEnum.slotIndex];
-        returnToMain(slot);
-        status[0] = SignalStatus.WorkerWaiting;
+        writeFrame(slot);
+        op[0] = OP.WorkerWaiting;
         queue.push(slot);
         isThereAnythingToResolve--;
         hasAnythingFinished--;
@@ -156,29 +156,29 @@ export const createWorkerQueue = (
         return;
       }
 
-      if (optimizedStack.length > 0) {
-        const slot = optimizedStack.pop()!;
+      if (optimizedFrames.length > 0) {
+        const slot = optimizedFrames.pop()!;
         slotIndex[0] = slot[MainListEnum.slotIndex];
-        returnToMain(slot);
-        status[0] = SignalStatus.WorkerWaiting;
+        writeFrame(slot);
+        op[0] = OP.WorkerWaiting;
         queue.push(slot);
         isThereAnythingToResolve--;
         hasAnythingFinished--;
         return;
       }
 
-      if (errorStack.length > 0) {
-        const slot = errorStack.pop()!;
+      if (errorFrames.length > 0) {
+        const slot = errorFrames.pop()!;
         slotIndex[0] = slot[MainListEnum.slotIndex];
         returnError(slot);
-        status[0] = SignalStatus.ErrorThrown;
+        op[0] = OP.ErrorThrown;
         queue.push(slot);
         isThereAnythingToResolve--;
         hasAnythingFinished--;
       }
     },
     // Process the next available task.
-    nextJob: async () => {
+    serviceOne: async () => {
       const slot = toWork.pop();
 
       if (slot !== undefined) {
@@ -188,27 +188,27 @@ export const createWorkerQueue = (
           .then((res) => {
             slot[MainListEnum.WorkerResponse] = res;
             hasAnythingFinished++;
-            resolvedStack.push(slot);
+            completedFrames.push(slot);
           })
           .catch((err) => {
             slot[MainListEnum.WorkerResponse] = err;
             hasAnythingFinished++;
-            errorStack.push(slot);
+            errorFrames.push(slot);
           });
       }
     },
-    fastResolve: async () => {
+    serviceOneImmediate: async () => {
       const slot = toWork.pop()!;
 
       try {
         slot[MainListEnum.WorkerResponse] = await jobs
           [slot[MainListEnum.FunctionID]](slot[MainListEnum.RawArguments]);
         hasAnythingFinished++;
-        resolvedStack.push(slot);
+        completedFrames.push(slot);
       } catch (err) {
         slot[MainListEnum.WorkerResponse] = err;
         hasAnythingFinished++;
-        errorStack.push(slot);
+        errorFrames.push(slot);
       }
     },
     allDone: () => isThereAnythingToResolve === 0,

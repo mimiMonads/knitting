@@ -38,18 +38,18 @@ import { hrtime } from "node:process";
 export const beat = (): number => Number(hrtime.bigint()) / 1e4;
 
 /**
- * Debug reads & writes to status[0] without touching `performance.now()`.
+ * Debug reads & writes to op[0] without touching `performance.now()`.
  * “Time” columns are driven by the `beat()` heart-beat instead.
  */
 export const signalDebuggerV2 = ({
   thread,
   isMain,
-  status,
+  op,
   startAt,
 }: {
   thread: number;
   isMain: boolean;
-  status: Int32Array;
+  op: Int32Array;
   startAt: number;
 }) => {
   // ─── colours & helpers ───────────────────────────────────────────
@@ -60,8 +60,8 @@ export const signalDebuggerV2 = ({
   const color = isMain ? orange : purple;
 
   // ─── timing & counting state ─────────────────────────────────────
-
-  let last = status[0];
+  
+  let last = op[0];
   const born = startAt;
   let lastBeat = born;
   let hitsTotal = 0;
@@ -98,7 +98,7 @@ export const signalDebuggerV2 = ({
   }
 
   // ─── proxy that logs reads/writes of element 0 & .set() ─────────
-  const proxied = new Proxy(status, {
+  const proxied = new Proxy(op, {
     get(target, prop, receiver) {
       // intercept .set()
       if (prop === "set") {

@@ -1,11 +1,11 @@
-import type { Serializable } from "./api.ts";
+import type { Serializable } from "../../api.ts";
 import {
-  QueueStateFlag,
+  frameFlagsFlag,
   type SignalArguments,
-  SignalStatus,
-} from "./signals.ts";
-import type { MainList } from "./mainQueueManager.ts";
-import { MainListEnum } from "./mainQueueManager.ts";
+  OP,
+} from "../transport/shared-memory.ts";
+import type { MainList } from "../../runtime/tx-queue.ts";
+import { MainListEnum } from "../../runtime/tx-queue.ts";
 
 import { deserialize, serialize } from "node:v8";
 
@@ -37,9 +37,9 @@ export enum PayloadType {
 
 const fromReturnToMainError = ({
   type,
-  setBuffer,
+  writeBinary,
 }: SignalArguments) => {
-  const serilizedError = serialize(
+  const serializedError = serialize(
     new Error("The thrown object is not serializable"),
   );
 
@@ -49,10 +49,10 @@ const fromReturnToMainError = ({
     try {
       error = serialize(task[MainListEnum.WorkerResponse]);
     } catch (_) {
-      error = serilizedError;
+      error = serializedError;
     }
 
-    setBuffer(error as Uint8Array);
+    writeBinary(error as Uint8Array);
 
     type[0] = PayloadType.Serializable;
   };
@@ -60,7 +60,7 @@ const fromReturnToMainError = ({
 
 type PossibleIndexes = MainListEnum.RawArguments | MainListEnum.WorkerResponse;
 
-const simplifyJson = (
+const preencodeJsonString = (
   { index }: {
     index: PossibleIndexes;
   },
@@ -73,7 +73,7 @@ const simplifyJson = (
     if (typeof args === "object") {
       if (args === null) return;
       task[at] = JSON.stringify(args);
-      task[MainListEnum.PlayloadType] = PayloadType.StringToJson;
+      task[MainListEnum.PayloadType] = PayloadType.StringToJson;
     }
   };
 };
@@ -83,7 +83,7 @@ const simplifyJson = (
  *  1 -> Takes the arguments of a MainList
  *  3 -> Takes the return of a MainList
  */
-const writeToShareMemory = (
+const writeFramePayload = (
   { index, jsonString, from }: {
     index: PossibleIndexes;
     jsonString?: boolean;
@@ -98,8 +98,8 @@ const writeToShareMemory = (
     int32,
     uInt32,
     float64,
-    setBuffer,
-    setString,
+    writeBinary,
+    writeUtf8,
   }: SignalArguments,
 ) => {
   const at = index;
@@ -111,12 +111,12 @@ const writeToShareMemory = (
     const args = task[at];
 
     // Warning: types are not clean after being resolved
-    // you must ensure that this `writeToShareMemory` is on
+    // you must ensure that this `writeFramePayload` is on
     // a different stack
     if (preProcessed === true) {
-      if (task[MainListEnum.PlayloadType] === PayloadType.StringToJson) {
-        setString(args as string);
-        task[MainListEnum.PlayloadType] = PayloadType.Json;
+      if (task[MainListEnum.PayloadType] === PayloadType.StringToJson) {
+        writeUtf8(args as string);
+        task[MainListEnum.PayloadType] = PayloadType.Json;
         type[0] = PayloadType.Json;
         return;
       }
@@ -124,7 +124,7 @@ const writeToShareMemory = (
 
     switch (typeof args) {
       case "string": {
-        setString(args);
+        writeUtf8(args);
         type[0] = PayloadType.String;
         return;
       }
@@ -207,13 +207,13 @@ const writeToShareMemory = (
         switch (args.constructor) {
           case Object:
           case Array: {
-            setString(JSON.stringify(args));
+            writeUtf8(JSON.stringify(args));
             type[0] = PayloadType.Json;
             return;
           }
         }
 
-        setBuffer(serialize(args) as Uint8Array);
+        writeBinary(serialize(args) as Uint8Array);
         type[0] = PayloadType.Serializable;
         return;
       }
@@ -221,26 +221,26 @@ const writeToShareMemory = (
   };
 };
 
-const readFromWorker = (signals: SignalArguments) => {
-  return readPayloadWorkerAny(signals);
+const readFrameBlocking = (signals: SignalArguments) => {
+  return readAnyPayload(signals);
 };
 
-const readPayloadWorkerAny = (
+const readAnyPayload = (
   {
-    subarray,
+    readBytesView,
     type,
     uBigInt,
     bigInt,
     uInt32,
     int32,
     float64,
-    buffToString,
+    readUtf8,
   }: SignalArguments,
 ) =>
 () => {
   switch (type[0]) {
     case PayloadType.String:
-      return buffToString();
+      return readUtf8();
     case PayloadType.BigUint:
       return uBigInt[0];
     case PayloadType.BigInt:
@@ -271,10 +271,10 @@ const readPayloadWorkerAny = (
       return null;
     case PayloadType.Json:
       return JSON.parse(
-        buffToString(),
+        readUtf8(),
       );
     case PayloadType.Uint8Array:
-      return subarray();
+      return readBytesView();
     case PayloadType.UNREACHABLE:
       throw new Error(
         "something when wrong :( , probably you are not resetting the type correctly",
@@ -282,15 +282,15 @@ const readPayloadWorkerAny = (
 
     // default
     case PayloadType.Serializable:
-      return deserialize(subarray());
+      return deserialize(readBytesView());
   }
 };
 
-const readPayloadWorkerBulk = (
+const readFramePayload = (
   {
-    subarray,
-    slice,
-    buffToString,
+    readBytesView,
+    readBytesCopy,
+    readUtf8,
     type,
     uBigInt,
     bigInt,
@@ -298,24 +298,24 @@ const readPayloadWorkerBulk = (
     int32,
     float64,
     specialType,
-    queueState,
-    status,
+    frameFlags,
+    op,
   }: SignalArguments & {
     specialType: "main" | "thread";
   },
 ) => {
   const changeOwnership = specialType === "main"
-    ? () => status[0] = SignalStatus.MainReadyToRead
+    ? () => op[0] = OP.MainReadyToRead
     : () =>
-      queueState[0] === QueueStateFlag.Last
-        ? (status[0] = SignalStatus.WaitingForMore)
-        : (status[0] = SignalStatus.MainReadyToRead);
+      frameFlags[0] === frameFlagsFlag.Last
+        ? (op[0] = OP.WaitingForMore)
+        : (op[0] = OP.MainReadyToRead);
 
   let text: unknown;
   return () => {
     switch (type[0]) {
       case PayloadType.String:
-        text = buffToString();
+        text = readUtf8();
         changeOwnership();
         return text;
       case PayloadType.BigUint:
@@ -362,7 +362,7 @@ const readPayloadWorkerBulk = (
         changeOwnership();
         return null;
       case PayloadType.Json:
-        text = buffToString();
+        text = readUtf8();
         changeOwnership();
 
         return JSON.parse(
@@ -370,32 +370,32 @@ const readPayloadWorkerBulk = (
         );
 
       case PayloadType.Uint8Array:
-        text = slice();
+        text = readBytesCopy();
         changeOwnership();
         return text;
       // default
       case PayloadType.Serializable:
-        text = deserialize(subarray());
+        text = deserialize(readBytesView());
         changeOwnership();
         return text;
     }
   };
 };
 
-const fromPlayloadToArguments = (signals: SignalArguments) => {
-  return readPayloadWorkerAny(signals);
+const decodeArgs = (signals: SignalArguments) => {
+  return readAnyPayload(signals);
 };
 
-const readPayloadError = ({ subarray }: SignalArguments) => () =>
-  deserialize(subarray());
+const readPayloadError = ({ readBytesView }: SignalArguments) => () =>
+  deserialize(readBytesView());
 
 export {
-  fromPlayloadToArguments,
+  decodeArgs,
   fromReturnToMainError,
-  readFromWorker,
+  readFrameBlocking,
   readPayloadError,
-  readPayloadWorkerAny,
-  readPayloadWorkerBulk,
-  simplifyJson,
-  writeToShareMemory,
+  readAnyPayload,
+  readFramePayload,
+  preencodeJsonString,
+  writeFramePayload,
 };

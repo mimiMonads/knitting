@@ -1,5 +1,5 @@
-import type { Composed, FixedPoints } from "./api.ts";
-import { type CallFunction } from "./threadManager.ts";
+import type { Composed, FixedPoints } from "../api.ts";
+import { type CallFunction } from "./pool.ts";
 
 type TaskID = number;
 type FunctionID = number;
@@ -31,7 +31,7 @@ type SlotMacro = [
   SlotStateMacro,
 ];
 
-export const createMainThread = ({
+export const createInlineExecutor = ({
   fixedPoints,
   genTaskID,
 }: {
@@ -141,7 +141,7 @@ export const createMainThread = ({
     },
     callFunction,
     send,
-    hasEverythingBeenSent: () => working === 0,
+    txIdle: () => working === 0,
     fastCalling: (cf: CallFunction) => {
       const fn = callFunction(cf);
       return (a: unknown) => {

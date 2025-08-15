@@ -1,9 +1,9 @@
-export type SignalArguments = ReturnType<typeof signalsForWorker>;
+export type SignalArguments = ReturnType<typeof createSharedMemoryTransport>;
 export type MainSignal = ReturnType<typeof mainSignal>;
 export type WorkerSignal = ReturnType<typeof workerSignal>;
 import { isMainThread } from "node:worker_threads";
-import { beat, signalDebuggerV2 } from "./utils.ts";
-import { type DebugOptions } from "./api.ts";
+import { beat, signalDebuggerV2 } from "../../common/time.ts";
+import { type DebugOptions } from "../../api.ts";
 import { Buffer as NodeBuffer } from "node:buffer";
 
 enum SignalEnumOptions {
@@ -13,14 +13,14 @@ enum SignalEnumOptions {
   safePadding = 512,
 }
 
-export enum SignalStatus {
+export enum OP {
   WorkerWaiting = 1,
   AllTasksDone = 2,
   WaitingForMore = 3,
   HighPriorityResolve = 4,
   WakeUp = 5,
   ErrorThrown = 6,
-  Promify = 7,
+  NAN = 7,
   MainReadyToRead = 8,
   FastResolve = 9,
   MainSend = 10,
@@ -30,7 +30,7 @@ export enum SignalStatus {
 // ───────────────────────────────────────────────
 // Queue State Flags
 // ───────────────────────────────────────────────
-export enum QueueStateFlag {
+export enum frameFlagsFlag {
   NotLast = 0,
   Last = 1,
 }
@@ -41,16 +41,16 @@ export type Sab = {
 };
 const textEncode = new TextEncoder();
 
-const allocBuffer = ({ sab, payloadLength }: {
+const allocatePayloadBuffer = ({ sab, payloadLen }: {
   sab: SharedArrayBuffer;
-  payloadLength: Int32Array;
+  payloadLen: Int32Array;
 }) => {
   let currentSize = sab.byteLength - SignalEnumOptions.header;
   let uInt8 = new Uint8Array(sab, SignalEnumOptions.header);
   let buff = NodeBuffer.from(sab, SignalEnumOptions.header);
 
-  const buffToString = () => buff.toString("utf8", 0, payloadLength[0]);
-  const setBuffer = (buffer: Uint8Array) => {
+  const readUtf8 = () => buff.toString("utf8", 0, payloadLen[0]);
+  const writeBinary = (buffer: Uint8Array) => {
     if (
       currentSize < buffer.length
     ) {
@@ -62,19 +62,19 @@ const allocBuffer = ({ sab, payloadLength }: {
       buff = NodeBuffer.from(sab, SignalEnumOptions.header);
     }
     uInt8.set(buffer, 0);
-    payloadLength[0] = buffer.length;
+    payloadLen[0] = buffer.length;
   };
   return {
-    buffToString,
-    setBuffer,
-    slice: () => uInt8.slice(0, payloadLength[0]),
-    subarray: () => uInt8.subarray(0, payloadLength[0]),
-    setString: (str: string) => {
+    readUtf8,
+    writeBinary,
+    readBytesCopy: () => uInt8.slice(0, payloadLen[0]),
+    readBytesView: () => uInt8.subarray(0, payloadLen[0]),
+    writeUtf8: (str: string) => {
       const { written  , read} = textEncode.encodeInto(str, uInt8);
-      payloadLength[0] = written;
+      payloadLen[0] = written;
 
       if (read < str.length) {
-        return setBuffer(textEncode.encode(str));
+        return writeBinary(textEncode.encode(str));
       }
     },
   };
@@ -87,7 +87,7 @@ type SignalForWorker = {
   debug?: DebugOptions;
   startTime?: number;
 };
-export const signalsForWorker = (
+export const createSharedMemoryTransport = (
   { sabObject, isMain, thread, debug, startTime }: SignalForWorker,
 ) => {
   const sab = sabObject?.sharedSab
@@ -98,7 +98,7 @@ export const signalsForWorker = (
 
   const startAt = beat();
 
-  const status = typeof debug !== "undefined" &&
+  const op = typeof debug !== "undefined" &&
       // This part just say `match the function on the thread and main parts and the debug parts`
       ((debug?.logMain === isMain && isMain === true) ||
         (debug?.logThreads === true && isMain === false))
@@ -106,43 +106,43 @@ export const signalsForWorker = (
       thread,
       isMain,
       startAt: startTime ?? startAt,
-      status: new Int32Array(sab, 0, 1),
+      op: new Int32Array(sab, 0, 1),
     })
     : new Int32Array(sab, 0, 1);
 
   // Stopping Threads
   if (isMainThread) {
-    status[0] = SignalStatus.MainStop;
+    op[0] = OP.MainStop;
   }
 
-  const payloadLength = new Int32Array(sab, 8, 1);
-  const { setBuffer, slice, subarray, setString, buffToString } = allocBuffer({
+  const payloadLen = new Int32Array(sab, 8, 1);
+  const { writeBinary, readBytesCopy, readBytesView, writeUtf8, readUtf8 } = allocatePayloadBuffer({
     sab,
-    payloadLength,
+    payloadLen,
   });
 
   return {
     sab,
-    status,
+    op,
     startAt,
-    // When we debug we wrap status in a proxy thus it stop being an array,
+    // When we debug we wrap op in a proxy thus it stop being an array,
     // There are some JS utils that would complain about it (Atomics)
-    rawStatus: new Int32Array(sab, 0, 1),
+    opView: new Int32Array(sab, 0, 1),
     // Headers
     id: new Int32Array(sab, 4, 1),
-    functionToUse: new Int32Array(sab, 12, 1),
-    queueState: new Int32Array(sab, 16, 1),
+    rpcId: new Int32Array(sab, 12, 1),
+    frameFlags: new Int32Array(sab, 16, 1),
     type: new Int32Array(sab, 20, 1),
     slotIndex: new Int32Array(sab, 24, 1),
-    workerStatus: new Int32Array(sab, 28, 1),
+    workerop: new Int32Array(sab, 28, 1),
     // Access to the current length of the payload
-    payloadLength,
+    payloadLen,
     // Modifying shared memory
-    setBuffer,
-    setString,
-    slice,
-    subarray,
-    buffToString,
+    writeBinary,
+    writeUtf8,
+    readBytesCopy,
+    readBytesView,
+    readUtf8,
     // One byte var
     bigInt: new BigInt64Array(sab, SignalEnumOptions.header, 1),
     uBigInt: new BigUint64Array(sab, SignalEnumOptions.header, 1),
@@ -153,24 +153,24 @@ export const signalsForWorker = (
 };
 
 export const mainSignal = (
-  { status, id, functionToUse, queueState, rawStatus, slotIndex, startAt }:
+  { op, id, rpcId, frameFlags, opView, slotIndex, startAt }:
     SignalArguments,
 ) => ({
-  status,
-  rawStatus,
-  functionToUse,
+  op,
+  opView,
+  rpcId,
   id,
   slotIndex,
-  queueState,
+  frameFlags,
   startAt,
 });
 
 export const workerSignal = (
-  { status, id, functionToUse, queueState, slotIndex }: SignalArguments,
+  { op, id, rpcId, frameFlags, slotIndex }: SignalArguments,
 ) => ({
-  status,
+  op,
   id,
   slotIndex,
-  functionToUse,
-  queueState,
+  rpcId,
+  frameFlags,
 });

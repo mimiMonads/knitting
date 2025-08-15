@@ -1,8 +1,8 @@
 import { isMainThread, workerData } from "node:worker_threads";
-import { createWorkerQueue } from "../workerQueue.ts";
-import { signalsForWorker, SignalStatus, workerSignal } from "../signals.ts";
+import { createWorkerRxQueue } from "../runtime/rx-queue.ts";
+import { createSharedMemoryTransport, OP, workerSignal } from "../ipc/transport/shared-memory.ts";
 import { type DebugOptions, getFunctions } from "../api.ts";
-import { type WorkerData } from "../threadManager.ts";
+import { type WorkerData } from "../runtime/pool.ts";
 
 export const jsrIsGreatAndWorkWithoutBugs = () => null;
 
@@ -11,7 +11,7 @@ const pause = "pause" in Atomics
     ? () => Atomics.pause(300)
     : () => {}
   
-const goToSleep = (sab: Int32Array, at: number, value: number , usTime: number) => {
+const sleepUntilChanged = (sab: Int32Array, at: number, value: number , usTime: number) => {
 
     const until = performance.now() + ( usTime / 1000)
 
@@ -25,9 +25,9 @@ const goToSleep = (sab: Int32Array, at: number, value: number , usTime: number) 
     return true
 }
 
-export const mainLoop = async (workerData: WorkerData): Promise<void> => {
+export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
   const debug = workerData.debug as DebugOptions;
-  const signals = signalsForWorker({
+  const signals = createSharedMemoryTransport({
     sabObject: {
       sharedSab: workerData.sab,
     },
@@ -40,7 +40,7 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
   const totalNumberOfThread = workerData.totalNumberOfThread;
   const moreThanOneThread = totalNumberOfThread > 1;
 
-  const { status, rawStatus } = signals;
+  const { op, opView } = signals;
 
   const listOfFunctions = await getFunctions({
     list: workerData.list,
@@ -65,15 +65,15 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
 
   const {
     enqueue,
-    nextJob,
-    someHasFinished,
+    serviceOne,
+    hasCompleted,
     write,
     allDone,
-    fastResolve,
-    isThereWorkToDO,
+    serviceOneImmediate,
+    hasPending,
     blockingResolve,
     preResolve,
-  } = createWorkerQueue({
+  } = createWorkerRxQueue({
     listOfFunctions,
     signal,
     signals,
@@ -81,22 +81,22 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
   });
 
   while (true) {
-    switch (status[0]) {
-      case SignalStatus.AllTasksDone:
-      case SignalStatus.WaitingForMore:
-      case SignalStatus.ErrorThrown:
-      case SignalStatus.WakeUp: {
+    switch (op[0]) {
+      case OP.AllTasksDone:
+      case OP.WaitingForMore:
+      case OP.ErrorThrown:
+      case OP.WakeUp: {
         pause()
         continue;
       }
-      case SignalStatus.HighPriorityResolve: {
+      case OP.HighPriorityResolve: {
         await blockingResolve();
         continue;
       }
 
-      case SignalStatus.WorkerWaiting: {
-        if (isThereWorkToDO()) {
-          await fastResolve();
+      case OP.WorkerWaiting: {
+        if (hasPending()) {
+          await serviceOneImmediate();
         } else {
           if (moreThanOneThread === true) {
             preResolve();
@@ -106,48 +106,48 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
         continue;
       }
 
-      case SignalStatus.MainReadyToRead: {
-        if (someHasFinished()) {
+      case OP.MainReadyToRead: {
+        if (hasCompleted()) {
           write();
           continue;
         }
 
-        await nextJob();
+        await serviceOne();
 
         if (allDone()) {
-          status[0] = SignalStatus.AllTasksDone;
+          op[0] = OP.AllTasksDone;
           continue;
         }
 
         continue;
       }
-      case SignalStatus.MainSend:
+      case OP.MainSend:
         {
           enqueue();
         }
 
         continue;
-      case SignalStatus.FastResolve: {
+      case OP.FastResolve: {
 
-        if(goToSleep(rawStatus, 0 ,SignalStatus.FastResolve,15) === false) continue;
+        if(sleepUntilChanged(opView, 0 ,OP.FastResolve,15) === false) continue;
 
         Atomics.wait(
-          rawStatus,
+          opView,
           0,
-          SignalStatus.FastResolve,
+          OP.FastResolve,
           5,
         );
         continue;
       }
-      case SignalStatus.MainStop: {
+      case OP.MainStop: {
        
 
-        if(goToSleep(rawStatus, 0 , SignalStatus.MainStop ,15) === false) continue;
+        if(sleepUntilChanged(opView, 0 , OP.MainStop ,15) === false) continue;
 
         Atomics.wait(
-          rawStatus,
+          opView,
           0,
-          SignalStatus.MainStop,
+          OP.MainStop,
           50,
         );
 
@@ -158,5 +158,5 @@ export const mainLoop = async (workerData: WorkerData): Promise<void> => {
 };
 
 if (isMainThread === false) {
-  mainLoop(workerData as WorkerData);
+  workerMainLoop(workerData as WorkerData);
 }

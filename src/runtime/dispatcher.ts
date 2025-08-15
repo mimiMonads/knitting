@@ -1,17 +1,17 @@
-import type { MultiQueue } from "./mainQueueManager.ts";
-import { type MainSignal, SignalStatus } from "./signals.ts";
-
-export const taskScheduler = ({
+import type { MultiQueue } from "./tx-queue.ts";
+import { type MainSignal, OP } from "../ipc/transport/shared-memory.ts";
+import { MessageChannel } from "node:worker_threads";
+export const hostDispatcherLoop = ({
   signalBox: {
-    rawStatus,
-    status,
+    opView,
+    op,
   },
   queue: {
-    resolveTask,
-    isThereAnythingToBeSent,
-    dispatchToWorker,
-    resolveError,
-    fastResolveTask,
+    completeFrame,
+    hasPendingFrames,
+    flushToWorker,
+    rejectFrame,
+    completeImmediate,
   },
   channelHandler,
 }: {
@@ -22,35 +22,35 @@ export const taskScheduler = ({
   let catchEarly = true;
   const nextTick = process.nextTick;
   const check = () => {
-    switch (status[0]) {
-      case SignalStatus.FastResolve: {
-        fastResolveTask();
-        status[0] = SignalStatus.AllTasksDone;
+    switch (op[0]) {
+      case OP.FastResolve: {
+        completeImmediate();
+        op[0] = OP.AllTasksDone;
         queueMicrotask(check);
         return;
       }
-      case SignalStatus.WorkerWaiting:
+      case OP.WorkerWaiting:
         do {
-          resolveTask();
-        } while (status[0] === SignalStatus.WorkerWaiting);
+          completeFrame();
+        } while (op[0] === OP.WorkerWaiting);
 
         queueMicrotask(check);
         return;
-      case SignalStatus.AllTasksDone:
-        if (isThereAnythingToBeSent()) {
-          Atomics.notify(rawStatus, 0, 1);
-          dispatchToWorker();
+      case OP.AllTasksDone:
+        if (hasPendingFrames()) {
+          Atomics.notify(opView, 0, 1);
+          flushToWorker();
           queueMicrotask(check);
         } else {
-          status[0] = SignalStatus.MainStop;
+          op[0] = OP.MainStop;
           check.isRunning = false;
           catchEarly = true;
         }
         return;
 
-      case SignalStatus.WaitingForMore:
-        if (isThereAnythingToBeSent()) {
-          dispatchToWorker();
+      case OP.WaitingForMore:
+        if (hasPendingFrames()) {
+          flushToWorker();
 
           nextTick(check);
         } else {
@@ -59,36 +59,36 @@ export const taskScheduler = ({
             queueMicrotask(check);
             return;
           }
-          status[0] = SignalStatus.MainReadyToRead;
-          channelHandler.scheduleCheck();
+          op[0] = OP.MainReadyToRead;
+          channelHandler.notify();
         }
         return;
-      case SignalStatus.ErrorThrown: {
+      case OP.ErrorThrown: {
         // Error was thrown in the worker queue
-        resolveError();
-        status[0] = SignalStatus.MainReadyToRead;
+        rejectFrame();
+        op[0] = OP.MainReadyToRead;
         if (catchEarly === true) {
           catchEarly = false;
           queueMicrotask(check);
           return;
         }
 
-        channelHandler.scheduleCheck();
+        channelHandler.notify();
 
         return;
       }
 
-      case SignalStatus.HighPriorityResolve:
-      case SignalStatus.MainReadyToRead: {
+      case OP.HighPriorityResolve:
+      case OP.MainReadyToRead: {
         if (catchEarly === true) {
           catchEarly = false;
           queueMicrotask(check);
           return;
         }
-        channelHandler.scheduleCheck();
+        channelHandler.notify();
         return;
       }
-      case SignalStatus.MainSend:
+      case OP.MainSend:
         nextTick(check);
         return;
     }
@@ -107,13 +107,13 @@ export class ChannelHandler {
     this.channel = new MessageChannel();
   }
 
-  public scheduleCheck(): void {
+  public notify(): void {
     this.channel.port2.postMessage(null);
   }
 
   /**
    * Opens the channel (if not already open) and sets the onmessage handler.
-   * This is the setup so `scheduleCheck` can send a message to the port 1.
+   * This is the setup so `notify` can send a message to the port 1.
    */
   public open(f: () => void): void {
     this.channel.port1.onmessage = f;

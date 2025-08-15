@@ -1,18 +1,18 @@
 import {
   PayloadType,
-  readFromWorker,
+  readFrameBlocking,
   readPayloadError,
-  readPayloadWorkerBulk,
-  simplifyJson,
-  writeToShareMemory,
-} from "./parsers.ts";
+  readFramePayload,
+  preencodeJsonString,
+  writeFramePayload,
+} from "../ipc/protocol/codec.ts";
 import {
   type MainSignal,
-  QueueStateFlag,
+  frameFlagsFlag,
   type SignalArguments,
-  SignalStatus,
-} from "./signals.ts";
-import type { ComposedWithKey } from "./api.ts";
+  OP,
+} from "../ipc/transport/shared-memory.ts";
+import type { ComposedWithKey } from "../api.ts";
 
 type RawArguments = unknown;
 type WorkerResponse = unknown;
@@ -35,7 +35,7 @@ export enum MainListEnum {
   WorkerResponse = 2,
   OnResolve = 3,
   OnReject = 4,
-  PlayloadType = 5,
+  PayloadType = 5,
   slotIndex = 6,
 }
 
@@ -59,7 +59,7 @@ export type MainList = [
 
 export type QueueListWorker = MainList;
 
-export type MultiQueue = ReturnType<typeof createMainQueue>;
+export type MultiQueue = ReturnType<typeof createHostTxQueue>;
 
 interface MultipleQueueSingle {
   signalBox: MainSignal;
@@ -70,11 +70,11 @@ interface MultipleQueueSingle {
   signals: SignalArguments;
 }
 
-export function createMainQueue({
+export function createHostTxQueue({
   signalBox: {
-    status,
-    functionToUse,
-    queueState,
+    op,
+    rpcId,
+    frameFlags,
     slotIndex,
   },
   max,
@@ -108,14 +108,14 @@ export function createMainQueue({
 
   // Writers
   const errorDeserializer = readPayloadError(signals);
-  const write = writeToShareMemory({
+  const write = writeFramePayload({
     index: MainListEnum.RawArguments,
     from: "main",
   })(signals);
 
   // Readers
-  const blockingReader = readFromWorker(signals);
-  const reader = readPayloadWorkerBulk({
+  const blockingReader = readFrameBlocking(signals);
+  const reader = readFramePayload({
     ...signals,
     specialType: "main",
   });
@@ -129,8 +129,8 @@ export function createMainQueue({
   const slotZero = newSlot();
 
   // Helpers
-  const isThereAnythingToBeSent = () => toBeSentCount > 0;
-  const hasEverythingBeenSent = () => toBeSentCount === 0;
+  const hasPendingFrames = () => toBeSentCount > 0;
+  const txIdle = () => toBeSentCount === 0;
   const addDeferred = () => {
     const deferred = Promise.withResolvers<
       WorkerResponse
@@ -163,27 +163,27 @@ export function createMainQueue({
   };
   return {
     rejectAll,
-    isThereAnythingToBeSent,
-    hasEverythingBeenSent,
-    fastResolveTask: () => {
+    hasPendingFrames,
+    txIdle,
+    completeImmediate: () => {
       slotZero[MainListEnum.OnResolve](
         blockingReader(),
       );
     },
-    fastEnqueue: (functionID: FunctionID) => (rawArgs: RawArguments) => {
+    postImmediate: (functionID: FunctionID) => (rawArgs: RawArguments) => {
       slotZero[MainListEnum.RawArguments] = rawArgs;
-      functionToUse[0] = functionID;
+      rpcId[0] = functionID;
       write(slotZero);
 
       // Blocks the queue ensuring this is the only function solving
-      status[0] = SignalStatus.HighPriorityResolve;
+      op[0] = OP.HighPriorityResolve;
 
       // This functions force js to create the `Promise.withResolver` after we sent the playload
       return addDeferred();
     },
 
     /* General enqueue with promise */
-    enqueuePromise: (functionID: FunctionID) => (rawArgs: RawArguments) => {
+    enqueue: (functionID: FunctionID) => (rawArgs: RawArguments) => {
       // Expanding size if needed
       if (inUsed === queue.length) {
         const newSize = inUsed + 10;
@@ -215,26 +215,26 @@ export function createMainQueue({
       return deferred.promise;
     },
 
-    dispatchToWorker: () => {
+    flushToWorker: () => {
       const index = toBeSent.pop()!,
         slot = queue[index];
 
       // Checks if this is the last Element to be sent
       toBeSentCount > 0
-        ? (queueState[0] = QueueStateFlag.Last)
-        : (queueState[0] = QueueStateFlag.NotLast);
+        ? (frameFlags[0] = frameFlagsFlag.Last)
+        : (frameFlags[0] = frameFlagsFlag.NotLast);
 
-      functionToUse[0] = slot[MainListEnum.FunctionID];
+      rpcId[0] = slot[MainListEnum.FunctionID];
       slotIndex[0] = index;
       write(slot);
 
       // Changes ownership of the sab
-      status[0] = SignalStatus.MainSend;
+      op[0] = OP.MainSend;
 
       toBeSentCount--;
     },
 
-    resolveError: () => {
+    rejectFrame: () => {
       const index = slotIndex[0],
         slot = queue[index],
         args = errorDeserializer();
@@ -245,7 +245,7 @@ export function createMainQueue({
     },
 
     /* Resolve task whose ID matches currentID */
-    resolveTask: () => {
+    completeFrame: () => {
       const index = slotIndex[0], slot = queue[index], args = reader();
 
       slot[MainListEnum.OnResolve](
