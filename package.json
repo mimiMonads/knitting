@@ -11,12 +11,14 @@
   "scripts": {
     "toNode": "bun build main.ts --outdir  dest   --target node"
   },
-
   "engines": {
     "node": ">=22.0.0",
     "deno": ">=2.0.0"
   },
   "peerDependencies": {
     "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "mitata": "^1.0.34"
   }
 }

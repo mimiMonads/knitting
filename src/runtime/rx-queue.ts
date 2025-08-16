@@ -1,8 +1,8 @@
 import { type QueueListWorker } from "./tx-queue.ts";
 import { MainListEnum } from "./tx-queue.ts";
 import {
-  type SignalArguments,
   OP,
+  type SignalArguments,
   type WorkerSignal,
 } from "../ipc/transport/shared-memory.ts";
 import type { ComposedWithKey } from "../api.ts";
@@ -10,8 +10,8 @@ import {
   decodeArgs,
   fromReturnToMainError,
   PayloadType,
-  readFramePayload,
   preencodeJsonString,
+  readFramePayload,
   writeFramePayload,
 } from "../ipc/protocol/codec.ts";
 

@@ -1,29 +1,37 @@
 import { isMainThread, workerData } from "node:worker_threads";
 import { createWorkerRxQueue } from "../runtime/rx-queue.ts";
-import { createSharedMemoryTransport, OP, workerSignal } from "../ipc/transport/shared-memory.ts";
+import {
+  createSharedMemoryTransport,
+  OP,
+  workerSignal,
+} from "../ipc/transport/shared-memory.ts";
 import { type DebugOptions, getFunctions } from "../api.ts";
 import { type WorkerData } from "../runtime/pool.ts";
 
 export const jsrIsGreatAndWorkWithoutBugs = () => null;
 
 const pause = "pause" in Atomics
-    // 300 nanos apx
-    ? () => Atomics.pause(300)
-    : () => {}
-  
-const sleepUntilChanged = (sab: Int32Array, at: number, value: number , usTime: number) => {
+  // 300 nanos apx
+  ? () => Atomics.pause(300)
+  : () => {};
 
-    const until = performance.now() + ( usTime / 1000)
+const sleepUntilChanged = (
+  sab: Int32Array,
+  at: number,
+  value: number,
+  usTime: number,
+) => {
+  const until = performance.now() + (usTime / 1000);
 
-    do{
-      if (Atomics.load(sab, at) !== value) return false
-      pause()
-    }while(
-      performance.now() < until
-    )
+  do {
+    if (Atomics.load(sab, at) !== value) return false;
+    pause();
+  } while (
+    performance.now() < until
+  );
 
-    return true
-}
+  return true;
+};
 
 export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
   const debug = workerData.debug as DebugOptions;
@@ -86,7 +94,7 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
       case OP.WaitingForMore:
       case OP.ErrorThrown:
       case OP.WakeUp: {
-        pause()
+        pause();
         continue;
       }
       case OP.HighPriorityResolve: {
@@ -128,8 +136,9 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
 
         continue;
       case OP.FastResolve: {
-
-        if(sleepUntilChanged(opView, 0 ,OP.FastResolve,15) === false) continue;
+        if (sleepUntilChanged(opView, 0, OP.FastResolve, 15) === false) {
+          continue;
+        }
 
         Atomics.wait(
           opView,
@@ -140,9 +149,7 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
         continue;
       }
       case OP.MainStop: {
-       
-
-        if(sleepUntilChanged(opView, 0 , OP.MainStop ,15) === false) continue;
+        if (sleepUntilChanged(opView, 0, OP.MainStop, 15) === false) continue;
 
         Atomics.wait(
           opView,

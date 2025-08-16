@@ -1,13 +1,7 @@
 import { bench, group, run as mitataRun } from "mitata";
 import { createThreadPool, fixedPoint, isMain } from "../knitting.ts";
 import { terminateAllWorkers, toResolve } from "./postmessage/single.ts";
-
-const json = { debug: false, samples: false };
-const format = process.argv.includes("--json")
-  ? {
-    json,
-  }
-  : "markdown";
+import { format, print } from "./ulti/json-parse.ts";
 
 export const inLine = fixedPoint({
   f: async (_: void) => {},
@@ -51,7 +45,8 @@ if (isMain) {
   });
 
   await mitataRun({
-    format, //print: (jsonString) => console.log(JSON.stringify(JSON.parse(jsonString),null,2))
+    format,
+    print,
   });
   await terminateAllWorkers();
   await terminateAll();

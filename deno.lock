@@ -1,5 +1,5 @@
 {
-  "version": "4",
+  "version": "5",
   "specifiers": {
     "jsr:@std/assert@*": "1.0.11",
     "jsr:@std/internal@^1.0.5": "1.0.5"
@@ -20,7 +20,8 @@
       "dependencies": [
         "npm:@types/bun@latest",
         "npm:@types/deno@latest",
-        "npm:@types/node@latest"
+        "npm:@types/node@latest",
+        "npm:mitata@^1.0.34"
       ]
     }
   }

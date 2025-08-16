@@ -3,10 +3,10 @@
 import { createHostTxQueue, type PromiseMap } from "./tx-queue.ts";
 import { beat, genTaskID } from "../common/time.ts";
 import {
-  mainSignal,
-  type Sab,
   createSharedMemoryTransport,
+  mainSignal,
   OP,
+  type Sab,
 } from "../ipc/transport/shared-memory.ts";
 import { ChannelHandler, hostDispatcherLoop } from "./dispatcher.ts";
 import type { ComposedWithKey, DebugOptions } from "../api.ts";
@@ -145,14 +145,13 @@ export const spawnWorkerContext = ({
     const thisSignal = signalBox.opView;
     return (args: Uint8Array) =>
       check.isRunning === false
-        ? 
         // Avoid weird optimizations from the runtime
-        (
+        ? (
           thisSignal[0] = OP.WakeUp,
-          Atomics.notify(thisSignal, 0, 1),
-          check.isRunning = true,
-          nextTick(check),
-          first(args)
+            Atomics.notify(thisSignal, 0, 1),
+            check.isRunning = true,
+            nextTick(check),
+            first(args)
         )
         : enqueued(args);
   };

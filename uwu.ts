@@ -27,6 +27,5 @@ if (isMain) {
     .then((results) => {
       console.log("Results:", results);
     })
-    .finally(terminateAll)
-
+    .finally(terminateAll);
 }

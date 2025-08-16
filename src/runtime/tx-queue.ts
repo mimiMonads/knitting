@@ -1,16 +1,16 @@
 import {
   PayloadType,
-  readFrameBlocking,
-  readPayloadError,
-  readFramePayload,
   preencodeJsonString,
+  readFrameBlocking,
+  readFramePayload,
+  readPayloadError,
   writeFramePayload,
 } from "../ipc/protocol/codec.ts";
 import {
-  type MainSignal,
   frameFlagsFlag,
-  type SignalArguments,
+  type MainSignal,
   OP,
+  type SignalArguments,
 } from "../ipc/transport/shared-memory.ts";
 import type { ComposedWithKey } from "../api.ts";
 

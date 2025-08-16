@@ -7,6 +7,7 @@ dest/
 
 results/
 
+charts/
 # Logs
 
 logs
@@ -180,3 +181,28 @@ dist
 
 # Finder (MacOS) folder config
 .DS_Store
+
+# Python virtual environments
+venv/
+.env/
+.venv/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Jupyter and data outputs
+.ipynb_checkpoints
+*.sqlite
+*.db
+*.log
+
+# Matplotlib cache
+.matplotlib/
+
+# Benchmark outputs / generated graphs
+/results/graphs/*.png
+/results/graphs/*.pdf
+

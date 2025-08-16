@@ -1,7 +1,7 @@
-import { bench, boxplot, group, run as mitataRun, summary } from "mitata";
+import { bench, group, run as mitataRun } from "mitata";
 import { createThreadPool, fixedPoint, isMain } from "../knitting.ts";
 import { terminateAllWorkers, toResolve } from "./postmessage/single.ts";
-
+import { format, print } from "./ulti/json-parse.ts";
 // ───────────────────────── fixed points ─────────────────────────
 export const toNumber = fixedPoint({ f: async (a: number) => a });
 export const toString = fixedPoint({ f: async (a: string) => a });
@@ -9,13 +9,6 @@ export const toBigInt = fixedPoint({ f: async (a: bigint) => a });
 export const toBoolean = fixedPoint({ f: async (a: boolean) => a });
 export const toVoid = fixedPoint({ f: async (_: void) => {} });
 export const toObject = fixedPoint({ f: async (a: object) => a });
-
-const json = { debug: false, samples: false };
-const format = process.argv.includes("--json")
-  ? {
-    json,
-  }
-  : "markdown";
 
 if (isMain) {
   const { callFunction, fastCallFunction, terminateAll, send } =
@@ -259,7 +252,7 @@ if (isMain) {
     }
   });
 
-  await mitataRun({ format });
+  await mitataRun({ format, print });
   await terminateAll();
   await terminateAllWorkers();
 }

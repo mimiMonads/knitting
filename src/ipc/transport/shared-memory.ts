@@ -70,7 +70,7 @@ const allocatePayloadBuffer = ({ sab, payloadLen }: {
     readBytesCopy: () => uInt8.slice(0, payloadLen[0]),
     readBytesView: () => uInt8.subarray(0, payloadLen[0]),
     writeUtf8: (str: string) => {
-      const { written  , read} = textEncode.encodeInto(str, uInt8);
+      const { written, read } = textEncode.encodeInto(str, uInt8);
       payloadLen[0] = written;
 
       if (read < str.length) {
@@ -116,10 +116,11 @@ export const createSharedMemoryTransport = (
   }
 
   const payloadLen = new Int32Array(sab, 8, 1);
-  const { writeBinary, readBytesCopy, readBytesView, writeUtf8, readUtf8 } = allocatePayloadBuffer({
-    sab,
-    payloadLen,
-  });
+  const { writeBinary, readBytesCopy, readBytesView, writeUtf8, readUtf8 } =
+    allocatePayloadBuffer({
+      sab,
+      payloadLen,
+    });
 
   return {
     sab,
@@ -153,8 +154,7 @@ export const createSharedMemoryTransport = (
 };
 
 export const mainSignal = (
-  { op, id, rpcId, frameFlags, opView, slotIndex, startAt }:
-    SignalArguments,
+  { op, id, rpcId, frameFlags, opView, slotIndex, startAt }: SignalArguments,
 ) => ({
   op,
   opView,

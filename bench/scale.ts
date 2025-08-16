@@ -1,13 +1,7 @@
 import { bench, boxplot, group, run as runMitata, summary } from "mitata";
 import { createThreadPool, fixedPoint, isMain } from "../knitting.ts";
 import { terminateAllWorkers, toResolve } from "./postmessage/single.ts";
-
-const json = { debug: false, samples: false };
-const format = process.argv.includes("--json")
-  ? {
-    json,
-  }
-  : "markdown";
+import { format, print } from "./ulti/json-parse.ts";
 
 export const fn = fixedPoint({
   f: async (a: object) => a,
@@ -61,7 +55,7 @@ if (isMain) {
     });
   });
 
-  await runMitata({ format });
+  await runMitata({ format, print });
   await terminateAll();
   await terminateAllWorkers();
 }

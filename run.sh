@@ -46,15 +46,15 @@ while IFS= read -r -d '' file; do
 
   echo "Running $filename with Node.js..."
   node --no-warnings --experimental-transform-types "$file" "${BENCH_EXTRA_ARGS[@]}" \
-    > "$RESULTS_DIR/node/node_${stem}.${OUT_EXT}" 2>&1
+    > "$RESULTS_DIR/node_${stem}.${OUT_EXT}" 2>&1
 
   echo "Running $filename with Deno..."
   deno run -A "$file" "${BENCH_EXTRA_ARGS[@]}" \
-    > "$RESULTS_DIR/deno/deno_${stem}.${OUT_EXT}" 2>&1
+    > "$RESULTS_DIR/deno_${stem}.${OUT_EXT}" 2>&1
 
   echo "Running $filename with Bun..."
   bun run "$file" "${BENCH_EXTRA_ARGS[@]}" \
-    > "$RESULTS_DIR/bun/bun_${stem}.${OUT_EXT}" 2>&1
+    > "$RESULTS_DIR/bun_${stem}.${OUT_EXT}" 2>&1
 
 done < <(find "$BENCH_DIR" -maxdepth 1 -type f -print0)
 

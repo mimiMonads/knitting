@@ -60,7 +60,7 @@ export const signalDebuggerV2 = ({
   const color = isMain ? orange : purple;
 
   // ─── timing & counting state ─────────────────────────────────────
-  
+
   let last = op[0];
   const born = startAt;
   let lastBeat = born;
@@ -100,26 +100,17 @@ export const signalDebuggerV2 = ({
   // ─── proxy that logs reads/writes of element 0 & .set() ─────────
   const proxied = new Proxy(op, {
     get(target, prop, receiver) {
-      // intercept .set()
-      if (prop === "set") {
-        const orig = target.set;
-        return function (arr: ArrayLike<number>, offset = 0) {
-          const res = orig.call(target, arr, offset);
-          if (offset === 0 && arr.length > 0) maybeLog(arr[0], "SET() ");
-          return res;
-        };
-      }
-      // direct index read
       if (prop === "0") {
-        const v = Reflect.get(target, 0, receiver) as number;
-        maybeLog(v, "GET   ");
-        return v;
+        const value = Reflect.get(target, 0, receiver) as number;
+        maybeLog(value, "GET ");
+        return value;
       }
       return Reflect.get(target, prop, receiver);
     },
     set(target, prop, value, receiver) {
-      if (prop === "0") maybeLog(value as number, "PUT   ");
-      return Reflect.set(target, prop, value, receiver);
+      const ok = Reflect.set(target, prop, value, receiver);
+      if (ok && prop === "0") maybeLog(value as number, "GET ");
+      return ok;
     },
   }) as unknown as Int32Array;
 
