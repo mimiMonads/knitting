@@ -30,6 +30,12 @@ export const toObject = fixedPoint({
   f: async (a: object | null) => a,
 });
 
+export const toSet = fixedPoint({
+  f: async (a: Set<number>) => a,
+});
+
+const setNumb = new Set([1, 2, 3, 4, 5, 6]);
+
 Deno.test("Using one thread calling with multiple arguments", async () => {
   const { callFunction, terminateAll, send } = createThreadPool({})({
     toNumber,
@@ -39,6 +45,7 @@ Deno.test("Using one thread calling with multiple arguments", async () => {
     toBoolean,
     toVoid,
     toObject,
+    toSet,
   });
 
   const promises = [
@@ -59,6 +66,7 @@ Deno.test("Using one thread calling with multiple arguments", async () => {
     callFunction.toNumber(0),
     callFunction.toNumber(2.2250738585072014e-308),
     callFunction.toObject(null),
+    callFunction.toSet(setNumb),
   ];
 
   send();
@@ -83,6 +91,7 @@ Deno.test("Using one thread calling with multiple arguments", async () => {
     0,
     2.2250738585072014e-308,
     null,
+    setNumb,
   ];
 
   results.forEach((value, index) => {

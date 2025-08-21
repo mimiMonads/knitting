@@ -1,4 +1,3 @@
-import type { Serializable } from "../../api.ts";
 import {
   frameFlagsFlag,
   OP,
@@ -33,6 +32,7 @@ export enum PayloadType {
   Uint8Array = 17,
   Serializable = 18,
   StringToJson = 19,
+  SerializabledAndReady = 20,
 }
 
 const fromReturnToMainError = ({
@@ -44,7 +44,7 @@ const fromReturnToMainError = ({
   );
 
   return (task: MainList) => {
-    let error: Serializable;
+    let error: unknown;
 
     try {
       error = serialize(task[MainListEnum.WorkerResponse]);
@@ -52,7 +52,7 @@ const fromReturnToMainError = ({
       error = serializedError;
     }
 
-    writeBinary(error as Uint8Array);
+    writeBinary(error as unknown as Uint8Array);
 
     type[0] = PayloadType.Serializable;
   };
@@ -72,8 +72,21 @@ const preencodeJsonString = (
 
     if (typeof args === "object") {
       if (args === null) return;
-      task[at] = JSON.stringify(args);
-      task[MainListEnum.PayloadType] = PayloadType.StringToJson;
+
+      switch (args.constructor) {
+        case Array:
+        case Object: {
+          task[at] = JSON.stringify(args);
+          task[MainListEnum.PayloadType] = PayloadType.StringToJson;
+          return;
+        }
+        case Map:
+        case Set: {
+          task[at] = serialize(args);
+          task[MainListEnum.PayloadType] = PayloadType.SerializabledAndReady;
+          return;
+        }
+      }
     }
   };
 };
@@ -114,11 +127,15 @@ const writeFramePayload = (
     // you must ensure that this `writeFramePayload` is on
     // a different stack
     if (preProcessed === true) {
-      if (task[MainListEnum.PayloadType] === PayloadType.StringToJson) {
-        writeUtf8(args as string);
-        task[MainListEnum.PayloadType] = PayloadType.Json;
-        type[0] = PayloadType.Json;
-        return;
+      switch (task[MainListEnum.PayloadType]) {
+        case PayloadType.StringToJson:
+          task[MainListEnum.PayloadType] = PayloadType.Json;
+          type[0] = PayloadType.Json;
+          return;
+        case PayloadType.SerializabledAndReady:
+          task[MainListEnum.PayloadType] = PayloadType.Serializable;
+          type[0] = PayloadType.Serializable;
+          return;
       }
     }
 
@@ -209,6 +226,12 @@ const writeFramePayload = (
           case Array: {
             writeUtf8(JSON.stringify(args));
             type[0] = PayloadType.Json;
+            return;
+          }
+          case Map:
+          case Set: {
+            writeBinary(serialize(args) as Uint8Array);
+            type[0] = PayloadType.Serializable;
             return;
           }
         }

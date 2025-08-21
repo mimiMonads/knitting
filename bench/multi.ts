@@ -4,7 +4,7 @@ import { terminateAllWorkers, toResolve } from "./postmessage/multi.ts";
 import { format, print } from "./ulti/json-parse.ts";
 
 export const inLine = fixedPoint({
-  f: async (a?: object | void) => a,
+  f: async (a?: object | void | Set<number>) => a,
 });
 
 const obj = {
@@ -15,7 +15,7 @@ const obj = {
 };
 
 const { terminateAll, callFunction, send } = createThreadPool(
-  { threads: 4 },
+  { threads: 6 },
 )({
   inLine,
 });

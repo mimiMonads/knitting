@@ -37,10 +37,10 @@ import { hrtime } from "node:process";
 
 export const beat = (): number => Number(hrtime.bigint()) / 1e4;
 
-/**
- * Debug reads & writes to op[0] without touching `performance.now()`.
- * “Time” columns are driven by the `beat()` heart-beat instead.
- */
+import { createWriteStream, existsSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { OP, OP_TAG } from "../ipc/transport/shared-memory.ts";
+
 export const signalDebuggerV2 = ({
   thread,
   isMain,
@@ -59,20 +59,25 @@ export const signalDebuggerV2 = ({
   const tab = "\t";
   const color = isMain ? orange : purple;
 
-  // ─── timing & counting state ─────────────────────────────────────
-
-  let last = op[0];
+  // ─── file logging setup ──────────────────────────────────────────
+  const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
+  const logDir = join(process.cwd(), "log");
+  if (!existsSync(logDir)) mkdirSync(logDir, { recursive: true });
   const born = startAt;
+  const logFile = join(logDir, `${isMain ? "M" : "T"}_${thread}_${born}.log`);
+  const stream = createWriteStream(logFile, { flags: "a" });
+
+  // ─── timing & counting state ─────────────────────────────────────
+  let last = op[0];
   let lastBeat = born;
   let hitsTotal = 0;
   const hitsPerValue: Record<number, number> = { [last]: 0 };
 
   // ─── header row ─────────────────────────────────────────────────
-  if (thread === 0) {
-    console.log(
-      `${color}Thread${tab}Tag${tab}Value${tab}SinceBorn${tab}SinceLast${tab}HitsPrev${tab}TotalHits${reset}`,
-    );
-  }
+
+  const header =
+    `${color}Thread${tab}Tag${tab}Value${tab}SinceBorn${tab}SinceLast${tab}HitsPrev${tab}TotalHits${reset}`;
+  stream.write(stripAnsi(header) + "\n");
 
   // ─── log when the tracked slot’s value changes ──────────────────
   function maybeLog(value: number, tag: string) {
@@ -83,14 +88,17 @@ export const signalDebuggerV2 = ({
       const now = isMain ? beat() : beat() + born;
       const hits = hitsPerValue[last];
 
-      console.log(
-        `${color}${isMain ? "M" : "T"}${thread}${reset}${tab}` + // thread
-          `${tag}${String(last).padStart(6, " ")}${reset}${tab}` + // tag + prev value
-          `${(now - born).toFixed(2).padStart(9)}${tab}` + // since born
-          `${(now - lastBeat).toFixed(2).padStart(9)}${tab}` + // since last
-          `${hits.toString().padStart(8)}${tab}` + // hits of prev
-          `${hitsTotal.toString().padStart(9)}`, // total hits
-      );
+      const line =
+        `${color}${isMain ? "M" : "T"}${thread}${reset}${tab}${tab}` + // thread
+        `${tag}${
+          // @ts-ignore
+          String(OP_TAG[last]! ?? last).padStart(1, " ")}${reset}${tab}` + // tag + prev value
+        `${(now - born).toFixed(2).padStart(9)}${tab}` + // since born
+        `${(now - lastBeat).toFixed(2).padStart(9)}${tab}` + // since last
+        `${hits.toString().padStart(8)}${tab}` + // hits of prev
+        `${hitsTotal.toString().padStart(9)}`; // total hits
+
+      stream.write(stripAnsi(line) + "\n");
 
       last = value;
       lastBeat = now;
@@ -100,16 +108,21 @@ export const signalDebuggerV2 = ({
   // ─── proxy that logs reads/writes of element 0 & .set() ─────────
   const proxied = new Proxy(op, {
     get(target, prop, receiver) {
+      // accept both "0" and 0
       if (prop === "0") {
-        const value = Reflect.get(target, 0, receiver) as number;
+        // IMPORTANT: use the underlying Int32Array, not the Proxy
+        const value = Atomics.load(target as unknown as Int32Array, 0);
         maybeLog(value, "GET ");
         return value;
       }
-      return Reflect.get(target, prop, receiver);
+      return Reflect.get(target, prop as any, receiver);
     },
     set(target, prop, value, receiver) {
-      const ok = Reflect.set(target, prop, value, receiver);
-      if (ok && prop === "0") maybeLog(value as number, "GET ");
+      const ok = Reflect.set(target, prop as any, value, receiver);
+      if (ok && (prop === "0")) {
+        // No Atomics here—just log the value we set
+        maybeLog(value as number, "PUT ");
+      }
       return ok;
     },
   }) as unknown as Int32Array;

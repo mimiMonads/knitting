@@ -2,7 +2,7 @@ export type SignalArguments = ReturnType<typeof createSharedMemoryTransport>;
 export type MainSignal = ReturnType<typeof mainSignal>;
 export type WorkerSignal = ReturnType<typeof workerSignal>;
 import { isMainThread } from "node:worker_threads";
-import { beat, signalDebuggerV2 } from "../../common/time.ts";
+import { beat, signalDebuggerV2 } from "../../common/others.ts";
 import { type DebugOptions } from "../../api.ts";
 import { Buffer as NodeBuffer } from "node:buffer";
 
@@ -14,6 +14,7 @@ enum SignalEnumOptions {
 }
 
 export enum OP {
+  Created = 0,
   WorkerWaiting = 1,
   AllTasksDone = 2,
   WaitingForMore = 3,
@@ -26,6 +27,21 @@ export enum OP {
   MainSend = 10,
   MainStop = 11,
 }
+
+export const OP_TAG: Record<OP, string> = {
+  [OP.Created]: "START ",
+  [OP.WorkerWaiting]: "WWAIT ",
+  [OP.AllTasksDone]: "DONE  ",
+  [OP.WaitingForMore]: "WMORE ",
+  [OP.HighPriorityResolve]: "HIPRIO",
+  [OP.WakeUp]: "WAKEUP",
+  [OP.ErrorThrown]: "ERROR ",
+  [OP.NAN]: "NAN   ",
+  [OP.MainReadyToRead]: "MREAD ",
+  [OP.FastResolve]: "FRESOL",
+  [OP.MainSend]: "MSEND ",
+  [OP.MainStop]: "MSTOP ",
+};
 
 // ───────────────────────────────────────────────
 // Queue State Flags
@@ -98,10 +114,13 @@ export const createSharedMemoryTransport = (
 
   const startAt = beat();
 
-  const op = typeof debug !== "undefined" &&
-      // This part just say `match the function on the thread and main parts and the debug parts`
-      ((debug?.logMain === isMain && isMain === true) ||
-        (debug?.logThreads === true && isMain === false))
+  const isReflected = typeof debug !== "undefined" &&
+    // This part just say `match the function on the thread and main parts and the debug parts`
+    ((debug?.logMain === isMain && isMain === true) ||
+      //@ts-ignore
+      (debug?.logThreads === true && isMain === false));
+
+  const op = isReflected
     ? signalDebuggerV2({
       thread,
       isMain,
@@ -126,6 +145,7 @@ export const createSharedMemoryTransport = (
     sab,
     op,
     startAt,
+    isReflected,
     // When we debug we wrap op in a proxy thus it stop being an array,
     // There are some JS utils that would complain about it (Atomics)
     opView: new Int32Array(sab, 0, 1),
@@ -166,11 +186,12 @@ export const mainSignal = (
 });
 
 export const workerSignal = (
-  { op, id, rpcId, frameFlags, slotIndex }: SignalArguments,
+  { op, id, rpcId, frameFlags, slotIndex, isReflected }: SignalArguments,
 ) => ({
   op,
   id,
   slotIndex,
   rpcId,
   frameFlags,
+  isReflected,
 });

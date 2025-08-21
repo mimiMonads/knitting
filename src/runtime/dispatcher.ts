@@ -116,6 +116,7 @@ export class ChannelHandler {
    * This is the setup so `notify` can send a message to the port 1.
    */
   public open(f: () => void): void {
+    //@ts-ignore
     this.channel.port1.onmessage = f;
     this.channel.port2.start();
     this.channel.port1.start();
@@ -125,7 +126,9 @@ export class ChannelHandler {
    * Closes the channel if it is open.
    */
   public close(): void {
+    //@ts-ignore
     this.channel.port1.onmessage = null;
+    //@ts-ignore
     this.channel.port2.onmessage = null;
     this.channel.port1.close();
     this.channel.port2.close();

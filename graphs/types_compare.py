@@ -16,6 +16,42 @@ PREFERRED_TYPE_ORDER = [
     "object", "big object",
 ]
 
+from PIL import Image
+
+def _stitch_images_horizontally(img_paths, out_path, padding=16, bg=(255, 255, 255)):
+    """Open images, scale to the same height, and stitch horizontally with padding."""
+    images = []
+    for p in img_paths:
+        if os.path.exists(p):
+            try:
+                images.append(Image.open(p).convert("RGB"))
+            except Exception as e:
+                print(f"[warn] could not open {p}: {e}")
+    if not images:
+        print(f"[warn] montage: none of {img_paths} exists")
+        return False
+
+    # target height = min of heights to avoid upscaling; resize widths proportionally
+    target_h = min(img.height for img in images)
+    resized = []
+    for img in images:
+        if img.height != target_h:
+            w = int(img.width * (target_h / img.height))
+            img = img.resize((w, target_h), Image.BICUBIC)
+        resized.append(img)
+
+    total_w = sum(img.width for img in resized) + padding * (len(resized) - 1)
+    canvas = Image.new("RGB", (total_w, target_h), bg)
+    x = 0
+    for i, img in enumerate(resized):
+        canvas.paste(img, (x, 0))
+        x += img.width + (padding if i < len(resized) - 1 else 0)
+
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    canvas.save(out_path, quality=92)
+    print(f"[ok] wrote {out_path}")
+    return True
+
 def parse_name(name: str):
     """
     Split "string -> (10)" into ("string", 10).
@@ -102,7 +138,7 @@ def plot_one(runtime_title, count, data_map, out_path):
         y = [tmap.get(t, math.nan) for t in types]
         plt.plot(x, y, marker="o", linestyle="-", label=label)
 
-    plt.yscale("log")
+    plt.yscale("linear")
     plt.xticks(x, types, rotation=30, ha="right")
     plt.ylabel("Average Latency (µs, log scale)")
     plt.title(f"{runtime_title} — Types Benchmark (count={count})")
@@ -117,14 +153,16 @@ def plot_one(runtime_title, count, data_map, out_path):
 
 def process_file(path, out_dir):
     groups = read_types_file(path)
-    base = os.path.splitext(os.path.basename(path))[0]  # e.g., node_types
-    runtime_title = base.replace("_", " ").title()      # "Node_Types" -> "Node Types"
+    base = os.path.splitext(os.path.basename(path))[0]
+    runtime_title = base.replace("_", " ").title()
 
     worker_by_count   = collect_by_count(groups.get("worker", []))
     knit_by_count     = collect_by_count(groups.get("knitting", []))
     knitfast_by_count = collect_by_count(groups.get("knitting fast", []))
 
     any_plotted = False
+    out_paths = []
+
     for count in (1, 10, 100):
         dm = {}
         if count in worker_by_count:
@@ -138,9 +176,23 @@ def process_file(path, out_dir):
         out_path = os.path.join(out_dir, f"{base}_types_count{count}.png")
         ok = plot_one(runtime_title, count, dm, out_path)
         any_plotted = any_plotted or ok
+        if ok:
+            out_paths.append(out_path)
 
     if not any_plotted:
         print(f"[warn] {path}: nothing plotted (no counts found)")
+        return
+
+    # Build a “container” image that shows all counts at once (skip any missing)
+    # Order: 1 | 10 | 100
+    montage_inputs = [
+        os.path.join(out_dir, f"{base}_types_count1.png"),
+        os.path.join(out_dir, f"{base}_types_count10.png"),
+        os.path.join(out_dir, f"{base}_types_count100.png"),
+    ]
+    montage_out = os.path.join(out_dir, f"{base}_types_all.png")
+    _stitch_images_horizontally(montage_inputs, montage_out)
+
 
 def main():
     ap = argparse.ArgumentParser()

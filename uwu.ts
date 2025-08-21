@@ -7,23 +7,43 @@ export const world = fixedPoint({
   f: async () => "world",
 });
 
-export const { terminateAll, fastCallFunction } = createThreadPool({
-  threads: 3,
-  debug: {
-    logMain: true,
-    //logThreads: true,
-  },
-})({
-  hello,
-  world,
-});
+export const { terminateAll, fastCallFunction, callFunction, send } =
+  createThreadPool({
+    debug: {
+      logMain: true,
+      //logThreads: true,
+    },
+  })({
+    hello,
+    world,
+  });
 
 if (isMain) {
   await Promise.all([
-    fastCallFunction.hello(),
-    fastCallFunction.world(),
-    fastCallFunction.world(),
+    callFunction.hello(),
+    callFunction.world(),
+    callFunction.world(),
+    callFunction.hello(),
+    callFunction.world(),
+    callFunction.world(),
+    send(),
   ])
+    .then(async (results) => {
+      console.log("Results:", results);
+
+      await new Promise((res) => setTimeout(res, 20));
+    })
+    .then(async () =>
+      await Promise.all([
+        callFunction.hello(),
+        callFunction.world(),
+        callFunction.world(),
+        callFunction.hello(),
+        callFunction.world(),
+        callFunction.world(),
+        send(),
+      ])
+    )
     .then((results) => {
       console.log("Results:", results);
     })

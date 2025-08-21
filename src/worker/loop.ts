@@ -136,12 +136,12 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
 
         continue;
       case OP.FastResolve: {
-        if (sleepUntilChanged(opView, 0, OP.FastResolve, 15) === false) {
+        if (sleepUntilChanged(op, 0, OP.FastResolve, 15) === false) {
           continue;
         }
 
         Atomics.wait(
-          opView,
+          op,
           0,
           OP.FastResolve,
           5,

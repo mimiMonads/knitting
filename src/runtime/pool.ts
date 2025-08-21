@@ -1,7 +1,7 @@
 // main.ts
 
 import { createHostTxQueue, type PromiseMap } from "./tx-queue.ts";
-import { beat, genTaskID } from "../common/time.ts";
+import { beat, genTaskID } from "../common/others.ts";
 import {
   createSharedMemoryTransport,
   mainSignal,

@@ -1,8 +1,8 @@
-import { getCallerFilePath } from "./common/time.ts";
-import { genTaskID } from "./common/time.ts";
+import { getCallerFilePath } from "./common/others.ts";
+import { genTaskID } from "./common/others.ts";
 import { spawnWorkerContext } from "./runtime/pool.ts";
 import type { PromiseMap } from "./runtime/tx-queue.ts";
-import { isMainThread, workerData } from "node:worker_threads";
+import { isMainThread, Serializable, workerData } from "node:worker_threads";
 
 import { type Balancer, managerMethod } from "./runtime/balancer.ts";
 import { createInlineExecutor } from "./runtime/inline-executor.ts";
@@ -10,7 +10,21 @@ import { createInlineExecutor } from "./runtime/inline-executor.ts";
 export const isMain = isMainThread;
 export type FixedPoints = Record<string, Composed>;
 
-export type Serializable =
+type JSONValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JSONArray
+  | JSONObject;
+
+interface JSONObject {
+  [key: string]: JSONValue;
+}
+
+interface JSONArray extends Array<JSONValue> {}
+
+export type ValidInput =
   | undefined
   | null
   | boolean
@@ -20,13 +34,9 @@ export type Serializable =
   | Date
   | RegExp
   | void
-  | ArrayBuffer
-  | ArrayBufferView
-  | { [key: string]: Serializable }
-  | Serializable[]
+  | JSONValue
   | Map<Serializable, Serializable>
-  | Set<Serializable>
-  | Error;
+  | Set<Serializable>;
 
 export type External = unknown;
 
@@ -149,7 +159,7 @@ export const toListAndIds = (
 export type DebugOptions = {
   extras?: boolean;
   logMain?: boolean;
-  logThreads?: boolean;
+  //logThreads?: boolean;
   logHref?: boolean;
   logImportedUrl?: boolean;
   threadOrder?: Boolean | number;
