@@ -1,33 +1,62 @@
 type PauseOptions = {
-  pauseInNanosecons?: number;
+  pauseInNanoseconds?: number;
 };
 
-export const pause = ({ pauseInNanosecons }: PauseOptions) => {
-  const forNanoseconds = pauseInNanosecons ?? 300;
+const DEFAULT_PAUSE_TIME = 300;
+
+
+export const whilePausing = ({ pauseInNanoseconds }: PauseOptions) => {
+  const forNanoseconds = pauseInNanoseconds ?? DEFAULT_PAUSE_TIME;
 
   return "pause" in Atomics ? () => Atomics.pause(forNanoseconds) : () => {};
 };
 
+export const pauseGeneric = whilePausing({});
+
 export const sleepUntilChanged = (
-  sab: Int32Array,
-  pause: () => void,
+  {
+
+    at,
+    opView,
+    pauseInNanoseconds,
+    rxStatus,
+    txStatus
+  }: {
+    opView: Int32Array;
+    rxStatus: Int32Array;
+    txStatus: Int32Array;
+    pauseInNanoseconds?: number;
+    at: number;
+  },
 ) => {
-  const status = sab;
+  const pause = pauseInNanoseconds
+    ? whilePausing({ pauseInNanoseconds })
+    : pauseGeneric;
 
   return (
-    at: number,
     value: number,
-    usTime: number,
+    msTime: number,
+    timeforWakingUp?: number 
   ) => {
-    const until = performance.now() + (usTime / 1000);
+    const until = performance.now() + (msTime / 1000);
 
     do {
-      if (Atomics.load(status, at) !== value) return false;
+      if (Atomics.load(opView, at) !== value || Atomics.load(txStatus, 0) === 1) return;
+
       pause();
     } while (
       performance.now() < until
     );
 
-    return true;
+    Atomics.store(rxStatus, 0, 1);
+
+    Atomics.wait(
+      opView,
+      0,
+      value,
+      timeforWakingUp ?? 50,
+    );
+    Atomics.store(rxStatus, 0, 0);
+
   };
 };

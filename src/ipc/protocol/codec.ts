@@ -71,23 +71,24 @@ const preencodeJsonString = (
     const args = task[at];
 
     if (typeof args === "object") {
-      if (args === null) return;
+      if (args === null) return task;
 
       switch (args.constructor) {
         case Array:
         case Object: {
           task[at] = JSON.stringify(args);
           task[MainListEnum.PayloadType] = PayloadType.StringToJson;
-          return;
+          return task;
         }
         case Map:
         case Set: {
           task[at] = serialize(args);
           task[MainListEnum.PayloadType] = PayloadType.SerializabledAndReady;
-          return;
+          return task;
         }
       }
     }
+    return task
   };
 };
 
@@ -117,7 +118,7 @@ const writeFramePayload = (
 ) => {
   const at = index;
   const preProcessed = Boolean(jsonString);
-  const payloadTo = from;
+
   return (
     task: MainList,
   ) => {
@@ -129,10 +130,12 @@ const writeFramePayload = (
     if (preProcessed === true) {
       switch (task[MainListEnum.PayloadType]) {
         case PayloadType.StringToJson:
+          writeUtf8(args as string)
           task[MainListEnum.PayloadType] = PayloadType.Json;
           type[0] = PayloadType.Json;
           return;
         case PayloadType.SerializabledAndReady:
+          writeBinary(args as Uint8Array)
           task[MainListEnum.PayloadType] = PayloadType.Serializable;
           type[0] = PayloadType.Serializable;
           return;

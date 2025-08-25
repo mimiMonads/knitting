@@ -14,6 +14,7 @@ import {
   readFramePayload,
   writeFramePayload,
 } from "../ipc/protocol/codec.ts";
+import "../polyfills/promise-with-resolvers.ts";
 
 type ArgumentsForCreateWorkerQueue = {
   listOfFunctions: ComposedWithKey[];
@@ -78,7 +79,7 @@ export const createWorkerRxQueue = (
   const playloadToArgs = decodeArgs(signals);
   const writeFrame = writeFramePayload({
     index: MainListEnum.WorkerResponse,
-    jsonString: moreThanOneThread,
+    jsonString: true,
     from: "thread",
   })(signals);
 
@@ -95,6 +96,7 @@ export const createWorkerRxQueue = (
 
   return {
     // Check if any task is solved and ready for writing.
+    hasFramesToOptimize: () => completedFrames.length > 0,
     hasCompleted: () => hasAnythingFinished !== 0,
     hasPending: () => toWork.length !== 0,
     blockingResolve: async () => {
@@ -114,12 +116,9 @@ export const createWorkerRxQueue = (
 
     preResolve: () => {
       const slot = completedFrames.pop();
-
-      if (slot !== undefined) {
-        simplifies(slot);
-        optimizedFrames.push(slot);
-      }
+      if (slot) optimizedFrames.push(simplifies(slot));
     },
+  
     //enqueue a task to the queue.
     enqueue: () => {
       const currentIndex = slotIndex[0],
@@ -149,7 +148,7 @@ export const createWorkerRxQueue = (
         slotIndex[0] = slot[MainListEnum.slotIndex];
         writeFrame(slot);
         op[0] = OP.WorkerWaiting;
-        queue.push(slot);
+        //queue.push(slot);
         isThereAnythingToResolve--;
         hasAnythingFinished--;
 
@@ -161,7 +160,7 @@ export const createWorkerRxQueue = (
         slotIndex[0] = slot[MainListEnum.slotIndex];
         writeFrame(slot);
         op[0] = OP.WorkerWaiting;
-        queue.push(slot);
+        //queue.push(slot);
         isThereAnythingToResolve--;
         hasAnythingFinished--;
         return;
@@ -172,7 +171,7 @@ export const createWorkerRxQueue = (
         slotIndex[0] = slot[MainListEnum.slotIndex];
         returnError(slot);
         op[0] = OP.ErrorThrown;
-        queue.push(slot);
+        //queue.push(slot);
         isThereAnythingToResolve--;
         hasAnythingFinished--;
       }

@@ -1,10 +1,14 @@
-import type { MultiQueue } from "./tx-queue.ts";
+import { type MultiQueue } from "./tx-queue.ts";
 import { type MainSignal, OP } from "../ipc/transport/shared-memory.ts";
 import { MessageChannel } from "node:worker_threads";
+
+
 export const hostDispatcherLoop = ({
   signalBox: {
     opView,
     op,
+    txStatus,
+    rxStatus
   },
   queue: {
     completeFrame,
@@ -12,13 +16,18 @@ export const hostDispatcherLoop = ({
     flushToWorker,
     rejectFrame,
     completeImmediate,
+  
   },
   channelHandler,
+ 
 }: {
   queue: MultiQueue;
   signalBox: MainSignal;
   channelHandler: ChannelHandler;
+  totalNumberOfThread: number
 }) => {
+
+ 
   let catchEarly = true;
   const nextTick = process.nextTick;
   const check = () => {
@@ -30,9 +39,22 @@ export const hostDispatcherLoop = ({
         return;
       }
       case OP.WorkerWaiting:
-        do {
-          completeFrame();
-        } while (op[0] === OP.WorkerWaiting);
+  
+          txStatus[0] = 1
+          
+          if(rxStatus[0] === 1){
+            Atomics.notify(opView, 0, 1);
+            completeFrame();
+            queueMicrotask(check);
+            return;
+          }
+
+          do {
+              completeFrame();
+          } while (op[0] === OP.WorkerWaiting);
+
+
+          txStatus[0] = 0
 
         queueMicrotask(check);
         return;
@@ -42,6 +64,7 @@ export const hostDispatcherLoop = ({
           flushToWorker();
           queueMicrotask(check);
         } else {
+          txStatus[0] = 0
           op[0] = OP.MainStop;
           check.isRunning = false;
           catchEarly = true;

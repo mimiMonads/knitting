@@ -2,7 +2,7 @@ import { getCallerFilePath } from "./common/others.ts";
 import { genTaskID } from "./common/others.ts";
 import { spawnWorkerContext } from "./runtime/pool.ts";
 import type { PromiseMap } from "./runtime/tx-queue.ts";
-import { isMainThread, Serializable, workerData } from "node:worker_threads";
+import { isMainThread, type Serializable, workerData } from "node:worker_threads";
 
 import { type Balancer, managerMethod } from "./runtime/balancer.ts";
 import { createInlineExecutor } from "./runtime/inline-executor.ts";
@@ -25,14 +25,7 @@ interface JSONObject {
 interface JSONArray extends Array<JSONValue> {}
 
 export type ValidInput =
-  | undefined
-  | null
-  | boolean
-  | number
-  | string
   | bigint
-  | Date
-  | RegExp
   | void
   | JSONValue
   | Map<Serializable, Serializable>
@@ -75,7 +68,7 @@ export const fixedPoint = <
 >(
   I: FixPoint<A, B>,
 ): ReturnFixed<A, B> => {
-  const importedFrom = I?.href ?? new URL(getCallerFilePath(3)).href;
+  const importedFrom = I?.href ?? new URL(getCallerFilePath()).href;
   return ({
     ...I,
     id: genTaskID(),

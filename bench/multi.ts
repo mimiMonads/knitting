@@ -24,6 +24,23 @@ if (isMain) {
   const sizes = [10, 100, 1000];
 
   boxplot(async () => {
+
+
+    group("knitting", () => {
+      summary(() => {
+        for (const size of sizes) {
+          bench(`4 thread → (${size})`, async () => {
+            const arr = Array(size)
+              .fill(0)
+              .map(() => callFunction.inLine(obj));
+
+            send();
+            await Promise.all(arr);
+          });
+        }
+      });
+    });
+
     group("worker", () => {
       summary(() => {
         for (const size of sizes) {
@@ -37,21 +54,6 @@ if (isMain) {
             send();
 
             // wait for all to resolve
-            await Promise.all(arr);
-          });
-        }
-      });
-    });
-
-    group("knitting", () => {
-      summary(() => {
-        for (const size of sizes) {
-          bench(`4 thread → (${size})`, async () => {
-            const arr = Array(size)
-              .fill(0)
-              .map(() => callFunction.inLine(obj));
-
-            send();
             await Promise.all(arr);
           });
         }

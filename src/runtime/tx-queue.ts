@@ -73,6 +73,7 @@ interface MultipleQueueSingle {
 export function createHostTxQueue({
   signalBox: {
     op,
+    rxStatus,
     rpcId,
     frameFlags,
     slotIndex,
@@ -111,6 +112,7 @@ export function createHostTxQueue({
   const write = writeFramePayload({
     index: MainListEnum.RawArguments,
     from: "main",
+    jsonString: true
   })(signals);
 
   // Readers
@@ -118,6 +120,10 @@ export function createHostTxQueue({
   const reader = readFramePayload({
     ...signals,
     specialType: "main",
+  });
+
+  const simplifies = preencodeJsonString({
+    index: MainListEnum.RawArguments,
   });
 
   // Local count
@@ -130,7 +136,7 @@ export function createHostTxQueue({
 
   // Helpers
   const hasPendingFrames = () => toBeSentCount > 0;
-  const txIdle = () => toBeSentCount === 0;
+  const txIdle = () => toBeSentCount === 0 && inUsed === 0;
   const addDeferred = () => {
     const deferred = Promise.withResolvers<
       WorkerResponse
@@ -162,6 +168,18 @@ export function createHostTxQueue({
     });
   };
   return {
+    optimizeQueue: ()=> {
+
+      let i = 0;
+    
+      while(rxStatus[0] === 1 && toBeSent.length > i ){
+
+        simplifies(queue[toBeSent[i]])
+        i++
+       
+      }
+    },
+
     rejectAll,
     hasPendingFrames,
     txIdle,

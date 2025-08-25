@@ -29,7 +29,7 @@ const getCallerFilePathForBun = (n: number) => {
   return caller;
 };
 
-export const getCallerFilePath = (n: number) => {
+export const getCallerFilePath = () => {
   return getCallerFilePathForBun(IS_BUN ? 2 : 3);
 };
 
@@ -39,7 +39,7 @@ export const beat = (): number => Number(hrtime.bigint()) / 1e4;
 
 import { createWriteStream, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { OP, OP_TAG } from "../ipc/transport/shared-memory.ts";
+import {  OP_TAG } from "../ipc/transport/shared-memory.ts";
 
 export const signalDebuggerV2 = ({
   thread,

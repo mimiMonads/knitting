@@ -1,5 +1,6 @@
-import type { Composed, FixedPoints } from "../api.ts";
+import type {  FixedPoints } from "../api.ts";
 import { type CallFunction } from "./pool.ts";
+import { MessageChannel } from "node:worker_threads";
 
 type TaskID = number;
 type FunctionID = number;
@@ -55,6 +56,7 @@ export const createInlineExecutor = ({
   let isInMacro = false;
 
   const channel = new MessageChannel();
+  //@ts-ignore
   channel.port1.onmessage = processNext;
 
   function allocIndex(): number {
@@ -130,8 +132,10 @@ export const createInlineExecutor = ({
 
   return {
     kills: () => {
+      //@ts-ignore
       channel.port1.onmessage = null;
       channel.port1.close();
+      //@ts-ignore
       channel.port2.onmessage = null;
       channel.port2.close();
       pendingQueue.length = 0;

@@ -42,7 +42,7 @@ if (isMain) {
   const min = -(2n ** 63n - 1n);
   const max = 2n ** 64n - 1n;
   const smallArray = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-  const bigArray = Array.from({ length: 500 }, (_, i) => i);
+  const bigArray = Array.from({ length: 500 }, (_, i) => i * Math.random());
   const obj = {
     number: 123,
     string: "helloWorld",
@@ -64,6 +64,9 @@ if (isMain) {
       },
     })),
   };
+
+  Object.freeze(bigObj)
+
 
   group("knitting fast", () => {
     bench(`string -> (1)`, async () => {

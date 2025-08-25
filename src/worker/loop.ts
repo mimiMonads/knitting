@@ -7,31 +7,12 @@ import {
 } from "../ipc/transport/shared-memory.ts";
 import { type DebugOptions, getFunctions } from "../api.ts";
 import { type WorkerData } from "../runtime/pool.ts";
+import { pauseGeneric  , sleepUntilChanged} from "./timers.ts";
 
 export const jsrIsGreatAndWorkWithoutBugs = () => null;
 
-const pause = "pause" in Atomics
-  // 300 nanos apx
-  ? () => Atomics.pause(300)
-  : () => {};
 
-const sleepUntilChanged = (
-  sab: Int32Array,
-  at: number,
-  value: number,
-  usTime: number,
-) => {
-  const until = performance.now() + (usTime / 1000);
 
-  do {
-    if (Atomics.load(sab, at) !== value) return false;
-    pause();
-  } while (
-    performance.now() < until
-  );
-
-  return true;
-};
 
 export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
   const debug = workerData.debug as DebugOptions;
@@ -45,10 +26,18 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     startTime: workerData.startAt,
   });
 
+  const timeToAwait = Math.max(1, workerData.totalNumberOfThread) * 50
   const totalNumberOfThread = workerData.totalNumberOfThread;
   const moreThanOneThread = totalNumberOfThread > 1;
 
-  const { op, opView } = signals;
+  const { opView  , op,rxStatus ,txStatus} = signals;
+
+  const  pauseUntil = sleepUntilChanged({
+    opView,
+    at: 0,
+    rxStatus,
+    txStatus
+  })
 
   const listOfFunctions = await getFunctions({
     list: workerData.list,
@@ -81,6 +70,7 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     hasPending,
     blockingResolve,
     preResolve,
+    hasFramesToOptimize
   } = createWorkerRxQueue({
     listOfFunctions,
     signal,
@@ -88,13 +78,14 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     moreThanOneThread,
   });
 
+  rxStatus[0] = 0
   while (true) {
     switch (op[0]) {
       case OP.AllTasksDone:
       case OP.WaitingForMore:
       case OP.ErrorThrown:
       case OP.WakeUp: {
-        pause();
+        pauseGeneric();
         continue;
       }
       case OP.HighPriorityResolve: {
@@ -103,12 +94,20 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
       }
 
       case OP.WorkerWaiting: {
+        
         if (hasPending()) {
           await serviceOneImmediate();
         } else {
-          if (moreThanOneThread === true) {
-            preResolve();
+          if(txStatus[0] === 1) continue;
+
+          if(hasFramesToOptimize()){
+      
+              preResolve();
+        
+          }else{
+            pauseUntil(OP.WorkerWaiting,timeToAwait,1)
           }
+
         }
 
         continue;
@@ -136,28 +135,11 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
 
         continue;
       case OP.FastResolve: {
-        if (sleepUntilChanged(op, 0, OP.FastResolve, 15) === false) {
-          continue;
-        }
-
-        Atomics.wait(
-          op,
-          0,
-          OP.FastResolve,
-          5,
-        );
+        pauseUntil(OP.FastResolve, 15,5)
         continue;
       }
       case OP.MainStop: {
-        if (sleepUntilChanged(opView, 0, OP.MainStop, 15) === false) continue;
-
-        Atomics.wait(
-          opView,
-          0,
-          OP.MainStop,
-          50,
-        );
-
+       pauseUntil(OP.MainStop, 15,50)
         continue;
       }
     }

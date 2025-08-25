@@ -7,7 +7,7 @@ import { type DebugOptions } from "../../api.ts";
 import { Buffer as NodeBuffer } from "node:buffer";
 
 enum SignalEnumOptions {
-  header = 32,
+  header = 40,
   maxByteLength = 64 * 1024 * 1024,
   defaultSize = 1024 * 64,
   safePadding = 512,
@@ -28,7 +28,7 @@ export enum OP {
   MainStop = 11,
 }
 
-export const OP_TAG: Record<OP, string> = {
+ export const OP_TAG: Record<OP, string> = {
   [OP.Created]: "START ",
   [OP.WorkerWaiting]: "WWAIT ",
   [OP.AllTasksDone]: "DONE  ",
@@ -141,6 +141,9 @@ export const createSharedMemoryTransport = (
       payloadLen,
     });
 
+    const rxStatus = new Int32Array(sab, 28, 1)
+
+    rxStatus[0] = 1
   return {
     sab,
     op,
@@ -155,7 +158,8 @@ export const createSharedMemoryTransport = (
     frameFlags: new Int32Array(sab, 16, 1),
     type: new Int32Array(sab, 20, 1),
     slotIndex: new Int32Array(sab, 24, 1),
-    workerop: new Int32Array(sab, 28, 1),
+    rxStatus,
+    txStatus: new Int32Array(sab, 32, 1),
     // Access to the current length of the payload
     payloadLen,
     // Modifying shared memory
@@ -174,19 +178,24 @@ export const createSharedMemoryTransport = (
 };
 
 export const mainSignal = (
-  { op, id, rpcId, frameFlags, opView, slotIndex, startAt }: SignalArguments,
-) => ({
-  op,
-  opView,
-  rpcId,
-  id,
-  slotIndex,
-  frameFlags,
-  startAt,
-});
+  { op, id, rpcId, frameFlags, opView, slotIndex, startAt  , rxStatus ,txStatus }: SignalArguments,
+) => {
+
+  return ({
+    op,
+    opView,
+    rpcId,
+    id,
+    slotIndex,
+    frameFlags,
+    startAt,
+    rxStatus,
+    txStatus
+  })
+};
 
 export const workerSignal = (
-  { op, id, rpcId, frameFlags, slotIndex, isReflected }: SignalArguments,
+  { op, id, rpcId, frameFlags, slotIndex, isReflected , rxStatus , txStatus}: SignalArguments,
 ) => ({
   op,
   id,
@@ -194,4 +203,5 @@ export const workerSignal = (
   rpcId,
   frameFlags,
   isReflected,
+  rxStatus
 });
