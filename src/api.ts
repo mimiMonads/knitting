@@ -2,10 +2,15 @@ import { getCallerFilePath } from "./common/others.ts";
 import { genTaskID } from "./common/others.ts";
 import { spawnWorkerContext } from "./runtime/pool.ts";
 import type { PromiseMap } from "./runtime/tx-queue.ts";
-import { isMainThread, type Serializable, workerData } from "node:worker_threads";
+import {
+  isMainThread,
+  type Serializable,
+  workerData,
+} from "node:worker_threads";
 
 import { type Balancer, managerMethod } from "./runtime/balancer.ts";
 import { createInlineExecutor } from "./runtime/inline-executor.ts";
+
 
 export const isMain = isMainThread;
 export type FixedPoints = Record<string, Composed>;
@@ -29,7 +34,7 @@ export type ValidInput =
   | void
   | JSONValue
   | Map<Serializable, Serializable>
-  | Set<Serializable>;
+  | Set<Serializable>
 
 export type External = unknown;
 
@@ -165,19 +170,21 @@ type Pool<T extends Record<string, FixPoint<Args, Args>>> = {
   send: { (): void };
 };
 
+type CreateThreadPool = {
+  threads?: number;
+  main?: "first" | "last";
+  balancer?: Balancer;
+  debug?: DebugOptions;
+  source?: string;
+}
 export const createThreadPool = ({
   threads,
   debug,
   balancer,
   main,
   source,
-}: {
-  threads?: number;
-  main?: "first" | "last";
-  balancer?: Balancer;
-  debug?: DebugOptions;
-  source?: string;
-}) =>
+}: CreateThreadPool
+) =>
 <T extends FixedPoints>(fixedPoints: T): Pool<T> => {
   /**
    *  This functions is only available in the main thread.

@@ -1,4 +1,4 @@
-import { bench, group, run as mitataRun } from "mitata";
+import { B, bench, group, run as mitataRun } from "mitata";
 import { createThreadPool, fixedPoint, isMain } from "../knitting.ts";
 import { terminateAllWorkers, toResolve } from "./postmessage/single.ts";
 import { format, print } from "./ulti/json-parse.ts";
@@ -42,15 +42,22 @@ if (isMain) {
   const min = -(2n ** 63n - 1n);
   const max = 2n ** 64n - 1n;
   const smallArray = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
-  const bigArray = Array.from({ length: 500 }, (_, i) => i * Math.random());
+
   const obj = {
     number: 123,
     string: "helloWorld",
     nullable: null,
     arr: [1, 2, 3, 4, 5],
   };
+  const bigArray = Array.from(
+    { length: 100 },
+    (_, i) => Math.floor(i * Math.random() * 5000),
+  );
+
+
+ 
   const bigObj = {
-    users: Array.from({ length: 5 }, (_, i) => ({
+    users: Array.from({ length: 500 }, (_, i) => ({
       id: i,
       name: `User ${i}`,
       age: Math.floor(Math.random() * 80),
@@ -64,9 +71,6 @@ if (isMain) {
       },
     })),
   };
-
-  Object.freeze(bigObj)
-
 
   group("knitting fast", () => {
     bench(`string -> (1)`, async () => {
@@ -211,7 +215,10 @@ if (isMain) {
 
       bench(
         `big Array -> (${n})`,
-        async () => await runCF(n, async () => callFunction.toObject(bigArray)),
+        async () => {
+
+          await runCF(n, async () => callFunction.toObject(bigArray));
+        },
       );
       bench(
         `object -> (${n})`,

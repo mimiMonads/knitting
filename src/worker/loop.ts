@@ -7,12 +7,9 @@ import {
 } from "../ipc/transport/shared-memory.ts";
 import { type DebugOptions, getFunctions } from "../api.ts";
 import { type WorkerData } from "../runtime/pool.ts";
-import { pauseGeneric  , sleepUntilChanged} from "./timers.ts";
+import { pauseGeneric, sleepUntilChanged } from "./timers.ts";
 
 export const jsrIsGreatAndWorkWithoutBugs = () => null;
-
-
-
 
 export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
   const debug = workerData.debug as DebugOptions;
@@ -26,18 +23,18 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     startTime: workerData.startAt,
   });
 
-  const timeToAwait = Math.max(1, workerData.totalNumberOfThread) * 50
+  const timeToAwait = Math.max(1, workerData.totalNumberOfThread) * 50;
   const totalNumberOfThread = workerData.totalNumberOfThread;
   const moreThanOneThread = totalNumberOfThread > 1;
 
-  const { opView  , op,rxStatus ,txStatus} = signals;
+  const { opView, op, rxStatus, txStatus } = signals;
 
-  const  pauseUntil = sleepUntilChanged({
+  const pauseUntil = sleepUntilChanged({
     opView,
     at: 0,
     rxStatus,
-    txStatus
-  })
+    txStatus,
+  });
 
   const listOfFunctions = await getFunctions({
     list: workerData.list,
@@ -70,7 +67,7 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     hasPending,
     blockingResolve,
     preResolve,
-    hasFramesToOptimize
+    hasFramesToOptimize,
   } = createWorkerRxQueue({
     listOfFunctions,
     signal,
@@ -78,7 +75,7 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     moreThanOneThread,
   });
 
-  rxStatus[0] = 0
+  rxStatus[0] = 0;
   while (true) {
     switch (op[0]) {
       case OP.AllTasksDone:
@@ -94,20 +91,15 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
       }
 
       case OP.WorkerWaiting: {
-        
         if (hasPending()) {
           await serviceOneImmediate();
         } else {
-          if(txStatus[0] === 1) continue;
-
-          if(hasFramesToOptimize()){
-      
-              preResolve();
-        
-          }else{
-            pauseUntil(OP.WorkerWaiting,timeToAwait,1)
+          if (hasFramesToOptimize()) {
+            preResolve();
+          } else {
+            if (txStatus[0] === 1) continue;
+            pauseUntil(OP.WorkerWaiting, timeToAwait, 1);
           }
-
         }
 
         continue;
@@ -135,11 +127,11 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
 
         continue;
       case OP.FastResolve: {
-        pauseUntil(OP.FastResolve, 15,5)
+        pauseUntil(OP.FastResolve, 15, 5);
         continue;
       }
       case OP.MainStop: {
-       pauseUntil(OP.MainStop, 15,50)
+        pauseUntil(OP.MainStop, 15, 50);
         continue;
       }
     }

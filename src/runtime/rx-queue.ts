@@ -118,7 +118,7 @@ export const createWorkerRxQueue = (
       const slot = completedFrames.pop();
       if (slot) optimizedFrames.push(simplifies(slot));
     },
-  
+
     //enqueue a task to the queue.
     enqueue: () => {
       const currentIndex = slotIndex[0],

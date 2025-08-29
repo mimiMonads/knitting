@@ -1,4 +1,4 @@
-import type {  FixedPoints } from "../api.ts";
+import type { FixedPoints } from "../api.ts";
 import { type CallFunction } from "./pool.ts";
 import { MessageChannel } from "node:worker_threads";
 

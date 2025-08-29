@@ -4,7 +4,6 @@ type PauseOptions = {
 
 const DEFAULT_PAUSE_TIME = 300;
 
-
 export const whilePausing = ({ pauseInNanoseconds }: PauseOptions) => {
   const forNanoseconds = pauseInNanoseconds ?? DEFAULT_PAUSE_TIME;
 
@@ -15,12 +14,11 @@ export const pauseGeneric = whilePausing({});
 
 export const sleepUntilChanged = (
   {
-
     at,
     opView,
     pauseInNanoseconds,
     rxStatus,
-    txStatus
+    txStatus,
   }: {
     opView: Int32Array;
     rxStatus: Int32Array;
@@ -36,12 +34,14 @@ export const sleepUntilChanged = (
   return (
     value: number,
     msTime: number,
-    timeforWakingUp?: number 
+    timeforWakingUp?: number,
   ) => {
     const until = performance.now() + (msTime / 1000);
 
     do {
-      if (Atomics.load(opView, at) !== value || Atomics.load(txStatus, 0) === 1) return;
+      if (
+        Atomics.load(opView, at) !== value || Atomics.load(txStatus, 0) === 1
+      ) return;
 
       pause();
     } while (
@@ -57,6 +57,5 @@ export const sleepUntilChanged = (
       timeforWakingUp ?? 50,
     );
     Atomics.store(rxStatus, 0, 0);
-
   };
 };

@@ -112,7 +112,7 @@ export function createHostTxQueue({
   const write = writeFramePayload({
     index: MainListEnum.RawArguments,
     from: "main",
-    jsonString: true
+    jsonString: true,
   })(signals);
 
   // Readers
@@ -168,15 +168,12 @@ export function createHostTxQueue({
     });
   };
   return {
-    optimizeQueue: ()=> {
-
+    optimizeQueue: () => {
       let i = 0;
-    
-      while(rxStatus[0] === 1 && toBeSent.length > i ){
 
-        simplifies(queue[toBeSent[i]])
-        i++
-       
+      while (rxStatus[0] === 1 && toBeSent.length > i) {
+        simplifies(queue[toBeSent[i]]);
+        i++;
       }
     },
 

@@ -90,7 +90,7 @@ export const spawnWorkerContext = ({
     signalBox,
     queue,
     channelHandler,
-    totalNumberOfThread
+    totalNumberOfThread,
     //thread,
     //debugSignal: debug?.logMain ?? false,
     //perf,

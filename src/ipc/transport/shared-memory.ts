@@ -7,7 +7,7 @@ import { type DebugOptions } from "../../api.ts";
 import { Buffer as NodeBuffer } from "node:buffer";
 
 enum SignalEnumOptions {
-  header = 40,
+  header = 64,
   maxByteLength = 64 * 1024 * 1024,
   defaultSize = 1024 * 64,
   safePadding = 512,
@@ -28,7 +28,7 @@ export enum OP {
   MainStop = 11,
 }
 
- export const OP_TAG: Record<OP, string> = {
+export const OP_TAG: Record<OP, string> = {
   [OP.Created]: "START ",
   [OP.WorkerWaiting]: "WWAIT ",
   [OP.AllTasksDone]: "DONE  ",
@@ -57,42 +57,85 @@ export type Sab = {
 };
 const textEncode = new TextEncoder();
 
-const allocatePayloadBuffer = ({ sab, payloadLen }: {
+const alignUpto64 = (n: number) => (n + (64 - 1)) & ~(64 - 1);
+
+export const allocatePayloadBuffer = ({
+  sab,
+  payloadLen, // always store BYTES!! here
+}: {
   sab: SharedArrayBuffer;
   payloadLen: Int32Array;
 }) => {
-  let currentSize = sab.byteLength - SignalEnumOptions.header;
-  let uInt8 = new Uint8Array(sab, SignalEnumOptions.header);
-  let buff = NodeBuffer.from(sab, SignalEnumOptions.header);
+  let u8 = new Uint8Array(sab, SignalEnumOptions.header);
+  let buf = NodeBuffer.from(sab, SignalEnumOptions.header);
+  let f64 = new Float64Array(sab, SignalEnumOptions.header);
 
-  const readUtf8 = () => buff.toString("utf8", 0, payloadLen[0]);
-  const writeBinary = (buffer: Uint8Array) => {
-    if (
-      currentSize < buffer.length
-    ) {
-      const required = buffer.length + SignalEnumOptions.header +
-        SignalEnumOptions.safePadding;
-      sab.grow(required);
-      currentSize = sab.byteLength - SignalEnumOptions.header;
-      uInt8 = new Uint8Array(sab, SignalEnumOptions.header);
-      buff = NodeBuffer.from(sab, SignalEnumOptions.header);
-    }
-    uInt8.set(buffer, 0);
-    payloadLen[0] = buffer.length;
+  const capacityBytes = () => sab.byteLength - SignalEnumOptions.header;
+
+  const ensureCapacity = (neededBytes: number) => {
+    if (capacityBytes() >= neededBytes) return;
+
+    sab.grow(
+      alignUpto64(
+        SignalEnumOptions.header + neededBytes + SignalEnumOptions.safePadding,
+      ),
+    );
+
+    u8 = new Uint8Array(
+      sab,
+      SignalEnumOptions.header,
+      sab.byteLength - SignalEnumOptions.header,
+    );
+    buf = NodeBuffer.from(
+      sab,
+      SignalEnumOptions.header,
+      sab.byteLength - SignalEnumOptions.header,
+    );
+    f64 = new Float64Array(
+      sab,
+      SignalEnumOptions.header,
+      (sab.byteLength - SignalEnumOptions.header) >>> 3,
+    );
   };
+
+  const readUtf8 = () => buf.toString("utf8", 0, payloadLen[0]);
+
+  const writeBinary = (src: Uint8Array) => {
+    ensureCapacity(src.byteLength);
+    u8.set(src, 0);
+    payloadLen[0] = src.byteLength; // BYTES
+  };
+
+  const write8Binary = (src: Float64Array) => {
+    const bytes = src.byteLength;
+    ensureCapacity(bytes);
+    f64.set(src, 0);
+    payloadLen[0] = bytes; // BYTES
+  };
+
+  const readBytesCopy = () => u8.slice(0, payloadLen[0]);
+  const readBytesView = () => u8.subarray(0, payloadLen[0]);
+
+  const read8BytesFloatCopy = () => f64.slice(0, payloadLen[0] >>> 3);
+  const read8BytesFloatView = () => f64.subarray(0, payloadLen[0] >>> 3);
+
+  const writeUtf8 = (str: string) => {
+    const { written, read } = textEncode.encodeInto(str, u8);
+    payloadLen[0] = written;
+    if (read < str.length) {
+      return writeBinary(textEncode.encode(str));
+    }
+  };
+
   return {
     readUtf8,
     writeBinary,
-    readBytesCopy: () => uInt8.slice(0, payloadLen[0]),
-    readBytesView: () => uInt8.subarray(0, payloadLen[0]),
-    writeUtf8: (str: string) => {
-      const { written, read } = textEncode.encodeInto(str, uInt8);
-      payloadLen[0] = written;
-
-      if (read < str.length) {
-        return writeBinary(textEncode.encode(str));
-      }
-    },
+    write8Binary,
+    readBytesCopy,
+    readBytesView,
+    read8BytesFloatCopy,
+    read8BytesFloatView,
+    writeUtf8,
   };
 };
 
@@ -106,11 +149,15 @@ type SignalForWorker = {
 export const createSharedMemoryTransport = (
   { sabObject, isMain, thread, debug, startTime }: SignalForWorker,
 ) => {
+  const toGrow = sabObject?.size ?? SignalEnumOptions.defaultSize;
   const sab = sabObject?.sharedSab
     ? sabObject.sharedSab
-    : new SharedArrayBuffer(sabObject?.size ?? SignalEnumOptions.defaultSize, {
-      maxByteLength: SignalEnumOptions.maxByteLength,
-    });
+    : new SharedArrayBuffer(
+      toGrow + (toGrow % 8),
+      {
+        maxByteLength: SignalEnumOptions.maxByteLength,
+      },
+    );
 
   const startAt = beat();
 
@@ -135,15 +182,15 @@ export const createSharedMemoryTransport = (
   }
 
   const payloadLen = new Int32Array(sab, 8, 1);
-  const { writeBinary, readBytesCopy, readBytesView, writeUtf8, readUtf8 } =
+  const { writeBinary, readBytesCopy, readBytesView, writeUtf8, readUtf8, write8Binary, read8BytesFloatCopy, read8BytesFloatView } =
     allocatePayloadBuffer({
       sab,
       payloadLen,
     });
 
-    const rxStatus = new Int32Array(sab, 28, 1)
+  const rxStatus = new Int32Array(sab, 28, 1);
 
-    rxStatus[0] = 1
+  rxStatus[0] = 1;
   return {
     sab,
     op,
@@ -164,10 +211,13 @@ export const createSharedMemoryTransport = (
     payloadLen,
     // Modifying shared memory
     writeBinary,
+    write8Binary,
     writeUtf8,
     readBytesCopy,
     readBytesView,
     readUtf8,
+    read8BytesFloatCopy,
+    read8BytesFloatView,
     // One byte var
     bigInt: new BigInt64Array(sab, SignalEnumOptions.header, 1),
     uBigInt: new BigUint64Array(sab, SignalEnumOptions.header, 1),
@@ -178,9 +228,9 @@ export const createSharedMemoryTransport = (
 };
 
 export const mainSignal = (
-  { op, id, rpcId, frameFlags, opView, slotIndex, startAt  , rxStatus ,txStatus }: SignalArguments,
+  { op, id, rpcId, frameFlags, opView, slotIndex, startAt, rxStatus, txStatus }:
+    SignalArguments,
 ) => {
-
   return ({
     op,
     opView,
@@ -190,12 +240,13 @@ export const mainSignal = (
     frameFlags,
     startAt,
     rxStatus,
-    txStatus
-  })
+    txStatus,
+  });
 };
 
 export const workerSignal = (
-  { op, id, rpcId, frameFlags, slotIndex, isReflected , rxStatus , txStatus}: SignalArguments,
+  { op, id, rpcId, frameFlags, slotIndex, isReflected, rxStatus, txStatus }:
+    SignalArguments,
 ) => ({
   op,
   id,
@@ -203,5 +254,5 @@ export const workerSignal = (
   rpcId,
   frameFlags,
   isReflected,
-  rxStatus
+  rxStatus,
 });

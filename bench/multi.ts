@@ -15,7 +15,7 @@ const obj = {
 };
 
 const { terminateAll, callFunction, send } = createThreadPool(
-  { threads: 6 },
+  { threads: 4 },
 )({
   inLine,
 });
@@ -24,8 +24,6 @@ if (isMain) {
   const sizes = [10, 100, 1000];
 
   boxplot(async () => {
-
-
     group("knitting", () => {
       summary(() => {
         for (const size of sizes) {
