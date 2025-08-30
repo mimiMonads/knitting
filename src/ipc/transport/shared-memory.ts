@@ -182,11 +182,19 @@ export const createSharedMemoryTransport = (
   }
 
   const payloadLen = new Int32Array(sab, 8, 1);
-  const { writeBinary, readBytesCopy, readBytesView, writeUtf8, readUtf8, write8Binary, read8BytesFloatCopy, read8BytesFloatView } =
-    allocatePayloadBuffer({
-      sab,
-      payloadLen,
-    });
+  const {
+    writeBinary,
+    readBytesCopy,
+    readBytesView,
+    writeUtf8,
+    readUtf8,
+    write8Binary,
+    read8BytesFloatCopy,
+    read8BytesFloatView,
+  } = allocatePayloadBuffer({
+    sab,
+    payloadLen,
+  });
 
   const rxStatus = new Int32Array(sab, 28, 1);
 

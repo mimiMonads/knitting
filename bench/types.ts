@@ -54,8 +54,6 @@ if (isMain) {
     (_, i) => Math.floor(i * Math.random() * 5000),
   );
 
-
- 
   const bigObj = {
     users: Array.from({ length: 500 }, (_, i) => ({
       id: i,
@@ -216,7 +214,6 @@ if (isMain) {
       bench(
         `big Array -> (${n})`,
         async () => {
-
           await runCF(n, async () => callFunction.toObject(bigArray));
         },
       );

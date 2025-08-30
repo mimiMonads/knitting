@@ -1,6 +1,7 @@
 import { type MultiQueue } from "./tx-queue.ts";
 import { type MainSignal, OP } from "../ipc/transport/shared-memory.ts";
 import { MessageChannel } from "node:worker_threads";
+import { WorkerSettings } from "../api.ts";
 
 export const hostDispatcherLoop = ({
   signalBox: {
@@ -17,11 +18,13 @@ export const hostDispatcherLoop = ({
     completeImmediate,
   },
   channelHandler,
+  workerOptions,
 }: {
   queue: MultiQueue;
   signalBox: MainSignal;
   channelHandler: ChannelHandler;
   totalNumberOfThread: number;
+  workerOptions?: WorkerSettings;
 }) => {
   let catchEarly = true;
   const nextTick = process.nextTick;

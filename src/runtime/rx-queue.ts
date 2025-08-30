@@ -5,7 +5,7 @@ import {
   type SignalArguments,
   type WorkerSignal,
 } from "../ipc/transport/shared-memory.ts";
-import type { ComposedWithKey } from "../api.ts";
+import type { ComposedWithKey, WorkerSettings } from "../api.ts";
 import {
   decodeArgs,
   fromReturnToMainError,
@@ -22,6 +22,7 @@ type ArgumentsForCreateWorkerQueue = {
   moreThanOneThread: boolean;
   signal: WorkerSignal;
   signals: SignalArguments;
+  workerOptions?: WorkerSettings;
 };
 
 // Create and manage a
@@ -35,7 +36,7 @@ export const createWorkerRxQueue = (
       rpcId,
       slotIndex,
     },
-    moreThanOneThread,
+    workerOptions,
   }: ArgumentsForCreateWorkerQueue,
 ) => {
   const PLACE_HOLDER = () => {
@@ -93,11 +94,14 @@ export const createWorkerRxQueue = (
   const errorFrames: QueueListWorker[] = [];
   const toWork: QueueListWorker[] = [];
   const optimizedFrames: QueueListWorker[] = [];
+  const hasCompleted = workerOptions?.resolveAfterFinishinAll === true
+    ? () => hasAnythingFinished !== 0 && toWork.length === 0
+    : () => hasAnythingFinished !== 0;
 
   return {
     // Check if any task is solved and ready for writing.
     hasFramesToOptimize: () => completedFrames.length > 0,
-    hasCompleted: () => hasAnythingFinished !== 0,
+    hasCompleted,
     hasPending: () => toWork.length !== 0,
     blockingResolve: async () => {
       try {

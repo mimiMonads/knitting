@@ -11,7 +11,6 @@ import {
 import { type Balancer, managerMethod } from "./runtime/balancer.ts";
 import { createInlineExecutor } from "./runtime/inline-executor.ts";
 
-
 export const isMain = isMainThread;
 export type FixedPoints = Record<string, Composed>;
 
@@ -34,7 +33,7 @@ export type ValidInput =
   | void
   | JSONValue
   | Map<Serializable, Serializable>
-  | Set<Serializable>
+  | Set<Serializable>;
 
 export type External = unknown;
 
@@ -56,8 +55,6 @@ type SecondPart = {
 };
 
 export type Composed = {
-  readonly args?: Args;
-  readonly return?: Args;
   readonly f: (...args: any) => any;
 } & SecondPart;
 
@@ -100,13 +97,10 @@ export const getFunctions = async ({ list, ids }: {
       //@ts-ignore
       const module = await import(imports);
 
-      return Object.entries(module) // Use `Object.entries` to include names
+      return Object.entries(module)
         .filter(
-          ([_, value]): //@ts-ignore -> Reason trust me bro
-          value is ReturnFixed<any> =>
-            typeof value === "object" &&
-            value !== null &&
-            !Array.isArray(value) &&
+          ([_, value]) =>
+            value != null && typeof value === "object" &&
             Object.getOwnPropertySymbols(value).some(
               (sym) => sym === endpointSymbol,
             ),
@@ -170,28 +164,33 @@ type Pool<T extends Record<string, FixPoint<Args, Args>>> = {
   send: { (): void };
 };
 
+export type WorkerSettings = {
+  resolveAfterFinishinAll?: true;
+};
+
 type CreateThreadPool = {
   threads?: number;
   main?: "first" | "last";
   balancer?: Balancer;
+  worker?: WorkerSettings;
   debug?: DebugOptions;
   source?: string;
-}
+};
 export const createThreadPool = ({
   threads,
   debug,
   balancer,
   main,
   source,
-}: CreateThreadPool
-) =>
+  worker,
+}: CreateThreadPool) =>
 <T extends FixedPoints>(fixedPoints: T): Pool<T> => {
   /**
    *  This functions is only available in the main thread.
    *  Also triggers when debug extra is enabled.
    */
   if (isMainThread === false) {
-    if (debug?.extras === true) {
+    if ((debug?.extras === true)) {
       console.warn(
         "createThreadPool has been called with : " + JSON.stringify(
           workerData,
@@ -251,6 +250,7 @@ export const createThreadPool = ({
       perf,
       totalNumberOfThread,
       source,
+      workerOptions: worker,
     })
   );
 

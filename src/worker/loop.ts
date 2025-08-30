@@ -22,6 +22,7 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     debug,
     startTime: workerData.startAt,
   });
+  const { workerOptions } = workerData;
 
   const timeToAwait = Math.max(1, workerData.totalNumberOfThread) * 50;
   const totalNumberOfThread = workerData.totalNumberOfThread;

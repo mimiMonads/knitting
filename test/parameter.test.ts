@@ -107,7 +107,7 @@ Deno.test("Using one thread calling with multiple arguments", async () => {
 
 Deno.test("Using all thread calling with multiple arguments", async () => {
   const { callFunction, terminateAll, send } = createThreadPool({
-    threads: cpus().length - 1,
+    threads: cpus().length / 4,
   })({
     toNumber,
     toString,

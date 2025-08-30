@@ -9,7 +9,7 @@ import {
   type Sab,
 } from "../ipc/transport/shared-memory.ts";
 import { ChannelHandler, hostDispatcherLoop } from "./dispatcher.ts";
-import type { ComposedWithKey, DebugOptions } from "../api.ts";
+import type { ComposedWithKey, DebugOptions, WorkerSettings } from "../api.ts";
 import { jsrIsGreatAndWorkWithoutBugs } from "../worker/loop.ts";
 import { Worker } from "node:worker_threads";
 
@@ -29,6 +29,7 @@ export type WorkerData = {
   totalNumberOfThread: number;
   debug?: DebugOptions;
   startAt: number;
+  workerOptions?: WorkerSettings;
 };
 
 export const spawnWorkerContext = ({
@@ -41,6 +42,7 @@ export const spawnWorkerContext = ({
   listOfFunctions,
   totalNumberOfThread,
   source,
+  workerOptions,
 }: {
   promisesMap: PromiseMap;
   list: string[];
@@ -52,6 +54,7 @@ export const spawnWorkerContext = ({
   listOfFunctions: ComposedWithKey[];
   perf?: number;
   source?: string;
+  workerOptions?: WorkerSettings;
 }) => {
   const tsFileUrl = new URL(import.meta.url);
 
@@ -117,6 +120,7 @@ export const spawnWorkerContext = ({
         ids,
         thread,
         debug,
+        workerOptions,
         totalNumberOfThread,
         startAt: signalBox.startAt,
       } as WorkerData,

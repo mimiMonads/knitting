@@ -88,7 +88,7 @@ const preencodeJsonString = (
         }
       }
     }
-    return task
+    return task;
   };
 };
 
@@ -130,12 +130,12 @@ const writeFramePayload = (
     if (preProcessed === true) {
       switch (task[MainListEnum.PayloadType]) {
         case PayloadType.StringToJson:
-          writeUtf8(args as string)
+          writeUtf8(args as string);
           task[MainListEnum.PayloadType] = PayloadType.Json;
           type[0] = PayloadType.Json;
           return;
         case PayloadType.SerializabledAndReady:
-          writeBinary(args as Uint8Array)
+          writeBinary(args as Uint8Array);
           task[MainListEnum.PayloadType] = PayloadType.Serializable;
           type[0] = PayloadType.Serializable;
           return;
