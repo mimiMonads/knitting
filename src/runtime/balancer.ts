@@ -1,12 +1,8 @@
+import type { Balancer } from "../types.ts";
 import type { CreateContext } from "./pool.ts";
 
 export type Handler<A, R> = (args: A) => R;
 
-export type Balancer =
-  | "robinRound"
-  | "firstIdle"
-  | "randomLane"
-  | "firstIdleOrRandom";
 
 type manager = {
   contexts: readonly CreateContext[];

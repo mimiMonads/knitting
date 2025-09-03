@@ -12,7 +12,7 @@ import {
   OP,
   type SignalArguments,
 } from "../ipc/transport/shared-memory.ts";
-import type { ComposedWithKey } from "../api.ts";
+import type { ComposedWithKey } from "../types.ts";
 
 type RawArguments = unknown;
 type WorkerResponse = unknown;

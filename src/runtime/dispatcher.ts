@@ -1,7 +1,7 @@
 import { type MultiQueue } from "./tx-queue.ts";
 import { type MainSignal, OP } from "../ipc/transport/shared-memory.ts";
 import { MessageChannel } from "node:worker_threads";
-import { WorkerSettings } from "../api.ts";
+import { WorkerSettings } from "../types.ts";
 
 export const hostDispatcherLoop = ({
   signalBox: {

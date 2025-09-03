@@ -48,7 +48,12 @@ if (isMain) {
   const runPrimes = async (threads: number) => {
     const { callFunction, terminateAll, send } = createThreadPool({
       threads,
-      main: "last",
+      inliner:{
+        position: "first"
+      },
+      worker:{
+        resolveAfterFinishinAll: true
+      }
     })({ fn });
 
     const tasks = partition(N, CHUNK_SIZE).map((range) =>

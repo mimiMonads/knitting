@@ -3,7 +3,7 @@ export type MainSignal = ReturnType<typeof mainSignal>;
 export type WorkerSignal = ReturnType<typeof workerSignal>;
 import { isMainThread } from "node:worker_threads";
 import { beat, signalDebuggerV2 } from "../../common/others.ts";
-import { type DebugOptions } from "../../api.ts";
+import { type DebugOptions } from "../../types.ts";
 import { Buffer as NodeBuffer } from "node:buffer";
 
 enum SignalEnumOptions {

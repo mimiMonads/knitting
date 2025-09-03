@@ -5,7 +5,7 @@ import {
   type SignalArguments,
   type WorkerSignal,
 } from "../ipc/transport/shared-memory.ts";
-import type { ComposedWithKey, WorkerSettings } from "../api.ts";
+import type { ComposedWithKey, WorkerSettings } from "../types.ts";
 import {
   decodeArgs,
   fromReturnToMainError,
@@ -94,6 +94,7 @@ export const createWorkerRxQueue = (
   const errorFrames: QueueListWorker[] = [];
   const toWork: QueueListWorker[] = [];
   const optimizedFrames: QueueListWorker[] = [];
+
   const hasCompleted = workerOptions?.resolveAfterFinishinAll === true
     ? () => hasAnythingFinished !== 0 && toWork.length === 0
     : () => hasAnythingFinished !== 0;
@@ -188,12 +189,12 @@ export const createWorkerRxQueue = (
         await jobs[slot[MainListEnum.FunctionID]](
           slot[MainListEnum.RawArguments],
         )
-          .then((res) => {
+          .then((res: unknown) => {
             slot[MainListEnum.WorkerResponse] = res;
             hasAnythingFinished++;
             completedFrames.push(slot);
           })
-          .catch((err) => {
+          .catch((err: unknown) => {
             slot[MainListEnum.WorkerResponse] = err;
             hasAnythingFinished++;
             errorFrames.push(slot);

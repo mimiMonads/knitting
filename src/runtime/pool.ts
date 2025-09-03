@@ -9,7 +9,7 @@ import {
   type Sab,
 } from "../ipc/transport/shared-memory.ts";
 import { ChannelHandler, hostDispatcherLoop } from "./dispatcher.ts";
-import type { ComposedWithKey, DebugOptions, WorkerSettings } from "../api.ts";
+import type { ComposedWithKey, DebugOptions, WorkerSettings } from "../types.ts";
 import { jsrIsGreatAndWorkWithoutBugs } from "../worker/loop.ts";
 import { Worker } from "node:worker_threads";
 

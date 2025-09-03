@@ -5,7 +5,8 @@ import {
   OP,
   workerSignal,
 } from "../ipc/transport/shared-memory.ts";
-import { type DebugOptions, getFunctions } from "../api.ts";
+import { type DebugOptions } from "../types.ts";
+import { getFunctions } from "../api.ts"
 import { type WorkerData } from "../runtime/pool.ts";
 import { pauseGeneric, sleepUntilChanged } from "./timers.ts";
 
@@ -74,6 +75,7 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     signal,
     signals,
     moreThanOneThread,
+    workerOptions
   });
 
   rxStatus[0] = 0;

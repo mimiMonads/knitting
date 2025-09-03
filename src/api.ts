@@ -4,65 +4,16 @@ import { spawnWorkerContext } from "./runtime/pool.ts";
 import type { PromiseMap } from "./runtime/tx-queue.ts";
 import {
   isMainThread,
-  type Serializable,
   workerData,
 } from "node:worker_threads";
 
-import { type Balancer, managerMethod } from "./runtime/balancer.ts";
+import { managerMethod } from "./runtime/balancer.ts";
 import { createInlineExecutor } from "./runtime/inline-executor.ts";
+import type { Args, ComposedWithKey, CreateThreadPool, FixedPoints, FixPoint, FunctionMapType, Pool, ReturnFixed } from "./types.ts";
 
 export const isMain = isMainThread;
-export type FixedPoints = Record<string, Composed>;
+export const endpointSymbol = Symbol.for("FIXEDPOINT");
 
-type JSONValue =
-  | string
-  | number
-  | boolean
-  | null
-  | JSONArray
-  | JSONObject;
-
-interface JSONObject {
-  [key: string]: JSONValue;
-}
-
-interface JSONArray extends Array<JSONValue> {}
-
-export type ValidInput =
-  | bigint
-  | void
-  | JSONValue
-  | Map<Serializable, Serializable>
-  | Set<Serializable>;
-
-export type External = unknown;
-
-type Args = External | Serializable;
-
-const endpointSymbol = Symbol.for("FIXEDPOINT");
-
-interface FixPoint<A extends Args, B extends Args> {
-  readonly href?: string;
-  readonly f: (
-    args: A,
-  ) => Promise<B>;
-}
-
-type SecondPart = {
-  readonly [endpointSymbol]: string;
-  readonly id: number;
-  readonly importedFrom: string;
-};
-
-export type Composed = {
-  readonly f: (...args: any) => any;
-} & SecondPart;
-
-export type ComposedWithKey = Composed & { name: string };
-
-type ReturnFixed<A extends Args = undefined, B extends Args = undefined> =
-  & FixPoint<A, B>
-  & SecondPart;
 
 export const fixedPoint = <
   A extends Args = void,
@@ -75,17 +26,12 @@ export const fixedPoint = <
     ...I,
     id: genTaskID(),
     importedFrom,
-    [endpointSymbol]: "vixeny",
+    [endpointSymbol]: true,
   }) as const;
 };
 
-type UnionReturnFixed = ReturnFixed<Args, Args>;
-
-type FunctionMapType<T extends Record<string, FixPoint<Args, Args>>> = {
-  [K in keyof T]: T[K]["f"];
-};
-
 export type GetFunctions = ReturnType<typeof getFunctions>;
+
 
 export const getFunctions = async ({ list, ids }: {
   list: string[];
@@ -94,22 +40,21 @@ export const getFunctions = async ({ list, ids }: {
 }) => {
   const results = await Promise.all(
     list.map(async (imports) => {
-      //@ts-ignore
-      const module = await import(imports);
 
+      const module = await import(imports);
       return Object.entries(module)
         .filter(
           ([_, value]) =>
-            value != null && typeof value === "object" &&
-            Object.getOwnPropertySymbols(value).some(
-              (sym) => sym === endpointSymbol,
-            ),
+            value != null && typeof value === "object" && 
+          //@ts-ignore Reason -> trust me
+          value?.[endpointSymbol] === true
+           
         )
         .map(([name, value]) => ({
           //@ts-ignore Reason -> trust me
           ...value,
           name,
-        })) as ComposedWithKey[];
+        }))  as unknown as ComposedWithKey[];
     }),
   );
 
@@ -119,7 +64,7 @@ export const getFunctions = async ({ list, ids }: {
     .filter((obj) => ids.includes(obj.id))
     .sort((a, b) => a.name.localeCompare(b.name));
 
-  return flattenedResults as unknown as (UnionReturnFixed & { name: string })[];
+  return flattenedResults as unknown as (ReturnFixed<Args, Args> & { name: string })[];
 };
 
 export const toListAndIds = (
@@ -148,39 +93,13 @@ export const toListAndIds = (
   };
 };
 
-export type DebugOptions = {
-  extras?: boolean;
-  logMain?: boolean;
-  //logThreads?: boolean;
-  logHref?: boolean;
-  logImportedUrl?: boolean;
-  threadOrder?: Boolean | number;
-};
 
-type Pool<T extends Record<string, FixPoint<Args, Args>>> = {
-  terminateAll: { (): void };
-  callFunction: FunctionMapType<T>;
-  fastCallFunction: FunctionMapType<T>;
-  send: { (): void };
-};
 
-export type WorkerSettings = {
-  resolveAfterFinishinAll?: true;
-};
-
-type CreateThreadPool = {
-  threads?: number;
-  main?: "first" | "last";
-  balancer?: Balancer;
-  worker?: WorkerSettings;
-  debug?: DebugOptions;
-  source?: string;
-};
 export const createThreadPool = ({
   threads,
   debug,
+  inliner,
   balancer,
-  main,
   source,
   worker,
 }: CreateThreadPool) =>
@@ -234,8 +153,9 @@ export const createThreadPool = ({
 
   const perf = debug ? performance.now() : undefined;
 
+  const usingInliner = (typeof inliner === "object" && inliner != null)
   const totalNumberOfThread = (threads ?? 1) +
-    ((typeof main === "string") ? 1 : 0);
+    ( usingInliner ? 1 : 0);
 
   let workers = Array.from({
     length: threads ?? 1,
@@ -254,21 +174,19 @@ export const createThreadPool = ({
     })
   );
 
-  if (main) {
+  if (usingInliner) {
     const mainThread = createInlineExecutor({
       fixedPoints,
       genTaskID,
     });
 
-    if (main === "first") {
+    if (inliner?.position === "first") {
       workers = [
         //@ts-ignore
         mainThread,
         ...workers,
       ];
-    }
-
-    if (main === "last") {
+    }else{
       workers.push(
         //@ts-ignore
         mainThread,
@@ -332,7 +250,7 @@ export const createThreadPool = ({
   enqueueMap.forEach((v, k) => {
     callFunction.set(
       k,
-      (threads === 1 || threads === undefined) && typeof main !== "string"
+      (threads === 1 || threads === undefined) && !usingInliner
         ? (v[0] as (args: any) => Promise<any>)
         : managerMethod({
           contexts: workers,
@@ -345,7 +263,7 @@ export const createThreadPool = ({
   fastMap.forEach((v, k) => {
     fastCall.set(
       k,
-      (threads === 1 || threads === undefined) && typeof main !== "string"
+      (threads === 1 || threads === undefined) &&  !usingInliner
         ? (v[0] as (args: any) => Promise<any>)
         : managerMethod({
           contexts: workers,
@@ -366,3 +284,5 @@ export const createThreadPool = ({
     send: () => runnable.forEach((fn) => fn()),
   } as Pool<T>;
 };
+
+
