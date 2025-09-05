@@ -138,7 +138,7 @@ def plot_one(runtime_title, count, data_map, out_path):
         y = [tmap.get(t, math.nan) for t in types]
         plt.plot(x, y, marker="o", linestyle="-", label=label)
 
-    plt.yscale("linear")
+    plt.yscale("log")
     plt.xticks(x, types, rotation=30, ha="right")
     plt.ylabel("Average Latency (µs, log scale)")
     plt.title(f"{runtime_title} — Types Benchmark (count={count})")

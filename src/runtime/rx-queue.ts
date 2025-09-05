@@ -81,7 +81,6 @@ export const createWorkerRxQueue = (
   const writeFrame = writeFramePayload({
     index: MainListEnum.WorkerResponse,
     jsonString: true,
-    from: "thread",
   })(signals);
 
   // Readers

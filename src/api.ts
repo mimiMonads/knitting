@@ -2,18 +2,23 @@ import { getCallerFilePath } from "./common/others.ts";
 import { genTaskID } from "./common/others.ts";
 import { spawnWorkerContext } from "./runtime/pool.ts";
 import type { PromiseMap } from "./runtime/tx-queue.ts";
-import {
-  isMainThread,
-  workerData,
-} from "node:worker_threads";
+import { isMainThread, workerData } from "node:worker_threads";
 
 import { managerMethod } from "./runtime/balancer.ts";
 import { createInlineExecutor } from "./runtime/inline-executor.ts";
-import type { Args, ComposedWithKey, CreateThreadPool, FixedPoints, FixPoint, FunctionMapType, Pool, ReturnFixed } from "./types.ts";
+import type {
+  Args,
+  ComposedWithKey,
+  CreateThreadPool,
+  FixedPoints,
+  FixPoint,
+  FunctionMapType,
+  Pool,
+  ReturnFixed,
+} from "./types.ts";
 
 export const isMain = isMainThread;
 export const endpointSymbol = Symbol.for("FIXEDPOINT");
-
 
 export const fixedPoint = <
   A extends Args = void,
@@ -32,7 +37,6 @@ export const fixedPoint = <
 
 export type GetFunctions = ReturnType<typeof getFunctions>;
 
-
 export const getFunctions = async ({ list, ids }: {
   list: string[];
   isWorker: boolean;
@@ -40,21 +44,19 @@ export const getFunctions = async ({ list, ids }: {
 }) => {
   const results = await Promise.all(
     list.map(async (imports) => {
-
       const module = await import(imports);
       return Object.entries(module)
         .filter(
           ([_, value]) =>
-            value != null && typeof value === "object" && 
-          //@ts-ignore Reason -> trust me
-          value?.[endpointSymbol] === true
-           
+            value != null && typeof value === "object" &&
+            //@ts-ignore Reason -> trust me
+            value?.[endpointSymbol] === true,
         )
         .map(([name, value]) => ({
           //@ts-ignore Reason -> trust me
           ...value,
           name,
-        }))  as unknown as ComposedWithKey[];
+        })) as unknown as ComposedWithKey[];
     }),
   );
 
@@ -64,7 +66,9 @@ export const getFunctions = async ({ list, ids }: {
     .filter((obj) => ids.includes(obj.id))
     .sort((a, b) => a.name.localeCompare(b.name));
 
-  return flattenedResults as unknown as (ReturnFixed<Args, Args> & { name: string })[];
+  return flattenedResults as unknown as (ReturnFixed<Args, Args> & {
+    name: string;
+  })[];
 };
 
 export const toListAndIds = (
@@ -92,8 +96,6 @@ export const toListAndIds = (
     ids: number[];
   };
 };
-
-
 
 export const createThreadPool = ({
   threads,
@@ -153,9 +155,9 @@ export const createThreadPool = ({
 
   const perf = debug ? performance.now() : undefined;
 
-  const usingInliner = (typeof inliner === "object" && inliner != null)
+  const usingInliner = typeof inliner === "object" && inliner != null;
   const totalNumberOfThread = (threads ?? 1) +
-    ( usingInliner ? 1 : 0);
+    (usingInliner ? 1 : 0);
 
   let workers = Array.from({
     length: threads ?? 1,
@@ -186,7 +188,7 @@ export const createThreadPool = ({
         mainThread,
         ...workers,
       ];
-    }else{
+    } else {
       workers.push(
         //@ts-ignore
         mainThread,
@@ -263,7 +265,7 @@ export const createThreadPool = ({
   fastMap.forEach((v, k) => {
     fastCall.set(
       k,
-      (threads === 1 || threads === undefined) &&  !usingInliner
+      (threads === 1 || threads === undefined) && !usingInliner
         ? (v[0] as (args: any) => Promise<any>)
         : managerMethod({
           contexts: workers,
@@ -284,5 +286,3 @@ export const createThreadPool = ({
     send: () => runnable.forEach((fn) => fn()),
   } as Pool<T>;
 };
-
-

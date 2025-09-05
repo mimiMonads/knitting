@@ -1,7 +1,7 @@
 import { type MultiQueue } from "./tx-queue.ts";
 import { type MainSignal, OP } from "../ipc/transport/shared-memory.ts";
 import { MessageChannel } from "node:worker_threads";
-import { WorkerSettings } from "../types.ts";
+import type { WorkerSettings } from "../types.ts";
 
 export const hostDispatcherLoop = ({
   signalBox: {
@@ -27,13 +27,13 @@ export const hostDispatcherLoop = ({
   workerOptions?: WorkerSettings;
 }) => {
   let catchEarly = true;
-  const nextTick = process.nextTick;
+  let a = 0;
   const check = () => {
     switch (op[0]) {
       case OP.FastResolve: {
         completeImmediate();
         op[0] = OP.AllTasksDone;
-        queueMicrotask(check);
+        Promise.resolve().then(check);
         return;
       }
       case OP.WorkerWaiting:
@@ -42,7 +42,7 @@ export const hostDispatcherLoop = ({
         if (rxStatus[0] === 1) {
           Atomics.notify(opView, 0, 1);
           completeFrame();
-          queueMicrotask(check);
+          Promise.resolve().then(check);
           return;
         }
 
@@ -52,18 +52,19 @@ export const hostDispatcherLoop = ({
 
         txStatus[0] = 0;
 
-        queueMicrotask(check);
+        Promise.resolve().then(check);
         return;
       case OP.AllTasksDone:
         if (hasPendingFrames()) {
           Atomics.notify(opView, 0, 1);
           flushToWorker();
-          queueMicrotask(check);
+          Promise.resolve().then(check);
         } else {
           txStatus[0] = 0;
           op[0] = OP.MainStop;
           check.isRunning = false;
           catchEarly = true;
+          console.log(a);
         }
         return;
 
@@ -71,11 +72,12 @@ export const hostDispatcherLoop = ({
         if (hasPendingFrames()) {
           flushToWorker();
 
-          nextTick(check);
+          Promise.resolve().then(check);
         } else {
           if (catchEarly === true) {
             catchEarly = false;
-            queueMicrotask(check);
+            Promise.resolve().then(check);
+
             return;
           }
           op[0] = OP.MainReadyToRead;
@@ -88,7 +90,7 @@ export const hostDispatcherLoop = ({
         op[0] = OP.MainReadyToRead;
         if (catchEarly === true) {
           catchEarly = false;
-          queueMicrotask(check);
+          Promise.resolve().then(check);
           return;
         }
 
@@ -101,14 +103,15 @@ export const hostDispatcherLoop = ({
       case OP.MainReadyToRead: {
         if (catchEarly === true) {
           catchEarly = false;
-          queueMicrotask(check);
+          Promise.resolve().then(check);
           return;
         }
         channelHandler.notify();
         return;
       }
       case OP.MainSend:
-        nextTick(check);
+        a++;
+        Promise.resolve().then(check);
         return;
     }
   };

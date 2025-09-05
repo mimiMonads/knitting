@@ -6,6 +6,8 @@ import {
 import type { MainList } from "../../runtime/tx-queue.ts";
 import { MainListEnum } from "../../runtime/tx-queue.ts";
 
+import { NumericBuffer } from "./parsers/NumericBuffer.ts";
+
 import { deserialize, serialize } from "node:v8";
 
 const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
@@ -33,6 +35,8 @@ export enum PayloadType {
   Serializable = 18,
   StringToJson = 19,
   SerializabledAndReady = 20,
+  NumericBuffer = 21,
+  NumericBufferParsed = 22,
 }
 
 const fromReturnToMainError = ({
@@ -86,6 +90,11 @@ const preencodeJsonString = (
           task[MainListEnum.PayloadType] = PayloadType.SerializabledAndReady;
           return task;
         }
+        case NumericBuffer: {
+          task[at] = (args as NumericBuffer).toFloat64();
+          task[MainListEnum.PayloadType] = PayloadType.NumericBufferParsed;
+          return task;
+        }
       }
     }
     return task;
@@ -98,10 +107,9 @@ const preencodeJsonString = (
  *  3 -> Takes the return of a MainList
  */
 const writeFramePayload = (
-  { index, jsonString, from }: {
+  { index, jsonString }: {
     index: PossibleIndexes;
     jsonString?: boolean;
-    from: "main" | "thread";
   },
 ) =>
 (
@@ -113,6 +121,7 @@ const writeFramePayload = (
     uInt32,
     float64,
     writeBinary,
+    write8Binary,
     writeUtf8,
   }: SignalArguments,
 ) => {
@@ -138,6 +147,11 @@ const writeFramePayload = (
           writeBinary(args as Uint8Array);
           task[MainListEnum.PayloadType] = PayloadType.Serializable;
           type[0] = PayloadType.Serializable;
+          return;
+        case PayloadType.NumericBufferParsed:
+          write8Binary(args as Float64Array);
+          task[MainListEnum.PayloadType] = PayloadType.NumericBuffer;
+          type[0] = PayloadType.NumericBuffer;
           return;
       }
     }
@@ -237,6 +251,11 @@ const writeFramePayload = (
             type[0] = PayloadType.Serializable;
             return;
           }
+          case NumericBuffer: {
+            write8Binary((args as NumericBuffer).toFloat64());
+            type[0] = PayloadType.NumericBuffer;
+            return;
+          }
         }
 
         writeBinary(serialize(args) as Uint8Array);
@@ -261,6 +280,7 @@ const readAnyPayload = (
     int32,
     float64,
     readUtf8,
+    read8BytesFloatView,
   }: SignalArguments,
 ) =>
 () => {
@@ -301,6 +321,9 @@ const readAnyPayload = (
       );
     case PayloadType.Uint8Array:
       return readBytesView();
+    case PayloadType.NumericBuffer:
+      return NumericBuffer.fromFloat64(read8BytesFloatView());
+
     case PayloadType.UNREACHABLE:
       throw new Error(
         "something when wrong :( , probably you are not resetting the type correctly",
@@ -317,6 +340,7 @@ const readFramePayload = (
     readBytesView,
     readBytesCopy,
     readUtf8,
+    read8BytesFloatCopy,
     type,
     uBigInt,
     bigInt,
@@ -400,6 +424,11 @@ const readFramePayload = (
         changeOwnership();
         return text;
       // default
+      case PayloadType.NumericBuffer:
+        text = new NumericBuffer(read8BytesFloatCopy());
+        changeOwnership();
+        return text;
+
       case PayloadType.Serializable:
         text = deserialize(readBytesView());
         changeOwnership();

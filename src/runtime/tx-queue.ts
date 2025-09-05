@@ -111,7 +111,6 @@ export function createHostTxQueue({
   const errorDeserializer = readPayloadError(signals);
   const write = writeFramePayload({
     index: MainListEnum.RawArguments,
-    from: "main",
     jsonString: true,
   })(signals);
 

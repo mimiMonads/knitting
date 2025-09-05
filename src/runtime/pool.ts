@@ -9,7 +9,11 @@ import {
   type Sab,
 } from "../ipc/transport/shared-memory.ts";
 import { ChannelHandler, hostDispatcherLoop } from "./dispatcher.ts";
-import type { ComposedWithKey, DebugOptions, WorkerSettings } from "../types.ts";
+import type {
+  ComposedWithKey,
+  DebugOptions,
+  WorkerSettings,
+} from "../types.ts";
 import { jsrIsGreatAndWorkWithoutBugs } from "../worker/loop.ts";
 import { Worker } from "node:worker_threads";
 
@@ -69,6 +73,7 @@ export const spawnWorkerContext = ({
     thread,
     debug,
   });
+
   const signalBox = mainSignal(signals);
 
   const queue = createHostTxQueue({
@@ -132,7 +137,6 @@ export const spawnWorkerContext = ({
     return (args: Uint8Array) => enqueues(args);
   };
 
-  const nextTick = process.nextTick;
   const thisSignal = signalBox.opView;
   const send = () => {
     if (check.isRunning === false && hasPendingFrames()) {
@@ -140,7 +144,7 @@ export const spawnWorkerContext = ({
       Atomics.notify(thisSignal, 0, 1);
       flushToWorker();
       check.isRunning = true;
-      nextTick(check);
+      Promise.resolve().then(check);
     }
   };
 
@@ -155,7 +159,7 @@ export const spawnWorkerContext = ({
           thisSignal[0] = OP.WakeUp,
             Atomics.notify(thisSignal, 0, 1),
             check.isRunning = true,
-            nextTick(check),
+            Promise.resolve().then(check),
             first(args)
         )
         : enqueued(args);

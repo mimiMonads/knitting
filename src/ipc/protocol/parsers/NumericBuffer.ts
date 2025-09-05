@@ -1,6 +1,6 @@
 const kBrand = Symbol("NumericArray");
 type NumericArrayArgs = number[] | Float64Array;
-export class NumericArray {
+export class NumericBuffer {
   private arr?: number[];
   private arrFloat?: Float64Array;
   private isFloat = false;
@@ -29,10 +29,10 @@ export class NumericArray {
     for (; i < len; i++) arr[i] = srcF64[i];
     return arr;
   }
-  static isNumericArray(v: any): v is NumericArray {
+  static isNumericArray(v: any): v is NumericBuffer {
     return !!(v && v[kBrand]);
   }
-  static fromFloat64(srcF64: Float64Array): NumericArray {
+  static fromFloat64(srcF64: Float64Array): NumericBuffer {
     const len = srcF64.length;
     const arr = new Array(len);
     const rem = len & 3;
@@ -44,15 +44,15 @@ export class NumericArray {
       arr[i + 3] = srcF64[i + 3];
     }
     for (; i < len; i++) arr[i] = srcF64[i];
-    return new NumericArray(arr);
+    return new NumericBuffer(arr);
   }
-  static fromArrayCopy(arr: number[]): NumericArray {
-    return new NumericArray([...arr]);
+  static fromArrayCopy(arr: number[]): NumericBuffer {
+    return new NumericBuffer([...arr]);
   }
   toArray(): number[] {
     if (this.isFloat) {
       this.isFloat = true;
-      return this.arr = NumericArray.FloatToArray(this.arrFloat!);
+      return this.arr = NumericBuffer.FloatToArray(this.arrFloat!);
     }
     return this.arr!;
   }

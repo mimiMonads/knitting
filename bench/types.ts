@@ -36,38 +36,37 @@ if (isMain) {
     await Promise.all(Array.from({ length: n }, () => toResolve(val)));
   };
 
+  const user = (_, i: number) => ({
+    id: i,
+    name: `User ${i}`,
+    age: Math.floor(Math.random() * 80),
+    tags: Array.from(
+      { length: 10 },
+      () => Math.random().toString(36).slice(2),
+    ),
+    address: {
+      city: "Testville",
+      zip: Math.floor(Math.random() * 90000 + 10000),
+    },
+  });
+
+  const times = 1000;
   const string = "helloWorld";
-  const bigString = "helloWorld".repeat(100);
+  const bigString = "helloWorld".repeat(times);
   const num = 77777;
   const min = -(2n ** 63n - 1n);
   const max = 2n ** 64n - 1n;
-  const smallArray = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+  const smallArray = [...Object.values(user(null, 1))];
 
-  const obj = {
-    number: 123,
-    string: "helloWorld",
-    nullable: null,
-    arr: [1, 2, 3, 4, 5],
-  };
+  const obj = user(null, 1);
+
   const bigArray = Array.from(
-    { length: 100 },
-    (_, i) => Math.floor(i * Math.random() * 5000),
+    { length: times },
+    user,
   );
 
   const bigObj = {
-    users: Array.from({ length: 500 }, (_, i) => ({
-      id: i,
-      name: `User ${i}`,
-      age: Math.floor(Math.random() * 80),
-      tags: Array.from(
-        { length: 10 },
-        () => Math.random().toString(36).slice(2),
-      ),
-      address: {
-        city: "Testville",
-        zip: Math.floor(Math.random() * 90000 + 10000),
-      },
-    })),
+    users: Array.from({ length: times }, user),
   };
 
   group("knitting fast", () => {

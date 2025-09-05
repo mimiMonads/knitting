@@ -1,6 +1,7 @@
 // ---API---
 
 import { endpointSymbol } from "./api.ts";
+import { NumericBuffer } from "./ipc/protocol/parsers/NumericBuffer.ts";
 
 type JSONValue =
   | string
@@ -14,10 +15,19 @@ interface JSONObject {
   [key: string]: JSONValue;
 }
 
+export type ValidInput =
+  | bigint
+  | void
+  | JSONValue
+  | Map<Serializable, Serializable>
+  | Set<Serializable>;
+//| NumericBuffer
+
 interface JSONArray extends Array<JSONValue> {}
+
 type Serializable = string | object | number | boolean | bigint;
 
-export type Args = External | Serializable;
+export type Args = ValidInput | Serializable;
 
 export type FixedPoints = Record<string, Composed>;
 
@@ -27,12 +37,9 @@ export type Composed = {
 
 export type ComposedWithKey = Composed & { name: string };
 
-
-
 export type FunctionMapType<T extends Record<string, FixPoint<Args, Args>>> = {
   [K in keyof T]: T[K]["f"];
 };
-
 
 export interface FixPoint<A extends Args, B extends Args> {
   readonly href?: string;
@@ -47,7 +54,6 @@ export type SecondPart = {
   readonly importedFrom: string;
 };
 
-
 export type Pool<T extends Record<string, FixPoint<Args, Args>>> = {
   terminateAll: { (): void };
   callFunction: FunctionMapType<T>;
@@ -55,23 +61,18 @@ export type Pool<T extends Record<string, FixPoint<Args, Args>>> = {
   send: { (): void };
 };
 
-export type ReturnFixed<A extends Args = undefined, B extends Args = undefined> =
+export type ReturnFixed<
+  A extends Args = undefined,
+  B extends Args = undefined,
+> =
   & FixPoint<A, B>
   & SecondPart;
 
-
-export type ValidInput =
-  | bigint
-  | void
-  | JSONValue
-  | Map<Serializable, Serializable>
-  | Set<Serializable>;
-
 export type External = unknown;
 
-export type Inliner  = {
-    position?: "first" | "last"
-}
+export type Inliner = {
+  position?: "first" | "last";
+};
 
 export type Balancer =
   | "robinRound"
@@ -79,25 +80,23 @@ export type Balancer =
   | "randomLane"
   | "firstIdleOrRandom";
 
- export type DebugOptions = {
-    extras?: boolean;
-    logMain?: boolean;
-    //logThreads?: boolean;
-    logHref?: boolean;
-    logImportedUrl?: boolean;
-    threadOrder?: Boolean | number;
-  };
+export type DebugOptions = {
+  extras?: boolean;
+  logMain?: boolean;
+  //logThreads?: boolean;
+  logHref?: boolean;
+  logImportedUrl?: boolean;
+  threadOrder?: Boolean | number;
+};
 
+export type WorkerSettings = {
+  resolveAfterFinishinAll?: true;
+  NoSideEffects?: true;
+};
 
-  export type WorkerSettings = {
-    resolveAfterFinishinAll?: true;
-    NoSideEffects?: true
-  };
-
-  
- export type CreateThreadPool = {
+export type CreateThreadPool = {
   threads?: number;
-  inliner?: Inliner
+  inliner?: Inliner;
   balancer?: Balancer;
   worker?: WorkerSettings;
   debug?: DebugOptions;

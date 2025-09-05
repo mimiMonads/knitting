@@ -3,7 +3,6 @@ import type { CreateContext } from "./pool.ts";
 
 export type Handler<A, R> = (args: A) => R;
 
-
 type manager = {
   contexts: readonly CreateContext[];
   balancer?: Balancer;
