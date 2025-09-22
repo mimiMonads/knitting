@@ -23,6 +23,15 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     debug,
     startTime: workerData.startAt,
   });
+
+  const secondChannelSignals = createSharedMemoryTransport({
+    sabObject: {
+      sharedSab: workerData.secondSab,
+    },
+    isMain: false,
+    thread: workerData.thread,
+  });
+
   const { workerOptions } = workerData;
 
   const timeToAwait = Math.max(1, workerData.totalNumberOfThread) * 50;
@@ -58,6 +67,7 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
   }
 
   const signal = workerSignal(signals);
+  
 
   const {
     enqueue,
@@ -76,6 +86,7 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     signals,
     moreThanOneThread,
     workerOptions,
+    secondChannel: secondChannelSignals,
   });
 
   rxStatus[0] = 0;

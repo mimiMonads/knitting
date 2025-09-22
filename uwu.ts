@@ -225,5 +225,12 @@ group(`nested recursion chains (DEPTH=${DEPTH}, BATCH=${BATCH})`, () => {
   });
 });
 
+
+const fn  = () => {
+  uwu: {
+    break uwu;
+  }
+}
+
 await run();
 channel?.close?.();

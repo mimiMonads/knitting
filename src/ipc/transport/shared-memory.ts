@@ -6,11 +6,12 @@ import { beat, signalDebuggerV2 } from "../../common/others.ts";
 import { type DebugOptions } from "../../types.ts";
 import { Buffer as NodeBuffer } from "node:buffer";
 
+const page = 1024 * 4;
 enum SignalEnumOptions {
   header = 64,
-  maxByteLength = 64 * 1024 * 1024,
-  defaultSize = 1024 * 64,
-  safePadding = 512,
+  maxByteLength = page * page,
+  defaultSize = page,
+  safePadding = page,
 }
 
 export enum OP {
@@ -153,7 +154,7 @@ export const createSharedMemoryTransport = (
   const sab = sabObject?.sharedSab
     ? sabObject.sharedSab
     : new SharedArrayBuffer(
-      toGrow + (toGrow % 8),
+      toGrow + (toGrow % page),
       {
         maxByteLength: SignalEnumOptions.maxByteLength,
       },

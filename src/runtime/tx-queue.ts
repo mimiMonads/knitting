@@ -65,25 +65,30 @@ interface MultipleQueueSingle {
   signalBox: MainSignal;
   genTaskID: () => number;
   promisesMap: PromiseMap;
+
   max?: number;
   listOfFunctions: ComposedWithKey[];
   signals: SignalArguments;
+  secondChannel:  SignalArguments
 }
 
 export function createHostTxQueue({
-  signalBox: {
+  signalBox,
+  max,
+  signals,
+  secondChannel
+}: MultipleQueueSingle) {
+  const PLACE_HOLDER = (_: void) => {
+    throw ("UNREACHABLE FROM PLACE HOLDER (main)");
+  };
+
+  const {
     op,
     rxStatus,
     rpcId,
     frameFlags,
     slotIndex,
-  },
-  max,
-  signals,
-}: MultipleQueueSingle) {
-  const PLACE_HOLDER = (_: void) => {
-    throw ("UNREACHABLE FROM PLACE HOLDER (main)");
-  };
+  } = signalBox;
 
   let countSlot = 0;
   const newSlot = () =>
@@ -166,6 +171,47 @@ export function createHostTxQueue({
       }
     });
   };
+
+  const flushToChannel = (
+    frameFlags: MainSignal['frameFlags'],
+    thisChannel: SignalArguments,
+    checkChange: boolean,
+  ) => {
+ 
+    const write = writeFramePayload({
+      index: MainListEnum.RawArguments,
+      jsonString: true,
+    })({...thisChannel});
+
+    const { op, slotIndex, rpcId } = thisChannel;
+
+    return () => {
+      if (checkChange === true) {
+        if (toBeSent.length === 0 || op[0] !== OP.WaitingForMore) return false;
+      }
+
+      const index = toBeSent.pop()!,
+        slot = queue[index];
+
+      // Checks if this is the last Element to be sent
+      toBeSentCount > 0
+        ? (frameFlags[0] = frameFlagsFlag.Last)
+        : (frameFlags[0] = frameFlagsFlag.NotLast);
+
+      rpcId[0] = slot[MainListEnum.FunctionID];
+      slotIndex[0] = index;
+      write(slot);
+
+      // Changes ownership of the sab
+      op[0] = OP.MainSend;
+
+      toBeSentCount--;
+      return true;
+    };
+  };
+
+  const flushToFirst = flushToChannel(signalBox.frameFlags, signals, false)
+
   return {
     optimizeQueue: () => {
       let i = 0;
@@ -229,24 +275,7 @@ export function createHostTxQueue({
       return deferred.promise;
     },
 
-    flushToWorker: () => {
-      const index = toBeSent.pop()!,
-        slot = queue[index];
-
-      // Checks if this is the last Element to be sent
-      toBeSentCount > 0
-        ? (frameFlags[0] = frameFlagsFlag.Last)
-        : (frameFlags[0] = frameFlagsFlag.NotLast);
-
-      rpcId[0] = slot[MainListEnum.FunctionID];
-      slotIndex[0] = index;
-      write(slot);
-
-      // Changes ownership of the sab
-      op[0] = OP.MainSend;
-
-      toBeSentCount--;
-    },
+    flushToWorker: flushToFirst,
 
     rejectFrame: () => {
       const index = slotIndex[0],

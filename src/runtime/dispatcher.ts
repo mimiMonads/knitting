@@ -64,7 +64,7 @@ export const hostDispatcherLoop = ({
           op[0] = OP.MainStop;
           check.isRunning = false;
           catchEarly = true;
-          console.log(a);
+          //console.log(a);
         }
         return;
 

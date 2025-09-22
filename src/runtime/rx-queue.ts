@@ -22,6 +22,7 @@ type ArgumentsForCreateWorkerQueue = {
   moreThanOneThread: boolean;
   signal: WorkerSignal;
   signals: SignalArguments;
+  secondChannel: SignalArguments;
   workerOptions?: WorkerSettings;
 };
 
@@ -37,6 +38,7 @@ export const createWorkerRxQueue = (
       slotIndex,
     },
     workerOptions,
+    secondChannel
   }: ArgumentsForCreateWorkerQueue,
 ) => {
   const PLACE_HOLDER = () => {
@@ -98,33 +100,25 @@ export const createWorkerRxQueue = (
     ? () => hasAnythingFinished !== 0 && toWork.length === 0
     : () => hasAnythingFinished !== 0;
 
-  return {
-    // Check if any task is solved and ready for writing.
-    hasFramesToOptimize: () => completedFrames.length > 0,
-    hasCompleted,
-    hasPending: () => toWork.length !== 0,
-    blockingResolve: async () => {
-      try {
-        blockingSlot[MainListEnum.WorkerResponse] = await jobs
-          [blockingSlot[MainListEnum.FunctionID]](
-            playloadToArgs(),
-          );
-        writeFrame(blockingSlot);
-        op[0] = OP.FastResolve;
-      } catch (err) {
-        blockingSlot[MainListEnum.WorkerResponse] = err;
-        returnError(blockingSlot);
-        op[0] = OP.ErrorThrown;
-      }
-    },
+  const channelEnqueued = (
+    mainOP: SignalArguments,
+    thisChanne: SignalArguments,
+  ) => {
 
-    preResolve: () => {
-      const slot = completedFrames.pop();
-      if (slot) optimizedFrames.push(simplifies(slot));
-    },
 
-    //enqueue a task to the queue.
-    enqueue: () => {
+    const reader = readFramePayload({
+      ...thisChanne,
+      frameFlags: mainOP.frameFlags,
+      specialType: "thread",
+    });
+
+    const { op, slotIndex, rpcId } = thisChanne;
+
+
+    return () => {
+
+      if (op[0] !== OP.MainSend) return false
+
       const currentIndex = slotIndex[0],
         fnNumber = rpcId[0],
         args = reader();
@@ -144,7 +138,42 @@ export const createWorkerRxQueue = (
       slot[MainListEnum.slotIndex] = currentIndex;
       toWork.push(slot);
       isThereAnythingToResolve++;
+
+      return true
+    }
+  };
+
+
+  const firstFrame = channelEnqueued(signals,signals)
+  const secondFrame = channelEnqueued(signals,secondChannel)
+
+  return {
+    // Check if any task is solved and ready for writing.
+    hasFramesToOptimize: () => completedFrames.length > 0,
+    hasCompleted,
+    hasPending: () => toWork.length !== 0,
+    blockingResolve: async () => {
+      try {
+        blockingSlot[MainListEnum.WorkerResponse] = await jobs
+        [blockingSlot[MainListEnum.FunctionID]](
+          playloadToArgs(),
+        );
+        writeFrame(blockingSlot);
+        op[0] = OP.FastResolve;
+      } catch (err) {
+        blockingSlot[MainListEnum.WorkerResponse] = err;
+        returnError(blockingSlot);
+        op[0] = OP.ErrorThrown;
+      }
     },
+
+    preResolve: () => {
+      const slot = completedFrames.pop();
+      if (slot) optimizedFrames.push(simplifies(slot));
+    },
+
+    //enqueue a task to the queue.
+    enqueue: firstFrame,
 
     write: () => {
       if (completedFrames.length > 0) {
@@ -205,7 +234,7 @@ export const createWorkerRxQueue = (
 
       try {
         slot[MainListEnum.WorkerResponse] = await jobs
-          [slot[MainListEnum.FunctionID]](slot[MainListEnum.RawArguments]);
+        [slot[MainListEnum.FunctionID]](slot[MainListEnum.RawArguments]);
         hasAnythingFinished++;
         completedFrames.push(slot);
       } catch (err) {

@@ -27,6 +27,7 @@ export type CallFunction = {
 
 export type WorkerData = {
   sab: SharedArrayBuffer;
+  secondSab: SharedArrayBuffer;
   list: string[];
   ids: number[];
   thread: number;
@@ -73,11 +74,17 @@ export const spawnWorkerContext = ({
     thread,
     debug,
   });
+  const secondChannelSignals = createSharedMemoryTransport({
+    isMain: true,
+    thread,
+  });
 
   const signalBox = mainSignal(signals);
+ 
 
   const queue = createHostTxQueue({
     signalBox,
+    secondChannel: secondChannelSignals,
     genTaskID,
     promisesMap,
     listOfFunctions,
@@ -127,6 +134,7 @@ export const spawnWorkerContext = ({
         debug,
         workerOptions,
         totalNumberOfThread,
+        secondSab: secondChannelSignals.sab,
         startAt: signalBox.startAt,
       } as WorkerData,
     },
