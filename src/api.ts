@@ -45,11 +45,18 @@ export const getFunctions = async ({ list, ids }: {
 }) => {
   const results = await Promise.all(
     list
+
+      //
       .map((string) => {
+
+        const url =  new URL(string).href;
+
+        if(url.includes("://")) return url
+  
         return "file://" + new URL(string).href;
       })
       .map(async (imports) => {
-        console.log(imports);
+        console
         const module = await import(imports);
         return Object.entries(module)
           .filter(
