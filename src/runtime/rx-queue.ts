@@ -15,7 +15,7 @@ import {
   writeFramePayload,
 } from "../ipc/protocol/codec.ts";
 import "../polyfills/promise-with-resolvers.ts";
-import  LinkList  from "../ipc/tools/LinkList.ts"
+import LinkList from "../ipc/tools/LinkList.ts";
 
 type ArgumentsForCreateWorkerQueue = {
   listOfFunctions: ComposedWithKey[];

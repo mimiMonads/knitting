@@ -114,12 +114,14 @@ export const spawnWorkerContext = ({
 
   //@ts-ignore
 
-  let worker = new poliWorker(
+  let worker;
+
+  worker = new poliWorker(
     source ?? (
       // isBrowser
       //   ? tsFileUrl.href // correct in browser
       //   :
-      decodeURIComponent(tsFileUrl.pathname)
+      tsFileUrl
     ),
     {
       //@ts-ignore Reason

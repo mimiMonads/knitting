@@ -30,18 +30,19 @@ if (isMain) {
 ```
 
 ```ts
-import { task, isMain } from "@vixeny/knitting";
+import { isMain, task } from "@vixeny/knitting";
 
 export const hello = task({
   f: async () => "hello",
 }).createThreadPool({
-  threads: 2
+  threads: 2,
 });
 
-if (isMain) await hello.call()
-  .then(console.log)
-  .finally(hello.shutdown);
-
+if (isMain) {
+  await hello.call()
+    .then(console.log)
+    .finally(hello.shutdown);
+}
 ```
 
 ## License

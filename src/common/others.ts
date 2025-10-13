@@ -13,6 +13,7 @@ const getCallerFilePathForBun = (n: number) => {
   //@ts-ignore Reason -> Types
   Error.prepareStackTrace = (_, stack) => stack;
   const err = new Error();
+
   const stack = err.stack as unknown as NodeJS.CallSite[];
   //@ts-ignore Reason -> Types
   Error.prepareStackTrace = originalStackTrace;
@@ -23,10 +24,14 @@ const getCallerFilePathForBun = (n: number) => {
     throw new Error("Unable to determine caller file.");
   }
 
-  if (!caller.startsWith("file://")) {
-    return "file://" + caller;
+  let href;
+  try {
+    href = new URL(caller);
+  } catch (error) {
+    href = new URL("file://" + caller);
   }
-  return caller;
+
+  return href;
 };
 
 export const getCallerFilePath = () => {

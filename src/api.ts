@@ -27,6 +27,7 @@ export const fixedPoint = <
   I: FixPoint<A, B>,
 ): ReturnFixed<A, B> => {
   const importedFrom = I?.href ?? new URL(getCallerFilePath()).href;
+
   return ({
     ...I,
     id: genTaskID(),
@@ -43,21 +44,26 @@ export const getFunctions = async ({ list, ids }: {
   ids: number[];
 }) => {
   const results = await Promise.all(
-    list.map(async (imports) => {
-      const module = await import(imports);
-      return Object.entries(module)
-        .filter(
-          ([_, value]) =>
-            value != null && typeof value === "object" &&
+    list
+      .map((string) => {
+        return "file://" + new URL(string).href;
+      })
+      .map(async (imports) => {
+        console.log(imports);
+        const module = await import(imports);
+        return Object.entries(module)
+          .filter(
+            ([_, value]) =>
+              value != null && typeof value === "object" &&
+              //@ts-ignore Reason -> trust me
+              value?.[endpointSymbol] === true,
+          )
+          .map(([name, value]) => ({
             //@ts-ignore Reason -> trust me
-            value?.[endpointSymbol] === true,
-        )
-        .map(([name, value]) => ({
-          //@ts-ignore Reason -> trust me
-          ...value,
-          name,
-        })) as unknown as ComposedWithKey[];
-    }),
+            ...value,
+            name,
+          })) as unknown as ComposedWithKey[];
+      }),
   );
 
   // Flatten the results, filter by IDs, and sort
