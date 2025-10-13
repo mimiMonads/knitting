@@ -1,9 +1,9 @@
 import { bench, boxplot, group, run as mitataRun, summary } from "mitata";
-import { createThreadPool, fixedPoint, isMain } from "../knitting.ts";
+import { createPool, isMain, task } from "../knitting.ts";
 import { format, print } from "./ulti/json-parse.ts";
 import { NumericBuffer } from "../src/ipc/protocol/parsers/NumericBuffer.ts";
 
-export const fn = fixedPoint({
+export const fn = task({
   f: async ([start, end]: [number, number]): Promise<number[]> => {
     const primes: number[] = [];
 
@@ -50,7 +50,7 @@ if (isMain) {
   };
 
   const runPrimes = async (threads: number) => {
-    const { callFunction, terminateAll, send } = createThreadPool({
+    const { call, shutdown, send } = createPool ({
       threads,
       inliner: {
         position: "last",
@@ -61,11 +61,11 @@ if (isMain) {
     })({ fn });
 
     const tasks = partition(N, CHUNK_SIZE).map((range) =>
-      callFunction.fn(range)
+      call.fn(range)
     );
     send(); // flush batch to workers
     const results = await Promise.all(tasks).finally(async () =>
-      await terminateAll()
+      await shutdown()
     );
 
     // reduce to a count (avoid holding all primes)i

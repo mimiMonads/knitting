@@ -4,38 +4,49 @@ export const genTaskID = ((counter: number) => () => counter++)(0);
 // Get the current file's path.
 export const currentPath = () => new URL(import.meta.url);
 
+// Bun has a different Offset than Deno and Node
 //@ts-ignore
 const IS_BUN = typeof Bun == "object" && Bun !== null;
 
-const getCallerFilePathForBun = (n: number) => {
-  //@ts-ignore Reason -> Types
+
+
+const getCallerFilePathForBun = (offset: number) => {
+
+   // @ts-ignore
   const originalStackTrace = Error.prepareStackTrace;
-  //@ts-ignore Reason -> Types
+   // @ts-ignore
   Error.prepareStackTrace = (_, stack) => stack;
   const err = new Error();
-
+   // @ts-ignore
   const stack = err.stack as unknown as NodeJS.CallSite[];
-  //@ts-ignore Reason -> Types
+   // @ts-ignore
   Error.prepareStackTrace = originalStackTrace;
-  // Get the caller file
-  const caller = stack[n]?.getFileName();
+  const caller = stack[offset]?.getFileName();
 
   if (!caller) {
     throw new Error("Unable to determine caller file.");
   }
 
-  let href;
+  let url: URL;
   try {
-    href = new URL(caller);
+    url = new URL(caller);
   } catch (error) {
-    href = new URL("file://" + caller);
+    url = new URL("file://" + caller);
   }
 
-  return href;
+  return url.href;
 };
 
+/**
+ * Helps to get the right exported function from the file
+ */
+const linkingMap = new Map<string, null>();
+
 export const getCallerFilePath = () => {
-  return getCallerFilePathForBun(IS_BUN ? 2 : 3);
+  const stackOffset = IS_BUN ? 2 : 3;
+  const href = getCallerFilePathForBun(stackOffset);
+
+  return href;
 };
 
 import { hrtime } from "node:process";

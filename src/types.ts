@@ -29,7 +29,7 @@ type Serializable = string | object | number | boolean | bigint;
 
 export type Args = ValidInput | Serializable;
 
-export type FixedPoints = Record<string, Composed>;
+export type tasks = Record<string, Composed>;
 
 export type Composed = {
   readonly f: (...args: any) => any;
@@ -55,9 +55,9 @@ export type SecondPart = {
 };
 
 export type Pool<T extends Record<string, FixPoint<Args, Args>>> = {
-  terminateAll: { (): void };
-  callFunction: FunctionMapType<T>;
-  fastCallFunction: FunctionMapType<T>;
+  shutdown: { (): void };
+  call: FunctionMapType<T>;
+  fastCall: FunctionMapType<T>;
   send: { (): void };
 };
 
@@ -94,7 +94,7 @@ export type WorkerSettings = {
   NoSideEffects?: true;
 };
 
-export type CreateThreadPool = {
+export type CreatePool = {
   threads?: number;
   inliner?: Inliner;
   balancer?: Balancer;

@@ -21,7 +21,7 @@ import { Worker } from "node:worker_threads";
 
 let poliWorker = Worker;
 
-export type CallFunction = {
+export type call = {
   fnNumber: number;
 };
 
@@ -141,7 +141,7 @@ export const spawnWorkerContext = ({
     },
   ) as Worker;
 
-  const callFunction = ({ fnNumber }: CallFunction) => {
+  const call = ({ fnNumber }: call) => {
     const enqueues = enqueue(fnNumber);
     return (args: Uint8Array) => enqueues(args);
   };
@@ -157,7 +157,7 @@ export const spawnWorkerContext = ({
     }
   };
 
-  const fastCalling = ({ fnNumber }: CallFunction) => {
+  const fastCalling = ({ fnNumber }: call) => {
     const first = postImmediate(fnNumber);
     const enqueued = enqueue(fnNumber);
     const thisSignal = signalBox.opView;
@@ -177,7 +177,7 @@ export const spawnWorkerContext = ({
   return {
     txIdle,
     send,
-    callFunction,
+    call,
     fastCalling,
     kills: () => (
       rejectAll("Thread closed"), channelHandler.close(), worker.terminate()

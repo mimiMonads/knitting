@@ -1,24 +1,32 @@
-import { createThreadPool, fixedPoint, isMain } from "./knitting.ts";
+import { createPool, isMain, task } from "./knitting.ts";
 
-export const hello = fixedPoint({
+export const hello = task({
   f: async () => "hello",
 });
-export const world = fixedPoint({
+export const world = task({
   f: async () => "world",
 });
 
-export const { terminateAll, fastCallFunction } = createThreadPool({})({
+const { shutdown, fastCall } = createPool({
+  threads: 3,
+  balancer: "robinRound",
+  inliner: {
+    position: "last"
+  }
+})({
   hello,
   world,
 });
 
 if (isMain) {
   await Promise.all([
-    fastCallFunction.hello(),
-    fastCallFunction.world(),
+    fastCall.hello(),
+    fastCall.world(),
+    fastCall.hello(),
+    fastCall.world(),
   ])
     .then((results) => {
       console.log("Results:", results);
     })
-    .finally(terminateAll);
+    .finally(shutdown);
 }

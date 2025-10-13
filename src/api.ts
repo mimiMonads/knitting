@@ -9,18 +9,18 @@ import { createInlineExecutor } from "./runtime/inline-executor.ts";
 import type {
   Args,
   ComposedWithKey,
-  CreateThreadPool,
-  FixedPoints,
+  CreatePool,
   FixPoint,
   FunctionMapType,
   Pool,
   ReturnFixed,
+  tasks,
 } from "./types.ts";
 
 export const isMain = isMainThread;
-export const endpointSymbol = Symbol.for("FIXEDPOINT");
+export const endpointSymbol = Symbol.for("task");
 
-export const fixedPoint = <
+export const task = <
   A extends Args = void,
   B extends Args = void,
 >(
@@ -45,18 +45,16 @@ export const getFunctions = async ({ list, ids }: {
 }) => {
   const results = await Promise.all(
     list
-
       //
       .map((string) => {
+        const url = new URL(string).href;
 
-        const url =  new URL(string).href;
+        if (url.includes("://")) return url;
 
-        if(url.includes("://")) return url
-  
         return "file://" + new URL(string).href;
       })
       .map(async (imports) => {
-        console
+        console;
         const module = await import(imports);
         return Object.entries(module)
           .filter(
@@ -85,7 +83,7 @@ export const getFunctions = async ({ list, ids }: {
 };
 
 export const toListAndIds = (
-  args: FixedPoints,
+  args: tasks,
 ) => {
   const result = Object.values(args)
     .reduce(
@@ -110,15 +108,15 @@ export const toListAndIds = (
   };
 };
 
-export const createThreadPool = ({
+export const createPool = ({
   threads,
   debug,
   inliner,
   balancer,
   source,
   worker,
-}: CreateThreadPool) =>
-<T extends FixedPoints>(fixedPoints: T): Pool<T> => {
+}: CreatePool) =>
+<T extends tasks>(tasks: T): Pool<T> => {
   /**
    *  This functions is only available in the main thread.
    *  Also triggers when debug extra is enabled.
@@ -126,14 +124,14 @@ export const createThreadPool = ({
   if (isMainThread === false) {
     if ((debug?.extras === true)) {
       console.warn(
-        "createThreadPool has been called with : " + JSON.stringify(
+        "createPool has been called with : " + JSON.stringify(
           workerData,
         ),
       );
     }
     const uwuError = () => {
       throw new Error(
-        "createThreadPool can only be called in the main thread.",
+        "createPool can only be called in the main thread.",
       );
     };
 
@@ -151,16 +149,16 @@ export const createThreadPool = ({
 
     //@ts-ignore
     return ({
-      terminateAll: uwu,
-      callFunction: uwu,
-      fastCallFunction: uwu,
+      shutdown: uwu,
+      call: uwu,
+      fastCall: uwu,
       send: uwu,
     } as Pool<T>);
   }
 
   const promisesMap: PromiseMap = new Map(),
-    { list, ids } = toListAndIds(fixedPoints),
-    listOfFunctions = Object.entries(fixedPoints).map(([k, v]) => ({
+    { list, ids } = toListAndIds(tasks),
+    listOfFunctions = Object.entries(tasks).map(([k, v]) => ({
       ...v,
       name: k,
     }))
@@ -191,7 +189,7 @@ export const createThreadPool = ({
 
   if (usingInliner) {
     const mainThread = createInlineExecutor({
-      fixedPoints,
+      tasks,
       genTaskID,
     });
 
@@ -238,7 +236,7 @@ export const createThreadPool = ({
         .reduce((acc, v) => {
           acc.set(
             v.name,
-            worker.callFunction({
+            worker.call({
               fnNumber: v.index,
             }),
           );
@@ -254,7 +252,7 @@ export const createThreadPool = ({
       return acc;
     }, new Map<string, Function[]>());
 
-  const callFunction = new Map<string, (args: any) => Promise<any>>();
+  const call = new Map<string, (args: any) => Promise<any>>();
   const fastCall = new Map<string, (args: any) => Promise<any>>();
 
   const runnable = workers.reduce((acc, { send }) => {
@@ -263,7 +261,7 @@ export const createThreadPool = ({
   }, [] as (() => void)[]);
 
   enqueueMap.forEach((v, k) => {
-    callFunction.set(
+    call.set(
       k,
       (threads === 1 || threads === undefined) && !usingInliner
         ? (v[0] as (args: any) => Promise<any>)
@@ -289,11 +287,11 @@ export const createThreadPool = ({
   });
 
   return {
-    terminateAll: () => workers.forEach((worker) => worker.kills()),
-    callFunction: Object.fromEntries(
-      callFunction,
+    shutdown: () => workers.forEach((worker) => worker.kills()),
+    call: Object.fromEntries(
+      call,
     ) as unknown as FunctionMapType<T>,
-    fastCallFunction: Object.fromEntries(
+    fastCall: Object.fromEntries(
       fastCall,
     ) as unknown as FunctionMapType<T>,
     send: () => runnable.forEach((fn) => fn()),

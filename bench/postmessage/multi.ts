@@ -83,6 +83,6 @@ export function toResolve(payload?: unknown): Promise<unknown> {
 }
 
 // ─── Public API: Graceful Termination ────────────────────────────────────────
-export async function terminateAllWorkers(): Promise<void> {
+export async function shutdownWorkers(): Promise<void> {
   await Promise.all(workers.map((worker) => worker.terminate()));
 }

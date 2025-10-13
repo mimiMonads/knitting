@@ -1,16 +1,16 @@
 # knitting
 
 ```ts
-import { createThreadPool, fixedPoint, isMain } from "@vixeny/knitting";
+import { createPool, isMain, task } from "@vixeny/knitting";
 
-export const hello = fixedPoint({
+export const hello = task({
   f: async () => "hello",
 });
-export const world = fixedPoint({
+export const world = task({
   f: async () => "world",
 });
 
-export const { terminateAll, fastCallFunction } = createThreadPool({
+export const { shutdown, fastCall } = createPool({
   threads: 2,
 })({
   hello,
@@ -19,13 +19,13 @@ export const { terminateAll, fastCallFunction } = createThreadPool({
 
 if (isMain) {
   await Promise.all([
-    fastCallFunction.hello(),
-    fastCallFunction.world(),
+    fastCall.hello(),
+    fastCall.world(),
   ])
     .then((results) => {
       console.log("Results:", results);
     })
-    .finally(terminateAll);
+    .finally(shutdown);
 }
 ```
 
@@ -34,7 +34,7 @@ import { isMain, task } from "@vixeny/knitting";
 
 export const hello = task({
   f: async () => "hello",
-}).createThreadPool({
+}).createPool({
   threads: 2,
 });
 
