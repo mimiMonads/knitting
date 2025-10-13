@@ -67,7 +67,6 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
   }
 
   const signal = workerSignal(signals);
-  
 
   const {
     enqueue,
@@ -90,6 +89,7 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
   });
 
   rxStatus[0] = 0;
+
   while (true) {
     switch (op[0]) {
       case OP.AllTasksDone:

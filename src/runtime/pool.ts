@@ -80,7 +80,6 @@ export const spawnWorkerContext = ({
   });
 
   const signalBox = mainSignal(signals);
- 
 
   const queue = createHostTxQueue({
     signalBox,

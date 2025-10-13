@@ -1,236 +1,130 @@
-// nested-recursion-queue.bench.ts
-// Run:
-//   bun nested-recursion-queue.bench.ts
-//   deno run -A nested-recursion-queue.bench.ts
-//   npx tsx nested-recursion-queue.bench.ts
-//
-// Tweak:
-//   DEPTH=50 BATCH=20 bun nested-recursion-queue.bench.ts
-//
-// Notes:
-// - Each benchmark iteration creates a *chain* of DEPTH callbacks,
-//   where each callback schedules the next (no breadth).
-// - This starves the event loop until the chain finishes (especially nextTick/microtask).
-// - DEPTH of 10–1000 is typical; huge values can lock the loop for a while.
+// array-vs-linked-list-shift.mjs
+import { bench, run } from "mitata";
 
-import { bench, group, run } from "mitata";
+// LinkedList.ts — modern, iterable, tail-aware singly linked list
 
-// ── env helpers ───────────────────────────────────────────────────
-function getenv(name: string, fallback: string): string {
-  if (typeof process !== "undefined" && process.env && name in process.env) {
-    return process.env[name] as string;
-  }
-  // @ts-ignore Deno
-  if (typeof Deno !== "undefined" && Deno?.env?.get) {
-    // @ts-ignore
-    const v = Deno.env.get(name);
-    if (v != null) return v;
-  }
-  // @ts-ignore Bun
-  if (typeof Bun !== "undefined" && Bun?.env && name in Bun.env) {
-    // @ts-ignore
-    return Bun.env[name];
-  }
-  return fallback;
-}
+type Node<T> = { value: T; next: Node<T> | null };
 
-const DEPTH = Number(getenv("DEPTH", "5")); // callbacks in one chain
-const BATCH = Number(getenv("BATCH", "5")); // chains per mitata iteration
+export default class LinkedList<T> implements Iterable<T> {
+  #head: Node<T> | null = null;
+  #tail: Node<T> | null = null;
+  #size = 0;
 
-const hasNextTick = typeof process !== "undefined" &&
-  typeof process.nextTick === "function";
-const hasSetImmediate = typeof setImmediate === "function";
-
-// ── MessageChannel cross-runtime (global or worker_threads) ──────
-type MessageChannelCtor = new () => { port1: any; port2: any };
-async function getMessageChannelCtor(): Promise<MessageChannelCtor | null> {
-  if (typeof (globalThis as any).MessageChannel === "function") {
-    return (globalThis as any).MessageChannel;
-  }
-  try {
-    // @ts-ignore
-    const wt = await import("node:worker_threads");
-    if (wt?.MessageChannel) return wt.MessageChannel as any;
-  } catch {}
-  return null;
-}
-
-// ── ChannelHandler (your pattern) ─────────────────────────────────
-class ChannelHandler {
-  public channel: any;
-  private useOnEvent = false;
-
-  constructor(MC: MessageChannelCtor) {
-    this.channel = new MC();
-    this.useOnEvent = typeof this.channel.port1.on === "function";
+  constructor(iterable?: Iterable<T>) {
+    if (iterable) { for (const v of iterable) this.push(v); }
   }
 
-  notify(): void {
-    this.channel.port2.postMessage(null);
+  get size(): number {
+    return this.#size;
+  }
+  get isEmpty(): boolean {
+    return this.#size === 0;
   }
 
-  open(f: () => void): void {
-    if (this.useOnEvent) {
-      this.channel.port1.removeAllListeners?.("message");
-      this.channel.port1.on("message", f);
+  push(value: T): void {
+    const node: Node<T> = { value, next: null };
+    if (!this.#head) {
+      this.#head = this.#tail = node;
     } else {
-      this.channel.port1.onmessage = f;
-      this.channel.port2.start?.();
-      this.channel.port1.start?.();
+      this.#tail!.next = node;
+      this.#tail = node;
     }
+    this.#size++;
   }
 
-  close(): void {
-    if (this.useOnEvent) {
-      this.channel.port1.removeAllListeners?.("message");
-    } else {
-      this.channel.port1.onmessage = null;
-      this.channel.port2.onmessage = null;
-    }
-    this.channel.port1.close?.();
-    this.channel.port2.close?.();
+  unshift(value: T): void {
+    const node: Node<T> = { value, next: this.#head };
+    this.#head = node;
+    if (!this.#tail) this.#tail = node;
+    this.#size++;
+  }
+
+  shift(): T | undefined {
+    if (!this.#head) return undefined;
+    const { value, next } = this.#head;
+    this.#head = next;
+    if (!this.#head) this.#tail = null;
+    this.#size--;
+    return value;
+  }
+
+  peek(): T | undefined {
+    return this.#head?.value;
+  }
+
+  clear(): void {
+    this.#head = this.#tail = null;
+    this.#size = 0;
+  }
+
+  toArray(): T[] {
+    const out: T[] = [];
+    for (const v of this) out.push(v);
+    return out;
+  }
+
+  [Symbol.iterator](): Iterator<T> {
+    let cur = this.#head;
+    return {
+      next(): IteratorResult<T> {
+        if (!cur) return { done: true, value: undefined as any };
+        const value = cur.value;
+        cur = cur.next;
+        return { done: false, value };
+      },
+    };
+  }
+
+  get [Symbol.toStringTag](): string {
+    return `LinkedList(size=${this.#size})`;
+  }
+
+  static from<U>(iterable: Iterable<U>): LinkedList<U> {
+    return new LinkedList(iterable);
   }
 }
 
-const MC = await getMessageChannelCtor();
-const hasChannel = !!MC;
+// --- Test bodies ported 1:1 from MeasureThat (including thresholds) ---
+// Linked List test
+function testLinkedList_MeasureThat() {
+  const list = new LinkedList();
 
-// ── NESTED (CHAIN) BUILDERS ───────────────────────────────────────
-// Each returns a Promise that resolves after DEPTH nested steps.
-// Each step *schedules the next* rather than enqueuing a batch.
-
-function nestedQueueMicrotask(depth: number): Promise<void> {
-  return new Promise<void>((resolve) => {
-    let i = 0;
-    function step() {
-      if (++i >= depth) {
-        resolve();
-      } else {
-        queueMicrotask(step);
-      }
-    }
-    queueMicrotask(step);
-  });
+  let x = 10000;
+  while (x--) list.unshift(x);
+  // Original benchmark compares node object to number (< 1000).
+  // This is intentionally preserved for fidelity.
+  // It will usually exit immediately due to non-numeric comparison.
+  while (list.shift() < 1000) {}
 }
 
-function nestedPromiseThen(depth: number): Promise<void> {
-  return new Promise<void>((resolve) => {
-    let i = 0;
-    function step() {
-      if (++i >= depth) {
-        resolve();
-      } else {
-        Promise.resolve().then(step);
-      }
-    }
-    Promise.resolve().then(step);
-  });
+// Array test
+function testArray_MeasureThat() {
+  const array = [];
+  let x = 10000;
+  while (x--) array.unshift(x);
+  while (array.shift() < 10000) {}
 }
-
-function nestedNextTick(depth: number): Promise<void> {
-  return new Promise<void>((resolve) => {
-    let i = 0;
-    function step() {
-      if (++i >= depth) {
-        resolve();
-      } else {
-        // @ts-ignore
-        process.nextTick(step);
-      }
-    }
-    // @ts-ignore
-    process.nextTick(step);
-  });
-}
-
-function nestedSetImmediate(depth: number): Promise<void> {
-  return new Promise<void>((resolve) => {
-    let i = 0;
-    function step() {
-      if (++i >= depth) {
-        resolve();
-      } else {
-        // @ts-ignore
-        setImmediate(step);
-      }
-    }
-    // @ts-ignore
-    setImmediate(step);
-  });
-}
-
-function nestedSetTimeout0(depth: number): Promise<void> {
-  return new Promise<void>((resolve) => {
-    let i = 0;
-    function step() {
-      if (++i >= depth) {
-        resolve();
-      } else {
-        setTimeout(step, 0);
-      }
-    }
-    setTimeout(step, 0);
-  });
-}
-
-function nestedChannel(depth: number, ch: ChannelHandler): Promise<void> {
-  return new Promise<void>((resolve) => {
-    let i = 0;
-    function onMsg() {
-      if (++i >= depth) {
-        ch.open(() => {}); // detach to avoid leaks
-        resolve();
-      } else {
-        ch.notify();
-      }
-    }
-    ch.open(onMsg);
-    ch.notify();
-  });
-}
-
-// ── optional re-usable channel instance ───────────────────────────
-const channel = hasChannel ? new ChannelHandler(MC!) : null;
-
-// ── BENCHES ───────────────────────────────────────────────────────
-group(`nested recursion chains (DEPTH=${DEPTH}, BATCH=${BATCH})`, () => {
-  bench("queueMicrotask (nested)", async () => {
-    for (let b = 0; b < BATCH; b++) await nestedQueueMicrotask(DEPTH);
-  });
-
-  bench("Promise.then (nested)", async () => {
-    for (let b = 0; b < BATCH; b++) await nestedPromiseThen(DEPTH);
-  });
-
-  if (hasNextTick) {
-    bench("process.nextTick (nested)", async () => {
-      for (let b = 0; b < BATCH; b++) await nestedNextTick(DEPTH);
-    });
-  }
-
-  if (channel) {
-    bench("MessageChannel (nested)", async () => {
-      for (let b = 0; b < BATCH; b++) await nestedChannel(DEPTH, channel);
-    });
-  }
-
-  if (hasSetImmediate) {
-    bench("setImmediate (nested)", async () => {
-      for (let b = 0; b < BATCH; b++) await nestedSetImmediate(DEPTH);
-    });
-  }
-
-  bench("setTimeout(0) (nested)", async () => {
-    for (let b = 0; b < BATCH; b++) await nestedSetTimeout0(DEPTH);
-  });
+// --- Benchmarks ---
+bench("Linked List (MeasureThat)", () => {
+  testLinkedList_MeasureThat();
 });
 
+bench("Array (MeasureThat)", () => {
+  testArray_MeasureThat();
+});
 
-const fn  = () => {
-  uwu: {
-    break uwu;
-  }
-}
+// Optional: a "fixed" variant for curiosity (not part of the faithful replication).
+// Uncomment to compare.
+// function testLinkedList_Fixed() {
+//   const list = new LinkedList();
+//   let x = 10000;
+//   while (x--) list.unshift(x);
+//   // Shift returns node; compare using node.data and mirror the Array threshold.
+//   let node;
+//   while ((node = list.shift()) && node.data < 10000) {}
+// }
+// bench('Linked List (Fixed: compare node.data, <10000)', () => {
+//   testLinkedList_Fixed();
+// });
 
 await run();
-channel?.close?.();

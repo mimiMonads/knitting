@@ -26,14 +26,7 @@ def ns_to_seconds(v):
         return math.nan
 
 def extract_series(obj):
-    """
-    Returns two dicts keyed by total_threads: time_seconds
-      times[1] is 'main'
-      times[n] is 'main + (n-1) extra threads'
-    The JSON looks like an array of sections; each section has a single key like
-    'knitting: primes up to ...' mapping to a list of rows.
-    We'll merge all sections.
-    """
+
     times = {}  # total_threads -> avg seconds
 
     def scan_rows(rows):

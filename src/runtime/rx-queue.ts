@@ -15,6 +15,7 @@ import {
   writeFramePayload,
 } from "../ipc/protocol/codec.ts";
 import "../polyfills/promise-with-resolvers.ts";
+import  LinkList  from "../ipc/tools/LinkList.ts"
 
 type ArgumentsForCreateWorkerQueue = {
   listOfFunctions: ComposedWithKey[];
@@ -38,7 +39,7 @@ export const createWorkerRxQueue = (
       slotIndex,
     },
     workerOptions,
-    secondChannel
+    secondChannel,
   }: ArgumentsForCreateWorkerQueue,
 ) => {
   const PLACE_HOLDER = () => {
@@ -104,8 +105,6 @@ export const createWorkerRxQueue = (
     mainOP: SignalArguments,
     thisChanne: SignalArguments,
   ) => {
-
-
     const reader = readFramePayload({
       ...thisChanne,
       frameFlags: mainOP.frameFlags,
@@ -114,10 +113,8 @@ export const createWorkerRxQueue = (
 
     const { op, slotIndex, rpcId } = thisChanne;
 
-
     return () => {
-
-      if (op[0] !== OP.MainSend) return false
+      if (op[0] !== OP.MainSend) return false;
 
       const currentIndex = slotIndex[0],
         fnNumber = rpcId[0],
@@ -139,13 +136,12 @@ export const createWorkerRxQueue = (
       toWork.push(slot);
       isThereAnythingToResolve++;
 
-      return true
-    }
+      return true;
+    };
   };
 
-
-  const firstFrame = channelEnqueued(signals,signals)
-  const secondFrame = channelEnqueued(signals,secondChannel)
+  const firstFrame = channelEnqueued(signals, signals);
+  const secondFrame = channelEnqueued(signals, secondChannel);
 
   return {
     // Check if any task is solved and ready for writing.
@@ -155,9 +151,9 @@ export const createWorkerRxQueue = (
     blockingResolve: async () => {
       try {
         blockingSlot[MainListEnum.WorkerResponse] = await jobs
-        [blockingSlot[MainListEnum.FunctionID]](
-          playloadToArgs(),
-        );
+          [blockingSlot[MainListEnum.FunctionID]](
+            playloadToArgs(),
+          );
         writeFrame(blockingSlot);
         op[0] = OP.FastResolve;
       } catch (err) {
@@ -234,7 +230,7 @@ export const createWorkerRxQueue = (
 
       try {
         slot[MainListEnum.WorkerResponse] = await jobs
-        [slot[MainListEnum.FunctionID]](slot[MainListEnum.RawArguments]);
+          [slot[MainListEnum.FunctionID]](slot[MainListEnum.RawArguments]);
         hasAnythingFinished++;
         completedFrames.push(slot);
       } catch (err) {

@@ -69,14 +69,14 @@ interface MultipleQueueSingle {
   max?: number;
   listOfFunctions: ComposedWithKey[];
   signals: SignalArguments;
-  secondChannel:  SignalArguments
+  secondChannel: SignalArguments;
 }
 
 export function createHostTxQueue({
   signalBox,
   max,
   signals,
-  secondChannel
+  secondChannel,
 }: MultipleQueueSingle) {
   const PLACE_HOLDER = (_: void) => {
     throw ("UNREACHABLE FROM PLACE HOLDER (main)");
@@ -173,15 +173,14 @@ export function createHostTxQueue({
   };
 
   const flushToChannel = (
-    frameFlags: MainSignal['frameFlags'],
+    frameFlags: MainSignal["frameFlags"],
     thisChannel: SignalArguments,
     checkChange: boolean,
   ) => {
- 
     const write = writeFramePayload({
       index: MainListEnum.RawArguments,
       jsonString: true,
-    })({...thisChannel});
+    })({ ...thisChannel });
 
     const { op, slotIndex, rpcId } = thisChannel;
 
@@ -210,7 +209,7 @@ export function createHostTxQueue({
     };
   };
 
-  const flushToFirst = flushToChannel(signalBox.frameFlags, signals, false)
+  const flushToFirst = flushToChannel(signalBox.frameFlags, signals, false);
 
   return {
     optimizeQueue: () => {

@@ -352,7 +352,6 @@ const readFramePayload = (
     op,
   }: SignalArguments & {
     specialType: "main" | "thread";
-    
   },
 ) => {
   const changeOwnership = specialType === "main"

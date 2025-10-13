@@ -29,6 +29,21 @@ if (isMain) {
 }
 ```
 
+```ts
+import { task, isMain } from "@vixeny/knitting";
+
+export const hello = task({
+  f: async () => "hello",
+}).createThreadPool({
+  threads: 2
+});
+
+if (isMain) await hello.call()
+  .then(console.log)
+  .finally(hello.shutdown);
+
+```
+
 ## License
 
 This software is licensed under a modified MIT License with a **No-Derivatives
