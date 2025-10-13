@@ -30,13 +30,13 @@ export type PromiseMap = Map<
 >;
 
 export enum MainListEnum {
-  RawArguments = 0,
-  FunctionID = 1,
-  WorkerResponse = 2,
-  OnResolve = 3,
-  OnReject = 4,
-  PayloadType = 5,
-  slotIndex = 6,
+  slotIndex = 0,
+  RawArguments = 1,
+  FunctionID = 2,
+  WorkerResponse = 3,
+  OnResolve = 4,
+  OnReject = 5,
+  PayloadType = 6,
 }
 
 export enum MainListState {
@@ -48,13 +48,13 @@ export enum MainListState {
 }
 
 export type MainList = [
+  number,
   unknown,
   FunctionID,
   WorkerResponse,
   Accepted,
   Rejected,
   PayloadType,
-  number,
 ];
 
 export type QueueListWorker = MainList;
@@ -91,15 +91,16 @@ export function createHostTxQueue({
   } = signalBox;
 
   let countSlot = 0;
+
   const newSlot = () =>
     [
+      countSlot++,
       ,
       0,
       ,
       PLACE_HOLDER,
       PLACE_HOLDER,
       PayloadType.Undefined,
-      countSlot++,
     ] as MainList;
 
   const queue = Array.from(

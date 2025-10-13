@@ -51,19 +51,15 @@ export const createWorkerRxQueue = (
 
   const newSlot = () =>
     [
+      0,
       ,
       0,
       ,
       PLACE_HOLDER,
       PLACE_HOLDER,
       PayloadType.UNREACHABLE,
-      0,
     ] as QueueListWorker;
 
-  const queue = Array.from(
-    { length: 15 },
-    newSlot,
-  );
 
   const blockingSlot = newSlot();
 
@@ -92,13 +88,14 @@ export const createWorkerRxQueue = (
     specialType: "thread",
   });
 
+  const toWork =  new LinkList<QueueListWorker>()
   const completedFrames: QueueListWorker[] = [];
   const errorFrames: QueueListWorker[] = [];
-  const toWork: QueueListWorker[] = [];
+  //const toWork: QueueListWorker[] = [];
   const optimizedFrames: QueueListWorker[] = [];
 
   const hasCompleted = workerOptions?.resolveAfterFinishinAll === true
-    ? () => hasAnythingFinished !== 0 && toWork.length === 0
+    ? () => hasAnythingFinished !== 0 && toWork.size === 0
     : () => hasAnythingFinished !== 0;
 
   const channelEnqueued = (
@@ -114,22 +111,14 @@ export const createWorkerRxQueue = (
     const { op, slotIndex, rpcId } = thisChanne;
 
     return () => {
-      if (op[0] !== OP.MainSend) return false;
+      //if (op[0] !== OP.MainSend) return false;
 
       const currentIndex = slotIndex[0],
         fnNumber = rpcId[0],
         args = reader();
 
-      if (queue.length === 0) {
-        let i = 0;
 
-        while (i !== 15) {
-          queue.push(newSlot());
-          i++;
-        }
-      }
-
-      const slot = queue.pop()!;
+      const slot = newSlot();
       slot[MainListEnum.RawArguments] = args;
       slot[MainListEnum.FunctionID] = fnNumber;
       slot[MainListEnum.slotIndex] = currentIndex;
@@ -147,7 +136,7 @@ export const createWorkerRxQueue = (
     // Check if any task is solved and ready for writing.
     hasFramesToOptimize: () => completedFrames.length > 0,
     hasCompleted,
-    hasPending: () => toWork.length !== 0,
+    hasPending: () => toWork.size !== 0,
     blockingResolve: async () => {
       try {
         blockingSlot[MainListEnum.WorkerResponse] = await jobs
@@ -177,7 +166,6 @@ export const createWorkerRxQueue = (
         slotIndex[0] = slot[MainListEnum.slotIndex];
         writeFrame(slot);
         op[0] = OP.WorkerWaiting;
-        //queue.push(slot);
         isThereAnythingToResolve--;
         hasAnythingFinished--;
 
@@ -189,7 +177,6 @@ export const createWorkerRxQueue = (
         slotIndex[0] = slot[MainListEnum.slotIndex];
         writeFrame(slot);
         op[0] = OP.WorkerWaiting;
-        //queue.push(slot);
         isThereAnythingToResolve--;
         hasAnythingFinished--;
         return;
@@ -200,14 +187,13 @@ export const createWorkerRxQueue = (
         slotIndex[0] = slot[MainListEnum.slotIndex];
         returnError(slot);
         op[0] = OP.ErrorThrown;
-        //queue.push(slot);
         isThereAnythingToResolve--;
         hasAnythingFinished--;
       }
     },
     // Process the next available task.
     serviceOne: async () => {
-      const slot = toWork.pop();
+      const slot = toWork.shift();
 
       if (slot !== undefined) {
         await jobs[slot[MainListEnum.FunctionID]](
@@ -226,7 +212,7 @@ export const createWorkerRxQueue = (
       }
     },
     serviceOneImmediate: async () => {
-      const slot = toWork.pop()!;
+      const slot = toWork.shift()!;
 
       try {
         slot[MainListEnum.WorkerResponse] = await jobs
