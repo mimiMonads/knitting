@@ -60,6 +60,6 @@ if (isMain) {
   });
 
   await mitataRun({ format, print });
-  await terminateAllWorkers();
+  await shutdownWorkers();
   await shutdown ();
 }

@@ -89,10 +89,9 @@ export const createWorkerRxQueue = (
   });
 
   const toWork =  new LinkList<QueueListWorker>()
-  const completedFrames: QueueListWorker[] = [];
-  const errorFrames: QueueListWorker[] = [];
-  //const toWork: QueueListWorker[] = [];
-  const optimizedFrames: QueueListWorker[] = [];
+  const completedFrames=  new LinkList<QueueListWorker>();
+  const errorFrames = new LinkList<QueueListWorker>();
+  const optimizedFrames =  new LinkList<QueueListWorker>();
 
   const hasCompleted = workerOptions?.resolveAfterFinishinAll === true
     ? () => hasAnythingFinished !== 0 && toWork.size === 0
@@ -134,7 +133,7 @@ export const createWorkerRxQueue = (
 
   return {
     // Check if any task is solved and ready for writing.
-    hasFramesToOptimize: () => completedFrames.length > 0,
+    hasFramesToOptimize: () => completedFrames.size > 0,
     hasCompleted,
     hasPending: () => toWork.size !== 0,
     blockingResolve: async () => {
@@ -153,7 +152,7 @@ export const createWorkerRxQueue = (
     },
 
     preResolve: () => {
-      const slot = completedFrames.pop();
+      const slot = completedFrames.shift();
       if (slot) optimizedFrames.push(simplifies(slot));
     },
 
@@ -161,8 +160,8 @@ export const createWorkerRxQueue = (
     enqueue: firstFrame,
 
     write: () => {
-      if (completedFrames.length > 0) {
-        const slot = completedFrames.pop()!;
+      if (completedFrames.size > 0) {
+        const slot = completedFrames.shift()!;
         slotIndex[0] = slot[MainListEnum.slotIndex];
         writeFrame(slot);
         op[0] = OP.WorkerWaiting;
@@ -172,8 +171,8 @@ export const createWorkerRxQueue = (
         return;
       }
 
-      if (optimizedFrames.length > 0) {
-        const slot = optimizedFrames.pop()!;
+      if (optimizedFrames.size > 0) {
+        const slot = optimizedFrames.shift()!;
         slotIndex[0] = slot[MainListEnum.slotIndex];
         writeFrame(slot);
         op[0] = OP.WorkerWaiting;
@@ -182,8 +181,8 @@ export const createWorkerRxQueue = (
         return;
       }
 
-      if (errorFrames.length > 0) {
-        const slot = errorFrames.pop()!;
+      if (errorFrames.size > 0) {
+        const slot = errorFrames.shift()!;
         slotIndex[0] = slot[MainListEnum.slotIndex];
         returnError(slot);
         op[0] = OP.ErrorThrown;
