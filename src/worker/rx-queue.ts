@@ -1,5 +1,5 @@
-import { type QueueListWorker } from "./tx-queue.ts";
-import { MainListEnum } from "./tx-queue.ts";
+import { type QueueListWorker } from "../runtime/tx-queue.ts";
+import { MainListEnum } from "../runtime/tx-queue.ts";
 import {
   OP,
   type SignalArguments,
@@ -27,6 +27,7 @@ type ArgumentsForCreateWorkerQueue = {
   workerOptions?: WorkerSettings;
 };
 
+export type CreateWorkerRxQueue = ReturnType<typeof createWorkerRxQueue>;
 // Create and manage a
 // working queue.
 export const createWorkerRxQueue = (
@@ -35,11 +36,9 @@ export const createWorkerRxQueue = (
     signals,
     signal: {
       op,
-      rpcId,
       slotIndex,
     },
     workerOptions,
-    secondChannel,
   }: ArgumentsForCreateWorkerQueue,
 ) => {
   const PLACE_HOLDER = () => {
@@ -59,7 +58,6 @@ export const createWorkerRxQueue = (
       PLACE_HOLDER,
       PayloadType.UNREACHABLE,
     ] as QueueListWorker;
-
 
   const blockingSlot = newSlot();
 
@@ -88,10 +86,10 @@ export const createWorkerRxQueue = (
     specialType: "thread",
   });
 
-  const toWork =  new LinkList<QueueListWorker>()
-  const completedFrames=  new LinkList<QueueListWorker>();
+  const toWork = new LinkList<QueueListWorker>();
+  const completedFrames = new LinkList<QueueListWorker>();
   const errorFrames = new LinkList<QueueListWorker>();
-  const optimizedFrames =  new LinkList<QueueListWorker>();
+  const optimizedFrames = new LinkList<QueueListWorker>();
 
   const hasCompleted = workerOptions?.resolveAfterFinishinAll === true
     ? () => hasAnythingFinished !== 0 && toWork.size === 0
@@ -116,7 +114,6 @@ export const createWorkerRxQueue = (
         fnNumber = rpcId[0],
         args = reader();
 
-
       const slot = newSlot();
       slot[MainListEnum.RawArguments] = args;
       slot[MainListEnum.FunctionID] = fnNumber;
@@ -129,7 +126,6 @@ export const createWorkerRxQueue = (
   };
 
   const firstFrame = channelEnqueued(signals, signals);
-  const secondFrame = channelEnqueued(signals, secondChannel);
 
   return {
     // Check if any task is solved and ready for writing.
@@ -160,15 +156,13 @@ export const createWorkerRxQueue = (
     enqueue: firstFrame,
 
     write: () => {
-      if (completedFrames.size > 0) {
-        const slot = completedFrames.shift()!;
+      if (errorFrames.size > 0) {
+        const slot = errorFrames.shift()!;
         slotIndex[0] = slot[MainListEnum.slotIndex];
-        writeFrame(slot);
-        op[0] = OP.WorkerWaiting;
+        returnError(slot);
+        op[0] = OP.ErrorThrown;
         isThereAnythingToResolve--;
         hasAnythingFinished--;
-
-        return;
       }
 
       if (optimizedFrames.size > 0) {
@@ -181,13 +175,15 @@ export const createWorkerRxQueue = (
         return;
       }
 
-      if (errorFrames.size > 0) {
-        const slot = errorFrames.shift()!;
+      if (completedFrames.size > 0) {
+        const slot = completedFrames.shift()!;
         slotIndex[0] = slot[MainListEnum.slotIndex];
-        returnError(slot);
-        op[0] = OP.ErrorThrown;
+        writeFrame(slot);
+        op[0] = OP.WorkerWaiting;
         isThereAnythingToResolve--;
         hasAnythingFinished--;
+
+        return;
       }
     },
     // Process the next available task.

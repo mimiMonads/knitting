@@ -141,11 +141,6 @@ export const spawnWorkerContext = ({
     },
   ) as Worker;
 
-  const call = ({ fnNumber }: call) => {
-    const enqueues = enqueue(fnNumber);
-    return (args: Uint8Array) => enqueues(args);
-  };
-
   const thisSignal = signalBox.opView;
   const send = () => {
     if (check.isRunning === false && hasPendingFrames()) {
@@ -155,6 +150,20 @@ export const spawnWorkerContext = ({
       check.isRunning = true;
       Promise.resolve().then(check);
     }
+  };
+
+  const call = ({ fnNumber }: call) => {
+    const enqueues = enqueue(fnNumber);
+    return (args: Uint8Array) => {
+      if (check.isRunning === false && hasPendingFrames()) {
+        check.isRunning = true;
+        thisSignal[0] = OP.WakeUp;
+        Atomics.notify(thisSignal, 0, 1);
+        Promise.resolve().then(() => (flushToWorker(), check()));
+      }
+
+      return enqueues(args);
+    };
   };
 
   const fastCalling = ({ fnNumber }: call) => {

@@ -1,32 +1,42 @@
 import { createPool, isMain, task } from "./knitting.ts";
 
+let num = 0;
+const arr: number[] = [];
+
 export const hello = task({
-  f: async () => "hello",
-});
-export const world = task({
-  f: async () => "world",
+  f: async () => num++,
 });
 
-const { shutdown, fastCall } = createPool({
-  threads: 3,
-  balancer: "robinRound",
-  inliner: {
-    position: "last"
-  }
-})({
+const { shutdown, fastCall } = createPool({})({
   hello,
-  world,
 });
 
+const fn = (n: number) => arr.push(n);
 if (isMain) {
   await Promise.all([
-    fastCall.hello(),
-    fastCall.world(),
-    fastCall.hello(),
-    fastCall.world(),
+    fastCall.hello().then(fn),
+    fastCall.hello().then(fn),
+    fastCall.hello().then(fn),
+    fastCall.hello().then(fn),
+    fastCall.hello().then(fn),
+    fastCall.hello().then(fn),
+    fastCall.hello().then(fn),
+    fastCall.hello().then(fn),
+    fastCall.hello().then(fn),
+    fastCall.hello().then(fn),
+    fastCall.hello().then(fn),
+    fastCall.hello().then(fn),
+    fastCall.hello().then(fn),
+    fastCall.hello().then(fn),
+    fastCall.hello().then(fn),
+    fastCall.hello().then(fn),
+    fastCall.hello().then(fn),
+    fastCall.hello().then(fn),
+    fastCall.hello().then(fn),
+    fastCall.hello().then(fn),
   ])
-    .then((results) => {
-      console.log("Results:", results);
+    .then(() => {
+      console.log("Results:", arr);
     })
     .finally(shutdown);
 }

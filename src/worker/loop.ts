@@ -1,5 +1,5 @@
 import { isMainThread, workerData } from "node:worker_threads";
-import { createWorkerRxQueue } from "../runtime/rx-queue.ts";
+import { createWorkerRxQueue } from "./rx-queue.ts";
 import {
   createSharedMemoryTransport,
   OP,

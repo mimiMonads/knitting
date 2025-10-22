@@ -8,18 +8,15 @@ export const currentPath = () => new URL(import.meta.url);
 //@ts-ignore
 const IS_BUN = typeof Bun == "object" && Bun !== null;
 
-
-
 const getCallerFilePathForBun = (offset: number) => {
-
-   // @ts-ignore
+  // @ts-ignore
   const originalStackTrace = Error.prepareStackTrace;
-   // @ts-ignore
+  // @ts-ignore
   Error.prepareStackTrace = (_, stack) => stack;
   const err = new Error();
-   // @ts-ignore
+  // @ts-ignore
   const stack = err.stack as unknown as NodeJS.CallSite[];
-   // @ts-ignore
+  // @ts-ignore
   Error.prepareStackTrace = originalStackTrace;
   const caller = stack[offset]?.getFileName();
 

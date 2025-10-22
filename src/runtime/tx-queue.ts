@@ -6,6 +6,7 @@ import {
   readPayloadError,
   writeFramePayload,
 } from "../ipc/protocol/codec.ts";
+import LinkedList from "../ipc/tools/LinkList.ts";
 import {
   frameFlagsFlag,
   type MainSignal,
@@ -132,7 +133,7 @@ export function createHostTxQueue({
   });
 
   // Local count
-  const toBeSent: number[] = [];
+  const toBeSent = new LinkedList<MainList>();
   let toBeSentCount = 0;
   let inUsed = 0;
 
@@ -187,11 +188,10 @@ export function createHostTxQueue({
 
     return () => {
       if (checkChange === true) {
-        if (toBeSent.length === 0 || op[0] !== OP.WaitingForMore) return false;
+        if (toBeSent.size === 0 || op[0] !== OP.WaitingForMore) return false;
       }
 
-      const index = toBeSent.pop()!,
-        slot = queue[index];
+      const slot = toBeSent.shift()!;
 
       // Checks if this is the last Element to be sent
       toBeSentCount > 0
@@ -199,7 +199,7 @@ export function createHostTxQueue({
         : (frameFlags[0] = frameFlagsFlag.NotLast);
 
       rpcId[0] = slot[MainListEnum.FunctionID];
-      slotIndex[0] = index;
+      slotIndex[0] = slot[MainListEnum.slotIndex];
       write(slot);
 
       // Changes ownership of the sab
@@ -213,14 +213,14 @@ export function createHostTxQueue({
   const flushToFirst = flushToChannel(signalBox.frameFlags, signals, false);
 
   return {
-    optimizeQueue: () => {
-      let i = 0;
+    // optimizeQueue: () => {
+    //   let i = 0;
 
-      while (rxStatus[0] === 1 && toBeSent.length > i) {
-        simplifies(queue[toBeSent[i]]);
-        i++;
-      }
-    },
+    //   while (rxStatus[0] === 1 && toBeSent.size > i) {
+    //     simplifies(queue[toBeSent[i]]);
+    //     i++;
+    //   }
+    // },
 
     rejectAll,
     hasPendingFrames,
@@ -265,10 +265,11 @@ export function createHostTxQueue({
       slot[MainListEnum.FunctionID] = functionID;
       slot[MainListEnum.OnResolve] = deferred.resolve;
       slot[MainListEnum.OnReject] = deferred.reject;
+      slot[MainListEnum.slotIndex] = index;
 
       //preRresolve(slot)
       // Change states:
-      toBeSent.push(index);
+      toBeSent.push(slot);
       toBeSentCount++;
       inUsed++;
 
@@ -279,8 +280,8 @@ export function createHostTxQueue({
 
     rejectFrame: () => {
       const index = slotIndex[0],
-        slot = queue[index],
-        args = errorDeserializer();
+        args = errorDeserializer(),
+        slot = queue[index];
 
       slot[MainListEnum.OnReject](args);
       inUsed--;
@@ -289,7 +290,7 @@ export function createHostTxQueue({
 
     /* Resolve task whose ID matches currentID */
     completeFrame: () => {
-      const index = slotIndex[0], slot = queue[index], args = reader();
+      const index = slotIndex[0], args = reader(), slot = queue[index];
 
       slot[MainListEnum.OnResolve](
         args,

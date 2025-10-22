@@ -200,8 +200,7 @@ if (isMain) {
       );
       bench(
         `small array -> (${n})`,
-        async () =>
-          await runCF(n, async () => call.toObject(smallArray)),
+        async () => await runCF(n, async () => call.toObject(smallArray)),
       );
 
       bench(

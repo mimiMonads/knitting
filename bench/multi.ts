@@ -1,6 +1,6 @@
 import { bench, boxplot, group, run as mitataRun, summary } from "mitata";
-import { createPool, task, isMain } from "../knitting.ts";
-import { shutdownWorkers , toResolve } from "./postmessage/multi.ts";
+import { createPool, isMain, task } from "../knitting.ts";
+import { shutdownWorkers, toResolve } from "./postmessage/multi.ts";
 import { format, print } from "./ulti/json-parse.ts";
 
 export const inLine = task({
@@ -14,7 +14,7 @@ const obj = {
   arr: [1, 2, 3, 4],
 };
 
-const { shutdown , call, send } = createPool(
+const { shutdown, call, send } = createPool(
   { threads: 4 },
 )({
   inLine,
@@ -61,5 +61,5 @@ if (isMain) {
 
   await mitataRun({ format, print });
   await shutdownWorkers();
-  await shutdown ();
+  await shutdown();
 }
