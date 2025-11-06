@@ -1,7 +1,7 @@
 import { getCallerFilePath } from "./common/others.ts";
 import { genTaskID } from "./common/others.ts";
 import { spawnWorkerContext } from "./runtime/pool.ts";
-import type { PromiseMap } from "./runtime/tx-queue.ts";
+import type { PromiseMap } from "./types.ts";
 import { isMainThread, workerData } from "node:worker_threads";
 
 import { managerMethod } from "./runtime/balancer.ts";
@@ -14,6 +14,7 @@ import type {
   FunctionMapType,
   Pool,
   ReturnFixed,
+  WorkerInvoke,
   tasks,
 } from "./types.ts";
 
@@ -207,93 +208,62 @@ export const createPool = ({
     }
   }
 
-  const fastMap = workers
-    .map((worker) => {
-      return listOfFunctions
-        .map((list, index) => ({ ...list, index }))
-        .reduce((acc, v) => {
-          acc.set(
-            v.name,
-            worker.fastCalling({
-              fnNumber: v.index,
-            }),
-          );
-          return acc;
-        }, new Map<string, ReturnType<typeof worker.fastCalling>>());
-    })
-    .reduce((acc, map) => {
-      map.forEach((v, k) => {
-        const fun = acc.get(k);
-        fun ? acc.set(k, [...fun, v]) : acc.set(k, [v]);
-      });
-      return acc;
-    }, new Map<string, Function[]>());
+  const indexedFunctions = listOfFunctions.map((fn, index) => ({
+    name: fn.name,
+    index,
+  }));
 
-  const enqueueMap = workers
-    .map((worker) => {
-      return listOfFunctions
-        .map((list, index) => ({ ...list, index }))
-        .reduce((acc, v) => {
-          acc.set(
-            v.name,
-            worker.call({
-              fnNumber: v.index,
-            }),
-          );
+  const fastHandlers = new Map<string, WorkerInvoke[]>();
+  const callHandlers = new Map<string, WorkerInvoke[]>();
 
-          return acc;
-        }, new Map<string, ReturnType<typeof worker.fastCalling>>());
-    })
-    .reduce((acc, map) => {
-      map.forEach((v, k) => {
-        const fun = acc.get(k);
-        fun ? acc.set(k, [...fun, v]) : acc.set(k, [v]);
-      });
-      return acc;
-    }, new Map<string, Function[]>());
+  for (const { name } of indexedFunctions) {
+    fastHandlers.set(name, []);
+    callHandlers.set(name, []);
+  }
 
-  const call = new Map<string, (args: any) => Promise<any>>();
-  const fastCall = new Map<string, (args: any) => Promise<any>>();
-
-  const runnable = workers.reduce((acc, { send }) => {
-    acc.push(send);
-    return acc;
-  }, [] as (() => void)[]);
-
-  enqueueMap.forEach((v, k) => {
-    call.set(
-      k,
-      (threads === 1 || threads === undefined) && !usingInliner
-        ? (v[0] as (args: any) => Promise<any>)
-        : managerMethod({
-          contexts: workers,
-          balancer,
-          handlers: v,
+  for (const worker of workers) {
+    for (const { name, index } of indexedFunctions) {
+      fastHandlers.get(name)!.push(
+        worker.fastCalling({
+          fnNumber: index,
         }),
-    );
-  });
+      );
 
-  fastMap.forEach((v, k) => {
-    fastCall.set(
-      k,
-      (threads === 1 || threads === undefined) && !usingInliner
-        ? (v[0] as (args: any) => Promise<any>)
-        : managerMethod({
-          contexts: workers,
-          balancer,
-          handlers: v,
+      callHandlers.get(name)!.push(
+        worker.call({
+          fnNumber: index,
         }),
-    );
-  });
+      );
+    }
+  }
+
+  const useDirectHandler = (threads ?? 1) === 1 && !usingInliner;
+
+  const buildInvoker = (handlers: WorkerInvoke[]) =>
+    useDirectHandler
+      ? handlers[0]!
+      : managerMethod({
+        contexts: workers,
+        balancer,
+        handlers,
+      });
+
+  const callEntries = Array.from(
+    callHandlers.entries(),
+    ([name, handlers]) => [name, buildInvoker(handlers)],
+  );
+
+  const fastEntries = Array.from(
+    fastHandlers.entries(),
+    ([name, handlers]) => [name, buildInvoker(handlers)],
+  );
+
+  const runnable = workers.map((worker) => worker.send);
 
   return {
     shutdown: () => workers.forEach((worker) => worker.kills()),
-    call: Object.fromEntries(
-      call,
-    ) as unknown as FunctionMapType<T>,
-    fastCall: Object.fromEntries(
-      fastCall,
-    ) as unknown as FunctionMapType<T>,
+    call: Object.fromEntries(callEntries) as unknown as FunctionMapType<T>,
+    fastCall: Object.fromEntries(fastEntries) as unknown as FunctionMapType<T>,
     send: () => runnable.forEach((fn) => fn()),
   } as Pool<T>;
 };

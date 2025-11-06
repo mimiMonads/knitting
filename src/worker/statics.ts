@@ -1,6 +1,6 @@
-import { PayloadType } from "../ipc/protocol/codec";
-import LinkList from "../ipc/tools/LinkList";
-import type { QueueListWorker } from "../runtime/tx-queue";
+import { PayloadType } from "../types.ts";
+import LinkList from "../ipc/tools/LinkList.ts";
+import type { QueueListWorker } from "../types.ts";
 
 const PLACE_HOLDER = () => {
   throw ("UNREACHABLE FROM PLACE HOLDER (thread)");
@@ -17,10 +17,7 @@ export const newSlotNoIndex = () =>
     PayloadType.UNREACHABLE,
   ] as QueueListWorker;
 
-
-  
-  export const toWork = new LinkList<QueueListWorker>();
-  export const completedFrames = new LinkList<QueueListWorker>();
-  export const errorFrames = new LinkList<QueueListWorker>();
-  export const optimizedFrames = new LinkList<QueueListWorker>();
-
+export const toWork = new LinkList<QueueListWorker>();
+export const completedFrames = new LinkList<QueueListWorker>();
+export const errorFrames = new LinkList<QueueListWorker>();
+export const optimizedFrames = new LinkList<QueueListWorker>();

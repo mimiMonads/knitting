@@ -3,8 +3,11 @@ import {
   OP,
   type SignalArguments,
 } from "../transport/shared-memory.ts";
-import type { MainList } from "../../runtime/tx-queue.ts";
-import { MainListEnum } from "../../runtime/tx-queue.ts";
+import {
+  MainListEnum,
+  type MainList,
+  PayloadType,
+} from "../../types.ts";
 
 import { NumericBuffer } from "./parsers/NumericBuffer.ts";
 
@@ -12,32 +15,6 @@ import { deserialize, serialize } from "node:v8";
 
 const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
 const MIN_SAFE_INTEGER = Number.MIN_SAFE_INTEGER;
-
-export enum PayloadType {
-  UNREACHABLE = 0,
-  String = 1,
-  BigUint = 2,
-  BigInt = 3,
-  True = 4,
-  False = 5,
-  Undefined = 6,
-  NaN = 7,
-  Infinity = 8,
-  NegativeInfinity = 9,
-  Float64 = 10,
-  Uint32 = 11,
-  Int32 = 12,
-  Uint64 = 13,
-  Int64 = 14,
-  Null = 15,
-  Json = 16,
-  Uint8Array = 17,
-  Serializable = 18,
-  StringToJson = 19,
-  SerializabledAndReady = 20,
-  NumericBuffer = 21,
-  NumericBufferParsed = 22,
-}
 
 const fromReturnToMainError = ({
   type,
@@ -87,7 +64,7 @@ const preencodeJsonString = (
         case Map:
         case Set: {
           task[at] = serialize(args);
-          task[MainListEnum.PayloadType] = PayloadType.SerializabledAndReady;
+          task[MainListEnum.PayloadType] = PayloadType.SerializedAndReady;
           return task;
         }
         case NumericBuffer: {
@@ -143,7 +120,7 @@ const writeFramePayload = (
           task[MainListEnum.PayloadType] = PayloadType.Json;
           type[0] = PayloadType.Json;
           return;
-        case PayloadType.SerializabledAndReady:
+        case PayloadType.SerializedAndReady:
           writeBinary(args as Uint8Array);
           task[MainListEnum.PayloadType] = PayloadType.Serializable;
           type[0] = PayloadType.Serializable;

@@ -1,19 +1,21 @@
-import { type QueueListWorker } from "../runtime/tx-queue.ts";
-import { MainListEnum } from "../runtime/tx-queue.ts";
 import {
   OP,
   type SignalArguments,
   type WorkerSignal,
 } from "../ipc/transport/shared-memory.ts";
-import type { ComposedWithKey, WorkerSettings } from "../types.ts";
+import type {
+  ComposedWithKey,
+  QueueListWorker,
+  WorkerSettings,
+} from "../types.ts";
 import {
   decodeArgs,
   fromReturnToMainError,
-  PayloadType,
   preencodeJsonString,
   readFramePayload,
   writeFramePayload,
 } from "../ipc/protocol/codec.ts";
+import { MainListEnum, PayloadType } from "../types.ts";
 import "../polyfills/promise-with-resolvers.ts";
 import LinkList from "../ipc/tools/LinkList.ts";
 

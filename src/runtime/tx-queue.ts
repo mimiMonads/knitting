@@ -1,5 +1,4 @@
 import {
-  PayloadType,
   preencodeJsonString,
   readFrameBlocking,
   readFramePayload,
@@ -13,32 +12,17 @@ import {
   OP,
   type SignalArguments,
 } from "../ipc/transport/shared-memory.ts";
-import type { ComposedWithKey } from "../types.ts";
+import {
+  type MainList,
+  type ComposedWithKey,
+  type PromiseMap,
+  PayloadType,
+  MainListEnum,
+} from "../types.ts";
 
 type RawArguments = unknown;
 type WorkerResponse = unknown;
 type FunctionID = number;
-type Accepted = (val: unknown) => void;
-type Rejected = (val: unknown) => void;
-
-export type PromiseMap = Map<
-  number,
-  {
-    promise: Promise<unknown>;
-    resolve: Accepted;
-    reject: Rejected;
-  }
->;
-
-export enum MainListEnum {
-  slotIndex = 0,
-  RawArguments = 1,
-  FunctionID = 2,
-  WorkerResponse = 3,
-  OnResolve = 4,
-  OnReject = 5,
-  PayloadType = 6,
-}
 
 export enum MainListState {
   Free = 0,
@@ -47,18 +31,6 @@ export enum MainListState {
   Accepted = 3,
   Rejected = 4,
 }
-
-export type MainList = [
-  number,
-  unknown,
-  FunctionID,
-  WorkerResponse,
-  Accepted,
-  Rejected,
-  PayloadType,
-];
-
-export type QueueListWorker = MainList;
 
 export type MultiQueue = ReturnType<typeof createHostTxQueue>;
 

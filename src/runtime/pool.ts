@@ -1,6 +1,6 @@
 // main.ts
 
-import { createHostTxQueue, type PromiseMap } from "./tx-queue.ts";
+import { createHostTxQueue } from "./tx-queue.ts";
 import { beat, genTaskID } from "../common/others.ts";
 import {
   createSharedMemoryTransport,
@@ -12,6 +12,10 @@ import { ChannelHandler, hostDispatcherLoop } from "./dispatcher.ts";
 import type {
   ComposedWithKey,
   DebugOptions,
+  PromiseMap,
+  WorkerCall,
+  WorkerContext,
+  WorkerData,
   WorkerSettings,
 } from "../types.ts";
 import { jsrIsGreatAndWorkWithoutBugs } from "../worker/loop.ts";
@@ -20,22 +24,6 @@ import { Worker } from "node:worker_threads";
 //const isBrowser = typeof window !== "undefined";
 
 let poliWorker = Worker;
-
-export type call = {
-  fnNumber: number;
-};
-
-export type WorkerData = {
-  sab: SharedArrayBuffer;
-  secondSab: SharedArrayBuffer;
-  list: string[];
-  ids: number[];
-  thread: number;
-  totalNumberOfThread: number;
-  debug?: DebugOptions;
-  startAt: number;
-  workerOptions?: WorkerSettings;
-};
 
 export const spawnWorkerContext = ({
   promisesMap,
@@ -152,7 +140,7 @@ export const spawnWorkerContext = ({
     }
   };
 
-  const call = ({ fnNumber }: call) => {
+  const call = ({ fnNumber }: WorkerCall) => {
     const enqueues = enqueue(fnNumber);
     return (args: Uint8Array) => {
       if (check.isRunning === false && hasPendingFrames()) {
@@ -166,7 +154,7 @@ export const spawnWorkerContext = ({
     };
   };
 
-  const fastCalling = ({ fnNumber }: call) => {
+  const fastCalling = ({ fnNumber }: WorkerCall) => {
     const first = postImmediate(fnNumber);
     const enqueued = enqueue(fnNumber);
     const thisSignal = signalBox.opView;
@@ -183,7 +171,7 @@ export const spawnWorkerContext = ({
         : enqueued(args);
   };
 
-  return {
+  const context: WorkerContext = {
     txIdle,
     send,
     call,
@@ -192,6 +180,8 @@ export const spawnWorkerContext = ({
       rejectAll("Thread closed"), channelHandler.close(), worker.terminate()
     ),
   };
+
+  return context;
 };
 
-export type CreateContext = ReturnType<typeof spawnWorkerContext>;
+export type CreateContext = WorkerContext;

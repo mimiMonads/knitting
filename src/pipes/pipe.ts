@@ -1,9 +1,9 @@
 import {
   createSharedMemoryTransport,
   OP,
-} from "../ipc/transport/shared-memory";
-import type { WorkerData } from "../runtime/pool";
-import type { CreateWorkerRxQueue } from "../worker/rx-queue";
+} from "../ipc/transport/shared-memory.ts";
+import type { WorkerData } from "../types.ts";
+import type { CreateWorkerRxQueue } from "../worker/rx-queue.ts";
 
 enum PipeState {
   "waiting" = 0,

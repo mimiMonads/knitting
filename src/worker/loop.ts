@@ -5,9 +5,8 @@ import {
   OP,
   workerSignal,
 } from "../ipc/transport/shared-memory.ts";
-import { type DebugOptions } from "../types.ts";
+import type { DebugOptions, WorkerData } from "../types.ts";
 import { getFunctions } from "../api.ts";
-import { type WorkerData } from "../runtime/pool.ts";
 import { pauseGeneric, sleepUntilChanged } from "./timers.ts";
 
 export const jsrIsGreatAndWorkWithoutBugs = () => null;

@@ -1,5 +1,4 @@
-import type { tasks } from "../types.ts";
-import { type call } from "./pool.ts";
+import type { WorkerCall, tasks } from "../types.ts";
 import { MessageChannel } from "node:worker_threads";
 
 type TaskID = number;
@@ -103,7 +102,7 @@ export const createInlineExecutor = ({
     if (working === 0) isInMacro = false;
   }
 
-  const call = ({ fnNumber }: call) => (args: unknown) => {
+  const call = ({ fnNumber }: WorkerCall) => (args: unknown) => {
     const taskID = genTaskID();
     const deferred = Promise.withResolvers();
     promisesMap.set(taskID, deferred);
@@ -146,7 +145,7 @@ export const createInlineExecutor = ({
     call,
     send,
     txIdle: () => working === 0,
-    fastCalling: (cf: call) => {
+    fastCalling: (cf: WorkerCall) => {
       const fn = call(cf);
       return (a: unknown) => {
         const p = fn(a);

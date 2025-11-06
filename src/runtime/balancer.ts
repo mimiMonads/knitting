@@ -1,5 +1,4 @@
-import type { Balancer } from "../types.ts";
-import type { CreateContext } from "./pool.ts";
+import type { Balancer, CreateContext } from "../types.ts";
 
 export type Handler<A, R> = (args: A) => R;
 
