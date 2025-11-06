@@ -90,7 +90,7 @@ export type DebugOptions = {
 };
 
 export type WorkerSettings = {
-  resolveAfterFinishinAll?: true;
+  resolveAfterFinishingAll?: true;
   NoSideEffects?: true;
 };
 

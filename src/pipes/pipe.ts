@@ -3,7 +3,7 @@ import {
   OP,
 } from "../ipc/transport/shared-memory";
 import type { WorkerData } from "../runtime/pool";
-import type { CreateWorkerRxQueue } from "./rx-queue";
+import type { CreateWorkerRxQueue } from "../worker/rx-queue";
 
 enum PipeState {
   "waiting" = 0,

@@ -91,7 +91,7 @@ export const createWorkerRxQueue = (
   const errorFrames = new LinkList<QueueListWorker>();
   const optimizedFrames = new LinkList<QueueListWorker>();
 
-  const hasCompleted = workerOptions?.resolveAfterFinishinAll === true
+  const hasCompleted = workerOptions?.resolveAfterFinishingAll === true
     ? () => hasAnythingFinished !== 0 && toWork.size === 0
     : () => hasAnythingFinished !== 0;
 
