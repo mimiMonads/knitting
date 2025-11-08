@@ -17,7 +17,4 @@ export const newSlotNoIndex = () =>
     PayloadType.UNREACHABLE,
   ] as QueueListWorker;
 
-export const toWork = new LinkList<QueueListWorker>();
-export const completedFrames = new LinkList<QueueListWorker>();
-export const errorFrames = new LinkList<QueueListWorker>();
-export const optimizedFrames = new LinkList<QueueListWorker>();
+
