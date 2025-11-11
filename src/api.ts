@@ -1,5 +1,6 @@
 import { getCallerFilePath } from "./common/others.ts";
 import { genTaskID } from "./common/others.ts";
+import { endpointSymbol } from "./common/task-symbol.ts";
 import { spawnWorkerContext } from "./runtime/pool.ts";
 import type { PromiseMap } from "./types.ts";
 import { isMainThread, workerData } from "node:worker_threads";
@@ -19,7 +20,7 @@ import type {
 } from "./types.ts";
 
 export const isMain = isMainThread;
-export const endpointSymbol = Symbol.for("task");
+export { endpointSymbol };
 
 export const task = <
   A extends Args = void,
@@ -27,75 +28,46 @@ export const task = <
 >(
   I: FixPoint<A, B>,
 ): ReturnFixed<A, B> => {
-  const importedFrom = I?.href ?? new URL(getCallerFilePath()).href;
+  const [ href , at] = getCallerFilePath()
+
+  const importedFrom = I?.href ?? new URL(href).href;
 
   return ({
     ...I,
     id: genTaskID(),
     importedFrom,
+    at,
     [endpointSymbol]: true,
   }) as const;
 };
 
-export type GetFunctions = ReturnType<typeof getFunctions>;
 
-export const getFunctions = async ({ list, ids }: {
-  list: string[];
-  isWorker: boolean;
-  ids: number[];
-}) => {
-  const results = await Promise.all(
-    list
-      //
-      .map((string) => {
-        const url = new URL(string).href;
-
-        if (url.includes("://")) return url;
-
-        return "file://" + new URL(string).href;
-      })
-      .map(async (imports) => {
-        console;
-        const module = await import(imports);
-        return Object.entries(module)
-          .filter(
-            ([_, value]) =>
-              value != null && typeof value === "object" &&
-              //@ts-ignore Reason -> trust me
-              value?.[endpointSymbol] === true,
-          )
-          .map(([name, value]) => ({
-            //@ts-ignore Reason -> trust me
-            ...value,
-            name,
-          })) as unknown as ComposedWithKey[];
-      }),
-  );
-
-  // Flatten the results, filter by IDs, and sort
-  const flattenedResults = results
-    .flat()
-    .filter((obj) => ids.includes(obj.id))
-    .sort((a, b) => a.name.localeCompare(b.name));
-
-  return flattenedResults as unknown as (ReturnFixed<Args, Args> & {
-    name: string;
-  })[];
-};
-
+/**
+ *  With this information we can recreate the logical order of
+ *  relevant exported functions from a file, also it helps to 
+ *  track a task before naming, ` export ` elements have to be decalere
+ *  at top level and without branching, we take avantage of this to 
+ *  correctlly map them. 
+ * 
+ */
 export const toListAndIds = (
   args: tasks,
 ) => {
   const result = Object.values(args)
     .reduce(
       (acc, v) => (
-        acc[0].add(v.importedFrom), acc[1].add(v.id), acc
+        acc[0].add(v.importedFrom), 
+        acc[1].add(v.id), 
+        acc[2].add(v.at), 
+        acc
       ),
       [
         new Set<string>(),
         new Set<number>(),
+        new Set<number>()
       ] as [
         Set<string>,
+        Set<number>,
         Set<number>,
       ],
     );
@@ -103,9 +75,11 @@ export const toListAndIds = (
   return Object.fromEntries([
     ["list", [...result[0]]],
     ["ids", [...result[1]]],
+    ["at", [...result[2]]]
   ]) as {
     list: string[];
     ids: number[];
+    at: number[];
   };
 };
 
@@ -158,7 +132,7 @@ export const createPool = ({
   }
 
   const promisesMap: PromiseMap = new Map(),
-    { list, ids } = toListAndIds(tasks),
+    { list, ids  , at } = toListAndIds(tasks),
     listOfFunctions = Object.entries(tasks).map(([k, v]) => ({
       ...v,
       name: k,
@@ -178,6 +152,7 @@ export const createPool = ({
       promisesMap,
       list,
       ids,
+      at,
       thread,
       debug,
       listOfFunctions,

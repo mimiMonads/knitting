@@ -1,5 +1,4 @@
 import { PayloadType } from "../types.ts";
-import LinkList from "../ipc/tools/LinkList.ts";
 import type { QueueListWorker } from "../types.ts";
 
 const PLACE_HOLDER = () => {

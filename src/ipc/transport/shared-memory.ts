@@ -14,19 +14,37 @@ enum SignalEnumOptions {
   safePadding = page,
 }
 
-export enum OP {
+export enum HostOP {
   Created = 0,
+  HighPriorityResolve = 4,
+  WakeUp = 5,
+  NAN = 7,
+  MainReadyToRead = 8,
+  MainSend = 10,
+  MainStop = 11,
+}
+
+export enum WorkerOP {
   WorkerWaiting = 1,
   AllTasksDone = 2,
   WaitingForMore = 3,
-  HighPriorityResolve = 4,
-  WakeUp = 5,
   ErrorThrown = 6,
-  NAN = 7,
-  MainReadyToRead = 8,
   FastResolve = 9,
-  MainSend = 10,
-  MainStop = 11,
+}
+
+export enum OP {
+  Created = HostOP.Created,
+  WorkerWaiting = WorkerOP.WorkerWaiting,
+  AllTasksDone = WorkerOP.AllTasksDone,
+  WaitingForMore = WorkerOP.WaitingForMore,
+  HighPriorityResolve = HostOP.HighPriorityResolve,
+  WakeUp = HostOP.WakeUp,
+  ErrorThrown = WorkerOP.ErrorThrown,
+  NAN = HostOP.NAN,
+  MainReadyToRead = HostOP.MainReadyToRead,
+  FastResolve = WorkerOP.FastResolve,
+  MainSend = HostOP.MainSend,
+  MainStop = HostOP.MainStop,
 }
 
 export const OP_TAG: Record<OP, string> = {

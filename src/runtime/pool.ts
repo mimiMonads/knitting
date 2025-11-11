@@ -35,17 +35,20 @@ export const spawnWorkerContext = ({
   listOfFunctions,
   totalNumberOfThread,
   source,
+  at,
   workerOptions,
 }: {
   promisesMap: PromiseMap;
   list: string[];
   ids: number[];
+  at: number[];
   sab?: Sab;
   thread: number;
   debug?: DebugOptions;
   totalNumberOfThread: number;
   listOfFunctions: ComposedWithKey[];
   perf?: number;
+
   source?: string;
   workerOptions?: WorkerSettings;
 }) => {
@@ -119,6 +122,7 @@ export const spawnWorkerContext = ({
         sab: signals.sab,
         list,
         ids,
+        at,
         thread,
         debug,
         workerOptions,

@@ -6,32 +6,32 @@ import {
   workerSignal,
 } from "../ipc/transport/shared-memory.ts";
 import type { DebugOptions, WorkerData } from "../types.ts";
-import { getFunctions } from "../api.ts";
+import { getFunctions } from "./get-functions.ts";
 import { pauseGeneric, sleepUntilChanged } from "./timers.ts";
 
 export const jsrIsGreatAndWorkWithoutBugs = () => null;
 
 export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
-  const debug = workerData.debug as DebugOptions;
+
+  const { 
+    debug , 
+    sab , 
+    thread , 
+    startAt , 
+    workerOptions
+  } = workerData as WorkerData;
+
   const signals = createSharedMemoryTransport({
     sabObject: {
-      sharedSab: workerData.sab,
+      sharedSab: sab,
     },
     isMain: false,
-    thread: workerData.thread,
+    thread,
     debug,
-    startTime: workerData.startAt,
+    startTime: startAt,
   });
 
-  const secondChannelSignals = createSharedMemoryTransport({
-    sabObject: {
-      sharedSab: workerData.secondSab,
-    },
-    isMain: false,
-    thread: workerData.thread,
-  });
 
-  const { workerOptions } = workerData;
 
   const timeToAwait = Math.max(1, workerData.totalNumberOfThread) * 50;
   const totalNumberOfThread = workerData.totalNumberOfThread;
@@ -50,6 +50,7 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     list: workerData.list,
     isWorker: true,
     ids: workerData.ids,
+    at: workerData.at
   });
 
   if (debug?.logImportedUrl === true) {
@@ -84,7 +85,6 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     signals,
     moreThanOneThread,
     workerOptions,
-    secondChannel: secondChannelSignals,
   });
 
   rxStatus[0] = 0;

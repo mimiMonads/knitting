@@ -25,7 +25,6 @@ type ArgumentsForCreateWorkerQueue = {
   moreThanOneThread: boolean;
   signal: WorkerSignal;
   signals: SignalArguments;
-  secondChannel: SignalArguments;
   workerOptions?: WorkerSettings;
 };
 

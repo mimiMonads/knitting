@@ -37,13 +37,22 @@ const getCallerFilePathForBun = (offset: number) => {
 /**
  * Helps to get the right exported function from the file
  */
-const linkingMap = new Map<string, null>();
+
+const linkingMap = new Map<string, number>();
 
 export const getCallerFilePath = () => {
   const stackOffset = IS_BUN ? 2 : 3;
   const href = getCallerFilePathForBun(stackOffset);
 
-  return href;
+  let at = 0
+  if (linkingMap.has(href)){
+    linkingMap.set(href,at)
+  }else{
+    let at = linkingMap.get(href)!
+    linkingMap.set(href, ++at)
+  }
+
+  return [href, at] as [string, number];
 };
 
 import { hrtime } from "node:process";

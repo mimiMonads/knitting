@@ -1,4 +1,4 @@
-import { endpointSymbol } from "./api.ts";
+import { endpointSymbol } from "./common/task-symbol.ts";
 // ──────────────────────────────────────────────────────────────────────────────
 // Payloads & queue slots shared across runtime/worker
 // ──────────────────────────────────────────────────────────────────────────────
@@ -88,6 +88,7 @@ export type WorkerData = {
   debug?: DebugOptions;
   startAt: number;
   workerOptions?: WorkerSettings;
+  at: number[];
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -139,6 +140,13 @@ export interface FixPoint<A extends Args, B extends Args> {
 export type SecondPart = {
   readonly [endpointSymbol]: true;
   readonly id: number;
+  /**
+   * IMPORTANT: `at` helps to create a `createPool` because we dont know 
+   * the name of the variable at runtime, so basically this gets the logical order
+   * of the exported file, so no matter the name the worker can track which ` task `
+   * to track
+   */
+  readonly at: number;
   readonly importedFrom: string;
 };
 

@@ -40,7 +40,7 @@ export const sleepUntilChanged = (
 
     do {
       if (
-        Atomics.load(opView, at) !== value || Atomics.load(txStatus, 0) === 1
+        opView[at] !== value || txStatus[0] === 1
       ) return;
 
       pause();
@@ -48,7 +48,8 @@ export const sleepUntilChanged = (
       performance.now() < until
     );
 
-    Atomics.store(rxStatus, 0, 1);
+    rxStatus[0] = 1
+
 
     Atomics.wait(
       opView,
@@ -56,6 +57,8 @@ export const sleepUntilChanged = (
       value,
       timeforWakingUp ?? 50,
     );
-    Atomics.store(rxStatus, 0, 0);
+
+    rxStatus[0] = 0
+
   };
 };
