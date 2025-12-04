@@ -7,6 +7,24 @@ enum Mask {
   empty = 0,
 }
 
+const def = () => {}
+
+type Task =  ArrayLike<number> & {
+      value: unknown,
+      resolve: {():void},
+      reject : {():void}
+    };
+
+
+  const makeTask = () => {
+    const a = [1, 2, 3] as unknown as Task
+    a.value = null;
+    a.resolve = def
+    a.reject = def
+    return a;
+  }
+
+
 export const lock = ({
   read,
   write,
@@ -61,7 +79,7 @@ export const lock = ({
   // ensure the next write point is aligned to 8
   const findPoint = (): number => {
  
-    const at = Math.max(...end32) + 1;
+    const at = Math.max(...end32);
     // align to next multiple of 8
     return at + ((8 - (at % 8)) % 8);
   };

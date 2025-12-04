@@ -14,6 +14,7 @@ enum MemorySize {
 
 
 
+
   const typeProffMem = new SharedArrayBuffer(MemorySize.range32);
   const type8 = new Uint8Array(typeProffMem);
   const proff8 = new Uint8Array(typeProffMem);
@@ -25,11 +26,20 @@ enum MemorySize {
   const view8 = new Uint8Array(mem);
   const view32 = new Uint8Array(mem);
 
+export enum PayloadType {
+  UNREACHABLE =       0,
+  True =              1,
+  False =             2,
+  Undefined =         3,
+  NaN =               4,
+  Infinity =          5,
+  NegativeInfinity =  6,
+}
+
 export const writter = (
   {
 
   }:{
-
 
   }
 ) => {
