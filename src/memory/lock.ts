@@ -1,7 +1,6 @@
-import type { ReaderInShared, WriterInShared } from "./io.ts";
 import LinkList from "../ipc/tools/LinkList.ts";
 
-enum PayloadType {
+ export enum PayloadSingal {
   UNREACHABLE = 0,
   BigInt = 2,
   True = 3,
@@ -14,11 +13,12 @@ enum PayloadType {
   Null = 10,
 }
 
-// Renamed: more semantic than "Mask"
-enum SlotFlag {
-  Empty = 0,
-  InUse = 1,
+export enum PayloadBuffer {
+  BORDER_SIGNAL_BUFFER = 11,
+  String = 11
 }
+
+
 
 export enum Lock {
   padding = 64,
@@ -28,7 +28,7 @@ export enum Lock {
 export type Task = [
   number,
   number,
-  PayloadType,
+  PayloadSingal | PayloadBuffer,
   number,
   number
 ] & {
@@ -46,16 +46,13 @@ export enum TaskIndex {
   Length = 5,
 }
 
-const memory = new ArrayBuffer(8);
-const Float64View = new Float64Array(memory);
-const UBigInt64View = new BigUint64Array(memory);
-const Uint32View = new Uint8Array(memory);
 
 let INDEX_ID = 0;
-const INIT_VAL = PayloadType.UNREACHABLE;
+const INIT_VAL = PayloadSingal.UNREACHABLE;
 const def = () => {};
 
 export const makeTask = () => {
+  
   const task = [
     INIT_VAL,
     INDEX_ID++,
@@ -69,90 +66,6 @@ export const makeTask = () => {
   return task;
 };
 
-export const parse = (task: Task) => {
-  const args = task.value
-  switch (typeof args) {
-    case "bigint":
-      UBigInt64View[0] = args;
-      task[TaskIndex.Type] = PayloadType.BigInt;
-      task[TaskIndex.Start] = Uint32View[0];
-      task[TaskIndex.End] = Uint32View[1];
-      return;
-    case "boolean":
-      task[TaskIndex.Type] =
-        task.value === true ? PayloadType.True : PayloadType.False;
-      return;
-    case "function":
-      throw "you cant pass a function ";
-    case "number":
-
-    if (args !== args) {
-      task[TaskIndex.Type] = PayloadType.NaN;
-      return;
-    }
-    switch (args) {
-      case Infinity:
-        task[TaskIndex.Type]  = PayloadType.Infinity;
-        return;
-      case -Infinity:
-        task[TaskIndex.Type]  = PayloadType.NegativeInfinity;
-        return;
-    }
-
-      Float64View[0] = args;
-      task[TaskIndex.Type] = PayloadType.Float64;
-      task[TaskIndex.Start] = Uint32View[0];
-      task[TaskIndex.End] = Uint32View[1];
-      return
-    case "object" : 
-      throw "notImplemented yet"
-    case "string":
-      throw "notImplemented yet"
-    case "symbol":
-      throw "notImplemented yet"
-    case "undefined":
-      task[TaskIndex.Type]  = PayloadType.Undefined
-      return
-  }
-};
-
-export const recover = (task: Task) => {
-  switch (task[TaskIndex.Type]) {
-    case PayloadType.BigInt:
-      Uint32View[0] = task[TaskIndex.Start];
-      Uint32View[1] = task[TaskIndex.End];
-      task.value = UBigInt64View[0];
-      return;
-    case PayloadType.True:
-      task.value = true;
-      return;
-    case PayloadType.False:
-      task.value = false;
-      return;
-    case PayloadType.Float64:
-      Uint32View[0] = task[TaskIndex.Start];
-      Uint32View[1] = task[TaskIndex.End];
-      task.value = Float64View[0];
-      return
-    case PayloadType.Infinity:
-      task.value = Infinity
-      return
-    case PayloadType.NaN:
-      task.value = NaN
-      return
-    case PayloadType.NegativeInfinity:
-      task.value = -Infinity
-      return
-    case PayloadType.Null :
-      task.value = null
-      return
-    case PayloadType.Undefined:
-      task.value = undefined
-      return
-    case PayloadType.UNREACHABLE:
-      throw "UREACHABLE AT RECOVER"
-  }
-};
 
 const makeTaskFrom = (array: ArrayLike<number>, at: number) => {
   const task = [
@@ -180,9 +93,12 @@ export const lock2 = ({
   resultList?: LinkList<Task>;
 }) => {
   // One mask per slot bit (0..31)
-  const masks: number[] = [];
+   const masks = new Uint32Array(32);
+   const maskNOT = new Uint32Array(32);
+   const endBuffer = new Uint32Array(32);
   for (let i = 0; i < 32; i++) {
     masks[i] = (1 << i) >>> 0;
+    maskNOT[i] = ~maskNOT;
   }
 
 
@@ -204,8 +120,8 @@ export const lock2 = ({
   );
 
   // Start with both sides in sync (no pending messages)
-  Atomics.store(hostBits, 0, 0);
-  Atomics.store(workerBits, 0, 0);
+  // Atomics.store(hostBits, 0, 0);
+  // Atomics.store(workerBits, 0, 0);
 
   const resolved = resultList ?? new LinkList<Task>();
 
@@ -214,24 +130,18 @@ export const lock2 = ({
   const headersBuffer = new Int32Array(
     headers ??
       new SharedArrayBuffer(
-        (Lock.padding + Lock.slots * TaskIndex.Length) * Lock.slots,
+        (Lock.padding + (Lock.slots * TaskIndex.Length)) * Lock.slots,
       ),
   );
 
 const SLOT_SIZE = Lock.padding + TaskIndex.Length;
 
 const slotOffset = (at: number) =>
-  Lock.padding + at * SLOT_SIZE;
+  Lock.padding + (at * SLOT_SIZE);
 
   /**
    * HOST SIDE: encode
    *
-   * Protocol:
-   * - For a given slot i:
-   *   - If hostBits[i] === workerBits[i] → slot has no unconsumed task.
-   *   - Host writes task into headers.
-   *   - Host toggles hostBits[i].
-   * - Worker sees a new task when hostBits[i] !== workerBits[i].
    */
 
   const enlist = (task: Task) => toBeSent.push(task)
@@ -269,7 +179,7 @@ const slotOffset = (at: number) =>
   };
 
   const encode = (task: Task, state = hostBits[0] ^ Atomics.load(workerBits, 0) ): boolean => {
-    parse(task);
+    encodePayload(task);
 
     // eventually consistent, for single host / single worker
     for (let at = 0; at < Lock.slots; at++) {
@@ -298,11 +208,6 @@ const slotOffset = (at: number) =>
   /**
    * WORKER SIDE: decode
    *
-   * Protocol:
-   * - Worker computes diff = hostBits ^ workerBits.
-   * - For any bit i where diff has 1 → new task in slot i.
-   * - Worker reads headers for that slot, pushes task, then
-   *   toggles workerBits[i] to match hostBits[i].
    */
   const decode = (): boolean => {
     let modified = false;
@@ -324,11 +229,11 @@ const slotOffset = (at: number) =>
   };
 
   const decodeAt = (at: number, bit: number): boolean => {
-    const task = makeTaskFrom(headersBuffer, slotOffset(at));
+    const task = decodePayload(makeTaskFrom(headersBuffer, slotOffset(at)));
 
     resolved.push(task);
 
-    // ack: toggle worker bit so workerBits[i] == hostBits[i] again
+
     Atomics.xor(workerBits, 0, bit);
 
     return true;
@@ -340,7 +245,6 @@ const slotOffset = (at: number) =>
     encodeAll,
     decode,
     resolved,
-    // exposing these might be useful if you want to inspect / wait on them externally
     hostBits,
     workerBits,
   };

@@ -40,7 +40,7 @@ if (isMainThread) {
   }
 
   function makeArr() {
-    const a = [1, 2, 3];
+    const a = new Uint32Array(3);
     a.hello = "world";
     return a;
   }
