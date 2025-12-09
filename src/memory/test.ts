@@ -6,7 +6,6 @@ import {
   Lock,
   TaskIndex,
   makeTask,
-  recover,
   type Task,
 } from './lock.ts';
 
@@ -30,7 +29,6 @@ function drainResolved() {
   let node = (q.resolved as any).shift?.() as Task | undefined;
 
   while (node) {
-    recover(node);
     node = (q.resolved as any).shift?.() as Task | undefined;
   }
 }

@@ -1,4 +1,5 @@
 import LinkList from "../ipc/tools/LinkList.ts";
+import { decodePayload, encodePayload } from "./payloadCodec.ts";
 
  export enum PayloadSingal {
   UNREACHABLE = 0,
@@ -94,13 +95,14 @@ export const lock2 = ({
 }) => {
   // One mask per slot bit (0..31)
    const masks = new Uint32Array(32);
-   const maskNOT = new Uint32Array(32);
-   const endBuffer = new Uint32Array(32);
+ 
   for (let i = 0; i < 32; i++) {
-    masks[i] = (1 << i) >>> 0;
-    maskNOT[i] = ~maskNOT;
+    masks[i] = (1 << i) ;
+ 
   }
 
+  const LastLocal = new Uint32Array(1)
+  const LastWorker = new Uint32Array(1)
 
   const toBeSent = toSentList ?? new LinkList();
   // Layout:
@@ -112,16 +114,13 @@ export const lock2 = ({
     lockSector ??
     new SharedArrayBuffer(Lock.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2);
 
-  const hostBits = new Int32Array(lockSAB, Lock.padding, 1);
-  const workerBits = new Int32Array(
+  const hostBits = new Uint32Array(lockSAB, Lock.padding, 1);
+  const workerBits = new Uint32Array(
     lockSAB,
     Lock.padding * 2,
     1,
   );
 
-  // Start with both sides in sync (no pending messages)
-  // Atomics.store(hostBits, 0, 0);
-  // Atomics.store(workerBits, 0, 0);
 
   const resolved = resultList ?? new LinkList<Task>();
 
@@ -146,19 +145,16 @@ const slotOffset = (at: number) =>
 
   const enlist = (task: Task) => toBeSent.push(task)
 
-    // NEW: try to encode all tasks currently in toBeSent
-  //
-  // - Returns true if *all* pending tasks were encoded (queue fully drained).
-  // - Returns false if we ran out of slots; in that case:
-  //   - Already-sent tasks are in the slots,
-  //   - Remaining tasks (including the one that failed) stay in toBeSent.
+
   const encodeAll = (): boolean => {
-    // assuming LinkList has shift() (FIFO). Adjust if your API differs.
+   
     let node = (toBeSent as any).shift?.() as Task | undefined;
 
-    const state = hostBits[0] ^ Atomics.load(workerBits, 0)
+    const state = LastLocal[0] ^ Atomics.load(workerBits, 0)
     // nothing to send → trivially succeeded
     if (!node) return true;
+
+  
 
     while (node) {
       const task = node;
@@ -178,17 +174,16 @@ const slotOffset = (at: number) =>
     return true;
   };
 
-  const encode = (task: Task, state = hostBits[0] ^ Atomics.load(workerBits, 0) ): boolean => {
+  const encode = (task: Task, state = LastLocal[0] ^ Atomics.load(workerBits, 0) ): boolean => {
     encodePayload(task);
 
+    let bit = 1
     // eventually consistent, for single host / single worker
-    for (let at = 0; at < Lock.slots; at++) {
-      const bit = masks[at];
-
-      // no pending message in this slot if sequence bits are equal
+    for (let at = 1; at < Lock.slots; at++) {
       
-      if (( state & bit) === 0) {
-        return encodeAt(task, at, bit);
+     
+      if (( state & (bit <<= 1) ) === 0) {
+        return encodeAt(task, at, bit );
       }
     }
 
@@ -200,7 +195,9 @@ const slotOffset = (at: number) =>
     headersBuffer.set(task, slotOffset(at));
 
     // publish: toggle host side bit (0->1 or 1->0)
-    Atomics.xor(hostBits, 0, bit);
+  
+    Atomics.store(hostBits, 0, LastLocal[0] ^= bit)
+   
 
     return true;
   };
@@ -210,15 +207,14 @@ const slotOffset = (at: number) =>
    *
    */
   const decode = (): boolean => {
-    let modified = false;
+    let modified = false, bit  = 1;
 
-    const diff = Atomics.load(hostBits, 0) ^ Atomics.load(workerBits, 0);
+    const diff = Atomics.load(hostBits, 0) ^ LastWorker[0];
+  
+    for (let at = 1; at < Lock.slots; at++) {
+    
 
-    // eventually consistent, single worker
-    for (let at = 0; at < Lock.slots; at++) {
-      const bit = masks[at];
-
-      if ((diff & bit) !== 0) {
+      if ((diff & (bit <<= 1)) !== 0) {
         if (decodeAt(at, bit)) {
           modified = true;
         }
@@ -229,12 +225,14 @@ const slotOffset = (at: number) =>
   };
 
   const decodeAt = (at: number, bit: number): boolean => {
-    const task = decodePayload(makeTaskFrom(headersBuffer, slotOffset(at)));
+    const task = makeTaskFrom(headersBuffer, slotOffset(at));
+
+
+    Atomics.store(workerBits, 0, LastWorker[0] ^=  bit);
+
+    decodePayload(task)
 
     resolved.push(task);
-
-
-    Atomics.xor(workerBits, 0, bit);
 
     return true;
   };

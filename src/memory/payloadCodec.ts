@@ -1,4 +1,4 @@
-import { PayloadSingal, Task, TaskIndex } from "./lock";
+import { PayloadSingal, Task, TaskIndex } from "./lock.ts";
 
 
 const memory = new ArrayBuffer(8);
