@@ -196,6 +196,7 @@ const slotOffset = (at: number) =>
 
     // publish: toggle host side bit (0->1 or 1->0)
   
+    //hostBits[0] = LastLocal[0] ^= bit
     Atomics.store(hostBits, 0, LastLocal[0] ^= bit)
    
 
@@ -228,6 +229,7 @@ const slotOffset = (at: number) =>
     const task = makeTaskFrom(headersBuffer, slotOffset(at));
 
 
+    //workerBits[0] = LastWorker[0] ^=  bit
     Atomics.store(workerBits, 0, LastWorker[0] ^=  bit);
 
     decodePayload(task)
