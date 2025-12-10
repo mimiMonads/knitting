@@ -12,11 +12,36 @@ function nextIndex() {
   return idx;
 }
 
+
+const f = ((a=0) => () => a++ === 8 ? (a=0,true): false)()
+// Every 8 calls return true
+const g = ((a = 0) => () =>
+  ((a = (a + 1) & 7) === 0)
+)();
+
+const b = ((a = new Uint8Array(1)) => () =>
+  ((a[0] <<= 1) === 0x1) ? true : false
+)();
+
+
 group('bitmask: single mask retrieval', () => {
   bench('on-the-fly (shift)', () => {
     const i = nextIndex();
     const m = (1 << i) >>> 0;
     return m;
+  });
+
+    bench('f', () => {
+
+    f()
+  });
+      bench('b', () => {
+      
+    b()
+  });
+
+    bench('g', () => {
+    g()
   });
 
   bench('lookup (precomputed array)', () => {

@@ -1,10 +1,6 @@
 import { Lock } from "./lock.ts";
 
-enum Layout {
-  start = 0,
-  End = 1,
-  Length = 2, 
-}
+
 
 export const register = ({
   lockSector,
@@ -20,60 +16,110 @@ export const register = ({
   const hostBits = new Int32Array(lockSAB, Lock.padding, 1);
   const workerBits = new Int32Array(lockSAB, Lock.padding * 2, 1);
 
-  // local table: [start, end] per slot
-  const sectors = new Uint32Array(Lock.slots * Layout.Length);
 
+  const startAndIndex = new Uint32Array(Lock.slots);
+  const ends = new Uint32Array(Lock.slots);
 
-  const masksNot = new Uint32Array(Lock.slots);
-  const mask = new Uint32Array(Lock.slots);
+  startAndIndex.fill(0xFFFFFFFF)
 
-  for (let i = 0; i < Lock.slots; i++) {
-    mask[i] = (1 << i) >>> 0;
-    masksNot[i] = ~mask[i] >>> 0;
-  }
+    
 
-  let usedBytes = 0,
-      updateTableCounter = 1
+  let updateTableCounter = 1,
+      tableLength = 0
+
+    const hostLast = new Uint32Array(1)
 
   const updateTable = () => {
-    // compute current free bits (force to unsigned 32-bit)
-    usedBytes = (hostBits[0] ^ Atomics.load(workerBits, 0)) >>> 0
-    const freeBits = ~usedBytes;
+  
+    let freeBits =  (hostLast[0] ^ Atomics.load(workerBits, 0)) >>> 0,
+      newLength = tableLength
 
-    // for every free bit, clear its sector entry
-    for (let i = 0; i < Lock.slots; i++) {
-      if ((freeBits & mask[i]) !== 0) {
-        const offset = i * Layout.Length;
-        sectors[offset + Layout.start] = 0;
-        sectors[offset + Layout.End] = 0;
-      }
+
+    // nothing changed
+    if (freeBits === 0) return;
+
+    // make it 32 and not
+     freeBits = ~freeBits >>> 0;
+
+
+    // reset if empty 
+    if (freeBits === 0xFFFFFFFF) {
+      startAndIndex.fill(0xFFFFFFFF);
+      // we dont need to update the end table 
+      tableLength = 0;
+      return;
     }
+
+
+    for (let i = 0 , getIndex = 0; i < tableLength;) {
+
+      getIndex  = startAndIndex[0] & 32
+
+      if ((freeBits ^ 1 << getIndex) !== 0) {
+        startAndIndex[getIndex] = 0xFFFFFFFF
+        --newLength
+        --tableLength
+
+        // re-order to left
+        for(let j = 0; i < tableLength; j++){
+          startAndIndex[j] = startAndIndex[j+1]
+        }
+
+        continue;
+      }
+        i++
+    }
+
+    tableLength = newLength
+
   };
 
+  // Ask for a pointer where a lenght is garanted to be empty
+  // This doesnt atcually change any internal state
+
   const region = (length: number): number => {
-    // always read fresh bits; don't trust usedBytes cache here
+
+
+    if(tableLength === 0) 64
+    if(tableLength === 1) ends[0]
+
+    length += 64
 
 
 
-    // no suitable region found
-    return -1;
+
+
+
+
+    return ends[tableLength]
   };
 
   const alloc = (index: number, start: number, end: number) => {
 
     // Kinda expensive so runs every x cycles
-    if(++updateTableCounter === 8 ) (updateTableCounter = 0 , updateTable())
+    if(updateTableCounter++ === 8 ) (updateTableCounter = 0 , updateTable())
 
-    const offset = index * Layout.Length;
-    sectors[offset + Layout.start] = start >>> 0;
-    sectors[offset + Layout.End] = end >>> 0;
+ 
+    // this value can vener reach 0xFFFFFFFF, because the index goes up to 32
+    // and we are shifting 64 
+
+    startAndIndex[tableLength++] = start & ~63 | index;
+
+    //The optimizar should `andl` in both cases instead of `sarl` and `shrl`
+    ends[index] = ( end  + 63 ) >> 6 << 6
+    //ends[index] = (end + 63) & ~63
+    Atomics.store(hostBits, 0 , hostLast[0] ^=  (1 << index))
+
 
   };
 
 
-  // Worker is the only one that frees , thus can not trogger ` upadetable `
+  // Worker is the only one that frees , thus can not trigger ` upadeTable `
+  const workerLast = new Uint32Array(1)
   const free = (index: number) => {
-    Atomics.xor(workerBits, 0, mask[index]);
+
+    Atomics.store(workerBits, 0 , workerLast[0] ^=  (1 << index))
+   
   };
 
   
@@ -81,7 +127,6 @@ export const register = ({
     lockSAB,
     alloc,
     free,
-    sectors,
     hostBits,
     workerBits,
   };

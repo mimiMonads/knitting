@@ -54,13 +54,14 @@ const def = () => {};
 
 export const makeTask = () => {
   
-  const task = [
-    INIT_VAL,
-    INDEX_ID++,
-    INIT_VAL,
-    INIT_VAL,
-    INIT_VAL,
-  ] as unknown as Task;
+ const task = new Uint32Array(TaskIndex.Length) as Uint32Array & {
+    value: unknown
+    resolve: ()=>void
+    reject:  ()=>void
+  } as unknown as Task
+
+
+  task[TaskIndex.ID] = INDEX_ID++
   task.value = null;
   task.resolve = def;
   task.reject = def;
@@ -69,13 +70,20 @@ export const makeTask = () => {
 
 
 const makeTaskFrom = (array: ArrayLike<number>, at: number) => {
-  const task = [
-    array[at],
-    array[at] + 1,
-    array[at] + 2,
-    array[at] + 3,
-    array[at] + 4,
-  ] as unknown as Task;
+
+   const task = new Uint32Array(TaskIndex.Length) as Uint32Array & {
+    value: unknown
+    resolve: (key:void)=>void
+    reject:  (key:void)=>void
+  } as unknown as Task
+
+
+  task[0] = array[at]
+  task[1] = array[at] +1 
+  task[2] = array[at] +2 
+  task[3] = array[at] +3 
+  task[4] = array[at] +4
+
   task.value = null;
   task.resolve = def;
   task.reject = def;
@@ -86,12 +94,14 @@ export const lock2 = ({
   headers,
   lockSector,
   resultList,
-  toSentList
+  toSentList,
+  recycleList
 }: {
   headers?: SharedArrayBuffer;
   lockSector?: SharedArrayBuffer;
   toSentList?: LinkList<Task>;
   resultList?: LinkList<Task>;
+  recycleList?: LinkList<Task>;
 }) => {
   // One mask per slot bit (0..31)
    const masks = new Uint32Array(32);
@@ -101,10 +111,13 @@ export const lock2 = ({
  
   }
 
+
+
   const LastLocal = new Uint32Array(1)
   const LastWorker = new Uint32Array(1)
 
   const toBeSent = toSentList ?? new LinkList();
+  const recyclecList = recycleList ?? new LinkList()
   // Layout:
   // [ padding (64 bytes) ]
   // [ hostBits:Int32 (4 bytes) ]
@@ -135,13 +148,10 @@ export const lock2 = ({
 
 const SLOT_SIZE = Lock.padding + TaskIndex.Length;
 
+
+const clz32 = Math.clz32
 const slotOffset = (at: number) =>
   Lock.padding + (at * SLOT_SIZE);
-
-  /**
-   * HOST SIDE: encode
-   *
-   */
 
   const enlist = (task: Task) => toBeSent.push(task)
 
@@ -150,16 +160,15 @@ const slotOffset = (at: number) =>
    
     let node = (toBeSent as any).shift?.() as Task | undefined;
 
-    const state = LastLocal[0] ^ Atomics.load(workerBits, 0)
+    const lastWorkerBits =  Atomics.load(workerBits, 0)
     // nothing to send → trivially succeeded
     if (!node) return true;
 
-  
 
     while (node) {
       const task = node;
 
-      if (!encode(task, state)) {
+      if (!encode(task, LastLocal[0] ^  lastWorkerBits)) {
         // could not encode this one → put it back at the front
         // (if your LinkList has a different "push-front" name, swap here)
         toBeSent.unshift?.(task);
@@ -174,20 +183,21 @@ const slotOffset = (at: number) =>
     return true;
   };
 
-  const encode = (task: Task, state = LastLocal[0] ^ Atomics.load(workerBits, 0) ): boolean => {
+  const encode = (
+    task: Task,
+    state: number = (LastLocal[0] ^ Atomics.load(workerBits , 0)) ,
+  ): boolean => {
     encodePayload(task);
 
-    let bit = 1
-    // eventually consistent, for single host / single worker
-    for (let at = 1; at < Lock.slots; at++) {
-      
-     
-      if (( state & (bit <<= 1) ) === 0) {
-        return encodeAt(task, at, bit );
-      }
-    }
+    // free bits are ~state (only consider lower SLOT bits)
+    let free = (~state >>> 0) //  & SLOT_MASK;
+    if (free === 0) return false;
 
-    return false;
+    // Take the highest free bit: idx = 31 - clz32(free)
+    const idx = 31 - clz32(free);
+    const bit = 1 << idx;
+
+    return encodeAt(task, idx, bit);
   };
 
   const encodeAt = (task: Task, at: number, bit: number): boolean => {
@@ -205,25 +215,30 @@ const slotOffset = (at: number) =>
 
   /**
    * WORKER SIDE: decode
-   *
    */
   const decode = (): boolean => {
-    let modified = false, bit  = 1;
+    let modified = false;
 
-    const diff = Atomics.load(hostBits, 0) ^ LastWorker[0];
-  
-    for (let at = 1; at < Lock.slots; at++) {
-    
+    // bits that changed since last time on worker side
+    let diff = Atomics.load(hostBits, 0) ^ LastWorker[0];
+    //diff &= SLOT_MASK;
 
-      if ((diff & (bit <<= 1)) !== 0) {
-        if (decodeAt(at, bit)) {
-          modified = true;
-        }
-      }
+    // Process all set bits in `diff`, one by one using clz32
+    while (diff !== 0) {
+      const idx = 31 - clz32(diff);
+      const bit = 1 << idx;
+
+      decodeAt(idx, bit);
+
+      // clear that bit from diff
+      diff &= ~bit >>> 0;
+
+      modified = true;
     }
 
     return modified;
   };
+
 
   const decodeAt = (at: number, bit: number): boolean => {
     const task = makeTaskFrom(headersBuffer, slotOffset(at));
@@ -247,5 +262,6 @@ const slotOffset = (at: number) =>
     resolved,
     hostBits,
     workerBits,
+    recyclecList
   };
 };
