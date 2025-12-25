@@ -31,7 +31,8 @@ export type Task = [
   number,
   PayloadSingal | PayloadBuffer,
   number,
-  number
+  number,
+  number, 
 ] & {
   value: unknown;
   resolve: { (): void };
@@ -44,7 +45,8 @@ export enum TaskIndex {
   Type = 2,
   Start = 3,
   End = 4,
-  Length = 5,
+  PayloadLen = 5,
+  Size = 8,
 }
 
 
@@ -54,7 +56,7 @@ const def = () => {};
 
 export const makeTask = () => {
   
- const task = new Uint32Array(TaskIndex.Length) as Uint32Array & {
+ const task = new Uint32Array(TaskIndex.Size) as Uint32Array & {
     value: unknown
     resolve: ()=>void
     reject:  ()=>void
@@ -71,7 +73,7 @@ export const makeTask = () => {
 
 const makeTaskFrom = (array: ArrayLike<number>, at: number) => {
 
-   const task = new Uint32Array(TaskIndex.Length) as Uint32Array & {
+   const task = new Uint32Array(TaskIndex.Size) as Uint32Array & {
     value: unknown
     resolve: (key:void)=>void
     reject:  (key:void)=>void
@@ -142,11 +144,11 @@ export const lock2 = ({
   const headersBuffer = new Int32Array(
     headers ??
       new SharedArrayBuffer(
-        (Lock.padding + (Lock.slots * TaskIndex.Length)) * Lock.slots,
+        (Lock.padding + (Lock.slots * TaskIndex.Size)) * Lock.slots,
       ),
   );
 
-const SLOT_SIZE = Lock.padding + TaskIndex.Length;
+const SLOT_SIZE = Lock.padding + TaskIndex.Size;
 
 
 const clz32 = Math.clz32
@@ -161,7 +163,7 @@ const slotOffset = (at: number) =>
     let node = (toBeSent as any).shift?.() as Task | undefined;
 
     const lastWorkerBits =  Atomics.load(workerBits, 0)
-    // nothing to send → trivially succeeded
+ 
     if (!node) return true;
 
 

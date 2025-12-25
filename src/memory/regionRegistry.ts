@@ -1,4 +1,4 @@
-import { Lock } from "./lock.ts";
+import { Lock, Task , TaskIndex } from "./lock.ts";
 
 
 
@@ -31,7 +31,10 @@ export const register = ({
 
   const updateTable = () => {
   
-    let freeBits =  (hostLast[0] ^ Atomics.load(workerBits, 0)) >>> 0,
+
+    // Getting a fresh load from atomics and updating the workerBits
+    // To after get wich bits are free
+    let freeBits =  (hostLast[0] ^ ( workerBits[0] = Atomics.load(workerBits, 0))) >>> 0,
       newLength = tableLength
 
 
@@ -74,25 +77,74 @@ export const register = ({
 
   };
 
-  // Ask for a pointer where a lenght is garanted to be empty
-  // This doesnt atcually change any internal state
 
-  const region = (length: number): number => {
+   const storeAtomics = (index : number ) => Atomics.store(hostBits, 0 , hostLast[0] ^=  (1 << index))
 
-
-    if(tableLength === 0) 64
-    if(tableLength === 1) ends[0]
-
-    length += 64
+  const AllocTask = (task: Task) => {
 
 
+    
+    if(updateTableCounter++ === 8 ) (updateTableCounter = 0 , updateTable())
 
 
+      // Works with the static versions of table
+
+    if(tableLength === 0) {
+      task[TaskIndex.Start] =  startAndIndex[0] = 0
+      task[TaskIndex.End] = ends[0] = (task[TaskIndex.PayloadLen] + 63 ) & ~63
+      tableLength++
+
+       return void storeAtomics(0)
+    }
+
+    
+    if(tableLength === 1) {
+      task[TaskIndex.Start] = startAndIndex[1] = ends[0]
+      task[TaskIndex.End] = ends[1] = ( ends[0] + task[TaskIndex.PayloadLen] + 63 ) & ~63
+      tableLength++
+
+      return void storeAtomics(1)
+    }
 
 
+    {
+     const size = task[TaskIndex.PayloadLen] | 0
 
-    return ends[tableLength]
-  };
+      let index =  0;
+
+      for (let at = 1  ; at != 32 ; at++){
+    
+      
+           index = startAndIndex[at] & 63
+        
+          // this basically checks for the real space 
+          if(
+            
+            startAndIndex[at + 1 ]  - 
+            // real space 
+            (ends[index] + startAndIndex[at]  )
+              <
+              size 
+            
+          ) continue
+
+
+          // if this is the case shift elements to right from `at`
+          for (let current = tableLength; at >= current ; current--){
+            startAndIndex[current + 1] = startAndIndex[current]
+          }
+
+          return void storeAtomics(at)
+     
+      }
+      
+    }
+
+  }
+
+
+ 
+
 
   const alloc = (index: number, start: number, end: number) => {
 
@@ -124,6 +176,7 @@ export const register = ({
 
   
   return {
+    
     lockSAB,
     alloc,
     free,
