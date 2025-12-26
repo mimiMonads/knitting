@@ -1,6 +1,22 @@
 import { Lock, Task , TaskIndex } from "./lock.ts";
 
 
+/**
+ * 
+ * Complexity: Harry you are a wizard / 10 
+ * 
+ * SAFETY:
+ *  - Single worker ownership; hostBits/workerBits are the only source of truth.
+ *  - Caller/lock guarantees no overflow (<= 32 slots); no bounds checks here.
+ *  - `free` is worker-only; reclaim happens only after worker signals and
+ *    `updateTable` runs.
+ *  - `updateTable` must be called periodically (every 8 allocs by default).
+ *  - This is logical bookkeeping only; it does not check GSAB boundaries.
+ *  - Only non-signal payloads should use this (objects requiring a buffer
+ *    region); signals like booleans are excluded.
+ *  - `updateTable` compacts `startAndIndex` only; `size64bit` is rewritten
+ *    on allocation and is not compacted by design.
+ */
 
 export const register = ({
   lockSector,
@@ -18,7 +34,7 @@ export const register = ({
 
 
   const startAndIndex = new Uint32Array(Lock.slots);
-  const sizeByIndex = new Uint32Array(Lock.slots);
+  const size64bit = new Uint32Array(Lock.slots);
 
   startAndIndex.fill(0xFFFFFFFF)
 
@@ -28,6 +44,8 @@ export const register = ({
       tableLength = 0
 
     const hostLast = new Uint32Array(1)
+
+  const startAndIndexToArray = (length: number) => [...startAndIndex].slice(0,length)
 
   const updateTable = () => {
   
@@ -39,7 +57,7 @@ export const register = ({
 
 
     // nothing changed
-    if (freeBits === 0) return;
+    if (freeBits === 0 || tableLength === 0) return;
 
     // make it 32 and not
      freeBits = ~freeBits >>> 0;
@@ -54,23 +72,17 @@ export const register = ({
     }
 
 
-    for (let i = 0 , getIndex = 0; i < tableLength;) {
-
-      getIndex  = startAndIndex[0] & 31
-
-      if ((freeBits ^ 1 << getIndex) !== 0) {
-        startAndIndex[getIndex] = 0xFFFFFFFF
-        --newLength
-        --tableLength
-
-        // re-order to left
-        for(let j = 0; i < tableLength; j++){
-          startAndIndex[j] = startAndIndex[j+1]
-        }
-
+    let write = 0;
+    for (let read = 0; read < tableLength; read++) {
+      if ((freeBits & (1 << read)) !== 0) {
+        newLength--;
         continue;
       }
-        i++
+
+      if (write !== read) {
+        startAndIndex[write] = startAndIndex[read];
+      }
+      write++;
     }
 
     tableLength = newLength
@@ -81,17 +93,20 @@ export const register = ({
    const storeAtomics = (index : number ) => Atomics.store(hostBits, 0 , hostLast[0] ^=  (1 << index))
 
   const allocTask = (task: Task) => {
-
-
     
     if(updateTableCounter++ === 8 ) (updateTableCounter = 0 , updateTable())
 
-
       // Works with the static versions of table
 
+      // ensure a padding of 64 and ending on 63
+      // so the task always starts in multiples of 64
+    const payloadAlignedBytes64 = ((task[TaskIndex.PayloadLen] + 65 ) & ~63) 
+
     if(tableLength === 0) {
-      task[TaskIndex.Start] =  startAndIndex[0] = 0
-      sizeByIndex[0] = (task[TaskIndex.PayloadLen] + 63 ) & ~63
+      // (load <<< 6) + 0
+      startAndIndex[0] = 0
+      size64bit[0] = payloadAlignedBytes64
+      task[TaskIndex.Start] = 0
       tableLength++
 
        return void storeAtomics(0)
@@ -99,69 +114,79 @@ export const register = ({
 
     
     if(tableLength === 1) {
-      task[TaskIndex.Start] = startAndIndex[1] = startAndIndex[0] + sizeByIndex[0]
-      sizeByIndex[1] = ( task[TaskIndex.PayloadLen] + 63 ) & ~63
+      if(size64bit[0] === 0) throw 3
+      size64bit[1] = payloadAlignedBytes64
+      // load +  + index
+       startAndIndex[1]  = (
+        task[TaskIndex.Start] = size64bit[0] 
+       ) + 1
+      
+     
+
       tableLength++
 
       return void storeAtomics(1)
     }
 
 
+
+    // broken has to be fixed
     {
-     const size = task[TaskIndex.PayloadLen] | 0
+     const size = payloadAlignedBytes64 | 0
 
-      let index =  0, prevIndex = 0;
-
-      for (let at = 1  ; at + 1 < tableLength ; at++){
+      for (let at = 0  ; at + 1 < tableLength ; at++){
     
       
-           index = startAndIndex[at] & 31
-        
           // this basically checks for the real space 
           if(
             
             startAndIndex[at + 1 ]  - 
             // real space 
-            (sizeByIndex[index] + startAndIndex[at]  )
+            ((size64bit[at] * 64 ) + startAndIndex[at]  )
               <
               size 
             
           ) continue
 
-          prevIndex =  startAndIndex[at - 1] & 31
-
 
           // if this is the case shift elements to right from `at`
-          for (let current = tableLength; current > at ; current--){
+          for (let current = tableLength; current > at + 1 ; current--){
             startAndIndex[current] = startAndIndex[current - 1]
+            size64bit[current] = size64bit[current - 1]
           }
 
           // tell here to start and update table after shift
-          task[TaskIndex.Start] = startAndIndex[at] = sizeByIndex[prevIndex] + startAndIndex[at - 1] 
+           startAndIndex[at + 1] = (size64bit[at] + startAndIndex[at] + 1  )
+           task[TaskIndex.Start] =
           // add boundery of the memory
-          sizeByIndex[at] = ( task[TaskIndex.PayloadLen] + 63 ) & ~63
+          size64bit[at + 1] = size
           tableLength++
 
-          return void storeAtomics(at)
+          return void storeAtomics(at + 1)
      
       }
 
-      // no gap found, append at the end if there's capacity
-      if (tableLength < Lock.slots) {
-        const lastPos = tableLength - 1
-        const lastIndex = startAndIndex[lastPos] & 31
 
-        task[TaskIndex.Start] = startAndIndex[tableLength] =
-          sizeByIndex[lastIndex] + startAndIndex[lastPos]
-        sizeByIndex[tableLength] = ( task[TaskIndex.PayloadLen] + 63 ) & ~63
+
+          // no gap found, append at the end if there's capacity
+      if (tableLength < Lock.slots) {
+       
+        const last = startAndIndex[tableLength - 1]
+      
+
+        task[TaskIndex.Start] = (startAndIndex[tableLength] =
+        size64bit[last & 31 ] + last + 1) & ~31 
+
+        size64bit[tableLength] = payloadAlignedBytes64
         tableLength++
 
-        return void storeAtomics(lastPos + 1)
+        return void storeAtomics(tableLength)
       }
       
     }
 
   }
+
 
 
   // Worker is the only one that frees , thus can not trigger ` upadeTable `
@@ -179,5 +204,7 @@ export const register = ({
     free,
     hostBits,
     workerBits,
+    updateTable,
+    startAndIndexToArray
   };
 };

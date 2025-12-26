@@ -5,7 +5,7 @@ import { Lock, makeTask, TaskIndex } from "../src/memory/lock.ts";
 
 
 // AI Written needs review
-const align64 = (n: number) => (n + 63) & ~63;
+// const align64 = (n: number) => (n + 63) & ~63;
 
 const makeRegistry = () =>
   register({
@@ -14,6 +14,7 @@ const makeRegistry = () =>
     ),
   });
 
+const track64andIndex = (startAndIndex: number) => [ startAndIndex >>> 6 , startAndIndex & 31 ]
 const allocAndSync = (registry: ReturnType<typeof makeRegistry>, size: number) => {
   const task = makeTask();
   task[TaskIndex.PayloadLen] = size;
@@ -22,67 +23,95 @@ const allocAndSync = (registry: ReturnType<typeof makeRegistry>, size: number) =
   return task;
 };
 
-Deno.test("allocTask assigns start for first two tasks and toggles host bits", () => {
+
+
+Deno.test("check packing in startAndIndexToArray", () => {
   const registry = makeRegistry();
+  const sizes = [64, 43 , 152 , 54];
 
-  const first = allocAndSync(registry, 1);
-  assertEquals(first[TaskIndex.Start], 0);
-  assertEquals(registry.hostBits[0], 1);
+  const result = [[0,0] , ...sizes.map( (_,i,a) => {
 
-  const second = allocAndSync(registry, 70);
-  assertEquals(second[TaskIndex.Start], align64(1));
-  assertEquals(registry.hostBits[0], 3);
-});
-
-Deno.test("allocTask appends at end when no gap is found", () => {
-  const registry = makeRegistry();
-
-  allocAndSync(registry, 1);
-  const second = allocAndSync(registry, 70);
-  const third = allocAndSync(registry, 2);
-
-  const expectedThirdStart = align64(1) + align64(70);
-
-  assertEquals(second[TaskIndex.Start], align64(1));
-  assertEquals(third[TaskIndex.Start], expectedThirdStart);
-  assertEquals(registry.hostBits[0], 7);
-});
-
-Deno.test("allocTask keeps 64-byte alignment and monotonic offsets", () => {
-  const registry = makeRegistry();
-  const sizes = [0, 1, 63, 64, 65, 127, 128, 255, 256];
-
-  let expectedStart = 0;
+    // add them together and index [postion + padding , index]
+    const  val = a.slice(0,i + 1).reduce((acc,c) => acc+ ((64 + c) >>> 6), 0) 
+    return [val, ++i]
+  }).slice(0,-1)] 
 
   for (const size of sizes) {
-    const task = allocAndSync(registry, size);
-    assertEquals(task[TaskIndex.Start], expectedStart);
-    assertEquals(task[TaskIndex.Start] % 64, 0);
-    expectedStart += align64(size);
+    allocAndSync(registry, size);
   }
+
+
+  assertEquals(
+    registry
+    .startAndIndexToArray(sizes.length)
+    .map(track64andIndex),
+       result
+      );
+
+ 
 });
 
-Deno.test("allocTask is a no-op when the table is full", () => {
+Deno.test("check packing in startAndIndexToArray", () => {
   const registry = makeRegistry();
-  const size = 1;
+  const sizes = [64, 64 , 64 , 64, 64 , 64];
 
-  let expectedStart = 0;
-  for (let i = 0; i < Lock.slots; i++) {
-    const task = allocAndSync(registry, size);
-    assertEquals(task[TaskIndex.Start], expectedStart);
-    expectedStart += align64(size);
+  const result = [[0,0] , ...sizes.map( (_,i,a) => {
+
+    // add them together and index [postion + padding , index]
+    const  val = a.slice(0,i + 1).reduce((acc,c) => acc+ ((64 + c) >>> 6), 0) 
+    return [val, ++i]
+  }).slice(0,-1)] 
+
+  for (const size of sizes) {
+    allocAndSync(registry, size);
   }
 
-  assertEquals(registry.hostBits[0] >>> 0, 0xFFFFFFFF);
 
-  const before = registry.hostBits[0];
-  const extra = makeTask();
-  extra[TaskIndex.PayloadLen] = size;
-  extra[TaskIndex.Start] = 0xDEADBEEF;
 
-  registry.allocTask(extra);
-  Atomics.store(registry.workerBits, 0, registry.hostBits[0]);
+  assertEquals(
+    registry
+    .startAndIndexToArray(sizes.length )
+    .map(track64andIndex),
+       result
+      );
 
-  assertEquals(extra[TaskIndex.Start], 0xDEADBEEF);
-  assertEquals(registry.hostBits[0], before);
+  registry.free(1)
+  //registry.free(2)
+  registry.updateTable()
+  //allocAndSync(registry, 10);
+  // result.splice(1,2)
+
+  
+  assertEquals(
+    registry
+    .startAndIndexToArray(sizes.length - 1)
+    .map(track64andIndex),
+       []
+      );
+
+ 
 });
+
+Deno.test("check Start from Task", () => {
+  const registry = makeRegistry();
+  const sizes = [64, 453 , 64 , 64];
+  const values = []
+
+  const result = sizes.reduce( (acc,v) => (
+    // reduce and adding padding and  >>> 6
+    acc.push((acc[acc.length - 1] + v + 64) & ~63 ),
+    acc ), 
+  [0]).slice(0,-1)
+
+  for (const size of sizes) {
+    values.push(allocAndSync(registry, size)[TaskIndex.Start]);
+  }
+
+
+  assertEquals( values, result  );
+
+ 
+});
+
+
+
