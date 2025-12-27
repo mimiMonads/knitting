@@ -12,8 +12,8 @@ const makeRegistry = () =>
     ),
   });
 
+const task = makeTask();
 const allocAndSync = (registry: ReturnType<typeof makeRegistry>, size: number) => {
-  const task = makeTask();
   task[TaskIndex.PayloadLen] = size;
   registry.allocTask(task);
   Atomics.store(registry.workerBits, 0, registry.hostBits[0]);
@@ -26,14 +26,15 @@ const fill = (registry: ReturnType<typeof makeRegistry>, count: number, size: nu
   }
 };
 
+const registry = makeRegistry();
 group("regionRegistry", () => {
   bench("allocTask append (16)", () => {
-    const registry = makeRegistry();
+
     fill(registry, 16, 64);
   });
 
   bench("allocTask reuse gap (free 2)", () => {
-    const registry = makeRegistry();
+
     fill(registry, 8, 64);
     registry.free(1);
     registry.free(2);
@@ -42,7 +43,7 @@ group("regionRegistry", () => {
   });
 
   bench("updateTable compact (free 6)", () => {
-    const registry = makeRegistry();
+
     fill(registry, 16, 64);
     registry.free(2);
     registry.free(4);

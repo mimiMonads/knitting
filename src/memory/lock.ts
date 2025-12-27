@@ -185,6 +185,11 @@ const slotOffset = (at: number) =>
     return true;
   };
 
+  let uwuIdx = 0, uwuBit = 0
+
+  const a_s = Atomics.store
+  const storeHost = (bit: number) => a_s(hostBits, 0, LastLocal[0] ^= bit)
+    const storeWorker = (bit: number) => a_s(workerBits, 0, LastWorker[0] ^=  bit)
   const encode = (
     task: Task,
     state: number = (LastLocal[0] ^ Atomics.load(workerBits , 0)) ,
@@ -196,10 +201,9 @@ const slotOffset = (at: number) =>
     if (free === 0) return false;
 
     // Take the highest free bit: idx = 31 - clz32(free)
-    const idx = 31 - clz32(free);
-    const bit = 1 << idx;
-
-    return encodeAt(task, idx, bit);
+    uwuIdx = 31 - clz32(free);
+    
+    return encodeAt(task, uwuIdx, 1 << uwuIdx);
   };
 
   const encodeAt = (task: Task, at: number, bit: number): boolean => {
@@ -208,9 +212,8 @@ const slotOffset = (at: number) =>
 
     // publish: toggle host side bit (0->1 or 1->0)
   
-    //hostBits[0] = LastLocal[0] ^= bit
-    Atomics.store(hostBits, 0, LastLocal[0] ^= bit)
-   
+
+     storeHost(bit)
 
     return true;
   };
@@ -227,13 +230,12 @@ const slotOffset = (at: number) =>
 
     // Process all set bits in `diff`, one by one using clz32
     while (diff !== 0) {
-      const idx = 31 - clz32(diff);
-      const bit = 1 << idx;
-
-      decodeAt(idx, bit);
+      uwuIdx = 31 - clz32(diff);
+    
+      decodeAt(uwuIdx, uwuBit = 1 << uwuIdx);
 
       // clear that bit from diff
-      diff &= ~bit >>> 0;
+      diff &= ~uwuBit >>> 0;
 
       modified = true;
     }
@@ -247,7 +249,7 @@ const slotOffset = (at: number) =>
 
 
     //workerBits[0] = LastWorker[0] ^=  bit
-    Atomics.store(workerBits, 0, LastWorker[0] ^=  bit);
+    storeWorker(bit)
 
     decodePayload(task)
 

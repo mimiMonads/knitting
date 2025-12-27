@@ -51,9 +51,10 @@ Deno.test("check packing in startAndIndexToArray", () => {
  
 });
 
-Deno.test("check packing in startAndIndexToArray", () => {
+Deno.test("updateTable delete front", () => {
   const registry = makeRegistry();
   const sizes = [64, 64 , 64 , 64, 64 , 64];
+  const toBeDeletedFront = 2
 
   const result = [[0,0] , ...sizes.map( (_,i,a) => {
 
@@ -66,7 +67,81 @@ Deno.test("check packing in startAndIndexToArray", () => {
     allocAndSync(registry, size);
   }
 
+  assertEquals(
+    registry
+    .startAndIndexToArray(sizes.length )
+    .map(track64andIndex),
+       result
+      );
 
+  registry.free(0)
+  registry.free(1)
+  registry.updateTable()
+  result.splice(0,toBeDeletedFront)
+
+  
+  assertEquals(
+    registry
+    .startAndIndexToArray(sizes.length - toBeDeletedFront)
+    .map(track64andIndex),
+       result
+      );
+});
+
+
+Deno.test("updateTable delete Back", () => {
+  const registry = makeRegistry();
+  const sizes = [64, 64 , 64 , 64, 64 , 64];
+  const toBeDeletedBack = 2
+
+  const result = [[0,0] , ...sizes.map( (_,i,a) => {
+
+    // add them together and index [postion + padding , index]
+    const  val = a.slice(0,i + 1).reduce((acc,c) => acc+ ((64 + c) >>> 6), 0) 
+    return [val, ++i]
+  }).slice(0,-1)] 
+
+  for (const size of sizes) {
+    allocAndSync(registry, size);
+  }
+
+  assertEquals(
+    registry
+    .startAndIndexToArray(sizes.length )
+    .map(track64andIndex),
+       result
+      );
+
+  registry.free(4)
+  registry.free(5)
+  registry.updateTable()
+  result.splice(-toBeDeletedBack)
+
+  
+  assertEquals(
+    registry
+    .startAndIndexToArray(sizes.length - toBeDeletedBack)
+    .map(track64andIndex),
+       result
+      );
+});
+
+
+Deno.test("updateTable delete middle", () => {
+  const registry = makeRegistry();
+  const sizes = [64, 64 , 64 , 64, 64 , 64];
+  const toBeDeletedBack = 2
+
+  const result = [[0,0] , ...sizes.map( (_,i,a) => {
+
+    // add them together and index [postion + padding , index]
+    const  val = a.slice(0,i + 1).reduce((acc,c) => acc+ ((64 + c) >>> 6), 0) 
+    return [val, ++i]
+  }).slice(0,-1)] 
+
+  for (const size of sizes) {
+    allocAndSync(registry, size);
+  }
 
   assertEquals(
     registry
@@ -76,20 +151,17 @@ Deno.test("check packing in startAndIndexToArray", () => {
       );
 
   registry.free(1)
-  //registry.free(2)
+  registry.free(2)
   registry.updateTable()
-  //allocAndSync(registry, 10);
-  // result.splice(1,2)
+  result.splice(1,toBeDeletedBack)
 
   
   assertEquals(
     registry
-    .startAndIndexToArray(sizes.length - 1)
+    .startAndIndexToArray(sizes.length - toBeDeletedBack)
     .map(track64andIndex),
-       []
+       result
       );
-
- 
 });
 
 Deno.test("check Start from Task", () => {

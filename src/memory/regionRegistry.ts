@@ -36,7 +36,11 @@ export const register = ({
   const startAndIndex = new Uint32Array(Lock.slots);
   const size64bit = new Uint32Array(Lock.slots);
 
-  startAndIndex.fill(0xFFFFFFFF)
+  const clz32 = Math.clz32
+  
+  
+  const EMPTY = 0xFFFFFFFF;
+  startAndIndex.fill(EMPTY)
 
     
 
@@ -47,44 +51,72 @@ export const register = ({
 
   const startAndIndexToArray = (length: number) => [...startAndIndex].slice(0,length)
 
+
+
+  const compactSectorStable = ( b:number)  => {
+
+  let w = 0 | 0  , r = 0 | 0;
+
+    b = b | 0 
+
+  for (; r + 3 < b; r += 4) {
+    let v0 = startAndIndex[r];
+    let v1 = startAndIndex[r + 1];
+    let v2 = startAndIndex[r + 2];
+    let v3 = startAndIndex[r + 3];
+
+    if (v0 !== EMPTY) startAndIndex[w++] = v0;
+    if (v1 !== EMPTY) startAndIndex[w++] = v1;
+    if (v2 !== EMPTY) startAndIndex[w++] = v2;
+    if (v3 !== EMPTY) startAndIndex[w++] = v3;
+  }
+
+  for (; r < b; r++) {
+    const v = startAndIndex[r];
+    if (v !== EMPTY) startAndIndex[w++] = v;
+  }
+
+  // In theory we dont have to clean values after w
+  // while (w < b) startAndIndex[w++] = EMPTY;
+
+  
+}
   const updateTable = () => {
   
 
     // Getting a fresh load from atomics and updating the workerBits
     // To after get wich bits are free
-    let freeBits =  (hostLast[0] ^ ( workerBits[0] = Atomics.load(workerBits, 0))) >>> 0,
-      newLength = tableLength
+    const state = (hostLast[0] ^ (workerBits[0] = Atomics.load(workerBits, 0))) >>> 0
+    let freeBits = ~state >>> 0
+    let newLength = tableLength
 
-
-    // nothing changed
+    // nothing to clear
     if (freeBits === 0 || tableLength === 0) return;
-
-    // make it 32 and not
-     freeBits = ~freeBits >>> 0;
 
 
     // reset if empty 
-    if (freeBits === 0xFFFFFFFF) {
-      startAndIndex.fill(0xFFFFFFFF);
+    if (freeBits === EMPTY) {
+      startAndIndex.fill(EMPTY);
       // we dont need to update the end table 
       tableLength = 0;
       return;
     }
 
 
-    let write = 0;
-    for (let read = 0; read < tableLength; read++) {
-      if ((freeBits & (1 << read)) !== 0) {
+  
+    let idx  = 0 ;
+       // Clear freed entries using trailing-zero scan
+    while (freeBits !== 0) {
+      idx = 31 - clz32(freeBits);
+      if (idx < tableLength && startAndIndex[idx] !== EMPTY) {
+        startAndIndex[idx] = EMPTY;
         newLength--;
-        continue;
       }
-
-      if (write !== read) {
-        startAndIndex[write] = startAndIndex[read];
-      }
-      write++;
+      freeBits ^= (1 << idx);
     }
 
+
+    compactSectorStable( tableLength )
     tableLength = newLength
 
   };
@@ -109,12 +141,12 @@ export const register = ({
       task[TaskIndex.Start] = 0
       tableLength++
 
-       return void storeAtomics(0)
+       return  storeAtomics(0)
     }
 
     
     if(tableLength === 1) {
-      if(size64bit[0] === 0) throw 3
+ 
       size64bit[1] = payloadAlignedBytes64
       // load +  + index
        startAndIndex[1]  = (
@@ -125,7 +157,7 @@ export const register = ({
 
       tableLength++
 
-      return void storeAtomics(1)
+      return  storeAtomics(1)
     }
 
 
@@ -156,13 +188,13 @@ export const register = ({
           }
 
           // tell here to start and update table after shift
-           startAndIndex[at + 1] = (size64bit[at] + startAndIndex[at] + 1  )
+           startAndIndex[at + 1] = (size64bit[at] +( startAndIndex[at] & ~31) + (31 -  clz32(workerBits[0]))  )
            task[TaskIndex.Start] =
           // add boundery of the memory
           size64bit[at + 1] = size
           tableLength++
 
-          return void storeAtomics(at + 1)
+          return  storeAtomics(at + 1)
      
       }
 
@@ -178,9 +210,9 @@ export const register = ({
         size64bit[last & 31 ] + last + 1) & ~31 
 
         size64bit[tableLength] = payloadAlignedBytes64
-        tableLength++
+    
 
-        return void storeAtomics(tableLength)
+        return  storeAtomics(tableLength++)
       }
       
     }
@@ -197,6 +229,7 @@ export const register = ({
    
   };
 
+  
   
   return {
     allocTask,
