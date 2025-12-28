@@ -46,6 +46,7 @@ export const register = ({
 
   let updateTableCounter = 1,
       tableLength = 0
+  let usedBits = 0
 
     const hostLast = new Uint32Array(1)
 
@@ -79,16 +80,15 @@ export const register = ({
   // In theory we dont have to clean values after w
   // while (w < b) startAndIndex[w++] = EMPTY;
 
-  
+  return w
 }
   const updateTable = () => {
   
 
     // Getting a fresh load from atomics and updating the workerBits
     // To after get wich bits are free
-    const state = (hostLast[0] ^ (workerBits[0] = Atomics.load(workerBits, 0))) >>> 0
+    const state = (hostLast[0] ^ Atomics.load(workerBits, 0)) >>> 0
     let freeBits = ~state >>> 0
-    let newLength = tableLength
 
     // nothing to clear
     if (freeBits === 0 || tableLength === 0) return;
@@ -99,30 +99,33 @@ export const register = ({
       startAndIndex.fill(EMPTY);
       // we dont need to update the end table 
       tableLength = 0;
+      usedBits = 0
       return;
     }
 
 
   
-    let idx  = 0 ;
-       // Clear freed entries using trailing-zero scan
-    while (freeBits !== 0) {
-      idx = 31 - clz32(freeBits);
-      if (idx < tableLength && startAndIndex[idx] !== EMPTY) {
-        startAndIndex[idx] = EMPTY;
-        newLength--;
+    // clearing
+    for ( let i = 0 ; i < tableLength; i++){
+      const slot = startAndIndex[i] & 31
+      if (( freeBits & (1 << slot) ) !== 0){
+          startAndIndex[i] = EMPTY;
+          usedBits &= ~(1 << slot)
       }
-      freeBits ^= (1 << idx);
     }
 
 
-    compactSectorStable( tableLength )
-    tableLength = newLength
+    tableLength = compactSectorStable( tableLength )
 
   };
 
 
-   const storeAtomics = (index : number ) => Atomics.store(hostBits, 0 , hostLast[0] ^=  (1 << index))
+   const storeAtomics = (bit : number ) => Atomics.store(hostBits, 0 , hostLast[0] ^=  bit)
+   const loadFreeBit = () => {
+     const freeBits = (~usedBits) >>> 0
+     if (freeBits === 0) return 0
+     return (freeBits & -freeBits) >>> 0
+   }
 
   const allocTask = (task: Task) => {
     
@@ -132,39 +135,44 @@ export const register = ({
 
       // ensure a padding of 64 and ending on 63
       // so the task always starts in multiples of 64
-    const payloadAlignedBytes64 = ((task[TaskIndex.PayloadLen] + 65 ) & ~63) 
+    const payloadAlignedBytes64 = ((task[TaskIndex.PayloadLen] + 64 ) & ~63) 
+    const freeBit = loadFreeBit()
+    if (freeBit === 0) return
+    const slotIndex = 31 - clz32(freeBit)
+    if (tableLength >= Lock.slots) return
 
     if(tableLength === 0) {
       // (load <<< 6) + 0
-      startAndIndex[0] = 0
-      size64bit[0] = payloadAlignedBytes64
+      startAndIndex[0] = slotIndex
+      size64bit[slotIndex] = payloadAlignedBytes64
       task[TaskIndex.Start] = 0
       tableLength++
-
-       return  storeAtomics(0)
+      
+       usedBits |= freeBit
+       return  storeAtomics(freeBit)
     }
 
     
-    if(tableLength === 1) {
- 
-      size64bit[1] = payloadAlignedBytes64
-      // load +  + index
-       startAndIndex[1]  = (
-        task[TaskIndex.Start] = size64bit[0] 
-       ) + 1
-      
-     
-
-      tableLength++
-
-      return  storeAtomics(1)
-    }
-
-
 
     // broken has to be fixed
     {
      const size = payloadAlignedBytes64 | 0
+     const firstStart = startAndIndex[0] & ~31
+     const startAtBeginning = firstStart >= size
+
+     if (startAtBeginning) {
+      for (let current = tableLength; current > 0 ; current--){
+        startAndIndex[current] = startAndIndex[current - 1]
+      }
+
+      startAndIndex[0] = slotIndex
+      size64bit[slotIndex] = size
+      task[TaskIndex.Start] = 0
+      tableLength++
+
+      usedBits |= freeBit
+      return  storeAtomics(freeBit)
+     }
 
       for (let at = 0  ; at + 1 < tableLength ; at++){
     
@@ -172,9 +180,12 @@ export const register = ({
           // this basically checks for the real space 
           if(
             
-            startAndIndex[at + 1 ]  - 
-            // real space 
-            ((size64bit[at] * 64 ) + startAndIndex[at]  )
+            (startAndIndex[at + 1 ]  & ~31)- 
+            (
+              // real space 
+              size64bit[startAndIndex[at] & 31] + 
+              (startAndIndex[at] & ~31) 
+            )
               <
               size 
             
@@ -184,17 +195,23 @@ export const register = ({
           // if this is the case shift elements to right from `at`
           for (let current = tableLength; current > at + 1 ; current--){
             startAndIndex[current] = startAndIndex[current - 1]
-            size64bit[current] = size64bit[current - 1]
           }
 
+          const newStart = ( startAndIndex[at] & ~31 ) +
+            size64bit[startAndIndex[at] & 31]
+
           // tell here to start and update table after shift
-           startAndIndex[at + 1] = (size64bit[at] +( startAndIndex[at] & ~31) + (31 -  clz32(workerBits[0]))  )
-           task[TaskIndex.Start] =
-          // add boundery of the memory
-          size64bit[at + 1] = size
+           startAndIndex[at + 1] = newStart | slotIndex
+           
+           task[TaskIndex.Start] = newStart
+
+          size64bit[slotIndex] = size
+          
           tableLength++
 
-          return  storeAtomics(at + 1)
+  
+          usedBits |= freeBit
+          return  storeAtomics(freeBit)
      
       }
 
@@ -203,16 +220,23 @@ export const register = ({
           // no gap found, append at the end if there's capacity
       if (tableLength < Lock.slots) {
        
-        const last = startAndIndex[tableLength - 1]
-      
+        const last = startAndIndex[tableLength - 1];
+         
+        
 
-        task[TaskIndex.Start] = (startAndIndex[tableLength] =
-        size64bit[last & 31 ] + last + 1) & ~31 
+        const newStart = (last & ~31) + (size64bit[last & 31 ])
 
-        size64bit[tableLength] = payloadAlignedBytes64
+        task[TaskIndex.Start] = newStart
+        
+        startAndIndex[tableLength] = newStart | slotIndex
+
+       
+        size64bit[slotIndex] = payloadAlignedBytes64
     
 
-        return  storeAtomics(tableLength++)
+        tableLength++
+        usedBits |= freeBit
+        return  storeAtomics(freeBit)
       }
       
     }

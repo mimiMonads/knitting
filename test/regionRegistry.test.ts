@@ -22,12 +22,24 @@ const allocAndSync = (registry: ReturnType<typeof makeRegistry>, size: number) =
   Atomics.store(registry.workerBits, 0, registry.hostBits[0]);
   return task;
 };
+const allocNoSync = (registry: ReturnType<typeof makeRegistry>, size: number) => {
+  const task = makeTask();
+  task[TaskIndex.PayloadLen] = size;
+  registry.allocTask(task);
+  return task;
+};
+const expectedStartAndIndex = (sizes: number[]) =>
+  [[0,0] , ...sizes.map( (_,i,a) => {
+
+    const  val = a.slice(0,i + 1).reduce((acc,c) => acc+ ((64 + c) >>> 6), 0)
+    return [val, ++i]
+  }).slice(0,-1)]
 
 
 
 Deno.test("check packing in startAndIndexToArray", () => {
   const registry = makeRegistry();
-  const sizes = [64, 43 , 152 , 54];
+  const sizes = [634, 43 , 152 , 54];
 
   const result = [[0,0] , ...sizes.map( (_,i,a) => {
 
@@ -44,8 +56,8 @@ Deno.test("check packing in startAndIndexToArray", () => {
   assertEquals(
     registry
     .startAndIndexToArray(sizes.length)
-    .map(track64andIndex),
-       result
+    .map(track64andIndex)
+    , result
       );
 
  
@@ -53,7 +65,7 @@ Deno.test("check packing in startAndIndexToArray", () => {
 
 Deno.test("updateTable delete front", () => {
   const registry = makeRegistry();
-  const sizes = [64, 64 , 64 , 64, 64 , 64];
+  const sizes = [634, 64 , 64 , 64, 64 , 64];
   const toBeDeletedFront = 2
 
   const result = [[0,0] , ...sizes.map( (_,i,a) => {
@@ -185,5 +197,108 @@ Deno.test("check Start from Task", () => {
  
 });
 
+Deno.test("packing boundary at payload size 63", () => {
+  const registry = makeRegistry();
+  const sizes = [63, 1];
 
+  for (const size of sizes) {
+    allocNoSync(registry, size);
+  }
+
+  assertEquals(
+    registry
+    .startAndIndexToArray(sizes.length)
+    .map(track64andIndex),
+     expectedStartAndIndex(sizes)
+      );
+});
+
+Deno.test("updateTable clears freed index >= 5", () => {
+  const registry = makeRegistry();
+  const sizes = Array.from({ length: 7 }, () => 64);
+
+  for (const size of sizes) {
+    allocNoSync(registry, size);
+  }
+
+  registry.free(5);
+  registry.updateTable();
+
+  const result = expectedStartAndIndex(sizes);
+  result.splice(5, 1);
+
+  assertEquals(
+    registry
+    .startAndIndexToArray(sizes.length - 1)
+    .map(track64andIndex),
+       result
+      );
+});
+
+Deno.test("allocTask reuses freed gap", () => {
+  const registry = makeRegistry();
+  const sizes = [64, 64, 64];
+  const tasks = sizes.map((size) => allocNoSync(registry, size));
+  const freedStart = tasks[1][TaskIndex.Start];
+
+  registry.free(1);
+  registry.updateTable();
+
+  const task = makeTask();
+  task[TaskIndex.PayloadLen] = 64;
+  registry.allocTask(task);
+
+  assertEquals(task[TaskIndex.Start], freedStart);
+});
+
+Deno.test("free does not allow reuse before updateTable", () => {
+  const registry = makeRegistry();
+  const sizes = [64, 64, 64];
+  const tasks = sizes.map((size) => allocNoSync(registry, size));
+  const lastStart = tasks[tasks.length - 1][TaskIndex.Start];
+
+  registry.free(1);
+
+  const task = makeTask();
+  task[TaskIndex.PayloadLen] = 64;
+  registry.allocTask(task);
+
+  assertEquals(task[TaskIndex.Start], lastStart + 128);
+});
+
+Deno.test("updateTable reuses freed slots in gaps and at start", () => {
+  const registry = makeRegistry();
+  const tasks = [64, 64, 64, 64].map((size) => allocNoSync(registry, size));
+
+  registry.free(0);
+  registry.free(2);
+  registry.updateTable();
+
+  const first = makeTask();
+  first[TaskIndex.PayloadLen] = 64;
+  registry.allocTask(first);
+
+  const second = makeTask();
+  second[TaskIndex.PayloadLen] = 64;
+  registry.allocTask(second);
+
+  assertEquals(first[TaskIndex.Start], 0);
+  assertEquals(second[TaskIndex.Start], tasks[1][TaskIndex.Start] + 128);
+});
+
+Deno.test("updateTable resets usedBits when all slots freed", () => {
+  const registry = makeRegistry();
+  allocNoSync(registry, 64);
+  allocNoSync(registry, 64);
+
+  registry.free(0);
+  registry.free(1);
+  registry.updateTable();
+
+  const task = makeTask();
+  task[TaskIndex.PayloadLen] = 64;
+  registry.allocTask(task);
+
+  assertEquals(task[TaskIndex.Start], 0);
+});
 

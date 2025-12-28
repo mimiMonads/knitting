@@ -80,11 +80,9 @@ const makeTaskFrom = (array: ArrayLike<number>, at: number) => {
   } as unknown as Task
 
 
-  task[0] = array[at]
-  task[1] = array[at] +1 
-  task[2] = array[at] +2 
-  task[3] = array[at] +3 
-  task[4] = array[at] +4
+  for (let i = 0; i < TaskIndex.Size; i++) {
+    task[i] = array[at + i]
+  }
 
   task.value = null;
   task.resolve = def;

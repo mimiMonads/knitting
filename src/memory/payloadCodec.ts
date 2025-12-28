@@ -4,7 +4,7 @@ import { PayloadSingal, type Task, TaskIndex } from "./lock.ts";
 const memory = new ArrayBuffer(8);
 const Float64View = new Float64Array(memory);
 const UBigInt64View = new BigUint64Array(memory);
-const Uint32View = new Uint8Array(memory);
+const Uint32View = new Uint32Array(memory);
 
 
 export const encodePayload = (task: Task) => {
