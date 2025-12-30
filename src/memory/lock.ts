@@ -16,12 +16,15 @@ import { decodePayload, encodePayload } from "./payloadCodec.ts";
 
 export enum PayloadBuffer {
   BORDER_SIGNAL_BUFFER = 11,
-  String = 11
+  String = 11,
+  Json = 12,
+  Serializable = 13,
+  NumericBuffer = 14,
 }
 
 
 
-export enum Lock {
+export enum LockBound {
   padding = 64,
   slots = 32,
 }
@@ -46,7 +49,9 @@ export enum TaskIndex {
   Start = 3,
   End = 4,
   PayloadLen = 5,
+  slotBuffer = 6,
   Size = 8,
+  TotalBuff = 32
 }
 
 
@@ -90,15 +95,26 @@ const makeTaskFrom = (array: ArrayLike<number>, at: number) => {
   return task;
 };
 
+/**
+ *
+ * Complexity: 7 / 10
+ *
+ * SAFETY:
+ *  - Single producer/consumer; do not call encode/decode concurrently.
+ *  - Shared buffers must be the same between host/worker.
+ *  - encode/decode are not re-entrant; payload codec uses a shared scratch buffer.
+ */
 export const lock2 = ({
   headers,
-  lockSector,
+  LockBoundSector,
+  payload,
   resultList,
   toSentList,
   recycleList
 }: {
   headers?: SharedArrayBuffer;
-  lockSector?: SharedArrayBuffer;
+  LockBoundSector?: SharedArrayBuffer;
+  payload?: SharedArrayBuffer;
   toSentList?: LinkList<Task>;
   resultList?: LinkList<Task>;
   recycleList?: LinkList<Task>;
@@ -111,47 +127,53 @@ export const lock2 = ({
  
   }
 
+    // Layout:
+  // [ padding (64 bytes) ]
+  // [ hostBits:Int32 (4 bytes) ]
+  // [ padding (64 bytes) ]
+  // [ workerBits:Int32 (4 bytes) ]
+  const LockBoundSAB =
+    LockBoundSector ??
+    new SharedArrayBuffer(LockBound.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2);
 
+  const hostBits = new Uint32Array(LockBoundSAB, LockBound.padding, 1);
+  const workerBits = new Uint32Array(
+    LockBoundSAB,
+    LockBound.padding * 2,
+    1,
+  );
+
+  // Logical positions for each slot payload in headersBuffer.
+  // (Layout unchanged from your version.)
+  const headersBuffer = new Uint32Array(
+    headers ??
+      new SharedArrayBuffer(
+        (LockBound.padding + ((LockBound.slots * TaskIndex.TotalBuff)) * LockBound.slots),
+      ),
+  );
+
+  const payloadSAB = payload ?? new SharedArrayBuffer(40000);
+  const encodeTask = encodePayload({ sab: payloadSAB  , headersBuffer});
+  const decodeTask = decodePayload({ sab: payloadSAB , headersBuffer});
 
   const LastLocal = new Uint32Array(1)
   const LastWorker = new Uint32Array(1)
 
   const toBeSent = toSentList ?? new LinkList();
   const recyclecList = recycleList ?? new LinkList()
-  // Layout:
-  // [ padding (64 bytes) ]
-  // [ hostBits:Int32 (4 bytes) ]
-  // [ padding (64 bytes) ]
-  // [ workerBits:Int32 (4 bytes) ]
-  const lockSAB =
-    lockSector ??
-    new SharedArrayBuffer(Lock.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2);
 
-  const hostBits = new Uint32Array(lockSAB, Lock.padding, 1);
-  const workerBits = new Uint32Array(
-    lockSAB,
-    Lock.padding * 2,
-    1,
-  );
 
 
   const resolved = resultList ?? new LinkList<Task>();
 
-  // Logical positions for each slot payload in headersBuffer.
-  // (Layout unchanged from your version.)
-  const headersBuffer = new Int32Array(
-    headers ??
-      new SharedArrayBuffer(
-        (Lock.padding + (Lock.slots * TaskIndex.Size)) * Lock.slots,
-      ),
-  );
 
-const SLOT_SIZE = Lock.padding + TaskIndex.Size;
+
+const SLOT_SIZE = LockBound.padding + TaskIndex.TotalBuff;
 
 
 const clz32 = Math.clz32
 const slotOffset = (at: number) =>
-  Lock.padding + (at * SLOT_SIZE);
+  (at * SLOT_SIZE) +  LockBound.padding ;
 
   const enlist = (task: Task) => toBeSent.push(task)
 
@@ -192,16 +214,19 @@ const slotOffset = (at: number) =>
     task: Task,
     state: number = (LastLocal[0] ^ Atomics.load(workerBits , 0)) ,
   ): boolean => {
-    encodePayload(task);
+    encodeTask(task);
 
-    // free bits are ~state (only consider lower SLOT bits)
+
+   // free bits are ~state (only consider lower SLOT bits)
     let free = (~state >>> 0) //  & SLOT_MASK;
     if (free === 0) return false;
 
     // Take the highest free bit: idx = 31 - clz32(free)
-    uwuIdx = 31 - clz32(free);
+    task[TaskIndex.slotBuffer] = uwuIdx = 31 - clz32(free);
     
     return encodeAt(task, uwuIdx, 1 << uwuIdx);
+
+  
   };
 
   const encodeAt = (task: Task, at: number, bit: number): boolean => {
@@ -249,7 +274,7 @@ const slotOffset = (at: number) =>
     //workerBits[0] = LastWorker[0] ^=  bit
     storeWorker(bit)
 
-    decodePayload(task)
+    decodeTask(task)
 
     resolved.push(task);
 

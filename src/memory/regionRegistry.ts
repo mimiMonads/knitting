@@ -1,13 +1,17 @@
-import { Lock, Task , TaskIndex } from "./lock.ts";
+import { LockBound, Task , TaskIndex } from "./lock.ts";
 
 
 /**
  * 
- * Complexity: Harry you are a wizard / 10 
+ * Complexity: Harry you are a wizard (9) / 10 
  * 
  * SAFETY:
- *  - Single worker ownership; hostBits/workerBits are the only source of truth.
+ *  - Single worker ownership; `hostBits`/`workerBits` are the only source of truth.
+ *  - `tableLength` is the only source of truth for valid entries; 
+ *    stale values beyond it are ignored.
  *  - Caller/lock guarantees no overflow (<= 32 slots); no bounds checks here.
+ *  - low 5 bits of `startAndIndex` are the slot index; 
+ *    size64bit is indexed by slot index, never table index.
  *  - `free` is worker-only; reclaim happens only after worker signals and
  *    `updateTable` runs.
  *  - `updateTable` must be called periodically (every 8 allocs by default).
@@ -16,25 +20,28 @@ import { Lock, Task , TaskIndex } from "./lock.ts";
  *    region); signals like booleans are excluded.
  *  - `updateTable` compacts `startAndIndex` only; `size64bit` is rewritten
  *    on allocation and is not compacted by design.
+ *  - `usedBits` only `shrinks` in `updateTable`; `free`() alone never allows reuse.
  */
+
+export type RegisterMalloc = ReturnType<typeof register>
 
 export const register = ({
   lockSector,
 }: {
-  lockSector: SharedArrayBuffer;
+  lockSector?: SharedArrayBuffer;
 }) => {
   const lockSAB =
     lockSector ??
     new SharedArrayBuffer(
-      Lock.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2,
+      LockBound.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2,
     );
 
-  const hostBits = new Int32Array(lockSAB, Lock.padding, 1);
-  const workerBits = new Int32Array(lockSAB, Lock.padding * 2, 1);
+  const hostBits = new Int32Array(lockSAB, LockBound.padding, 1);
+  const workerBits = new Int32Array(lockSAB, LockBound.padding * 2, 1);
 
 
-  const startAndIndex = new Uint32Array(Lock.slots);
-  const size64bit = new Uint32Array(Lock.slots);
+  const startAndIndex = new Uint32Array(LockBound.slots);
+  const size64bit = new Uint32Array(LockBound.slots);
 
   const clz32 = Math.clz32
   
@@ -137,9 +144,13 @@ export const register = ({
       // so the task always starts in multiples of 64
     const payloadAlignedBytes64 = ((task[TaskIndex.PayloadLen] + 64 ) & ~63) 
     const freeBit = loadFreeBit()
-    if (freeBit === 0) return
+    if (freeBit === 0) return - 1
     const slotIndex = 31 - clz32(freeBit)
-    if (tableLength >= Lock.slots) return
+    if (tableLength >= LockBound.slots) return -1
+    const storeSlot = (bit: number) => (
+      task[TaskIndex.slotBuffer] = slotIndex,
+      storeAtomics(bit)
+    );
 
     if(tableLength === 0) {
       // (load <<< 6) + 0
@@ -149,12 +160,10 @@ export const register = ({
       tableLength++
       
        usedBits |= freeBit
-       return  storeAtomics(freeBit)
+       return storeSlot(freeBit)
     }
 
     
-
-    // broken has to be fixed
     {
      const size = payloadAlignedBytes64 | 0
      const firstStart = startAndIndex[0] & ~31
@@ -171,7 +180,7 @@ export const register = ({
       tableLength++
 
       usedBits |= freeBit
-      return  storeAtomics(freeBit)
+      return  storeSlot(freeBit)
      }
 
       for (let at = 0  ; at + 1 < tableLength ; at++){
@@ -211,14 +220,14 @@ export const register = ({
 
   
           usedBits |= freeBit
-          return  storeAtomics(freeBit)
+          return storeSlot(freeBit)
      
       }
 
 
 
           // no gap found, append at the end if there's capacity
-      if (tableLength < Lock.slots) {
+      if (tableLength < LockBound.slots) {
        
         const last = startAndIndex[tableLength - 1];
          
@@ -236,8 +245,10 @@ export const register = ({
 
         tableLength++
         usedBits |= freeBit
-        return  storeAtomics(freeBit)
+        return storeSlot(freeBit)
       }
+
+      return -1
       
     }
 

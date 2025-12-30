@@ -1,6 +1,6 @@
 import { assert, assertEquals } from "jsr:@std/assert";
 import LinkList from "../src/ipc/tools/LinkList.ts";
-import { Lock, lock2, makeTask } from "../src/memory/lock.ts";
+import { LockBound, lock2, makeTask } from "../src/memory/lock.ts";
 
 const makeLock = () => {
   const toBeSent = new LinkList<ReturnType<typeof makeTask>>();
@@ -37,6 +37,19 @@ Deno.test("encode/decode roundtrip values", () => {
   }
 });
 
+Deno.test("encode/decode roundtrip string", () => {
+  const { lock } = makeLock();
+  const value = "hello from lock";
+
+  assert(lock.encode(makeValueTask(value)));
+  assert(lock.decode());
+
+  const decoded = lock.resolved.toArray()
+  .filter((task) =>  typeof task.value === "string") ;
+  assertEquals(decoded.length, 1);
+  assertEquals(decoded[0].value, value);
+});
+
 Deno.test("decode is no-op with no new slots", () => {
   const { lock } = makeLock();
   assertEquals(lock.decode(), false);
@@ -45,7 +58,7 @@ Deno.test("decode is no-op with no new slots", () => {
 Deno.test("encode stops when full", () => {
   const { lock } = makeLock();
 
-  for (let i = 0; i < Lock.slots; i++) {
+  for (let i = 0; i < LockBound.slots; i++) {
     assert(lock.encode(makeValueTask(i)));
   }
 
@@ -56,7 +69,7 @@ Deno.test("encode stops when full", () => {
 Deno.test("encodeAll leaves remaining task when full", () => {
   const { lock, toBeSent } = makeLock();
   const tasks = Array.from(
-    { length: Lock.slots + 1 },
+    { length: LockBound.slots + 1 },
     (_, i) => makeValueTask(i),
   );
 

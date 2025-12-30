@@ -10,10 +10,24 @@ const makeNumberTask = (value: number) => {
   return task;
 };
 
+const makeStringTask = (value: string) => {
+  const task = makeTask();
+  task.value = value;
+  return task;
+};
+
 const lock = makeLock();
 const single = makeNumberTask(123);
 const batch16 = Array.from({ length: 16 }, (_, i) => makeNumberTask(i));
 const batch32 = Array.from({ length: 32 }, (_, i) => makeNumberTask(i));
+const smallString = "hello from lock";
+const largeString = "helloWorld".repeat(1000);
+const singleString = makeStringTask(smallString);
+const singleLargeString = makeStringTask(largeString);
+const batch16Strings = Array.from(
+  { length: 16 },
+  (_, i) => makeStringTask(`${smallString}-${i}`),
+);
 
 const ackAll = (registry: ReturnType<typeof makeLock>) => {
   // Match worker bits to host so all slots are free again.
@@ -60,6 +74,27 @@ group("lock", () => {
   bench("roundtrip (32)", () => {
     ackAll(lock);
     encodeBatch(lock, batch32);
+    lock.decode();
+    lock.resolved.clear();
+  });
+
+  bench("roundtrip string (1)", () => {
+    ackAll(lock);
+    lock.encode(singleString);
+    lock.decode();
+    lock.resolved.clear();
+  });
+
+  bench("roundtrip large string (1)", () => {
+    ackAll(lock);
+    lock.encode(singleLargeString);
+    lock.decode();
+    lock.resolved.clear();
+  });
+
+  bench("roundtrip string (16)", () => {
+    ackAll(lock);
+    encodeBatch(lock, batch16Strings);
     lock.decode();
     lock.resolved.clear();
   });

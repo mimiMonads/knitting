@@ -1,0 +1,108 @@
+import { assertEquals } from "jsr:@std/assert";
+import { createSharedDynamicBufferIO } from "../src/memory/createSharedBufferIO.ts";
+
+const header = 64;
+
+const makeSab = (payloadBytes: number) =>
+  new SharedArrayBuffer(
+    header + payloadBytes,
+    { maxByteLength: header + 1024 * 1024 },
+  );
+
+Deno.test("writeBinary grows and reads back", () => {
+  const sab = makeSab(8);
+  const io = createSharedDynamicBufferIO({ sab });
+  const data = new Uint8Array(2048);
+
+  for (let i = 0; i < data.length; i++) data[i] = i & 255;
+
+  const written = io.writeBinary(data);
+
+  assertEquals(written, data.byteLength);
+  assertEquals(sab.byteLength >= header + data.byteLength, true);
+  assertEquals(sab.byteLength % 64, 0);
+  assertEquals(Array.from(io.readBytesCopy(0, written)), Array.from(data));
+  assertEquals(Array.from(io.readBytesView(0, written)), Array.from(data));
+});
+
+Deno.test("writeUtf8 grows when buffer is too small", () => {
+  const sab = makeSab(4);
+  const io = createSharedDynamicBufferIO({ sab });
+  const text = "hello-world-hello-world-hello-world";
+  const encoded = new TextEncoder().encode(text);
+
+  const written = io.writeUtf8(text,0);
+
+  assertEquals(written, encoded.byteLength);
+  assertEquals(io.readUtf8(0, written), text);
+  assertEquals(sab.byteLength >= header + encoded.byteLength, true);
+});
+
+Deno.test("write8Binary writes Float64 values", () => {
+  const sab = makeSab(8);
+  const io = createSharedDynamicBufferIO({ sab });
+  const values = new Float64Array([1.25, -2, 3.5]);
+
+  const written = io.write8Binary(values);
+  const readBack = new Float64Array(sab, header, values.length);
+
+  assertEquals(written, values.byteLength);
+  assertEquals(Array.from(readBack), Array.from(values));
+});
+
+Deno.test("writeBinary respects start offset and preserves earlier bytes", () => {
+  const sab = makeSab(32);
+  const io = createSharedDynamicBufferIO({ sab });
+  const first = new Uint8Array([1, 2, 3, 4]);
+  const second = new Uint8Array([9, 10]);
+
+  io.writeBinary(first, 0);
+  io.writeBinary(second, 8);
+
+  assertEquals(Array.from(io.readBytesCopy(0, 4)), Array.from(first));
+  assertEquals(Array.from(io.readBytesCopy(8, 10)), Array.from(second));
+});
+
+Deno.test("writeUtf8 does not grow when buffer is large enough", () => {
+  const sab = makeSab(64);
+  const io = createSharedDynamicBufferIO({ sab });
+  const text = "short-text";
+  const encoded = new TextEncoder().encode(text);
+  const before = sab.byteLength;
+
+  const written = io.writeUtf8(text, 0);
+
+  assertEquals(written, encoded.byteLength);
+  assertEquals(io.readUtf8(0, written), text);
+  assertEquals(sab.byteLength, before);
+});
+
+Deno.test("readBytesCopy is isolated and readBytesView reflects writes", () => {
+  const sab = makeSab(32);
+  const io = createSharedDynamicBufferIO({ sab });
+  const initial = new Uint8Array([7, 8, 9, 10]);
+
+  io.writeBinary(initial, 0);
+  const copy = io.readBytesCopy(0, 4);
+  const view = io.readBytesView(0, 4);
+
+  io.writeBinary(new Uint8Array([1, 2, 3, 4]), 0);
+
+  assertEquals(Array.from(copy), Array.from(initial));
+  assertEquals(Array.from(view), [1, 2, 3, 4]);
+});
+
+Deno.test("read8BytesFloat copy and view have expected semantics", () => {
+  const sab = makeSab(64);
+  const io = createSharedDynamicBufferIO({ sab });
+  const initial = new Float64Array([0.5, -1.5, 2.25]);
+
+  io.write8Binary(initial, 0);
+  const copy = io.read8BytesFloatCopy(0, initial.byteLength);
+  const view = io.read8BytesFloatView(0, initial.byteLength);
+
+  io.write8Binary(new Float64Array([3.25, 4.5, -6]), 0);
+
+  assertEquals(Array.from(copy), Array.from(initial));
+  assertEquals(Array.from(view), [3.25, 4.5, -6]);
+});

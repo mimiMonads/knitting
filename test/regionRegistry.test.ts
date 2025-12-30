@@ -1,6 +1,6 @@
 import { assertEquals } from "jsr:@std/assert";
 import { register } from "../src/memory/regionRegistry.ts";
-import { Lock, makeTask, TaskIndex } from "../src/memory/lock.ts";
+import { LockBound, makeTask, TaskIndex } from "../src/memory/lock.ts";
 
 
 
@@ -10,7 +10,7 @@ import { Lock, makeTask, TaskIndex } from "../src/memory/lock.ts";
 const makeRegistry = () =>
   register({
     lockSector: new SharedArrayBuffer(
-      Lock.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2,
+      LockBound.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2,
     ),
   });
 
