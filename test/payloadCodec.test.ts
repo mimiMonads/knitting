@@ -22,10 +22,10 @@ Deno.test("string payload stores slotBuffer and frees slot 0", () => {
   const task = makeTask();
   task.value = "";
 
-  assertEquals(encode(task), true);
+  assertEquals(encode(task, 0), true);
   assertEquals(task[TaskIndex.slotBuffer], 0);
 
-  decode(task);
+  decode(task, 0);
 
   assertEquals(task.value, "");
   assertEquals(registry.workerBits[0] & 1, 1);
@@ -39,14 +39,14 @@ Deno.test("string payloads use distinct slotBuffer values", () => {
   first.value = "a";
   second.value = "b";
 
-  assertEquals(encode(first), true);
-  assertEquals(encode(second), true);
+  assertEquals(encode(first, 0), true);
+  assertEquals(encode(second, 1), true);
 
   assertEquals(first[TaskIndex.slotBuffer], 0);
   assertEquals(second[TaskIndex.slotBuffer], 1);
 
-  decode(first);
-  decode(second);
+  decode(first, 0);
+  decode(second, 1);
 
   assertEquals(registry.workerBits[0] & 3, 3);
 });
@@ -58,6 +58,6 @@ Deno.test("non-buffer payloads do not modify slotBuffer", () => {
   task[TaskIndex.slotBuffer] = 7;
   task.value = 123;
 
-  assertEquals(encode(task), false);
+  assertEquals(encode(task, 0), false);
   assertEquals(task[TaskIndex.slotBuffer], 7);
 });

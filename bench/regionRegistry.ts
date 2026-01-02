@@ -1,6 +1,6 @@
 import { bench, group, run as mitataRun } from "mitata";
 import { register } from "../src/memory/regionRegistry.ts";
-import { Lock, makeTask, TaskIndex } from "../src/memory/lock.ts";
+import { LockBound, makeTask, TaskIndex } from "../src/memory/lock.ts";
 import { format, print } from "./ulti/json-parse.ts";
 
 // make with AI, recheck later 
@@ -8,7 +8,7 @@ import { format, print } from "./ulti/json-parse.ts";
 const makeRegistry = () =>
   register({
     lockSector: new SharedArrayBuffer(
-      Lock.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2,
+      LockBound.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2,
     ),
   });
 

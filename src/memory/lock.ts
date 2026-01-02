@@ -20,6 +20,8 @@ export enum PayloadBuffer {
   Json = 12,
   Serializable = 13,
   NumericBuffer = 14,
+  StaticString = 15,
+  StaticJson = 16,
 }
 
 
@@ -145,14 +147,21 @@ export const lock2 = ({
 
   // Logical positions for each slot payload in headersBuffer.
   // (Layout unchanged from your version.)
-  const headersBuffer = new Uint32Array(
-    headers ??
+
+  const bufferHeadersBuffer:SharedArrayBuffer =  headers ??
       new SharedArrayBuffer(
         (LockBound.padding + ((LockBound.slots * TaskIndex.TotalBuff)) * LockBound.slots),
-      ),
+      )
+
+  const headersBuffer = new Uint32Array(
+  bufferHeadersBuffer
   );
 
-  const payloadSAB = payload ?? new SharedArrayBuffer(40000);
+  const payloadSAB = payload ??
+    new SharedArrayBuffer(
+      64 * 1024 * 1024,
+      { maxByteLength: 64 * 1024 * 1024 },
+    );
   const encodeTask = encodePayload({ sab: payloadSAB  , headersBuffer});
   const decodeTask = decodePayload({ sab: payloadSAB , headersBuffer});
 
@@ -205,7 +214,7 @@ const slotOffset = (at: number) =>
     return true;
   };
 
-  let uwuIdx = 0, uwuBit = 0
+  let uwuIdx = 0 | 0, uwuBit = 0 | 0
 
   const a_s = Atomics.store
   const storeHost = (bit: number) => a_s(hostBits, 0, LastLocal[0] ^= bit)
@@ -214,15 +223,13 @@ const slotOffset = (at: number) =>
     task: Task,
     state: number = (LastLocal[0] ^ Atomics.load(workerBits , 0)) ,
   ): boolean => {
-    encodeTask(task);
-
-
    // free bits are ~state (only consider lower SLOT bits)
     let free = (~state >>> 0) //  & SLOT_MASK;
     if (free === 0) return false;
 
     // Take the highest free bit: idx = 31 - clz32(free)
-    task[TaskIndex.slotBuffer] = uwuIdx = 31 - clz32(free);
+    uwuIdx = 31 - clz32(free);
+    encodeTask(task, uwuIdx);
     
     return encodeAt(task, uwuIdx, 1 << uwuIdx);
 
@@ -274,7 +281,7 @@ const slotOffset = (at: number) =>
     //workerBits[0] = LastWorker[0] ^=  bit
     storeWorker(bit)
 
-    decodeTask(task)
+    decodeTask(task, at)
 
     resolved.push(task);
 

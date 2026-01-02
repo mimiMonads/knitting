@@ -21,9 +21,15 @@ const single = makeNumberTask(123);
 const batch16 = Array.from({ length: 16 }, (_, i) => makeNumberTask(i));
 const batch32 = Array.from({ length: 32 }, (_, i) => makeNumberTask(i));
 const smallString = "hello from lock";
-const largeString = "helloWorld".repeat(1000);
+const largeString = "helloWorld".repeat(100);
 const singleString = makeStringTask(smallString);
 const singleLargeString = makeStringTask(largeString);
+const smallObject = { a: 1, b: "x",  };
+const smallArray = [1, 2, 3];
+const singleObject = makeTask();
+singleObject.value = smallObject;
+const singleArray = makeTask();
+singleArray.value = smallArray;
 const batch16Strings = Array.from(
   { length: 16 },
   (_, i) => makeStringTask(`${smallString}-${i}`),
@@ -92,9 +98,23 @@ group("lock", () => {
     lock.resolved.clear();
   });
 
-  bench("roundtrip string (16)", () => {
+  // bench("roundtrip string (16)", () => {
+  //   ackAll(lock);
+  //   encodeBatch(lock, batch16Strings);
+  //   lock.decode();
+  //   lock.resolved.clear();
+  // });
+
+  bench("roundtrip object (1)", () => {
     ackAll(lock);
-    encodeBatch(lock, batch16Strings);
+    lock.encode(singleObject);
+    lock.decode();
+    lock.resolved.clear();
+  });
+
+  bench("roundtrip array (1)", () => {
+    ackAll(lock);
+    lock.encode(singleArray);
     lock.decode();
     lock.resolved.clear();
   });

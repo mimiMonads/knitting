@@ -1,5 +1,9 @@
 import { assertEquals } from "jsr:@std/assert";
-import { createSharedDynamicBufferIO } from "../src/memory/createSharedBufferIO.ts";
+import {
+  createSharedDynamicBufferIO,
+  createSharedStaticBufferIO,
+} from "../src/memory/createSharedBufferIO.ts";
+import { LockBound, TaskIndex } from "../src/memory/lock.ts";
 
 const header = 64;
 
@@ -7,6 +11,11 @@ const makeSab = (payloadBytes: number) =>
   new SharedArrayBuffer(
     header + payloadBytes,
     { maxByteLength: header + 1024 * 1024 },
+  );
+const makeHeaders = () =>
+  new SharedArrayBuffer(
+    LockBound.padding +
+      ((LockBound.slots * TaskIndex.TotalBuff)) * LockBound.slots,
   );
 
 Deno.test("writeBinary grows and reads back", () => {
@@ -105,4 +114,63 @@ Deno.test("read8BytesFloat copy and view have expected semantics", () => {
 
   assertEquals(Array.from(copy), Array.from(initial));
   assertEquals(Array.from(view), [3.25, 4.5, -6]);
+});
+
+Deno.test("static writeUtf8 preserves task header and reads back", () => {
+  const headersBuffer = makeHeaders();
+  const io = createSharedStaticBufferIO({ headersBuffer });
+  const headersU32 = new Uint32Array(headersBuffer);
+  const slotStride = LockBound.padding + TaskIndex.TotalBuff;
+  const slotOffset = (at: number) => (at * slotStride) + LockBound.padding;
+  const slot = 0;
+  const marker = 0xdeadbeef;
+
+  for (let i = 0; i < TaskIndex.Size; i++) {
+    headersU32[slotOffset(slot) + i] = marker;
+  }
+
+  const text = "hello";
+  const written = io.writeUtf8(text, slot);
+
+  assertEquals(written, new TextEncoder().encode(text).byteLength);
+  for (let i = 0; i < TaskIndex.Size; i++) {
+    assertEquals(headersU32[slotOffset(slot) + i], marker);
+  }
+  assertEquals(io.readUtf8(0, written, slot), text);
+});
+
+Deno.test("static writeUtf8 returns -1 when it does not fit", () => {
+  const headersBuffer = makeHeaders();
+  const io = createSharedStaticBufferIO({ headersBuffer });
+  const writableBytes =
+    (TaskIndex.TotalBuff - TaskIndex.Size) * Uint32Array.BYTES_PER_ELEMENT;
+  const tooLong = "a".repeat(writableBytes + 1);
+
+  const written = io.writeUtf8(tooLong, 0);
+
+  assertEquals(written, -1);
+});
+
+Deno.test("static binary and float IO roundtrip", () => {
+  const headersBuffer = makeHeaders();
+  const io = createSharedStaticBufferIO({ headersBuffer });
+  const slot = 0;
+
+  const bytes = new Uint8Array([10, 20, 30, 40, 50]);
+  const writtenBytes = io.writeBinary(bytes, slot, 4);
+  assertEquals(writtenBytes, bytes.byteLength);
+  assertEquals(Array.from(io.readBytesCopy(4, 9, slot)), Array.from(bytes));
+  assertEquals(Array.from(io.readBytesView(4, 9, slot)), Array.from(bytes));
+
+  const floats = new Float64Array([1.5, -2.25, 3.75]);
+  const writtenFloats = io.write8Binary(floats, slot, 16);
+  assertEquals(writtenFloats, floats.byteLength);
+  assertEquals(
+    Array.from(io.read8BytesFloatCopy(16, 16 + floats.byteLength, slot)),
+    Array.from(floats),
+  );
+  assertEquals(
+    Array.from(io.read8BytesFloatView(16, 16 + floats.byteLength, slot)),
+    Array.from(floats),
+  );
 });
