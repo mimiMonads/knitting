@@ -40,8 +40,9 @@ export type Task = [
   number, 
 ] & {
   value: unknown;
-  resolve: { (): void };
-  reject: { (): void };
+  resolve: (value?: unknown) => void;
+  reject: (reason?: unknown) => void;
+  payloadType?: number;
 };
 
 export enum TaskIndex {
@@ -59,14 +60,15 @@ export enum TaskIndex {
 
 let INDEX_ID = 0;
 const INIT_VAL = PayloadSingal.UNREACHABLE;
-const def = () => {};
+const def = (_?: unknown) => {};
 
 export const makeTask = () => {
   
  const task = new Uint32Array(TaskIndex.Size) as Uint32Array & {
     value: unknown
-    resolve: ()=>void
-    reject:  ()=>void
+    resolve: (value?: unknown)=>void
+    reject:  (reason?: unknown)=>void
+    payloadType?: number
   } as unknown as Task
 
 
@@ -82,8 +84,9 @@ const makeTaskFrom = (array: ArrayLike<number>, at: number) => {
 
    const task = new Uint32Array(TaskIndex.Size) as Uint32Array & {
     value: unknown
-    resolve: (key:void)=>void
-    reject:  (key:void)=>void
+    resolve: (value?: unknown)=>void
+    reject:  (reason?: unknown)=>void
+    payloadType?: number
   } as unknown as Task
 
 

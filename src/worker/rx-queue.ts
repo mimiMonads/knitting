@@ -4,10 +4,9 @@ import {
   type SignalArguments,
   type WorkerSignal,
 } from "../ipc/transport/shared-memory.ts";
-import { TaskIndex, type Task } from "../memory/lock.ts";
+import { makeTask, TaskIndex, type Task } from "../memory/lock.ts";
 import type {
   ComposedWithKey,
-  QueueListWorker,
   WorkerSettings,
 } from "../types.ts";
 import {
@@ -17,7 +16,7 @@ import {
   readFramePayload,
   writeFramePayload,
 } from "../ipc/protocol/codec.ts";
-import { MainListEnum, PayloadType } from "../types.ts";
+import { PayloadType } from "../types.ts";
 import "../polyfills/promise-with-resolvers.ts";
 import LinkList from "../ipc/tools/LinkList.ts";
 
@@ -46,23 +45,23 @@ export const createWorkerRxQueue = (
     lock,
   }: ArgumentsForCreateWorkerQueue,
 ) => {
-  const PLACE_HOLDER = () => {
+  const PLACE_HOLDER = (_?: unknown) => {
     throw ("UNREACHABLE FROM PLACE HOLDER (thread)");
   };
 
   let isThereAnythingToResolve = 0;
   let hasAnythingFinished = 0;
 
-  const newSlot = () =>
-    [
-      0,
-      ,
-      0,
-      ,
-      PLACE_HOLDER,
-      PLACE_HOLDER,
-      PayloadType.UNREACHABLE,
-    ] as QueueListWorker;
+  const newSlot = () => {
+    const task = makeTask() as Task;
+    task[TaskIndex.FuntionID] = 0;
+    task[TaskIndex.ID] = 0;
+    task.value = undefined;
+    task.payloadType = PayloadType.Undefined;
+    task.resolve = PLACE_HOLDER;
+    task.reject = PLACE_HOLDER;
+    return task;
+  };
 
   const blockingSlot = newSlot();
 
@@ -73,15 +72,12 @@ export const createWorkerRxQueue = (
   ), [] as AsyncFunction[]);
 
   // Parser
-  const simplifies = preencodeJsonString({
-    index: MainListEnum.WorkerResponse,
-  });
+  const simplifies = preencodeJsonString();
 
   // Writers
   const returnError = fromReturnToMainError(signals);
   const playloadToArgs = decodeArgs(signals);
   const writeFrame = writeFramePayload({
-    index: MainListEnum.WorkerResponse,
     jsonString: true,
   })(signals);
 
@@ -91,12 +87,12 @@ export const createWorkerRxQueue = (
     specialType: "thread",
   });
 
-  const toWork = new LinkList<QueueListWorker>();
-  const completedFrames = new LinkList<QueueListWorker>();
-  const errorFrames = new LinkList<QueueListWorker>();
-  const optimizedFrames = new LinkList<QueueListWorker>();
+  const toWork = new LinkList<Task>();
+  const completedFrames = new LinkList<Task>();
+  const errorFrames = new LinkList<Task>();
+  const optimizedFrames = new LinkList<Task>();
 
-  const enqueueSlot = (slot: QueueListWorker) => {
+  const enqueueSlot = (slot: Task) => {
     toWork.push(slot);
     isThereAnythingToResolve++;
     return true;
@@ -126,9 +122,10 @@ export const createWorkerRxQueue = (
         args = reader();
 
       const slot = newSlot();
-      slot[MainListEnum.RawArguments] = args;
-      slot[MainListEnum.FunctionID] = fnNumber;
-      slot[MainListEnum.slotIndex] = currentIndex;
+      slot.value = args;
+      slot.payloadType = PayloadType.Undefined;
+      slot[TaskIndex.FuntionID] = fnNumber;
+      slot[TaskIndex.ID] = currentIndex;
       return enqueueSlot(slot);
     };
   };
@@ -144,9 +141,10 @@ export const createWorkerRxQueue = (
     let task = lock.resolved.shift?.() as Task | undefined;
     while (task) {
       const slot = newSlot();
-      slot[MainListEnum.RawArguments] = task.value;
-      slot[MainListEnum.FunctionID] = task[TaskIndex.FuntionID];
-      slot[MainListEnum.slotIndex] = task[TaskIndex.ID];
+      slot.value = task.value;
+      slot.payloadType = PayloadType.Undefined;
+      slot[TaskIndex.FuntionID] = task[TaskIndex.FuntionID];
+      slot[TaskIndex.ID] = task[TaskIndex.ID];
       enqueueSlot(slot);
       task = lock.resolved.shift?.() as Task | undefined;
     }
@@ -164,15 +162,17 @@ export const createWorkerRxQueue = (
     hasCompleted,
     hasPending: () => toWork.size !== 0,
     blockingResolve: async () => {
+      blockingSlot[TaskIndex.FuntionID] = signals.rpcId[0];
+      blockingSlot.payloadType = PayloadType.Undefined;
       try {
-        blockingSlot[MainListEnum.WorkerResponse] = await jobs
-          [blockingSlot[MainListEnum.FunctionID]](
+        blockingSlot.value = await jobs
+          [blockingSlot[TaskIndex.FuntionID]](
             playloadToArgs(),
           );
         writeFrame(blockingSlot);
         op[0] = OP.FastResolve;
       } catch (err) {
-        blockingSlot[MainListEnum.WorkerResponse] = err;
+        blockingSlot.value = err;
         returnError(blockingSlot);
         op[0] = OP.ErrorThrown;
       }
@@ -190,18 +190,19 @@ export const createWorkerRxQueue = (
         return;
       }
 
-      blockingSlot[MainListEnum.FunctionID] = task[TaskIndex.FuntionID];
-      blockingSlot[MainListEnum.RawArguments] = task.value;
+      blockingSlot[TaskIndex.FuntionID] = task[TaskIndex.FuntionID];
+      blockingSlot.value = task.value;
+      blockingSlot.payloadType = PayloadType.Undefined;
 
       try {
-        blockingSlot[MainListEnum.WorkerResponse] = await jobs
-          [blockingSlot[MainListEnum.FunctionID]](
-            blockingSlot[MainListEnum.RawArguments],
+        blockingSlot.value = await jobs
+          [blockingSlot[TaskIndex.FuntionID]](
+            blockingSlot.value,
           );
         writeFrame(blockingSlot);
         op[0] = OP.FastResolve;
       } catch (err) {
-        blockingSlot[MainListEnum.WorkerResponse] = err;
+        blockingSlot.value = err;
         returnError(blockingSlot);
         op[0] = OP.ErrorThrown;
       }
@@ -209,9 +210,10 @@ export const createWorkerRxQueue = (
       let extra = lock.resolved.shift?.() as Task | undefined;
       while (extra) {
         const slot = newSlot();
-        slot[MainListEnum.RawArguments] = extra.value;
-        slot[MainListEnum.FunctionID] = extra[TaskIndex.FuntionID];
-        slot[MainListEnum.slotIndex] = extra[TaskIndex.ID];
+        slot.value = extra.value;
+        slot.payloadType = PayloadType.Undefined;
+        slot[TaskIndex.FuntionID] = extra[TaskIndex.FuntionID];
+        slot[TaskIndex.ID] = extra[TaskIndex.ID];
         enqueueSlot(slot);
         extra = lock.resolved.shift?.() as Task | undefined;
       }
@@ -229,7 +231,7 @@ export const createWorkerRxQueue = (
     write: () => {
       if (errorFrames.size > 0) {
         const slot = errorFrames.shift()!;
-        slotIndex[0] = slot[MainListEnum.slotIndex];
+        slotIndex[0] = slot[TaskIndex.ID];
         returnError(slot);
         op[0] = OP.ErrorThrown;
         isThereAnythingToResolve--;
@@ -238,7 +240,7 @@ export const createWorkerRxQueue = (
 
       if (optimizedFrames.size > 0) {
         const slot = optimizedFrames.shift()!;
-        slotIndex[0] = slot[MainListEnum.slotIndex];
+        slotIndex[0] = slot[TaskIndex.ID];
         writeFrame(slot);
         op[0] = OP.WorkerWaiting;
         isThereAnythingToResolve--;
@@ -248,7 +250,7 @@ export const createWorkerRxQueue = (
 
       if (completedFrames.size > 0) {
         const slot = completedFrames.shift()!;
-        slotIndex[0] = slot[MainListEnum.slotIndex];
+        slotIndex[0] = slot[TaskIndex.ID];
         writeFrame(slot);
         op[0] = OP.WorkerWaiting;
         isThereAnythingToResolve--;
@@ -262,16 +264,16 @@ export const createWorkerRxQueue = (
       const slot = toWork.shift();
 
       if (slot !== undefined) {
-        await jobs[slot[MainListEnum.FunctionID]](
-          slot[MainListEnum.RawArguments],
+        await jobs[slot[TaskIndex.FuntionID]](
+          slot.value,
         )
           .then((res: unknown) => {
-            slot[MainListEnum.WorkerResponse] = res;
+            slot.value = res;
             hasAnythingFinished++;
             completedFrames.push(slot);
           })
           .catch((err: unknown) => {
-            slot[MainListEnum.WorkerResponse] = err;
+            slot.value = err;
             hasAnythingFinished++;
             errorFrames.push(slot);
           });
@@ -281,12 +283,12 @@ export const createWorkerRxQueue = (
       const slot = toWork.shift()!;
 
       try {
-        slot[MainListEnum.WorkerResponse] = await jobs
-          [slot[MainListEnum.FunctionID]](slot[MainListEnum.RawArguments]);
+        slot.value = await jobs
+          [slot[TaskIndex.FuntionID]](slot.value);
         hasAnythingFinished++;
         completedFrames.push(slot);
       } catch (err) {
-        slot[MainListEnum.WorkerResponse] = err;
+        slot.value = err;
         hasAnythingFinished++;
         errorFrames.push(slot);
       }

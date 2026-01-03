@@ -29,30 +29,8 @@ export enum PayloadType {
   NumericBufferParsed = 22,
 }
 
-export enum MainListEnum {
-  slotIndex = 0,
-  RawArguments = 1,
-  FunctionID = 2,
-  WorkerResponse = 3,
-  OnResolve = 4,
-  OnReject = 5,
-  PayloadType = 6,
-}
-
 export type Accepted = (value: unknown) => void;
 export type Rejected = (reason: unknown) => void;
-
-export type MainList = [
-  number,
-  unknown,
-  number,
-  unknown,
-  Accepted,
-  Rejected,
-  PayloadType,
-];
-
-export type QueueListWorker = MainList;
 
 export type PromiseEntry = {
   promise: Promise<unknown>;
@@ -206,3 +184,12 @@ export type CreatePool = {
   source?: string;
   transport?: "codec" | "lock2";
 };
+
+export type { Task } from "./memory/lock.ts";
+export {
+  LockBound,
+  PayloadBuffer,
+  PayloadSingal,
+  TaskIndex,
+} from "./memory/lock.ts";
+export type { RegisterMalloc } from "./memory/regionRegistry.ts";
