@@ -5,6 +5,7 @@ import {
   OP,
   workerSignal,
 } from "../ipc/transport/shared-memory.ts";
+import { lock2 } from "../memory/lock.ts";
 import type { DebugOptions, WorkerData } from "../types.ts";
 import { getFunctions } from "./get-functions.ts";
 import { pauseGeneric, sleepUntilChanged } from "./timers.ts";
@@ -18,8 +19,16 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     sab , 
     thread , 
     startAt , 
-    workerOptions
+    workerOptions,
+    lock
   } = workerData as WorkerData;
+
+  if (!sab) {
+    throw new Error("worker missing transport SAB");
+  }
+  if (!lock?.headers || !lock?.lockSector || !lock?.payload) {
+    throw new Error("worker missing lock SABs");
+  }
 
   const signals = createSharedMemoryTransport({
     sabObject: {
@@ -31,6 +40,14 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     startTime: startAt,
   });
 
+  const lockState = lock
+    ? lock2({
+      headers: lock.headers,
+      LockBoundSector: lock.lockSector,
+      payload: lock.payload,
+    })
+    : null;
+  void lockState;
 
 
   const timeToAwait = Math.max(1, workerData.totalNumberOfThread) * 50;

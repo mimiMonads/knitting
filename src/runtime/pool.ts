@@ -9,9 +9,11 @@ import {
   type Sab,
 } from "../ipc/transport/shared-memory.ts";
 import { ChannelHandler, hostDispatcherLoop } from "./dispatcher.ts";
+import { lock2, LockBound, TaskIndex } from "../memory/lock.ts";
 import type {
   ComposedWithKey,
   DebugOptions,
+  LockBuffers,
   PromiseMap,
   WorkerCall,
   WorkerContext,
@@ -58,6 +60,27 @@ export const spawnWorkerContext = ({
     console.log(tsFileUrl);
     jsrIsGreatAndWorkWithoutBugs();
   }
+
+  // Lock buffers must be shared between host and worker.
+  const lockBuffers: LockBuffers = {
+    lockSector: new SharedArrayBuffer(
+      LockBound.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2,
+    ),
+    headers: new SharedArrayBuffer(
+      LockBound.padding +
+        (LockBound.slots * TaskIndex.TotalBuff) * LockBound.slots,
+    ),
+    payload: new SharedArrayBuffer(
+      64 * 1024 * 1024,
+      { maxByteLength: 64 * 1024 * 1024 },
+    ),
+  };
+
+  const lock = lock2({
+    headers: lockBuffers.headers,
+    LockBoundSector: lockBuffers.lockSector,
+    payload: lockBuffers.payload,
+  });
 
   const signals = createSharedMemoryTransport({
     sabObject: sab,
@@ -129,6 +152,7 @@ export const spawnWorkerContext = ({
         totalNumberOfThread,
         secondSab: secondChannelSignals.sab,
         startAt: signalBox.startAt,
+        lock: lockBuffers,
       } as WorkerData,
     },
   ) as Worker;
@@ -175,7 +199,7 @@ export const spawnWorkerContext = ({
         : enqueued(args);
   };
 
-  const context: WorkerContext = {
+  const context: WorkerContext & { lock: ReturnType<typeof lock2> } = {
     txIdle,
     send,
     call,
@@ -183,6 +207,7 @@ export const spawnWorkerContext = ({
     kills: () => (
       rejectAll("Thread closed"), channelHandler.close(), worker.terminate()
     ),
+    lock,
   };
 
   return context;

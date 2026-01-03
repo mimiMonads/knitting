@@ -89,6 +89,13 @@ export type WorkerData = {
   startAt: number;
   workerOptions?: WorkerSettings;
   at: number[];
+  lock?: LockBuffers;
+};
+
+export type LockBuffers = {
+  headers: SharedArrayBuffer;
+  lockSector: SharedArrayBuffer;
+  payload: SharedArrayBuffer;
 };
 
 // ──────────────────────────────────────────────────────────────────────────────

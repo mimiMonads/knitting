@@ -41,7 +41,8 @@ const getCallerFilePathForBun = (offset: number) => {
 const linkingMap = new Map<string, number>();
 
 export const getCallerFilePath = () => {
-  const stackOffset = IS_BUN ? 2 : 3;
+  
+  const stackOffset = IS_BUN ? 3 : 2;
   const href = getCallerFilePathForBun(stackOffset);
 
   let at = 0
