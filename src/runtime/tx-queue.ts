@@ -19,6 +19,7 @@ import {
   PayloadType,
   MainListEnum,
 } from "../types.ts";
+import { makeTask, TaskIndex } from "../memory/lock.ts";
 
 type RawArguments = unknown;
 type WorkerResponse = unknown;
@@ -43,6 +44,8 @@ interface MultipleQueueSingle {
   listOfFunctions: ComposedWithKey[];
   signals: SignalArguments;
   secondChannel: SignalArguments;
+  lock?: ReturnType<typeof import("../memory/lock.ts").lock2>;
+  useLock?: boolean;
 }
 
 export function createHostTxQueue({
@@ -50,6 +53,8 @@ export function createHostTxQueue({
   max,
   signals,
   secondChannel,
+  lock,
+  useLock,
 }: MultipleQueueSingle) {
   const PLACE_HOLDER = (_: void) => {
     throw ("UNREACHABLE FROM PLACE HOLDER (main)");
@@ -115,6 +120,14 @@ export function createHostTxQueue({
   // Helpers
   const hasPendingFrames = () => toBeSentCount > 0;
   const txIdle = () => toBeSentCount === 0 && inUsed === 0;
+
+  const toLockTask = (slot: MainList) => {
+    const task = makeTask();
+    task[TaskIndex.FuntionID] = slot[MainListEnum.FunctionID];
+    task[TaskIndex.ID] = slot[MainListEnum.slotIndex];
+    task.value = slot[MainListEnum.RawArguments];
+    return task;
+  };
   const addDeferred = () => {
     const deferred = Promise.withResolvers<
       WorkerResponse
@@ -182,7 +195,41 @@ export function createHostTxQueue({
     };
   };
 
-  const flushToFirst = flushToChannel(signalBox.frameFlags, signals, false);
+  const flushToLockChannel = (
+    frameFlags: MainSignal["frameFlags"],
+    thisChannel: SignalArguments,
+    checkChange: boolean,
+  ) => {
+    const { op } = thisChannel;
+
+    return () => {
+      if (!lock) return false;
+      if (checkChange === true) {
+        if (toBeSent.size === 0 || op[0] !== OP.WaitingForMore) return false;
+      }
+
+      const slot = toBeSent.shift();
+      if (!slot) return false;
+
+      const task = toLockTask(slot);
+      if (!lock.encode(task)) {
+        toBeSent.unshift(slot);
+        return false;
+      }
+
+      toBeSentCount > 0
+        ? (frameFlags[0] = frameFlagsFlag.Last)
+        : (frameFlags[0] = frameFlagsFlag.NotLast);
+
+      op[0] = OP.MainSendLock;
+      toBeSentCount--;
+      return true;
+    };
+  };
+
+  const flushToFirst = useLock === true
+    ? flushToLockChannel(signalBox.frameFlags, signals, false)
+    : flushToChannel(signalBox.frameFlags, signals, false);
 
   return {
     // optimizeQueue: () => {
@@ -203,6 +250,23 @@ export function createHostTxQueue({
       );
     },
     postImmediate: (functionID: FunctionID) => (rawArgs: RawArguments) => {
+      if (useLock === true) {
+        if (!lock) {
+          throw new Error("lock queue missing");
+        }
+        const task = makeTask();
+        task[TaskIndex.FuntionID] = functionID;
+        task[TaskIndex.ID] = slotZero[MainListEnum.slotIndex];
+        task.value = rawArgs;
+
+        if (!lock.encode(task)) {
+          throw new Error("lock queue full");
+        }
+
+        op[0] = OP.HighPriorityResolveLock;
+        return addDeferred();
+      }
+
       slotZero[MainListEnum.RawArguments] = rawArgs;
       rpcId[0] = functionID;
       write(slotZero);

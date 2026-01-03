@@ -1,8 +1,10 @@
 import {
   OP,
+  frameFlagsFlag,
   type SignalArguments,
   type WorkerSignal,
 } from "../ipc/transport/shared-memory.ts";
+import { TaskIndex, type Task } from "../memory/lock.ts";
 import type {
   ComposedWithKey,
   QueueListWorker,
@@ -26,6 +28,7 @@ type ArgumentsForCreateWorkerQueue = {
   signal: WorkerSignal;
   signals: SignalArguments;
   workerOptions?: WorkerSettings;
+  lock?: ReturnType<typeof import("../memory/lock.ts").lock2>;
 };
 
 export type CreateWorkerRxQueue = ReturnType<typeof createWorkerRxQueue>;
@@ -40,6 +43,7 @@ export const createWorkerRxQueue = (
       slotIndex,
     },
     workerOptions,
+    lock,
   }: ArgumentsForCreateWorkerQueue,
 ) => {
   const PLACE_HOLDER = () => {
@@ -92,6 +96,12 @@ export const createWorkerRxQueue = (
   const errorFrames = new LinkList<QueueListWorker>();
   const optimizedFrames = new LinkList<QueueListWorker>();
 
+  const enqueueSlot = (slot: QueueListWorker) => {
+    toWork.push(slot);
+    isThereAnythingToResolve++;
+    return true;
+  };
+
   const hasCompleted = workerOptions?.resolveAfterFinishingAll === true
     ? () => hasAnythingFinished !== 0 && toWork.size === 0
     : () => hasAnythingFinished !== 0;
@@ -119,14 +129,34 @@ export const createWorkerRxQueue = (
       slot[MainListEnum.RawArguments] = args;
       slot[MainListEnum.FunctionID] = fnNumber;
       slot[MainListEnum.slotIndex] = currentIndex;
-      toWork.push(slot);
-      isThereAnythingToResolve++;
-
-      return true;
+      return enqueueSlot(slot);
     };
   };
 
   const firstFrame = channelEnqueued(signals, signals);
+  const enqueueLock = () => {
+    if (!lock) return false;
+    if (!lock.decode()) {
+      op[0] = OP.MainReadyToRead;
+      return false;
+    }
+
+    let task = lock.resolved.shift?.() as Task | undefined;
+    while (task) {
+      const slot = newSlot();
+      slot[MainListEnum.RawArguments] = task.value;
+      slot[MainListEnum.FunctionID] = task[TaskIndex.FuntionID];
+      slot[MainListEnum.slotIndex] = task[TaskIndex.ID];
+      enqueueSlot(slot);
+      task = lock.resolved.shift?.() as Task | undefined;
+    }
+
+    op[0] = signals.frameFlags[0] === frameFlagsFlag.Last
+      ? OP.WaitingForMore
+      : OP.MainReadyToRead;
+
+    return true;
+  };
 
   return {
     // Check if any task is solved and ready for writing.
@@ -147,6 +177,45 @@ export const createWorkerRxQueue = (
         op[0] = OP.ErrorThrown;
       }
     },
+    blockingResolveLock: async () => {
+      if (!lock) return;
+      if (!lock.decode()) {
+        op[0] = OP.MainReadyToRead;
+        return;
+      }
+
+      const task = lock.resolved.shift?.() as Task | undefined;
+      if (!task) {
+        op[0] = OP.MainReadyToRead;
+        return;
+      }
+
+      blockingSlot[MainListEnum.FunctionID] = task[TaskIndex.FuntionID];
+      blockingSlot[MainListEnum.RawArguments] = task.value;
+
+      try {
+        blockingSlot[MainListEnum.WorkerResponse] = await jobs
+          [blockingSlot[MainListEnum.FunctionID]](
+            blockingSlot[MainListEnum.RawArguments],
+          );
+        writeFrame(blockingSlot);
+        op[0] = OP.FastResolve;
+      } catch (err) {
+        blockingSlot[MainListEnum.WorkerResponse] = err;
+        returnError(blockingSlot);
+        op[0] = OP.ErrorThrown;
+      }
+
+      let extra = lock.resolved.shift?.() as Task | undefined;
+      while (extra) {
+        const slot = newSlot();
+        slot[MainListEnum.RawArguments] = extra.value;
+        slot[MainListEnum.FunctionID] = extra[TaskIndex.FuntionID];
+        slot[MainListEnum.slotIndex] = extra[TaskIndex.ID];
+        enqueueSlot(slot);
+        extra = lock.resolved.shift?.() as Task | undefined;
+      }
+    },
 
     preResolve: () => {
       const slot = completedFrames.shift();
@@ -155,6 +224,7 @@ export const createWorkerRxQueue = (
 
     //enqueue a task to the queue.
     enqueue: firstFrame,
+    enqueueLock,
 
     write: () => {
       if (errorFrames.size > 0) {

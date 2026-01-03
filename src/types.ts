@@ -204,4 +204,5 @@ export type CreatePool = {
   worker?: WorkerSettings;
   debug?: DebugOptions;
   source?: string;
+  transport?: "codec" | "lock2";
 };

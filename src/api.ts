@@ -90,6 +90,7 @@ export const createPool = ({
   balancer,
   source,
   worker,
+  transport,
 }: CreatePool) =>
 <T extends tasks>(tasks: T): Pool<T> => {
   /**
@@ -140,6 +141,7 @@ export const createPool = ({
       .sort((a, b) => a.name.localeCompare(b.name)) as ComposedWithKey[];
 
   const perf = debug ? performance.now() : undefined;
+  const useLock = transport === "lock2";
 
   const usingInliner = typeof inliner === "object" && inliner != null;
   const totalNumberOfThread = (threads ?? 1) +
@@ -160,6 +162,7 @@ export const createPool = ({
       totalNumberOfThread,
       source,
       workerOptions: worker,
+      useLock,
     })
   );
 
@@ -242,3 +245,6 @@ export const createPool = ({
     send: () => runnable.forEach((fn) => fn()),
   } as Pool<T>;
 };
+
+export const createPoolLock = (options: Omit<CreatePool, "transport">) =>
+  createPool({ ...options, transport: "lock2" });

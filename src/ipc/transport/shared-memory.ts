@@ -17,11 +17,13 @@ enum SignalEnumOptions {
 export enum HostOP {
   Created = 0,
   HighPriorityResolve = 4,
+  HighPriorityResolveLock = 13,
   WakeUp = 5,
   NAN = 7,
   MainReadyToRead = 8,
   MainSend = 10,
   MainStop = 11,
+  MainSendLock = 12,
 }
 
 export enum WorkerOP {
@@ -38,6 +40,7 @@ export enum OP {
   AllTasksDone = WorkerOP.AllTasksDone,
   WaitingForMore = WorkerOP.WaitingForMore,
   HighPriorityResolve = HostOP.HighPriorityResolve,
+  HighPriorityResolveLock = HostOP.HighPriorityResolveLock,
   WakeUp = HostOP.WakeUp,
   ErrorThrown = WorkerOP.ErrorThrown,
   NAN = HostOP.NAN,
@@ -45,6 +48,7 @@ export enum OP {
   FastResolve = WorkerOP.FastResolve,
   MainSend = HostOP.MainSend,
   MainStop = HostOP.MainStop,
+  MainSendLock = HostOP.MainSendLock,
 }
 
 export const OP_TAG: Record<OP, string> = {
@@ -53,6 +57,7 @@ export const OP_TAG: Record<OP, string> = {
   [OP.AllTasksDone]: "DONE  ",
   [OP.WaitingForMore]: "WMORE ",
   [OP.HighPriorityResolve]: "HIPRIO",
+  [OP.HighPriorityResolveLock]: "HILCK",
   [OP.WakeUp]: "WAKEUP",
   [OP.ErrorThrown]: "ERROR ",
   [OP.NAN]: "NAN   ",
@@ -60,6 +65,7 @@ export const OP_TAG: Record<OP, string> = {
   [OP.FastResolve]: "FRESOL",
   [OP.MainSend]: "MSEND ",
   [OP.MainStop]: "MSTOP ",
+  [OP.MainSendLock]: "MSNDL",
 };
 
 // ───────────────────────────────────────────────

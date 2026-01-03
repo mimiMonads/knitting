@@ -47,7 +47,6 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
       payload: lock.payload,
     })
     : null;
-  void lockState;
 
 
   const timeToAwait = Math.max(1, workerData.totalNumberOfThread) * 50;
@@ -87,6 +86,7 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
 
   const {
     enqueue,
+    enqueueLock,
     serviceOne,
     hasCompleted,
     write,
@@ -94,6 +94,7 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     serviceOneImmediate,
     hasPending,
     blockingResolve,
+    blockingResolveLock,
     preResolve,
     hasFramesToOptimize,
   } = createWorkerRxQueue({
@@ -102,6 +103,7 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     signals,
     moreThanOneThread,
     workerOptions,
+    lock: lockState ?? undefined,
   });
 
   rxStatus[0] = 0;
@@ -117,6 +119,10 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
       }
       case OP.HighPriorityResolve: {
         await blockingResolve();
+        continue;
+      }
+      case OP.HighPriorityResolveLock: {
+        await blockingResolveLock();
         continue;
       }
 
@@ -153,6 +159,12 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
       case OP.MainSend:
         {
           enqueue();
+        }
+
+        continue;
+      case OP.MainSendLock:
+        {
+          enqueueLock();
         }
 
         continue;

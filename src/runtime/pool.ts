@@ -39,6 +39,7 @@ export const spawnWorkerContext = ({
   source,
   at,
   workerOptions,
+  useLock,
 }: {
   promisesMap: PromiseMap;
   list: string[];
@@ -53,6 +54,7 @@ export const spawnWorkerContext = ({
 
   source?: string;
   workerOptions?: WorkerSettings;
+  useLock?: boolean;
 }) => {
   const tsFileUrl = new URL(import.meta.url);
 
@@ -102,6 +104,8 @@ export const spawnWorkerContext = ({
     promisesMap,
     listOfFunctions,
     signals,
+    lock,
+    useLock,
   });
 
   const {
