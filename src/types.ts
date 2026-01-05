@@ -67,7 +67,8 @@ export type WorkerData = {
   startAt: number;
   workerOptions?: WorkerSettings;
   at: number[];
-  lock?: LockBuffers;
+  lock: LockBuffers;
+  returnLock: LockBuffers;
 };
 
 export type LockBuffers = {

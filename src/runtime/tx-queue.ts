@@ -16,7 +16,7 @@ import {
   type PromiseMap,
   PayloadType,
 } from "../types.ts";
-import { makeTask, TaskIndex, type Task } from "../memory/lock.ts";
+import { makeTask, TaskIndex, type Task , type Lock2 } from "../memory/lock.ts";
 
 type RawArguments = unknown;
 type WorkerResponse = unknown;
@@ -34,7 +34,7 @@ interface MultipleQueueSingle {
   listOfFunctions: ComposedWithKey[];
   signals: SignalArguments;
   secondChannel: SignalArguments;
-  lock?: ReturnType<typeof import("../memory/lock.ts").lock2>;
+  lock: Lock2;
   useLock?: boolean;
 }
 
@@ -176,7 +176,7 @@ export function createHostTxQueue({
     const { op } = thisChannel;
 
     return () => {
-      if (!lock) return false;
+   
       if (checkChange === true) {
         if (toBeSent.size === 0 || op[0] !== OP.WaitingForMore) return false;
       }
@@ -184,7 +184,7 @@ export function createHostTxQueue({
       const slot = toBeSent.shift();
       if (!slot) return false;
 
-      if (!lock.encode(slot)) {
+      if (lock.encode(slot)) {
         toBeSent.unshift(slot);
         return false;
       }
@@ -204,14 +204,7 @@ export function createHostTxQueue({
     : flushToChannel(signalBox.frameFlags, signals, false);
 
   return {
-    // optimizeQueue: () => {
-    //   let i = 0;
 
-    //   while (rxStatus[0] === 1 && toBeSent.size > i) {
-    //     simplifies(queue[toBeSent[i]]);
-    //     i++;
-    //   }
-    // },
 
     rejectAll,
     hasPendingFrames,
@@ -221,17 +214,11 @@ export function createHostTxQueue({
     },
     postImmediate: (functionID: FunctionID) => (rawArgs: RawArguments) => {
       if (useLock === true) {
-        // if (!lock) {
-        //   throw new Error("lock queue missing");
-        // }
+   
         slotZero[TaskIndex.FuntionID] = functionID;
         slotZero[TaskIndex.ID] = 0;
         slotZero.value = rawArgs;
         slotZero.payloadType = PayloadType.Undefined;
-
-        // if (!lock.encode(slotZero)) {
-        //   throw new Error("lock queue full");
-        // }
 
         op[0] = OP.HighPriorityResolveLock;
         return addDeferred();
@@ -275,10 +262,16 @@ export function createHostTxQueue({
       slot.resolve = deferred.resolve;
       slot.reject = deferred.reject;
 
+      if(lock.hasSpace()){
+        lock.encode(slot)
+      }else{
+          toBeSent.push(slot);
+          toBeSentCount++;
+      }
+
       //preRresolve(slot)
       // Change states:
-      toBeSent.push(slot);
-      toBeSentCount++;
+
       inUsed++;
 
       return deferred.promise;

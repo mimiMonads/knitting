@@ -38,6 +38,8 @@ export type Task = [
   number,
   number,
   number, 
+  number,
+  number,
 ] & {
   value: unknown;
   resolve: (value?: unknown) => void;
@@ -53,8 +55,13 @@ export enum TaskIndex {
   End = 4,
   PayloadLen = 5,
   slotBuffer = 6,
+  Flags = 7,
   Size = 8,
   TotalBuff = 32
+}
+
+export enum TaskFlag {
+  Reject = 1 << 0,
 }
 
 
@@ -79,6 +86,11 @@ export const makeTask = () => {
   return task;
 };
 
+const fillTaskFrom = (task: Task, array: ArrayLike<number>, at: number) => {
+  for (let i = 0; i < TaskIndex.Size; i++) {
+    task[i] = array[at + i];
+  }
+};
 
 const makeTaskFrom = (array: ArrayLike<number>, at: number) => {
 
@@ -90,9 +102,7 @@ const makeTaskFrom = (array: ArrayLike<number>, at: number) => {
   } as unknown as Task
 
 
-  for (let i = 0; i < TaskIndex.Size; i++) {
-    task[i] = array[at + i]
-  }
+  fillTaskFrom(task, array, at);
 
   task.value = null;
   task.resolve = def;
@@ -109,6 +119,9 @@ const makeTaskFrom = (array: ArrayLike<number>, at: number) => {
  *  - Shared buffers must be the same between host/worker.
  *  - encode/decode are not re-entrant; payload codec uses a shared scratch buffer.
  */
+
+export type Lock2 = ReturnType<typeof lock2>
+
 export const lock2 = ({
   headers,
   LockBoundSector,
@@ -251,6 +264,8 @@ const slotOffset = (at: number) =>
     return true;
   };
 
+  const hasSpace = () => (hostBits[0] ^ LastWorker[0]) !== 0
+  
   /**
    * WORKER SIDE: decode
    */
@@ -296,6 +311,7 @@ const slotOffset = (at: number) =>
     encode,
     encodeAll,
     decode,
+    hasSpace,
     resolved,
     hostBits,
     workerBits,

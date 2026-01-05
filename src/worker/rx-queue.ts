@@ -27,7 +27,7 @@ type ArgumentsForCreateWorkerQueue = {
   signal: WorkerSignal;
   signals: SignalArguments;
   workerOptions?: WorkerSettings;
-  lock?: ReturnType<typeof import("../memory/lock.ts").lock2>;
+  lock: ReturnType<typeof import("../memory/lock.ts").lock2>;
 };
 
 export type CreateWorkerRxQueue = ReturnType<typeof createWorkerRxQueue>;
@@ -49,6 +49,7 @@ export const createWorkerRxQueue = (
     throw ("UNREACHABLE FROM PLACE HOLDER (thread)");
   };
 
+  const { recyclecList } = lock
   let isThereAnythingToResolve = 0;
   let hasAnythingFinished = 0;
 
@@ -236,6 +237,7 @@ export const createWorkerRxQueue = (
         op[0] = OP.ErrorThrown;
         isThereAnythingToResolve--;
         hasAnythingFinished--;
+
       }
 
       if (optimizedFrames.size > 0) {
@@ -245,6 +247,7 @@ export const createWorkerRxQueue = (
         op[0] = OP.WorkerWaiting;
         isThereAnythingToResolve--;
         hasAnythingFinished--;
+
         return;
       }
 
@@ -255,6 +258,7 @@ export const createWorkerRxQueue = (
         op[0] = OP.WorkerWaiting;
         isThereAnythingToResolve--;
         hasAnythingFinished--;
+    
 
         return;
       }

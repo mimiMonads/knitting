@@ -20,7 +20,8 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     thread , 
     startAt , 
     workerOptions,
-    lock
+    lock,
+    returnLock,
   } = workerData as WorkerData;
 
   if (!sab) {
@@ -28,6 +29,9 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
   }
   if (!lock?.headers || !lock?.lockSector || !lock?.payload) {
     throw new Error("worker missing lock SABs");
+  }
+  if (!returnLock?.headers || !returnLock?.lockSector || !returnLock?.payload) {
+    throw new Error("worker missing return lock SABs");
   }
 
   const signals = createSharedMemoryTransport({
@@ -40,13 +44,13 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     startTime: startAt,
   });
 
-  const lockState = lock
-    ? lock2({
+  const lockState = 
+    lock2({
       headers: lock.headers,
       LockBoundSector: lock.lockSector,
       payload: lock.payload,
     })
-    : null;
+    
 
 
   const timeToAwait = Math.max(1, workerData.totalNumberOfThread) * 50;
@@ -103,7 +107,7 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     signals,
     moreThanOneThread,
     workerOptions,
-    lock: lockState ?? undefined,
+    lock: lockState,
   });
 
   rxStatus[0] = 0;

@@ -152,22 +152,11 @@ export const register = ({
       storeAtomics(bit)
     );
 
-    if(tableLength === 0) {
-      // (load <<< 6) + 0
-      startAndIndex[0] = slotIndex
-      size64bit[slotIndex] = payloadAlignedBytes64
-      task[TaskIndex.Start] = 0
-      tableLength++
-      
-       usedBits |= freeBit
-       return storeSlot(freeBit)
-    }
-
-    
     {
      const size = payloadAlignedBytes64 | 0
-     const firstStart = startAndIndex[0] & ~31
-     const startAtBeginning = firstStart >= size
+     const hasEntries = tableLength > 0
+     const firstStart = hasEntries ? (startAndIndex[0] & ~31) : 0
+     const startAtBeginning = !hasEntries || firstStart >= size
 
      if (startAtBeginning) {
       for (let current = tableLength; current > 0 ; current--){

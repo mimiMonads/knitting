@@ -49,7 +49,7 @@ if (isMain) {
     },
   });
 
-  const times = 1000;
+  const times = 100;
   const string = "helloWorld";
   const bigString = "helloWorld".repeat(times);
   const num = 77777;
