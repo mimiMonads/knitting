@@ -1,13 +1,13 @@
 import { bench, group, run as mitataRun } from "mitata";
-import { createThreadPool, fixedPoint, isMain } from "../knitting.ts";
-import { terminateAllWorkers, toResolve } from "./postmessage/single.ts";
+import { createPool, isMain, task } from "../knitting.ts";
+import { shutdownWorkers, toResolve } from "./postmessage/single.ts";
 import { format, print } from "./ulti/json-parse.ts";
 
-export const inLine = fixedPoint({
+export const inLine = task({
   f: async (_: void) => {},
 });
 
-const { terminateAll, callFunction, fastCallFunction, send } = createThreadPool(
+const { shutdown, call, fastCall, send } = createPool(
   {},
 )({ inLine });
 
@@ -29,15 +29,15 @@ if (isMain) {
     }
   });
 
-  // ───────────────────────── knitting (callFunction) ────────────────────
+  // ───────────────────────── knitting (call) ────────────────────
   group("knitting", () => {
     bench("1 thread → 1", async () => {
-      await fastCallFunction.inLine();
+      await fastCall.inLine();
     }).baseline(true);
 
     for (const n of sizes) {
       bench(`1 thread → (${n})`, async () => {
-        const arr = Array.from({ length: n }, () => callFunction.inLine());
+        const arr = Array.from({ length: n }, () => call.inLine());
         send();
         await Promise.all(arr);
       });
@@ -48,6 +48,6 @@ if (isMain) {
     format,
     print,
   });
-  await terminateAllWorkers();
-  await terminateAll();
+  await shutdownWorkers();
+  await shutdown();
 }

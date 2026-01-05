@@ -3,8 +3,8 @@ import {
   OP,
   type SignalArguments,
 } from "../transport/shared-memory.ts";
-import type { MainList } from "../../runtime/tx-queue.ts";
-import { MainListEnum } from "../../runtime/tx-queue.ts";
+import { PayloadType } from "../../types.ts";
+import type { Task } from "../../memory/lock.ts";
 
 import { NumericBuffer } from "./parsers/NumericBuffer.ts";
 
@@ -13,31 +13,7 @@ import { deserialize, serialize } from "node:v8";
 const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
 const MIN_SAFE_INTEGER = Number.MIN_SAFE_INTEGER;
 
-export enum PayloadType {
-  UNREACHABLE = 0,
-  String = 1,
-  BigUint = 2,
-  BigInt = 3,
-  True = 4,
-  False = 5,
-  Undefined = 6,
-  NaN = 7,
-  Infinity = 8,
-  NegativeInfinity = 9,
-  Float64 = 10,
-  Uint32 = 11,
-  Int32 = 12,
-  Uint64 = 13,
-  Int64 = 14,
-  Null = 15,
-  Json = 16,
-  Uint8Array = 17,
-  Serializable = 18,
-  StringToJson = 19,
-  SerializabledAndReady = 20,
-  NumericBuffer = 21,
-  NumericBufferParsed = 22,
-}
+type PayloadTask = Task & { payloadType?: PayloadType };
 
 const fromReturnToMainError = ({
   type,
@@ -47,11 +23,11 @@ const fromReturnToMainError = ({
     new Error("The thrown object is not serializable"),
   );
 
-  return (task: MainList) => {
+  return (task: PayloadTask) => {
     let error: unknown;
 
     try {
-      error = serialize(task[MainListEnum.WorkerResponse]);
+      error = serialize(task.value);
     } catch (_) {
       error = serializedError;
     }
@@ -59,20 +35,13 @@ const fromReturnToMainError = ({
     writeBinary(error as unknown as Uint8Array);
 
     type[0] = PayloadType.Serializable;
+    task.payloadType = PayloadType.Serializable;
   };
 };
 
-type PossibleIndexes = MainListEnum.RawArguments | MainListEnum.WorkerResponse;
-
-const preencodeJsonString = (
-  { index }: {
-    index: PossibleIndexes;
-  },
-) => {
-  const at = index;
-
-  return (task: MainList) => {
-    const args = task[at];
+const preencodeJsonString = () => {
+  return (task: PayloadTask) => {
+    const args = task.value;
 
     if (typeof args === "object") {
       if (args === null) return task;
@@ -80,19 +49,19 @@ const preencodeJsonString = (
       switch (args.constructor) {
         case Array:
         case Object: {
-          task[at] = JSON.stringify(args);
-          task[MainListEnum.PayloadType] = PayloadType.StringToJson;
+          task.value = JSON.stringify(args);
+          task.payloadType = PayloadType.StringToJson;
           return task;
         }
         case Map:
         case Set: {
-          task[at] = serialize(args);
-          task[MainListEnum.PayloadType] = PayloadType.SerializabledAndReady;
+          task.value = serialize(args);
+          task.payloadType = PayloadType.SerializedAndReady;
           return task;
         }
         case NumericBuffer: {
-          task[at] = (args as NumericBuffer).toFloat64();
-          task[MainListEnum.PayloadType] = PayloadType.NumericBufferParsed;
+          task.value = (args as NumericBuffer).toFloat64();
+          task.payloadType = PayloadType.NumericBufferParsed;
           return task;
         }
       }
@@ -103,12 +72,10 @@ const preencodeJsonString = (
 
 /**
  * Where:
- *  1 -> Takes the arguments of a MainList
- *  3 -> Takes the return of a MainList
+ *  Uses Task.value for payloads.
  */
 const writeFramePayload = (
-  { index, jsonString }: {
-    index: PossibleIndexes;
+  { jsonString }: {
     jsonString?: boolean;
   },
 ) =>
@@ -125,32 +92,31 @@ const writeFramePayload = (
     writeUtf8,
   }: SignalArguments,
 ) => {
-  const at = index;
   const preProcessed = Boolean(jsonString);
 
   return (
-    task: MainList,
+    task: PayloadTask,
   ) => {
-    const args = task[at];
+    const args = task.value;
 
     // Warning: types are not clean after being resolved
     // you must ensure that this `writeFramePayload` is on
     // a different stack
     if (preProcessed === true) {
-      switch (task[MainListEnum.PayloadType]) {
+      switch (task.payloadType) {
         case PayloadType.StringToJson:
           writeUtf8(args as string);
-          task[MainListEnum.PayloadType] = PayloadType.Json;
+          task.payloadType = PayloadType.Json;
           type[0] = PayloadType.Json;
           return;
-        case PayloadType.SerializabledAndReady:
+        case PayloadType.SerializedAndReady:
           writeBinary(args as Uint8Array);
-          task[MainListEnum.PayloadType] = PayloadType.Serializable;
+          task.payloadType = PayloadType.Serializable;
           type[0] = PayloadType.Serializable;
           return;
         case PayloadType.NumericBufferParsed:
           write8Binary(args as Float64Array);
-          task[MainListEnum.PayloadType] = PayloadType.NumericBuffer;
+          task.payloadType = PayloadType.NumericBuffer;
           type[0] = PayloadType.NumericBuffer;
           return;
       }

@@ -62,7 +62,7 @@ func (p *ThreadPool) Wait() {
 	p.waitGroup.Wait()
 }
 
-// FastCall is like fastCallFunction: runs the prime finder directly.
+// FastCall is like fastCall: runs the prime finder directly.
 func FastCall(start, end int) []int {
 	return findPrimes(start, end)
 }

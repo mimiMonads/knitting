@@ -1,5 +1,4 @@
-import type { FixedPoints } from "../types.ts";
-import { type CallFunction } from "./pool.ts";
+import type { WorkerCall, tasks } from "../types.ts";
 import { MessageChannel } from "node:worker_threads";
 
 type TaskID = number;
@@ -33,13 +32,13 @@ type SlotMacro = [
 ];
 
 export const createInlineExecutor = ({
-  fixedPoints,
+  tasks,
   genTaskID,
 }: {
-  fixedPoints: FixedPoints;
+  tasks: tasks;
   genTaskID: () => number;
 }) => {
-  const funcs = Object.values(fixedPoints)
+  const funcs = Object.values(tasks)
     .sort((a, b) => a.id - b.id)
     .map((p) => p.f as (...args: any[]) => Promise<any>);
 
@@ -103,7 +102,7 @@ export const createInlineExecutor = ({
     if (working === 0) isInMacro = false;
   }
 
-  const callFunction = ({ fnNumber }: CallFunction) => (args: unknown) => {
+  const call = ({ fnNumber }: WorkerCall) => (args: unknown) => {
     const taskID = genTaskID();
     const deferred = Promise.withResolvers();
     promisesMap.set(taskID, deferred);
@@ -143,11 +142,11 @@ export const createInlineExecutor = ({
       promisesMap.clear();
       stateArr.fill(SlotStateMacro.Free);
     },
-    callFunction,
+    call,
     send,
     txIdle: () => working === 0,
-    fastCalling: (cf: CallFunction) => {
-      const fn = callFunction(cf);
+    fastCalling: (cf: WorkerCall) => {
+      const fn = call(cf);
       return (a: unknown) => {
         const p = fn(a);
         if (!isInMacro) send();

@@ -1,0 +1,304 @@
+import { assertEquals } from "jsr:@std/assert";
+import { register } from "../src/memory/regionRegistry.ts";
+import { LockBound, makeTask, TaskIndex } from "../src/memory/lock.ts";
+
+
+
+// AI Written needs review
+// const align64 = (n: number) => (n + 63) & ~63;
+
+const makeRegistry = () =>
+  register({
+    lockSector: new SharedArrayBuffer(
+      LockBound.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2,
+    ),
+  });
+
+const track64andIndex = (startAndIndex: number) => [ startAndIndex >>> 6 , startAndIndex & 31 ]
+const allocAndSync = (registry: ReturnType<typeof makeRegistry>, size: number) => {
+  const task = makeTask();
+  task[TaskIndex.PayloadLen] = size;
+  registry.allocTask(task);
+  Atomics.store(registry.workerBits, 0, registry.hostBits[0]);
+  return task;
+};
+const allocNoSync = (registry: ReturnType<typeof makeRegistry>, size: number) => {
+  const task = makeTask();
+  task[TaskIndex.PayloadLen] = size;
+  registry.allocTask(task);
+  return task;
+};
+const expectedStartAndIndex = (sizes: number[]) =>
+  [[0,0] , ...sizes.map( (_,i,a) => {
+
+    const  val = a.slice(0,i + 1).reduce((acc,c) => acc+ ((64 + c) >>> 6), 0)
+    return [val, ++i]
+  }).slice(0,-1)]
+
+
+
+Deno.test("check packing in startAndIndexToArray", () => {
+  const registry = makeRegistry();
+  const sizes = [634, 43 , 152 , 54];
+
+  const result = [[0,0] , ...sizes.map( (_,i,a) => {
+
+    // add them together and index [postion + padding , index]
+    const  val = a.slice(0,i + 1).reduce((acc,c) => acc+ ((64 + c) >>> 6), 0) 
+    return [val, ++i]
+  }).slice(0,-1)] 
+
+  for (const size of sizes) {
+    allocAndSync(registry, size);
+  }
+
+
+  assertEquals(
+    registry
+    .startAndIndexToArray(sizes.length)
+    .map(track64andIndex)
+    , result
+      );
+
+ 
+});
+
+Deno.test("updateTable delete front", () => {
+  const registry = makeRegistry();
+  const sizes = [634, 64 , 64 , 64, 64 , 64];
+  const toBeDeletedFront = 2
+
+  const result = [[0,0] , ...sizes.map( (_,i,a) => {
+
+    // add them together and index [postion + padding , index]
+    const  val = a.slice(0,i + 1).reduce((acc,c) => acc+ ((64 + c) >>> 6), 0) 
+    return [val, ++i]
+  }).slice(0,-1)] 
+
+  for (const size of sizes) {
+    allocAndSync(registry, size);
+  }
+
+  assertEquals(
+    registry
+    .startAndIndexToArray(sizes.length )
+    .map(track64andIndex),
+       result
+      );
+
+  registry.free(0)
+  registry.free(1)
+  registry.updateTable()
+  result.splice(0,toBeDeletedFront)
+
+  
+  assertEquals(
+    registry
+    .startAndIndexToArray(sizes.length - toBeDeletedFront)
+    .map(track64andIndex),
+       result
+      );
+});
+
+
+Deno.test("updateTable delete Back", () => {
+  const registry = makeRegistry();
+  const sizes = [64, 64 , 64 , 64, 64 , 64];
+  const toBeDeletedBack = 2
+
+  const result = [[0,0] , ...sizes.map( (_,i,a) => {
+
+    // add them together and index [postion + padding , index]
+    const  val = a.slice(0,i + 1).reduce((acc,c) => acc+ ((64 + c) >>> 6), 0) 
+    return [val, ++i]
+  }).slice(0,-1)] 
+
+  for (const size of sizes) {
+    allocAndSync(registry, size);
+  }
+
+  assertEquals(
+    registry
+    .startAndIndexToArray(sizes.length )
+    .map(track64andIndex),
+       result
+      );
+
+  registry.free(4)
+  registry.free(5)
+  registry.updateTable()
+  result.splice(-toBeDeletedBack)
+
+  
+  assertEquals(
+    registry
+    .startAndIndexToArray(sizes.length - toBeDeletedBack)
+    .map(track64andIndex),
+       result
+      );
+});
+
+
+Deno.test("updateTable delete middle", () => {
+  const registry = makeRegistry();
+  const sizes = [64, 64 , 64 , 64, 64 , 64];
+  const toBeDeletedBack = 2
+
+  const result = [[0,0] , ...sizes.map( (_,i,a) => {
+
+    // add them together and index [postion + padding , index]
+    const  val = a.slice(0,i + 1).reduce((acc,c) => acc+ ((64 + c) >>> 6), 0) 
+    return [val, ++i]
+  }).slice(0,-1)] 
+
+  for (const size of sizes) {
+    allocAndSync(registry, size);
+  }
+
+  assertEquals(
+    registry
+    .startAndIndexToArray(sizes.length )
+    .map(track64andIndex),
+       result
+      );
+
+  registry.free(1)
+  registry.free(2)
+  registry.updateTable()
+  result.splice(1,toBeDeletedBack)
+
+  
+  assertEquals(
+    registry
+    .startAndIndexToArray(sizes.length - toBeDeletedBack)
+    .map(track64andIndex),
+       result
+      );
+});
+
+Deno.test("check Start from Task", () => {
+  const registry = makeRegistry();
+  const sizes = [64, 453 , 64 , 64];
+  const values = []
+
+  const result = sizes.reduce( (acc,v) => (
+    // reduce and adding padding and  >>> 6
+    acc.push((acc[acc.length - 1] + v + 64) & ~63 ),
+    acc ), 
+  [0]).slice(0,-1)
+
+  for (const size of sizes) {
+    values.push(allocAndSync(registry, size)[TaskIndex.Start]);
+  }
+
+
+  assertEquals( values, result  );
+
+ 
+});
+
+Deno.test("packing boundary at payload size 63", () => {
+  const registry = makeRegistry();
+  const sizes = [63, 1];
+
+  for (const size of sizes) {
+    allocNoSync(registry, size);
+  }
+
+  assertEquals(
+    registry
+    .startAndIndexToArray(sizes.length)
+    .map(track64andIndex),
+     expectedStartAndIndex(sizes)
+      );
+});
+
+Deno.test("updateTable clears freed index >= 5", () => {
+  const registry = makeRegistry();
+  const sizes = Array.from({ length: 7 }, () => 64);
+
+  for (const size of sizes) {
+    allocNoSync(registry, size);
+  }
+
+  registry.free(5);
+  registry.updateTable();
+
+  const result = expectedStartAndIndex(sizes);
+  result.splice(5, 1);
+
+  assertEquals(
+    registry
+    .startAndIndexToArray(sizes.length - 1)
+    .map(track64andIndex),
+       result
+      );
+});
+
+Deno.test("allocTask reuses freed gap", () => {
+  const registry = makeRegistry();
+  const sizes = [64, 64, 64];
+  const tasks = sizes.map((size) => allocNoSync(registry, size));
+  const freedStart = tasks[1][TaskIndex.Start];
+
+  registry.free(1);
+  registry.updateTable();
+
+  const task = makeTask();
+  task[TaskIndex.PayloadLen] = 64;
+  registry.allocTask(task);
+
+  assertEquals(task[TaskIndex.Start], freedStart);
+});
+
+Deno.test("free does not allow reuse before updateTable", () => {
+  const registry = makeRegistry();
+  const sizes = [64, 64, 64];
+  const tasks = sizes.map((size) => allocNoSync(registry, size));
+  const lastStart = tasks[tasks.length - 1][TaskIndex.Start];
+
+  registry.free(1);
+
+  const task = makeTask();
+  task[TaskIndex.PayloadLen] = 64;
+  registry.allocTask(task);
+
+  assertEquals(task[TaskIndex.Start], lastStart + 128);
+});
+
+Deno.test("updateTable reuses freed slots in gaps and at start", () => {
+  const registry = makeRegistry();
+  const tasks = [64, 64, 64, 64].map((size) => allocNoSync(registry, size));
+
+  registry.free(0);
+  registry.free(2);
+  registry.updateTable();
+
+  const first = makeTask();
+  first[TaskIndex.PayloadLen] = 64;
+  registry.allocTask(first);
+
+  const second = makeTask();
+  second[TaskIndex.PayloadLen] = 64;
+  registry.allocTask(second);
+
+  assertEquals(first[TaskIndex.Start], 0);
+  assertEquals(second[TaskIndex.Start], tasks[1][TaskIndex.Start] + 128);
+});
+
+Deno.test("updateTable resets usedBits when all slots freed", () => {
+  const registry = makeRegistry();
+  allocNoSync(registry, 64);
+  allocNoSync(registry, 64);
+
+  registry.free(0);
+  registry.free(1);
+  registry.updateTable();
+
+  const task = makeTask();
+  task[TaskIndex.PayloadLen] = 64;
+  registry.allocTask(task);
+
+  assertEquals(task[TaskIndex.Start], 0);
+});
+

@@ -1,7 +1,8 @@
 import { getCallerFilePath } from "./common/others.ts";
 import { genTaskID } from "./common/others.ts";
+import { endpointSymbol } from "./common/task-symbol.ts";
 import { spawnWorkerContext } from "./runtime/pool.ts";
-import type { PromiseMap } from "./runtime/tx-queue.ts";
+import type { PromiseMap } from "./types.ts";
 import { isMainThread, workerData } from "node:worker_threads";
 
 import { managerMethod } from "./runtime/balancer.ts";
@@ -9,87 +10,64 @@ import { createInlineExecutor } from "./runtime/inline-executor.ts";
 import type {
   Args,
   ComposedWithKey,
-  CreateThreadPool,
-  FixedPoints,
+  CreatePool,
   FixPoint,
   FunctionMapType,
   Pool,
   ReturnFixed,
+  WorkerInvoke,
+  tasks,
 } from "./types.ts";
 
 export const isMain = isMainThread;
-export const endpointSymbol = Symbol.for("FIXEDPOINT");
+export { endpointSymbol };
 
-export const fixedPoint = <
+export const task = <
   A extends Args = void,
   B extends Args = void,
 >(
   I: FixPoint<A, B>,
 ): ReturnFixed<A, B> => {
-  const importedFrom = I?.href ?? new URL(getCallerFilePath()).href;
+  const [ href , at] = getCallerFilePath()
+
+  const importedFrom = I?.href ?? new URL(href).href;
 
   return ({
     ...I,
     id: genTaskID(),
     importedFrom,
+    at,
     [endpointSymbol]: true,
   }) as const;
 };
 
-export type GetFunctions = ReturnType<typeof getFunctions>;
 
-export const getFunctions = async ({ list, ids }: {
-  list: string[];
-  isWorker: boolean;
-  ids: number[];
-}) => {
-  const results = await Promise.all(
-    list
-      .map((string) => {
-        return "file://" + new URL(string).href;
-      })
-      .map(async (imports) => {
-        console.log(imports);
-        const module = await import(imports);
-        return Object.entries(module)
-          .filter(
-            ([_, value]) =>
-              value != null && typeof value === "object" &&
-              //@ts-ignore Reason -> trust me
-              value?.[endpointSymbol] === true,
-          )
-          .map(([name, value]) => ({
-            //@ts-ignore Reason -> trust me
-            ...value,
-            name,
-          })) as unknown as ComposedWithKey[];
-      }),
-  );
-
-  // Flatten the results, filter by IDs, and sort
-  const flattenedResults = results
-    .flat()
-    .filter((obj) => ids.includes(obj.id))
-    .sort((a, b) => a.name.localeCompare(b.name));
-
-  return flattenedResults as unknown as (ReturnFixed<Args, Args> & {
-    name: string;
-  })[];
-};
-
+/**
+ *  With this information we can recreate the logical order of
+ *  relevant exported functions from a file, also it helps to 
+ *  track a task before naming, ` export ` elements have to be decalere
+ *  at top level and without branching, we take avantage of this to 
+ *  correctlly map them. 
+ * 
+ */
 export const toListAndIds = (
-  args: FixedPoints,
+  args: tasks,
 ) => {
   const result = Object.values(args)
     .reduce(
       (acc, v) => (
-        acc[0].add(v.importedFrom), acc[1].add(v.id), acc
+        acc[0].add(v.importedFrom), 
+        acc[1].add(v.id), 
+        acc[2].add(v.at), 
+        acc
       ),
       [
         new Set<string>(),
         new Set<number>(),
+        new Set<number>()
       ] as [
         Set<string>,
+        Set<number>,
         Set<number>,
       ],
     );
@@ -97,21 +75,24 @@ export const toListAndIds = (
   return Object.fromEntries([
     ["list", [...result[0]]],
     ["ids", [...result[1]]],
+    ["at", [...result[2]]]
   ]) as {
     list: string[];
     ids: number[];
+    at: number[];
   };
 };
 
-export const createThreadPool = ({
+export const createPool = ({
   threads,
   debug,
   inliner,
   balancer,
   source,
   worker,
-}: CreateThreadPool) =>
-<T extends FixedPoints>(fixedPoints: T): Pool<T> => {
+  transport,
+}: CreatePool) =>
+<T extends tasks>(tasks: T): Pool<T> => {
   /**
    *  This functions is only available in the main thread.
    *  Also triggers when debug extra is enabled.
@@ -119,14 +100,14 @@ export const createThreadPool = ({
   if (isMainThread === false) {
     if ((debug?.extras === true)) {
       console.warn(
-        "createThreadPool has been called with : " + JSON.stringify(
+        "createPool has been called with : " + JSON.stringify(
           workerData,
         ),
       );
     }
     const uwuError = () => {
       throw new Error(
-        "createThreadPool can only be called in the main thread.",
+        "createPool can only be called in the main thread.",
       );
     };
 
@@ -144,22 +125,23 @@ export const createThreadPool = ({
 
     //@ts-ignore
     return ({
-      terminateAll: uwu,
-      callFunction: uwu,
-      fastCallFunction: uwu,
+      shutdown: uwu,
+      call: uwu,
+      fastCall: uwu,
       send: uwu,
     } as Pool<T>);
   }
 
   const promisesMap: PromiseMap = new Map(),
-    { list, ids } = toListAndIds(fixedPoints),
-    listOfFunctions = Object.entries(fixedPoints).map(([k, v]) => ({
+    { list, ids  , at } = toListAndIds(tasks),
+    listOfFunctions = Object.entries(tasks).map(([k, v]) => ({
       ...v,
       name: k,
     }))
       .sort((a, b) => a.name.localeCompare(b.name)) as ComposedWithKey[];
 
   const perf = debug ? performance.now() : undefined;
+  const useLock = transport === "lock2";
 
   const usingInliner = typeof inliner === "object" && inliner != null;
   const totalNumberOfThread = (threads ?? 1) +
@@ -172,6 +154,7 @@ export const createThreadPool = ({
       promisesMap,
       list,
       ids,
+      at,
       thread,
       debug,
       listOfFunctions,
@@ -179,12 +162,13 @@ export const createThreadPool = ({
       totalNumberOfThread,
       source,
       workerOptions: worker,
+      useLock,
     })
   );
 
   if (usingInliner) {
     const mainThread = createInlineExecutor({
-      fixedPoints,
+      tasks,
       genTaskID,
     });
 
@@ -202,93 +186,65 @@ export const createThreadPool = ({
     }
   }
 
-  const fastMap = workers
-    .map((worker) => {
-      return listOfFunctions
-        .map((list, index) => ({ ...list, index }))
-        .reduce((acc, v) => {
-          acc.set(
-            v.name,
-            worker.fastCalling({
-              fnNumber: v.index,
-            }),
-          );
-          return acc;
-        }, new Map<string, ReturnType<typeof worker.fastCalling>>());
-    })
-    .reduce((acc, map) => {
-      map.forEach((v, k) => {
-        const fun = acc.get(k);
-        fun ? acc.set(k, [...fun, v]) : acc.set(k, [v]);
-      });
-      return acc;
-    }, new Map<string, Function[]>());
+  const indexedFunctions = listOfFunctions.map((fn, index) => ({
+    name: fn.name,
+    index,
+  }));
 
-  const enqueueMap = workers
-    .map((worker) => {
-      return listOfFunctions
-        .map((list, index) => ({ ...list, index }))
-        .reduce((acc, v) => {
-          acc.set(
-            v.name,
-            worker.callFunction({
-              fnNumber: v.index,
-            }),
-          );
+  const fastHandlers = new Map<string, WorkerInvoke[]>();
+  const callHandlers = new Map<string, WorkerInvoke[]>();
 
-          return acc;
-        }, new Map<string, ReturnType<typeof worker.fastCalling>>());
-    })
-    .reduce((acc, map) => {
-      map.forEach((v, k) => {
-        const fun = acc.get(k);
-        fun ? acc.set(k, [...fun, v]) : acc.set(k, [v]);
-      });
-      return acc;
-    }, new Map<string, Function[]>());
+  for (const { name } of indexedFunctions) {
+    fastHandlers.set(name, []);
+    callHandlers.set(name, []);
+  }
 
-  const callFunction = new Map<string, (args: any) => Promise<any>>();
-  const fastCall = new Map<string, (args: any) => Promise<any>>();
-
-  const runnable = workers.reduce((acc, { send }) => {
-    acc.push(send);
-    return acc;
-  }, [] as (() => void)[]);
-
-  enqueueMap.forEach((v, k) => {
-    callFunction.set(
-      k,
-      (threads === 1 || threads === undefined) && !usingInliner
-        ? (v[0] as (args: any) => Promise<any>)
-        : managerMethod({
-          contexts: workers,
-          balancer,
-          handlers: v,
+  for (const worker of workers) {
+    for (const { name, index } of indexedFunctions) {
+      fastHandlers.get(name)!.push(
+        worker.fastCalling({
+          fnNumber: index,
         }),
-    );
-  });
+      );
 
-  fastMap.forEach((v, k) => {
-    fastCall.set(
-      k,
-      (threads === 1 || threads === undefined) && !usingInliner
-        ? (v[0] as (args: any) => Promise<any>)
-        : managerMethod({
-          contexts: workers,
-          balancer,
-          handlers: v,
+      callHandlers.get(name)!.push(
+        worker.call({
+          fnNumber: index,
         }),
-    );
-  });
+      );
+    }
+  }
+
+  const useDirectHandler = (threads ?? 1) === 1 && !usingInliner;
+
+  const buildInvoker = (handlers: WorkerInvoke[]) =>
+    useDirectHandler
+      ? handlers[0]!
+      : managerMethod({
+        contexts: workers,
+        balancer,
+        handlers,
+      });
+
+  const callEntries = Array.from(
+    callHandlers.entries(),
+    ([name, handlers]) => [name, buildInvoker(handlers)],
+  );
+
+  const fastEntries = Array.from(
+    fastHandlers.entries(),
+    ([name, handlers]) => [name, buildInvoker(handlers)],
+  );
+
+  const runnable = workers.map((worker) => worker.send);
 
   return {
-    terminateAll: () => workers.forEach((worker) => worker.kills()),
-    callFunction: Object.fromEntries(
-      callFunction,
-    ) as unknown as FunctionMapType<T>,
-    fastCallFunction: Object.fromEntries(
-      fastCall,
-    ) as unknown as FunctionMapType<T>,
+    shutdown: () => workers.forEach((worker) => worker.kills()),
+    call: Object.fromEntries(callEntries) as unknown as FunctionMapType<T>,
+    fastCall: Object.fromEntries(fastEntries) as unknown as FunctionMapType<T>,
     send: () => runnable.forEach((fn) => fn()),
   } as Pool<T>;
 };
+
+export const createPoolLock = (options: Omit<CreatePool, "transport">) =>
+  createPool({ ...options, transport: "lock2" });

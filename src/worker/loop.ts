@@ -1,38 +1,57 @@
 import { isMainThread, workerData } from "node:worker_threads";
-import { createWorkerRxQueue } from "../runtime/rx-queue.ts";
+import { createWorkerRxQueue } from "./rx-queue.ts";
 import {
   createSharedMemoryTransport,
   OP,
   workerSignal,
 } from "../ipc/transport/shared-memory.ts";
-import { type DebugOptions } from "../types.ts";
-import { getFunctions } from "../api.ts";
-import { type WorkerData } from "../runtime/pool.ts";
+import { lock2 } from "../memory/lock.ts";
+import type { DebugOptions, WorkerData } from "../types.ts";
+import { getFunctions } from "./get-functions.ts";
 import { pauseGeneric, sleepUntilChanged } from "./timers.ts";
 
 export const jsrIsGreatAndWorkWithoutBugs = () => null;
 
 export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
-  const debug = workerData.debug as DebugOptions;
+
+  const { 
+    debug , 
+    sab , 
+    thread , 
+    startAt , 
+    workerOptions,
+    lock,
+    returnLock,
+  } = workerData as WorkerData;
+
+  if (!sab) {
+    throw new Error("worker missing transport SAB");
+  }
+  if (!lock?.headers || !lock?.lockSector || !lock?.payload) {
+    throw new Error("worker missing lock SABs");
+  }
+  if (!returnLock?.headers || !returnLock?.lockSector || !returnLock?.payload) {
+    throw new Error("worker missing return lock SABs");
+  }
+
   const signals = createSharedMemoryTransport({
     sabObject: {
-      sharedSab: workerData.sab,
+      sharedSab: sab,
     },
     isMain: false,
-    thread: workerData.thread,
+    thread,
     debug,
-    startTime: workerData.startAt,
+    startTime: startAt,
   });
 
-  const secondChannelSignals = createSharedMemoryTransport({
-    sabObject: {
-      sharedSab: workerData.secondSab,
-    },
-    isMain: false,
-    thread: workerData.thread,
-  });
+  const lockState = 
+    lock2({
+      headers: lock.headers,
+      LockBoundSector: lock.lockSector,
+      payload: lock.payload,
+    })
+    
 
-  const { workerOptions } = workerData;
 
   const timeToAwait = Math.max(1, workerData.totalNumberOfThread) * 50;
   const totalNumberOfThread = workerData.totalNumberOfThread;
@@ -51,6 +70,7 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     list: workerData.list,
     isWorker: true,
     ids: workerData.ids,
+    at: workerData.at
   });
 
   if (debug?.logImportedUrl === true) {
@@ -70,6 +90,7 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
 
   const {
     enqueue,
+    enqueueLock,
     serviceOne,
     hasCompleted,
     write,
@@ -77,6 +98,7 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     serviceOneImmediate,
     hasPending,
     blockingResolve,
+    blockingResolveLock,
     preResolve,
     hasFramesToOptimize,
   } = createWorkerRxQueue({
@@ -85,7 +107,7 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     signals,
     moreThanOneThread,
     workerOptions,
-    secondChannel: secondChannelSignals,
+    lock: lockState,
   });
 
   rxStatus[0] = 0;
@@ -101,6 +123,10 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
       }
       case OP.HighPriorityResolve: {
         await blockingResolve();
+        continue;
+      }
+      case OP.HighPriorityResolveLock: {
+        await blockingResolveLock();
         continue;
       }
 
@@ -137,6 +163,12 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
       case OP.MainSend:
         {
           enqueue();
+        }
+
+        continue;
+      case OP.MainSendLock:
+        {
+          enqueueLock();
         }
 
         continue;

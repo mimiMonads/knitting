@@ -56,6 +56,6 @@ export function toResolve(message?: unknown) {
   return def.promise;
 }
 
-const terminateAllWorkers = async () => worker.terminate();
+const shutdownWorkers = async () => worker.terminate();
 
-export { terminateAllWorkers };
+export { shutdownWorkers };

@@ -1,63 +1,27 @@
 import {
-  PayloadType,
-  preencodeJsonString,
   readFrameBlocking,
   readFramePayload,
   readPayloadError,
   writeFramePayload,
 } from "../ipc/protocol/codec.ts";
+import LinkedList from "../ipc/tools/LinkList.ts";
 import {
   frameFlagsFlag,
   type MainSignal,
   OP,
   type SignalArguments,
 } from "../ipc/transport/shared-memory.ts";
-import type { ComposedWithKey } from "../types.ts";
+import {
+  type ComposedWithKey,
+  type PromiseMap,
+  PayloadType,
+} from "../types.ts";
+import { makeTask, TaskIndex, type Task , type Lock2 } from "../memory/lock.ts";
 
 type RawArguments = unknown;
 type WorkerResponse = unknown;
 type FunctionID = number;
-type Accepted = (val: unknown) => void;
-type Rejected = (val: unknown) => void;
-
-export type PromiseMap = Map<
-  number,
-  {
-    promise: Promise<unknown>;
-    resolve: Accepted;
-    reject: Rejected;
-  }
->;
-
-export enum MainListEnum {
-  RawArguments = 0,
-  FunctionID = 1,
-  WorkerResponse = 2,
-  OnResolve = 3,
-  OnReject = 4,
-  PayloadType = 5,
-  slotIndex = 6,
-}
-
-export enum MainListState {
-  Free = 0,
-  ToBeSent = 1,
-  Sent = 2,
-  Accepted = 3,
-  Rejected = 4,
-}
-
-export type MainList = [
-  unknown,
-  FunctionID,
-  WorkerResponse,
-  Accepted,
-  Rejected,
-  PayloadType,
-  number,
-];
-
-export type QueueListWorker = MainList;
+type QueueTask = Task;
 
 export type MultiQueue = ReturnType<typeof createHostTxQueue>;
 
@@ -70,37 +34,39 @@ interface MultipleQueueSingle {
   listOfFunctions: ComposedWithKey[];
   signals: SignalArguments;
   secondChannel: SignalArguments;
+  lock: Lock2;
+  useLock?: boolean;
 }
 
 export function createHostTxQueue({
   signalBox,
   max,
   signals,
-  secondChannel,
+  lock,
+  useLock,
 }: MultipleQueueSingle) {
-  const PLACE_HOLDER = (_: void) => {
+  const PLACE_HOLDER = (_?: unknown) => {
     throw ("UNREACHABLE FROM PLACE HOLDER (main)");
   };
 
   const {
     op,
-    rxStatus,
     rpcId,
-    frameFlags,
     slotIndex,
   } = signalBox;
 
   let countSlot = 0;
-  const newSlot = () =>
-    [
-      ,
-      0,
-      ,
-      PLACE_HOLDER,
-      PLACE_HOLDER,
-      PayloadType.Undefined,
-      countSlot++,
-    ] as MainList;
+
+  const newSlot = () => {
+    const task = makeTask() as QueueTask;
+    task[TaskIndex.ID] = countSlot++;
+    task[TaskIndex.FuntionID] = 0;
+    task.value = undefined;
+    task.payloadType = PayloadType.Undefined;
+    task.resolve = PLACE_HOLDER;
+    task.reject = PLACE_HOLDER;
+    return task;
+  };
 
   const queue = Array.from(
     { length: max ?? 10 },
@@ -115,7 +81,6 @@ export function createHostTxQueue({
   // Writers
   const errorDeserializer = readPayloadError(signals);
   const write = writeFramePayload({
-    index: MainListEnum.RawArguments,
     jsonString: true,
   })(signals);
 
@@ -126,12 +91,8 @@ export function createHostTxQueue({
     specialType: "main",
   });
 
-  const simplifies = preencodeJsonString({
-    index: MainListEnum.RawArguments,
-  });
-
   // Local count
-  const toBeSent: number[] = [];
+  const toBeSent = new LinkedList<QueueTask>();
   let toBeSentCount = 0;
   let inUsed = 0;
 
@@ -141,29 +102,29 @@ export function createHostTxQueue({
   // Helpers
   const hasPendingFrames = () => toBeSentCount > 0;
   const txIdle = () => toBeSentCount === 0 && inUsed === 0;
+
   const addDeferred = () => {
     const deferred = Promise.withResolvers<
       WorkerResponse
     >();
 
-    slotZero[MainListEnum.OnResolve] = deferred.resolve;
-    slotZero[MainListEnum.OnReject] = deferred.reject;
+    slotZero.resolve = deferred.resolve;
+    slotZero.reject = deferred.reject;
 
     return deferred.promise;
   };
 
   const rejectAll = (reason: string) => {
     try {
-      slotZero[MainListEnum.OnReject](reason);
+      slotZero.reject(reason);
     } catch {
     }
 
     // Reject and reset each queued task
     queue.forEach((slot, index) => {
-      const reject = slot[MainListEnum.OnReject];
-      if (reject !== PLACE_HOLDER) {
+      if (slot.reject !== PLACE_HOLDER) {
         try {
-          reject(reason);
+          slot.reject(reason);
         } catch {
         }
 
@@ -178,7 +139,6 @@ export function createHostTxQueue({
     checkChange: boolean,
   ) => {
     const write = writeFramePayload({
-      index: MainListEnum.RawArguments,
       jsonString: true,
     })({ ...thisChannel });
 
@@ -186,19 +146,18 @@ export function createHostTxQueue({
 
     return () => {
       if (checkChange === true) {
-        if (toBeSent.length === 0 || op[0] !== OP.WaitingForMore) return false;
+        if (toBeSent.size === 0 || op[0] !== OP.WaitingForMore) return false;
       }
 
-      const index = toBeSent.pop()!,
-        slot = queue[index];
+      const slot = toBeSent.shift()!;
 
       // Checks if this is the last Element to be sent
       toBeSentCount > 0
         ? (frameFlags[0] = frameFlagsFlag.Last)
         : (frameFlags[0] = frameFlagsFlag.NotLast);
 
-      rpcId[0] = slot[MainListEnum.FunctionID];
-      slotIndex[0] = index;
+      rpcId[0] = slot[TaskIndex.FuntionID];
+      slotIndex[0] = slot[TaskIndex.ID];
       write(slot);
 
       // Changes ownership of the sab
@@ -209,28 +168,64 @@ export function createHostTxQueue({
     };
   };
 
-  const flushToFirst = flushToChannel(signalBox.frameFlags, signals, false);
+  const flushToLockChannel = (
+    frameFlags: MainSignal["frameFlags"],
+    thisChannel: SignalArguments,
+    checkChange: boolean,
+  ) => {
+    const { op } = thisChannel;
+
+    return () => {
+   
+      if (checkChange === true) {
+        if (toBeSent.size === 0 || op[0] !== OP.WaitingForMore) return false;
+      }
+
+      const slot = toBeSent.shift();
+      if (!slot) return false;
+
+      if (lock.encode(slot)) {
+        toBeSent.unshift(slot);
+        return false;
+      }
+
+      toBeSentCount > 0
+        ? (frameFlags[0] = frameFlagsFlag.Last)
+        : (frameFlags[0] = frameFlagsFlag.NotLast);
+
+      op[0] = OP.MainSendLock;
+      toBeSentCount--;
+      return true;
+    };
+  };
+
+  const flushToFirst = useLock === true
+    ? flushToLockChannel(signalBox.frameFlags, signals, false)
+    : flushToChannel(signalBox.frameFlags, signals, false);
 
   return {
-    optimizeQueue: () => {
-      let i = 0;
 
-      while (rxStatus[0] === 1 && toBeSent.length > i) {
-        simplifies(queue[toBeSent[i]]);
-        i++;
-      }
-    },
 
     rejectAll,
     hasPendingFrames,
     txIdle,
     completeImmediate: () => {
-      slotZero[MainListEnum.OnResolve](
-        blockingReader(),
-      );
+      slotZero.resolve(blockingReader());
     },
     postImmediate: (functionID: FunctionID) => (rawArgs: RawArguments) => {
-      slotZero[MainListEnum.RawArguments] = rawArgs;
+      if (useLock === true) {
+   
+        slotZero[TaskIndex.FuntionID] = functionID;
+        slotZero[TaskIndex.ID] = 0;
+        slotZero.value = rawArgs;
+        slotZero.payloadType = PayloadType.Undefined;
+
+        op[0] = OP.HighPriorityResolveLock;
+        return addDeferred();
+      }
+
+      slotZero.value = rawArgs;
+      slotZero.payloadType = PayloadType.Undefined;
       rpcId[0] = functionID;
       write(slotZero);
 
@@ -255,20 +250,28 @@ export function createHostTxQueue({
         }
       }
 
-      const index = freeSockets.pop()!,
-        slot = queue[index],
-        deferred = Promise.withResolvers<WorkerResponse>();
+      const index = freeSockets.pop()!;
+      const slot = queue[index];
+      const deferred = Promise.withResolvers<WorkerResponse>();
 
       // Set info
-      slot[MainListEnum.RawArguments] = rawArgs;
-      slot[MainListEnum.FunctionID] = functionID;
-      slot[MainListEnum.OnResolve] = deferred.resolve;
-      slot[MainListEnum.OnReject] = deferred.reject;
+      slot.value = rawArgs;
+      slot.payloadType = PayloadType.Undefined;
+      slot[TaskIndex.FuntionID] = functionID;
+      slot[TaskIndex.ID] = index;
+      slot.resolve = deferred.resolve;
+      slot.reject = deferred.reject;
+
+      if(lock.hasSpace()){
+        lock.encode(slot)
+      }else{
+          toBeSent.push(slot);
+          toBeSentCount++;
+      }
 
       //preRresolve(slot)
       // Change states:
-      toBeSent.push(index);
-      toBeSentCount++;
+
       inUsed++;
 
       return deferred.promise;
@@ -277,22 +280,22 @@ export function createHostTxQueue({
     flushToWorker: flushToFirst,
 
     rejectFrame: () => {
-      const index = slotIndex[0],
-        slot = queue[index],
-        args = errorDeserializer();
+      const index = slotIndex[0];
+      const args = errorDeserializer();
+      const slot = queue[index];
 
-      slot[MainListEnum.OnReject](args);
+      slot.reject(args);
       inUsed--;
       freeSockets.push(index);
     },
 
     /* Resolve task whose ID matches currentID */
     completeFrame: () => {
-      const index = slotIndex[0], slot = queue[index], args = reader();
+      const index = slotIndex[0];
+      const args = reader();
+      const slot = queue[index];
 
-      slot[MainListEnum.OnResolve](
-        args,
-      );
+      slot.resolve(args);
       inUsed--;
       freeSockets.push(index);
       return;

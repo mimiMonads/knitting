@@ -100,6 +100,7 @@ export const hostDispatcherLoop = ({
       }
 
       case OP.HighPriorityResolve:
+      case OP.HighPriorityResolveLock:
       case OP.MainReadyToRead: {
         if (catchEarly === true) {
           catchEarly = false;
@@ -110,6 +111,7 @@ export const hostDispatcherLoop = ({
         return;
       }
       case OP.MainSend:
+      case OP.MainSendLock:
         a++;
         Promise.resolve().then(check);
         return;

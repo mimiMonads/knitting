@@ -1,9 +1,9 @@
 import { bench, boxplot, group, run as mitataRun, summary } from "mitata";
-import { createThreadPool, fixedPoint, isMain } from "../knitting.ts";
-import { terminateAllWorkers, toResolve } from "./postmessage/multi.ts";
+import { createPool, isMain, task } from "../knitting.ts";
+import { shutdownWorkers, toResolve } from "./postmessage/multi.ts";
 import { format, print } from "./ulti/json-parse.ts";
 
-export const inLine = fixedPoint({
+export const inLine = task({
   f: async (a?: object | void | Set<number>) => a,
 });
 
@@ -14,7 +14,7 @@ const obj = {
   arr: [1, 2, 3, 4],
 };
 
-const { terminateAll, callFunction, send } = createThreadPool(
+const { shutdown, call, send } = createPool(
   { threads: 4 },
 )({
   inLine,
@@ -30,7 +30,7 @@ if (isMain) {
           bench(`4 thread → (${size})`, async () => {
             const arr = Array(size)
               .fill(0)
-              .map(() => callFunction.inLine(obj));
+              .map(() => call.inLine(obj));
 
             send();
             await Promise.all(arr);
@@ -60,6 +60,6 @@ if (isMain) {
   });
 
   await mitataRun({ format, print });
-  await terminateAllWorkers();
-  await terminateAll();
+  await shutdownWorkers();
+  await shutdown();
 }

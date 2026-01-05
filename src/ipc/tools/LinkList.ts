@@ -1,5 +1,5 @@
 type ID = number;
-type Node<T extends [ID, ...any[]]> = { value: T; next: Node<T> | null };
+interface Node<T extends [ID, ...any[]]>  { value: T; next: Node<T> | null };
 
 export default class LinkedList<T extends [ID, ...any[]]>
   implements Iterable<T> {
