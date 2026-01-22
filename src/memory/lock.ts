@@ -98,7 +98,6 @@ const makeTaskFrom = (array: ArrayLike<number>, at: number) => {
     value: unknown
     resolve: (value?: unknown)=>void
     reject:  (reason?: unknown)=>void
-    payloadType?: number
   } as unknown as Task
 
 
@@ -109,6 +108,24 @@ const makeTaskFrom = (array: ArrayLike<number>, at: number) => {
   task.reject = def;
   return task;
 };
+
+
+const resolveTask = ({ taskArr, decode }: {
+  taskArr: Task[];
+  decode: ReturnType<typeof decodePayload>;
+}) =>
+  (array: ArrayLike<number>, at: number) => {
+ 
+    const slotOffset = (at * (
+      LockBound.padding + TaskIndex.TotalBuff
+    )) + LockBound.padding;
+  
+    const task = taskArr[array[slotOffset + TaskIndex.ID]];
+
+    fillTaskFrom(task, array, slotOffset);
+    decode(task, at);
+    task.resolve(task.value);
+  };
 
 /**
  *
@@ -305,6 +322,8 @@ const slotOffset = (at: number) =>
 
     return true;
   };
+
+  
 
   return {
     enlist,

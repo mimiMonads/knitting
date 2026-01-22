@@ -96,6 +96,11 @@ export const spawnWorkerContext = ({
     LockBoundSector: lockBuffers.lockSector,
     payload: lockBuffers.payload,
   });
+  const returnLock = lock2({
+    headers: returnLockBuffers.headers,
+    LockBoundSector: returnLockBuffers.lockSector,
+    payload: returnLockBuffers.payload,
+  });
 
   const signals = createSharedMemoryTransport({
     sabObject: sab,
@@ -118,6 +123,7 @@ export const spawnWorkerContext = ({
     listOfFunctions,
     signals,
     lock,
+    returnLock,
     useLock,
   });
 

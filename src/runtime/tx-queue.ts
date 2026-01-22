@@ -35,6 +35,7 @@ interface MultipleQueueSingle {
   signals: SignalArguments;
   secondChannel: SignalArguments;
   lock: Lock2;
+  returnLock?: Lock2;
   useLock?: boolean;
 }
 
@@ -43,6 +44,7 @@ export function createHostTxQueue({
   max,
   signals,
   lock,
+  returnLock,
   useLock,
 }: MultipleQueueSingle) {
   const PLACE_HOLDER = (_?: unknown) => {
@@ -205,10 +207,10 @@ export function createHostTxQueue({
 
   return {
 
-
     rejectAll,
     hasPendingFrames,
     txIdle,
+    returnLock,
     completeImmediate: () => {
       slotZero.resolve(blockingReader());
     },
