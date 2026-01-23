@@ -1,6 +1,13 @@
 import LinkList from "../ipc/tools/LinkList.ts";
 import { decodePayload, encodePayload } from "./payloadCodec.ts";
 
+
+/**
+ * TODO: Compose all the instance where the array is passed as argument
+ * 
+ * 
+ */
+
  export enum PayloadSingal {
   UNREACHABLE = 0,
   BigInt = 2,
@@ -48,6 +55,14 @@ export type Task = [
 };
 
 export enum TaskIndex {
+  /**
+   * Flags for host
+   */
+  FlagsToHost = 0,
+  /**
+   * IMPORTANT: FuntionID is only use for worker to host
+   * reserved for special flags from host to worker
+   */
   FuntionID = 0,
   ID = 1,
   Type = 2,
@@ -55,7 +70,6 @@ export enum TaskIndex {
   End = 4,
   PayloadLen = 5,
   slotBuffer = 6,
-  Flags = 7,
   Size = 8,
   TotalBuff = 32
 }
@@ -110,9 +124,10 @@ const makeTaskFrom = (array: ArrayLike<number>, at: number) => {
 };
 
 
-const resolveTask = ({ taskArr, decode }: {
-  taskArr: Task[];
-  decode: ReturnType<typeof decodePayload>;
+
+// To be inline in the future
+const takeTask = ({ queue }: {
+  queue: Task[];
 }) =>
   (array: ArrayLike<number>, at: number) => {
  
@@ -120,12 +135,25 @@ const resolveTask = ({ taskArr, decode }: {
       LockBound.padding + TaskIndex.TotalBuff
     )) + LockBound.padding;
   
-    const task = taskArr[array[slotOffset + TaskIndex.ID]];
-
+    const task = queue[array[slotOffset + TaskIndex["ID"]]]
     fillTaskFrom(task, array, slotOffset);
-    decode(task, at);
-    task.resolve(task.value);
+
+     return task;
   };
+
+  // could be inlined 
+const settleTask = (task: Task) => {
+
+  if( task[TaskIndex["FlagsToHost"]] === 0){
+    task.resolve(task.value)
+  }else{
+    task.reject(task.value)
+    // restarting the flag
+    task[TaskIndex["FlagsToHost"]] = 0
+  }
+
+
+}
 
 /**
  *
@@ -309,14 +337,63 @@ const slotOffset = (at: number) =>
   };
 
 
+    /**
+   * HOST SIDE: decode version
+   */
+  const resolveHost = ({
+    queue,
+    decode
+  }: {
+    queue: Task[],
+    decode: ReturnType<typeof decodePayload>
+  }) => {
+
+    const getTask = takeTask({
+      queue
+    })
+
+
+    return (): boolean => {
+    let modified = false;
+    // TODO: check if shadowing here is needed
+    let uwuIdx = 0 | 0, uwuBit = 0 | 0
+    // bits that changed since last time on worker side
+    let diff = Atomics.load(hostBits, 0) ^ LastWorker[0];
+    //diff &= SLOT_MASK;
+
+    // Process all set bits in `diff`, one by one using clz32
+    while (diff !== 0) {
+      uwuIdx = 31 - clz32(diff);
+    
+      const task = getTask(headersBuffer, uwuIdx)
+      decode(task,uwuIdx)
+      // once we got it, we free it 
+      storeWorker(
+        // create the mask 
+        uwuBit = 1 << uwuIdx
+      )
+
+      settleTask(task)
+      // clear that bit from diff
+      diff &= ~uwuBit >>> 0;
+
+      modified = true;
+    }
+
+    return modified;
+  };
+  }
+
+
   const decodeAt = (at: number, bit: number): boolean => {
     const task = makeTaskFrom(headersBuffer, slotOffset(at));
 
 
-    //workerBits[0] = LastWorker[0] ^=  bit
+    // workerBits[0] = LastWorker[0] ^=  bit
+   
+    decodeTask(task, at)
     storeWorker(bit)
 
-    decodeTask(task, at)
 
     resolved.push(task);
 
@@ -334,6 +411,7 @@ const slotOffset = (at: number) =>
     resolved,
     hostBits,
     workerBits,
-    recyclecList
+    recyclecList,
+    resolveHost
   };
 };

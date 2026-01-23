@@ -56,7 +56,7 @@ if (isMain) {
         position: "last",
       },
       worker: {
-        resolveAfterFinishinAll: true,
+        resolveAfterFinishingAll: true,
       },
     })({ fn });
 

@@ -96,7 +96,7 @@ export const encodePayload = ({
         case Object:
         case Array: {
           const text = JSON.stringify(args)
-          if (staticIO  && text.length <= staticMaxChars) {
+          if (staticIO && text.length <= staticMaxChars) {
             const written = staticIO.writeUtf8(text, slotIndex);
             if (written !== -1) {
               task[TaskIndex.Type] = PayloadBuffer.StaticJson;
@@ -141,7 +141,7 @@ export const encodePayload = ({
         return true
       }
     case "string":
-      if (staticIO  && args.length <= staticMaxChars) {
+      if (staticIO && args.length <= staticMaxChars) {
         const written = staticIO.writeUtf8(args as string, slotIndex);
         if (written !== -1) {
           task[TaskIndex.Type] = PayloadBuffer.StaticString;
@@ -169,22 +169,32 @@ export const encodePayload = ({
 export const decodePayload = ({
   lockSector,
   sab,
-  headersBuffer
+  headersBuffer,
+  host,
 }: {
   lockSector?: SharedArrayBuffer;
    sab?: SharedArrayBuffer; 
-   headersBuffer: Uint32Array 
+   headersBuffer: Uint32Array
+   host?: true
 }  ) => {
   
-    const registry = register({
+  const registry = register({
     lockSector
   })
   const io = createSharedDynamicBufferIO({
     sab
   })
   const staticIO = initStaticIO(headersBuffer);
+
+
+  const HOST_SIDE = host ?? false
   
-  return (task: Task, slotIndex: number)=>  {
+  // TODO: remove slotIndex and make that all their callers
+  // store the slot in their Task, to just get it when it comes 
+  // to the static versions of decoding
+  return (task: Task, slotIndex: number , specialFlags?: number)=>  {
+
+
 
   switch (task[TaskIndex.Type]) {
     case PayloadSingal.BigInt:
@@ -226,10 +236,8 @@ export const decodePayload = ({
       registry.free(task[TaskIndex.slotBuffer])
     return
     case PayloadBuffer.StaticString:
-      if (!staticIO) {
-        throw "missing static buffer for payload decode";
-      }
-      task.value = staticIO.readUtf8(0, task[TaskIndex.PayloadLen], slotIndex)
+  
+      task.value = staticIO!.readUtf8(0, task[TaskIndex.PayloadLen], slotIndex)
     return
     case PayloadBuffer.Json:
       task.value = JSON.parse(
@@ -241,11 +249,9 @@ export const decodePayload = ({
       registry.free(task[TaskIndex.slotBuffer])
     return
     case PayloadBuffer.StaticJson:
-      if (!staticIO) {
-        throw "missing static buffer for payload decode";
-      }
+
       task.value = JSON.parse(
-        staticIO.readUtf8(0, task[TaskIndex.PayloadLen], slotIndex)
+        staticIO!.readUtf8(0, task[TaskIndex.PayloadLen], slotIndex)
       )
     return
     case PayloadBuffer.Serializable:
