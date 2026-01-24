@@ -1,22 +1,6 @@
-import {
-  readFrameBlocking,
-  readFramePayload,
-  readPayloadError,
-  writeFramePayload,
-} from "../ipc/protocol/codec.ts";
+import "../polyfills/promise-with-resolvers.ts";
 import LinkedList from "../ipc/tools/LinkList.ts";
-import {
-  frameFlagsFlag,
-  type MainSignal,
-  OP,
-  type SignalArguments,
-} from "../ipc/transport/shared-memory.ts";
-import {
-  type ComposedWithKey,
-  type PromiseMap,
-  PayloadType,
-} from "../types.ts";
-import { makeTask, TaskIndex, type Task , type Lock2 } from "../memory/lock.ts";
+import { makeTask, TaskIndex, type Task, type Lock2 } from "../memory/lock.ts";
 
 type RawArguments = unknown;
 type WorkerResponse = unknown;
@@ -25,46 +9,26 @@ type QueueTask = Task;
 
 export type MultiQueue = ReturnType<typeof createHostTxQueue>;
 
-interface MultipleQueueSingle {
-  signalBox: MainSignal;
-  genTaskID: () => number;
-  promisesMap: PromiseMap;
-
+type CreateHostTxQueueArgs = {
   max?: number;
-  listOfFunctions: ComposedWithKey[];
-  signals: SignalArguments;
-  secondChannel: SignalArguments;
   lock: Lock2;
-  returnLock?: Lock2;
-  useLock?: boolean;
-}
+  returnLock: Lock2;
+};
 
 export function createHostTxQueue({
-  signalBox,
   max,
-  signals,
   lock,
   returnLock,
-  useLock,
-}: MultipleQueueSingle) {
+}: CreateHostTxQueueArgs) {
   const PLACE_HOLDER = (_?: unknown) => {
     throw ("UNREACHABLE FROM PLACE HOLDER (main)");
   };
 
-  const {
-    op,
-    rpcId,
-    slotIndex,
-  } = signalBox;
-
-  let countSlot = 0;
-
-  const newSlot = () => {
+  const newSlot = (id: number) => {
     const task = makeTask() as QueueTask;
-    task[TaskIndex.ID] = countSlot++;
+    task[TaskIndex.ID] = id;
     task[TaskIndex.FuntionID] = 0;
     task.value = undefined;
-    task.payloadType = PayloadType.Undefined;
     task.resolve = PLACE_HOLDER;
     task.reject = PLACE_HOLDER;
     return task;
@@ -72,7 +36,7 @@ export function createHostTxQueue({
 
   const queue = Array.from(
     { length: max ?? 10 },
-    newSlot,
+    (_, index) => newSlot(index),
   );
 
   const freeSockets = Array.from(
@@ -80,49 +44,24 @@ export function createHostTxQueue({
     (_, i) => i,
   );
 
-  // Writers
-  const errorDeserializer = readPayloadError(signals);
-  const write = writeFramePayload({
-    jsonString: true,
-  })(signals);
-
-  // Readers
-  const blockingReader = readFrameBlocking(signals);
-  const reader = readFramePayload({
-    ...signals,
-    specialType: "main",
-  });
-
   // Local count
   const toBeSent = new LinkedList<QueueTask>();
   let toBeSentCount = 0;
   let inUsed = 0;
 
-  // For FastResolving "fastCall"
-  const slotZero = newSlot();
+  const resolveReturn = returnLock.resolveHost({
+    queue,
+    onResolved: (task) => {
+      inUsed--;
+      freeSockets.push(task[TaskIndex.ID]);
+    },
+  });
 
   // Helpers
   const hasPendingFrames = () => toBeSentCount > 0;
   const txIdle = () => toBeSentCount === 0 && inUsed === 0;
 
-  const addDeferred = () => {
-    const deferred = Promise.withResolvers<
-      WorkerResponse
-    >();
-
-    slotZero.resolve = deferred.resolve;
-    slotZero.reject = deferred.reject;
-
-    return deferred.promise;
-  };
-
   const rejectAll = (reason: string) => {
-    try {
-      slotZero.reject(reason);
-    } catch {
-    }
-
-    // Reject and reset each queued task
     queue.forEach((slot, index) => {
       if (slot.reject !== PLACE_HOLDER) {
         try {
@@ -130,115 +69,35 @@ export function createHostTxQueue({
         } catch {
         }
 
-        queue[index] = newSlot();
+        queue[index] = newSlot(index);
       }
     });
+
+    while (toBeSent.size > 0) {
+      toBeSent.shift();
+    }
+    toBeSentCount = 0;
+    inUsed = 0;
   };
 
-  const flushToChannel = (
-    frameFlags: MainSignal["frameFlags"],
-    thisChannel: SignalArguments,
-    checkChange: boolean,
-  ) => {
-    const write = writeFramePayload({
-      jsonString: true,
-    })({ ...thisChannel });
+  const flushToWorker = () => {
+    const slot = toBeSent.shift();
+    if (!slot) return false;
 
-    const { op, slotIndex, rpcId } = thisChannel;
+    if (!lock.encode(slot)) {
+      toBeSent.unshift(slot);
+      return false;
+    }
 
-    return () => {
-      if (checkChange === true) {
-        if (toBeSent.size === 0 || op[0] !== OP.WaitingForMore) return false;
-      }
-
-      const slot = toBeSent.shift()!;
-
-      // Checks if this is the last Element to be sent
-      toBeSentCount > 0
-        ? (frameFlags[0] = frameFlagsFlag.Last)
-        : (frameFlags[0] = frameFlagsFlag.NotLast);
-
-      rpcId[0] = slot[TaskIndex.FuntionID];
-      slotIndex[0] = slot[TaskIndex.ID];
-      write(slot);
-
-      // Changes ownership of the sab
-      op[0] = OP.MainSend;
-
-      toBeSentCount--;
-      return true;
-    };
+    toBeSentCount--;
+    return true;
   };
-
-  const flushToLockChannel = (
-    frameFlags: MainSignal["frameFlags"],
-    thisChannel: SignalArguments,
-    checkChange: boolean,
-  ) => {
-    const { op } = thisChannel;
-
-    return () => {
-   
-      if (checkChange === true) {
-        if (toBeSent.size === 0 || op[0] !== OP.WaitingForMore) return false;
-      }
-
-      const slot = toBeSent.shift();
-      if (!slot) return false;
-
-      if (lock.encode(slot)) {
-        toBeSent.unshift(slot);
-        return false;
-      }
-
-      toBeSentCount > 0
-        ? (frameFlags[0] = frameFlagsFlag.Last)
-        : (frameFlags[0] = frameFlagsFlag.NotLast);
-
-      op[0] = OP.MainSendLock;
-      toBeSentCount--;
-      return true;
-    };
-  };
-
-  const flushToFirst = useLock === true
-    ? flushToLockChannel(signalBox.frameFlags, signals, false)
-    : flushToChannel(signalBox.frameFlags, signals, false);
 
   return {
-
     rejectAll,
     hasPendingFrames,
     txIdle,
-    returnLock,
-    completeImmediate: () => {
-      slotZero.resolve(blockingReader());
-    },
-    postImmediate: (functionID: FunctionID) => (rawArgs: RawArguments) => {
-      if (useLock === true) {
-   
-        slotZero[TaskIndex.FuntionID] = functionID;
-        slotZero[TaskIndex.ID] = 0;
-        slotZero.value = rawArgs;
-        slotZero.payloadType = PayloadType.Undefined;
-
-        op[0] = OP.HighPriorityResolveLock;
-        return addDeferred();
-      }
-
-      slotZero.value = rawArgs;
-      slotZero.payloadType = PayloadType.Undefined;
-      rpcId[0] = functionID;
-      write(slotZero);
-
-      // Blocks the queue ensuring this is the only function solving
-      op[0] = OP.HighPriorityResolve;
-
-      // This functions force js to create the `Promise.withResolver` after we sent the playload
-      return addDeferred();
-    },
-
-    /* General enqueue with promise */
+    completeFrame: () => resolveReturn(),
     enqueue: (functionID: FunctionID) => (rawArgs: RawArguments) => {
       // Expanding size if needed
       if (inUsed === queue.length) {
@@ -246,7 +105,7 @@ export function createHostTxQueue({
         let current = queue.length;
 
         while (newSize > current) {
-          queue.push(newSlot());
+          queue.push(newSlot(current));
           freeSockets.push(current);
           current++;
         }
@@ -258,49 +117,20 @@ export function createHostTxQueue({
 
       // Set info
       slot.value = rawArgs;
-      slot.payloadType = PayloadType.Undefined;
       slot[TaskIndex.FuntionID] = functionID;
       slot[TaskIndex.ID] = index;
       slot.resolve = deferred.resolve;
       slot.reject = deferred.reject;
 
-      if(lock.hasSpace()){
-        lock.encode(slot)
-      }else{
-          toBeSent.push(slot);
-          toBeSentCount++;
+      if (!lock.encode(slot)) {
+        toBeSent.push(slot);
+        toBeSentCount++;
       }
-
-      //preRresolve(slot)
-      // Change states:
 
       inUsed++;
 
       return deferred.promise;
     },
-
-    flushToWorker: flushToFirst,
-
-    rejectFrame: () => {
-      const index = slotIndex[0];
-      const args = errorDeserializer();
-      const slot = queue[index];
-
-      slot.reject(args);
-      inUsed--;
-      freeSockets.push(index);
-    },
-
-    /* Resolve task whose ID matches currentID */
-    completeFrame: () => {
-      const index = slotIndex[0];
-      const args = reader();
-      const slot = queue[index];
-
-      slot.resolve(args);
-      inUsed--;
-      freeSockets.push(index);
-      return;
-    },
+    flushToWorker,
   };
 }

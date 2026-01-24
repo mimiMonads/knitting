@@ -33,14 +33,14 @@ export const sleepUntilChanged = (
 
   return (
     value: number,
-    msTime: number,
-    timeforWakingUp?: number,
+    spinMicroseconds: number,
+    parkMs?: number,
   ) => {
-    const until = performance.now() + (msTime / 1000);
+    const until = performance.now() + (spinMicroseconds / 1000);
 
     do {
       if (
-        opView[at] !== value || txStatus[0] === 1
+        Atomics.load(opView, at) !== value || Atomics.load(txStatus, 0) === 1
       ) return;
 
       pause();
@@ -48,17 +48,17 @@ export const sleepUntilChanged = (
       performance.now() < until
     );
 
-    rxStatus[0] = 1
+    Atomics.store(rxStatus, 0, 0)
 
 
     Atomics.wait(
       opView,
       0,
       value,
-      timeforWakingUp ?? 50,
+      parkMs ?? 50,
     );
 
-    rxStatus[0] = 0
+    Atomics.store(rxStatus, 0, 1)
 
   };
 };

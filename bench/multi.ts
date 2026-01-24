@@ -8,9 +8,7 @@ export const inLine = task({
 });
 
 const obj = {
-  hello: 1,
-  hi: "string",
-  nullish: null,
+  hello: "world",
   arr: [1, 2, 3, 4],
 };
 

@@ -1,6 +1,6 @@
 
 import { Buffer as NodeBuffer } from "node:buffer";
-import { LockBound, Task, TaskIndex } from "./lock.ts";
+import { LockBound, TaskIndex } from "./lock.ts";
 const page = 1024 * 4;
 
 const textEncode = new TextEncoder();
@@ -24,7 +24,7 @@ export const createSharedDynamicBufferIO = ({
   const lockSAB =
       sab ??
       new SharedArrayBuffer(
-        64 * 1024 * 1024,
+        4 * 1024 * 1024,
         { maxByteLength: 64 * 1024 * 1024 },
       );
 

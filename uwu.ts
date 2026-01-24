@@ -8,7 +8,7 @@ export const world = task({
 });
 
 export const { shutdown, fastCall } = createPool({
-  threads: 2,
+  threads: 1,
 })({
   hello,
   world,
@@ -17,6 +17,8 @@ export const { shutdown, fastCall } = createPool({
 if (isMain) {
   await Promise.all([
     fastCall.hello(),
+    fastCall.world(),
+        fastCall.hello(),
     fastCall.world(),
   ])
     .then((results) => {

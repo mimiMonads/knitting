@@ -7,14 +7,14 @@ const workerCode = `
   const fn = async (arg) => arg
 
 
-  parentPort.on('message', async ({ id, payload }) => {
-    try {
-      // your real logic goes here. we just echo back:
-      parentPort.postMessage(await fn({ id, result: payload }));
-    } catch (err) {
-      parentPort.postMessage({ id, error: (err instanceof Error ? err.message : String(err)) });
-    }
-  });
+parentPort.on("message", async ({ id, payload }) => {
+  try {
+    const result = await fn(payload);
+    parentPort.postMessage({ id, result });
+  } catch (err) {
+    parentPort.postMessage({ id, error: String(err?.message ?? err) });
+  }
+});
 `;
 
 const worker = new Worker(workerCode, {

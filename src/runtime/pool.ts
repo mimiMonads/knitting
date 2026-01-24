@@ -1,20 +1,16 @@
 // main.ts
 
 import { createHostTxQueue } from "./tx-queue.ts";
-import { genTaskID } from "../common/others.ts";
 import {
   createSharedMemoryTransport,
   mainSignal,
-  OP,
   type Sab,
 } from "../ipc/transport/shared-memory.ts";
 import { ChannelHandler, hostDispatcherLoop } from "./dispatcher.ts";
 import { lock2, LockBound, TaskIndex } from "../memory/lock.ts";
 import type {
-  ComposedWithKey,
   DebugOptions,
   LockBuffers,
-  PromiseMap,
   WorkerCall,
   WorkerContext,
   WorkerData,
@@ -28,20 +24,16 @@ import { Worker } from "node:worker_threads";
 let poliWorker = Worker;
 
 export const spawnWorkerContext = ({
-  promisesMap,
   list,
   ids,
   sab,
   thread,
   debug,
-  listOfFunctions,
   totalNumberOfThread,
   source,
   at,
   workerOptions,
-  useLock,
 }: {
-  promisesMap: PromiseMap;
   list: string[];
   ids: number[];
   at: number[];
@@ -49,12 +41,9 @@ export const spawnWorkerContext = ({
   thread: number;
   debug?: DebugOptions;
   totalNumberOfThread: number;
-  listOfFunctions: ComposedWithKey[];
-  perf?: number;
 
   source?: string;
   workerOptions?: WorkerSettings;
-  useLock?: boolean;
 }) => {
   const tsFileUrl = new URL(import.meta.url);
 
@@ -68,17 +57,7 @@ export const spawnWorkerContext = ({
     lockSector: new SharedArrayBuffer(
       LockBound.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2,
     ),
-    headers: new SharedArrayBuffer(
-      LockBound.padding +
-        (LockBound.slots * TaskIndex.TotalBuff) * LockBound.slots,
-    ),
-    payload: new SharedArrayBuffer(
-      64 * 1024 * 1024,
-      { maxByteLength: 64 * 1024 * 1024 },
-    ),
-  };
-  const returnLockBuffers: LockBuffers = {
-    lockSector: new SharedArrayBuffer(
+    payloadSector: new SharedArrayBuffer(
       LockBound.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2,
     ),
     headers: new SharedArrayBuffer(
@@ -86,7 +65,23 @@ export const spawnWorkerContext = ({
         (LockBound.slots * TaskIndex.TotalBuff) * LockBound.slots,
     ),
     payload: new SharedArrayBuffer(
-      64 * 1024 * 1024,
+      4 * 1024 * 1024,
+      { maxByteLength: 64 * 1024 * 1024 },
+    ),
+  };
+  const returnLockBuffers: LockBuffers = {
+    lockSector: new SharedArrayBuffer(
+      LockBound.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2,
+    ),
+    payloadSector: new SharedArrayBuffer(
+      LockBound.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2,
+    ),
+    headers: new SharedArrayBuffer(
+      LockBound.padding +
+        (LockBound.slots * TaskIndex.TotalBuff) * LockBound.slots,
+    ),
+    payload: new SharedArrayBuffer(
+      4 * 1024 * 1024,
       { maxByteLength: 64 * 1024 * 1024 },
     ),
   };
@@ -95,11 +90,13 @@ export const spawnWorkerContext = ({
     headers: lockBuffers.headers,
     LockBoundSector: lockBuffers.lockSector,
     payload: lockBuffers.payload,
+    payloadSector: lockBuffers.payloadSector,
   });
   const returnLock = lock2({
     headers: returnLockBuffers.headers,
     LockBoundSector: returnLockBuffers.lockSector,
     payload: returnLockBuffers.payload,
+    payloadSector: returnLockBuffers.payloadSector,
   });
 
   const signals = createSharedMemoryTransport({
@@ -108,30 +105,15 @@ export const spawnWorkerContext = ({
     thread,
     debug,
   });
-  const secondChannelSignals = createSharedMemoryTransport({
-    isMain: true,
-    thread,
-  });
-
   const signalBox = mainSignal(signals);
 
   const queue = createHostTxQueue({
-    signalBox,
-    secondChannel: secondChannelSignals,
-    genTaskID,
-    promisesMap,
-    listOfFunctions,
-    signals,
     lock,
     returnLock,
-    useLock,
   });
 
   const {
-    flushToWorker,
-    postImmediate,
     enqueue,
-    hasPendingFrames,
     rejectAll,
     txIdle,
   } = queue;
@@ -141,7 +123,6 @@ export const spawnWorkerContext = ({
     signalBox,
     queue,
     channelHandler,
-    totalNumberOfThread,
     //thread,
     //debugSignal: debug?.logMain ?? false,
     //perf,
@@ -173,7 +154,6 @@ export const spawnWorkerContext = ({
         debug,
         workerOptions,
         totalNumberOfThread,
-        secondSab: secondChannelSignals.sab,
         startAt: signalBox.startAt,
         lock: lockBuffers,
         returnLock: returnLockBuffers,
@@ -183,13 +163,17 @@ export const spawnWorkerContext = ({
 
   const thisSignal = signalBox.opView;
   const send = () => {
-    if (check.isRunning === false && hasPendingFrames()) {
-      thisSignal[0] = OP.WakeUp;
+    if (check.isRunning === true) return;
+
+    // Prevent worker from sleeping before the dispatcher loop starts.
+    Atomics.store(signalBox.txStatus, 0, 1);
+    // Use opView as a wake counter in lock2 mode to avoid lost wakeups.
+    Atomics.add(thisSignal, 0, 1);
+    if (Atomics.load(signalBox.rxStatus, 0) === 0) {
       Atomics.notify(thisSignal, 0, 1);
-      flushToWorker();
-      check.isRunning = true;
-      Promise.resolve().then(check);
     }
+    check.isRunning = true;
+    Promise.resolve().then(check);
   };
 
   const call = ({ fnNumber }: WorkerCall) => {
@@ -198,11 +182,16 @@ export const spawnWorkerContext = ({
 
       const pro = enqueues(args)
       
-      if (check.isRunning === false && hasPendingFrames()) {
+      if (check.isRunning === false) {
         check.isRunning = true;
-        thisSignal[0] = OP.WakeUp;
-        Atomics.notify(thisSignal, 0, 1);
-        Promise.resolve().then(() => (flushToWorker(), check()));
+        // Prevent worker from sleeping before the dispatcher loop starts.
+        Atomics.store(signalBox.txStatus, 0, 1);
+        // Use opView as a wake counter in lock2 mode to avoid lost wakeups.
+        Atomics.add(thisSignal, 0, 1);
+        if (Atomics.load(signalBox.rxStatus, 0) === 0) {
+          Atomics.notify(thisSignal, 0, 1);
+        }
+        Promise.resolve().then(check);
       }
 
       return pro;
@@ -210,20 +199,8 @@ export const spawnWorkerContext = ({
   };
 
   const fastCalling = ({ fnNumber }: WorkerCall) => {
-    const first = postImmediate(fnNumber);
-    const enqueued = enqueue(fnNumber);
-    const thisSignal = signalBox.opView;
-    return (args: Uint8Array) =>
-      check.isRunning === false
-        // Avoid weird optimizations from the runtime
-        ? (
-          thisSignal[0] = OP.WakeUp,
-            Atomics.notify(thisSignal, 0, 1),
-            check.isRunning = true,
-            Promise.resolve().then(check),
-            first(args)
-        )
-        : enqueued(args);
+    const enqueued = call({ fnNumber });
+    return (args: Uint8Array) => enqueued(args);
   };
 
   const context: WorkerContext & { lock: ReturnType<typeof lock2> } = {

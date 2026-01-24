@@ -7,18 +7,15 @@ export const inLine = task({
   f: async (_: void) => {},
 });
 
-const { shutdown, call, fastCall, send } = createPool(
+const { shutdown, call, send } = createPool(
   {},
 )({ inLine });
 
 if (isMain) {
-  const sizes = [10, 100, 1000];
+  const sizes = [1, 10, 100, 1000];
 
   // ───────────────────────── worker (toResolve) ─────────────────────────
   group("worker", () => {
-    bench("1 thread → (1)", async () => {
-      await toResolve();
-    });
 
     for (const n of sizes) {
       bench(`1 thread → (${n})`, async () => {
@@ -31,9 +28,6 @@ if (isMain) {
 
   // ───────────────────────── knitting (call) ────────────────────
   group("knitting", () => {
-    bench("1 thread → 1", async () => {
-      await fastCall.inLine();
-    }).baseline(true);
 
     for (const n of sizes) {
       bench(`1 thread → (${n})`, async () => {

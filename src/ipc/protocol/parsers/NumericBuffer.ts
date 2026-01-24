@@ -33,18 +33,7 @@ export class NumericBuffer {
     return !!(v && v[kBrand]);
   }
   static fromFloat64(srcF64: Float64Array): NumericBuffer {
-    const len = srcF64.length;
-    const arr = new Array(len);
-    const rem = len & 3;
-    let i = 0;
-    for (; i < len - rem; i += 4) {
-      arr[i] = srcF64[i];
-      arr[i + 1] = srcF64[i + 1];
-      arr[i + 2] = srcF64[i + 2];
-      arr[i + 3] = srcF64[i + 3];
-    }
-    for (; i < len; i++) arr[i] = srcF64[i];
-    return new NumericBuffer(arr);
+    return new NumericBuffer(srcF64.slice());
   }
   static fromArrayCopy(arr: number[]): NumericBuffer {
     return new NumericBuffer([...arr]);

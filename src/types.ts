@@ -1,45 +1,4 @@
 import { endpointSymbol } from "./common/task-symbol.ts";
-// ──────────────────────────────────────────────────────────────────────────────
-// Payloads & queue slots shared across runtime/worker
-// ──────────────────────────────────────────────────────────────────────────────
-
-export enum PayloadType {
-  UNREACHABLE = 0,
-  String = 1,
-  BigUint = 2,
-  BigInt = 3,
-  True = 4,
-  False = 5,
-  Undefined = 6,
-  NaN = 7,
-  Infinity = 8,
-  NegativeInfinity = 9,
-  Float64 = 10,
-  Uint32 = 11,
-  Int32 = 12,
-  Uint64 = 13,
-  Int64 = 14,
-  Null = 15,
-  Json = 16,
-  Uint8Array = 17,
-  Serializable = 18,
-  StringToJson = 19,
-  SerializedAndReady = 20,
-  NumericBuffer = 21,
-  NumericBufferParsed = 22,
-}
-
-export type Accepted = (value: unknown) => void;
-export type Rejected = (reason: unknown) => void;
-
-export type PromiseEntry = {
-  promise: Promise<unknown>;
-  resolve: Accepted;
-  reject: Rejected;
-};
-
-export type PromiseMap = Map<number, PromiseEntry>;
-
 export type WorkerCall = {
   fnNumber: number;
 };
@@ -58,7 +17,6 @@ export type CreateContext = WorkerContext;
 
 export type WorkerData = {
   sab: SharedArrayBuffer;
-  secondSab: SharedArrayBuffer;
   list: string[];
   ids: number[];
   thread: number;
@@ -75,6 +33,7 @@ export type LockBuffers = {
   headers: SharedArrayBuffer;
   lockSector: SharedArrayBuffer;
   payload: SharedArrayBuffer;
+  payloadSector: SharedArrayBuffer;
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -183,7 +142,6 @@ export type CreatePool = {
   worker?: WorkerSettings;
   debug?: DebugOptions;
   source?: string;
-  transport?: "codec" | "lock2";
 };
 
 export type { Task } from "./memory/lock.ts";

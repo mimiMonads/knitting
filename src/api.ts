@@ -2,7 +2,6 @@ import { getCallerFilePath } from "./common/others.ts";
 import { genTaskID } from "./common/others.ts";
 import { endpointSymbol } from "./common/task-symbol.ts";
 import { spawnWorkerContext } from "./runtime/pool.ts";
-import type { PromiseMap } from "./types.ts";
 import { isMainThread, workerData } from "node:worker_threads";
 
 import { managerMethod } from "./runtime/balancer.ts";
@@ -90,7 +89,6 @@ export const createPool = ({
   balancer,
   source,
   worker,
-  transport,
 }: CreatePool) =>
 <T extends tasks>(tasks: T): Pool<T> => {
   /**
@@ -132,16 +130,12 @@ export const createPool = ({
     } as Pool<T>);
   }
 
-  const promisesMap: PromiseMap = new Map(),
-    { list, ids  , at } = toListAndIds(tasks),
+  const { list, ids  , at } = toListAndIds(tasks),
     listOfFunctions = Object.entries(tasks).map(([k, v]) => ({
       ...v,
       name: k,
     }))
       .sort((a, b) => a.name.localeCompare(b.name)) as ComposedWithKey[];
-
-  const perf = debug ? performance.now() : undefined;
-  const useLock = transport === "lock2";
 
   const usingInliner = typeof inliner === "object" && inliner != null;
   const totalNumberOfThread = (threads ?? 1) +
@@ -151,18 +145,14 @@ export const createPool = ({
     length: threads ?? 1,
   }).map((_, thread) =>
     spawnWorkerContext({
-      promisesMap,
       list,
       ids,
       at,
       thread,
       debug,
-      listOfFunctions,
-      perf,
       totalNumberOfThread,
       source,
       workerOptions: worker,
-      useLock,
     })
   );
 
@@ -246,5 +236,4 @@ export const createPool = ({
   } as Pool<T>;
 };
 
-export const createPoolLock = (options: Omit<CreatePool, "transport">) =>
-  createPool({ ...options, transport: "lock2" });
+export const createPoolLock = (options: CreatePool) => createPool(options);

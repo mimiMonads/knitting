@@ -49,6 +49,7 @@ export const createInlineExecutor = ({
   const freeStack: number[] = [];
   for (let i = initCap - 1; i >= 0; --i) freeStack.push(i);
   const pendingQueue: number[] = [];
+  let pendingHead = 0;
 
   const promisesMap = new Map<TaskID, Deferred>();
   let working = 0;
@@ -57,6 +58,8 @@ export const createInlineExecutor = ({
   const channel = new MessageChannel();
   //@ts-ignore
   channel.port1.onmessage = processNext;
+
+  const hasPending = () => pendingHead < pendingQueue.length;
 
   function allocIndex(): number {
     if (freeStack.length) return freeStack.pop()!;
@@ -76,8 +79,12 @@ export const createInlineExecutor = ({
   }
 
   async function processNext() {
-    if (!pendingQueue.length) return;
-    const index = pendingQueue.pop()!;
+    if (!hasPending()) return;
+    const index = pendingQueue[pendingHead++]!;
+    if (pendingHead === pendingQueue.length) {
+      pendingQueue.length = 0;
+      pendingHead = 0;
+    }
     const slot = queue[index];
     try {
       const res = await funcs[slot[SlotPos.FunctionID]](slot[SlotPos.Args]);
@@ -138,6 +145,7 @@ export const createInlineExecutor = ({
       channel.port2.onmessage = null;
       channel.port2.close();
       pendingQueue.length = 0;
+      pendingHead = 0;
       freeStack.length = 0;
       promisesMap.clear();
       stateArr.fill(SlotStateMacro.Free);
