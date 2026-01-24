@@ -4,7 +4,7 @@ import {
   type SignalArguments,
   type WorkerSignal,
 } from "../ipc/transport/shared-memory.ts";
-import { makeTask, TaskIndex, type Task } from "../memory/lock.ts";
+import { makeTask, TaskIndex, type Task, type Lock2 } from "../memory/lock.ts";
 import type {
   ComposedWithKey,
   WorkerSettings,
@@ -28,6 +28,7 @@ type ArgumentsForCreateWorkerQueue = {
   signals: SignalArguments;
   workerOptions?: WorkerSettings;
   lock: ReturnType<typeof import("../memory/lock.ts").lock2>;
+  returnLock?: Lock2;
 };
 
 export type CreateWorkerRxQueue = ReturnType<typeof createWorkerRxQueue>;
@@ -43,6 +44,7 @@ export const createWorkerRxQueue = (
     },
     workerOptions,
     lock,
+    returnLock,
   }: ArgumentsForCreateWorkerQueue,
 ) => {
   const PLACE_HOLDER = (_?: unknown) => {
@@ -162,6 +164,7 @@ export const createWorkerRxQueue = (
     hasFramesToOptimize: () => completedFrames.size > 0,
     hasCompleted,
     hasPending: () => toWork.size !== 0,
+    returnLock,
     blockingResolve: async () => {
       blockingSlot[TaskIndex.FuntionID] = signals.rpcId[0];
       blockingSlot.payloadType = PayloadType.Undefined;

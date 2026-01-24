@@ -50,6 +50,12 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
       LockBoundSector: lock.lockSector,
       payload: lock.payload,
     })
+  const returnLockState =
+    lock2({
+      headers: returnLock.headers,
+      LockBoundSector: returnLock.lockSector,
+      payload: returnLock.payload,
+    })
     
 
 
@@ -108,6 +114,7 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     moreThanOneThread,
     workerOptions,
     lock: lockState,
+    returnLock: returnLockState,
   });
 
   rxStatus[0] = 0;

@@ -1,6 +1,7 @@
 import { assert, assertEquals } from "jsr:@std/assert";
 import LinkList from "../src/ipc/tools/LinkList.ts";
-import { LockBound, lock2, makeTask } from "../src/memory/lock.ts";
+import { LockBound, lock2, makeTask, TaskIndex } from "../src/memory/lock.ts";
+import { decodePayload } from "../src/memory/payloadCodec.ts";
 
 const makeLock = () => {
   const toBeSent = new LinkList<ReturnType<typeof makeTask>>();
@@ -89,4 +90,53 @@ Deno.test("decode syncs worker bits", () => {
   assert(lock.decode());
   assertEquals(lock.workerBits[0], lock.hostBits[0]);
   assertEquals(lock.decode(), false);
+});
+
+Deno.test("resolveHost decodes into queue and acks worker bits", () => {
+  const lockSector = new SharedArrayBuffer(
+    LockBound.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2,
+  );
+  const headers = new SharedArrayBuffer(
+    LockBound.padding +
+      (LockBound.slots * TaskIndex.TotalBuff) * LockBound.slots,
+  );
+  const payload = new SharedArrayBuffer(
+    64 * 1024 * 1024,
+    { maxByteLength: 64 * 1024 * 1024 },
+  );
+  const lock = lock2({
+    headers,
+    LockBoundSector: lockSector,
+    payload,
+  });
+  const headersBuffer = new Uint32Array(headers);
+  const decode = decodePayload({ sab: payload, headersBuffer });
+
+  const results: unknown[] = [];
+  const queue = Array.from({ length: 2 }, (_, i) => {
+    const task = makeTask();
+    task[TaskIndex.ID] = i;
+    task.resolve = (value) => {
+      results[i] = value;
+    };
+    task.reject = (reason) => {
+      results[i] = reason;
+    };
+    return task;
+  });
+
+  const responses = [123, "ok"];
+  for (let i = 0; i < responses.length; i++) {
+    const task = makeTask();
+    task[TaskIndex.ID] = i;
+    task.value = responses[i];
+    lock.encode(task);
+  }
+
+  const resolveHost = lock.resolveHost({ queue, decode });
+
+  assert(resolveHost());
+  assertEquals(results, responses);
+  assertEquals(lock.workerBits[0], lock.hostBits[0]);
+  assertEquals(resolveHost(), false);
 });
