@@ -19,9 +19,9 @@ export const hostDispatcherLoop = ({
   queue: MultiQueue;
   signalBox: MainSignal;
   channelHandler: ChannelHandler;
-}) => {
+  }) => {
   const check = () => {
-    txStatus[0] = 1;
+    Atomics.store(txStatus, 0, 1);
     let progressed = false;
 
     const resolved = completeFrame() as number | undefined;
@@ -32,7 +32,7 @@ export const hostDispatcherLoop = ({
       progressed = true;
     }
 
-    if (hasPendingFrames() && rxStatus[0] === 0) {
+    if (hasPendingFrames() && Atomics.load(rxStatus, 0) === 0) {
       Atomics.notify(opView, 0, 1);
     }
 
@@ -46,7 +46,7 @@ export const hostDispatcherLoop = ({
       return;
     }
 
-    txStatus[0] = 0;
+    Atomics.store(txStatus, 0, 0);
     check.isRunning = false;
   };
 

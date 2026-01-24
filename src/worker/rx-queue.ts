@@ -1,6 +1,6 @@
 import "../polyfills/promise-with-resolvers.ts";
 import LinkList from "../ipc/tools/LinkList.ts";
-import { makeTask, TaskFlag, TaskIndex, type Task, type Lock2 } from "../memory/lock.ts";
+import { TaskFlag, TaskIndex, type Task, type Lock2 } from "../memory/lock.ts";
 import type {
   ComposedWithKey,
   WorkerSettings,
@@ -29,16 +29,6 @@ export const createWorkerRxQueue = (
 
   let hasAnythingFinished = 0;
 
-  const newSlot = () => {
-    const task = makeTask() as Task;
-    task[TaskIndex.FuntionID] = 0;
-    task[TaskIndex.ID] = 0;
-    task.value = undefined;
-    task.resolve = PLACE_HOLDER;
-    task.reject = PLACE_HOLDER;
-    return task;
-  };
-
   type AsyncFunction = (...args: any[]) => Promise<any>;
 
   const jobs = listOfFunctions.reduce((acc, fixed) => (
@@ -65,11 +55,9 @@ export const createWorkerRxQueue = (
 
     let task = lock.resolved.shift?.() as Task | undefined;
     while (task) {
-      const slot = newSlot();
-      slot.value = task.value;
-      slot[TaskIndex.FuntionID] = task[TaskIndex.FuntionID];
-      slot[TaskIndex.ID] = task[TaskIndex.ID];
-      enqueueSlot(slot);
+      task.resolve = PLACE_HOLDER;
+      task.reject = PLACE_HOLDER;
+      enqueueSlot(task);
       task = lock.resolved.shift?.() as Task | undefined;
     }
 
@@ -80,6 +68,7 @@ export const createWorkerRxQueue = (
     slot[TaskIndex.FlagsToHost] = isError ? TaskFlag.Reject : 0;
     if (!returnLock.encode(slot)) return false;
     hasAnythingFinished--;
+    lock.recyclecList.push(slot);
     return true;
   };
 

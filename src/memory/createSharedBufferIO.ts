@@ -24,7 +24,7 @@ export const createSharedDynamicBufferIO = ({
   const lockSAB =
       sab ??
       new SharedArrayBuffer(
-        64 * 1024 * 1024,
+        4 * 1024 * 1024,
         { maxByteLength: 64 * 1024 * 1024 },
       );
 

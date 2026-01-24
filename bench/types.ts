@@ -24,9 +24,7 @@ if (isMain) {
 
   // helpers
   const runCF = async <T>(n: number, fn: () => Promise<T>) => {
-    const promises = Array.from({ length: n }, fn);
-    send(); // flush CF batch
-    await Promise.all(promises);
+    await Promise.all(Array.from({ length: n }, fn));
   };
 
   const runClassic = async <T>(n: number, val: T) => {
@@ -60,12 +58,7 @@ if (isMain) {
 
   group("knitting", () => {
     for (const n of sizes) {
-      bench(`string -> (${n})`, async () => {
-        await runCF(n, async () => call.toString(string));
-      });
-      bench(`large string -> (${n})`, async () => {
-        await runCF(n, async () => call.toString(bigString));
-      });
+
       bench(`number -> (${n})`, async () => {
         await runCF(n, async () => call.toNumber(num));
       });
@@ -92,20 +85,27 @@ if (isMain) {
         `void -> (${n})`,
         async () => await runCF(n, async () => call.toVoid()),
       );
+
+      bench(`string -> (${n})`, async () => {
+        await runCF(n, async () => call.toString(string));
+      });
+
       bench(
         `small array -> (${n})`,
         async () => await runCF(n, async () => call.toObject(smallArray)),
       );
-
+      bench(
+        `object -> (${n})`,
+        async () => await runCF(n, async () => call.toObject(obj)),
+      );
+      bench(`large string -> (${n})`, async () => {
+        await runCF(n, async () => call.toString(bigString));
+      });
       bench(
         `big Array -> (${n})`,
         async () => {
           await runCF(n, async () => call.toObject(bigArray));
         },
-      );
-      bench(
-        `object -> (${n})`,
-        async () => await runCF(n, async () => call.toObject(obj)),
       );
       bench(
         `big object -> (${n})`,
@@ -116,12 +116,7 @@ if (isMain) {
 
   group("worker", () => {
     for (const n of sizes) {
-      bench(`string -> (${n})`, async () => {
-        await runClassic(n, string);
-      });
-      bench(`large string -> (${n})`, async () => {
-        await runClassic(n, bigString);
-      });
+
       bench(`number -> (${n})`, async () => {
         await runClassic(n, num);
       });
@@ -134,13 +129,22 @@ if (isMain) {
 
       bench(`void -> (${n})`, async () => await runClassic(n, undefined));
 
+            bench(`string -> (${n})`, async () => {
+        await runClassic(n, string);
+      });
+
       bench(
         `small array -> (${n})`,
         async () => await runClassic(n, smallArray),
       );
+  
 
-      bench(`big Array -> (${n})`, async () => await runClassic(n, bigArray));
       bench(`object -> (${n})`, async () => await runClassic(n, obj));
+            bench(`large string -> (${n})`, async () => {
+        await runClassic(n, bigString);
+      });
+       bench(`big Array -> (${n})`, async () => await runClassic(n, bigArray));
+
       bench(`big object -> (${n})`, async () => await runClassic(n, bigObj));
     }
   });

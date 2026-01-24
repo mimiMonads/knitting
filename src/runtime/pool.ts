@@ -57,17 +57,7 @@ export const spawnWorkerContext = ({
     lockSector: new SharedArrayBuffer(
       LockBound.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2,
     ),
-    headers: new SharedArrayBuffer(
-      LockBound.padding +
-        (LockBound.slots * TaskIndex.TotalBuff) * LockBound.slots,
-    ),
-    payload: new SharedArrayBuffer(
-      64 * 1024 * 1024,
-      { maxByteLength: 64 * 1024 * 1024 },
-    ),
-  };
-  const returnLockBuffers: LockBuffers = {
-    lockSector: new SharedArrayBuffer(
+    payloadSector: new SharedArrayBuffer(
       LockBound.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2,
     ),
     headers: new SharedArrayBuffer(
@@ -75,7 +65,23 @@ export const spawnWorkerContext = ({
         (LockBound.slots * TaskIndex.TotalBuff) * LockBound.slots,
     ),
     payload: new SharedArrayBuffer(
-      64 * 1024 * 1024,
+      4 * 1024 * 1024,
+      { maxByteLength: 64 * 1024 * 1024 },
+    ),
+  };
+  const returnLockBuffers: LockBuffers = {
+    lockSector: new SharedArrayBuffer(
+      LockBound.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2,
+    ),
+    payloadSector: new SharedArrayBuffer(
+      LockBound.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2,
+    ),
+    headers: new SharedArrayBuffer(
+      LockBound.padding +
+        (LockBound.slots * TaskIndex.TotalBuff) * LockBound.slots,
+    ),
+    payload: new SharedArrayBuffer(
+      4 * 1024 * 1024,
       { maxByteLength: 64 * 1024 * 1024 },
     ),
   };
@@ -84,11 +90,13 @@ export const spawnWorkerContext = ({
     headers: lockBuffers.headers,
     LockBoundSector: lockBuffers.lockSector,
     payload: lockBuffers.payload,
+    payloadSector: lockBuffers.payloadSector,
   });
   const returnLock = lock2({
     headers: returnLockBuffers.headers,
     LockBoundSector: returnLockBuffers.lockSector,
     payload: returnLockBuffers.payload,
+    payloadSector: returnLockBuffers.payloadSector,
   });
 
   const signals = createSharedMemoryTransport({
@@ -158,10 +166,10 @@ export const spawnWorkerContext = ({
     if (check.isRunning === true) return;
 
     // Prevent worker from sleeping before the dispatcher loop starts.
-    signalBox.txStatus[0] = 1;
+    Atomics.store(signalBox.txStatus, 0, 1);
     // Use opView as a wake counter in lock2 mode to avoid lost wakeups.
     Atomics.add(thisSignal, 0, 1);
-    if (signalBox.rxStatus[0] === 0) {
+    if (Atomics.load(signalBox.rxStatus, 0) === 0) {
       Atomics.notify(thisSignal, 0, 1);
     }
     check.isRunning = true;
@@ -177,10 +185,10 @@ export const spawnWorkerContext = ({
       if (check.isRunning === false) {
         check.isRunning = true;
         // Prevent worker from sleeping before the dispatcher loop starts.
-        signalBox.txStatus[0] = 1;
+        Atomics.store(signalBox.txStatus, 0, 1);
         // Use opView as a wake counter in lock2 mode to avoid lost wakeups.
         Atomics.add(thisSignal, 0, 1);
-        if (signalBox.rxStatus[0] === 0) {
+        if (Atomics.load(signalBox.rxStatus, 0) === 0) {
           Atomics.notify(thisSignal, 0, 1);
         }
         Promise.resolve().then(check);

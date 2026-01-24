@@ -25,10 +25,10 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
   if (!sab) {
     throw new Error("worker missing transport SAB");
   }
-  if (!lock?.headers || !lock?.lockSector || !lock?.payload) {
+  if (!lock?.headers || !lock?.lockSector || !lock?.payload || !lock?.payloadSector) {
     throw new Error("worker missing lock SABs");
   }
-  if (!returnLock?.headers || !returnLock?.lockSector || !returnLock?.payload) {
+  if (!returnLock?.headers || !returnLock?.lockSector || !returnLock?.payload || !returnLock?.payloadSector) {
     throw new Error("worker missing return lock SABs");
   }
 
@@ -47,12 +47,14 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
       headers: lock.headers,
       LockBoundSector: lock.lockSector,
       payload: lock.payload,
+      payloadSector: lock.payloadSector,
     })
   const returnLockState =
     lock2({
       headers: returnLock.headers,
       LockBoundSector: returnLock.lockSector,
       payload: returnLock.payload,
+      payloadSector: returnLock.payloadSector,
     })
     
 
@@ -102,7 +104,7 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     returnLock: returnLockState,
   });
 
-  rxStatus[0] = 1;
+  Atomics.store(rxStatus, 0, 1);
 
   const BATCH_MAX = 32;
   const WRITE_MAX = 32;
@@ -128,7 +130,7 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     
 
       if (!progressed) {
-        if (txStatus[0] === 1) {
+        if (Atomics.load(txStatus, 0) === 1) {
           pauseGeneric();
           continue;
         }

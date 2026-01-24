@@ -33,6 +33,7 @@ export type LockBuffers = {
   headers: SharedArrayBuffer;
   lockSector: SharedArrayBuffer;
   payload: SharedArrayBuffer;
+  payloadSector: SharedArrayBuffer;
 };
 
 // ──────────────────────────────────────────────────────────────────────────────

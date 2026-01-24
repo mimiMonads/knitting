@@ -169,6 +169,7 @@ export const lock2 = ({
   headers,
   LockBoundSector,
   payload,
+  payloadSector,
   resultList,
   toSentList,
   recycleList
@@ -176,6 +177,7 @@ export const lock2 = ({
   headers?: SharedArrayBuffer;
   LockBoundSector?: SharedArrayBuffer;
   payload?: SharedArrayBuffer;
+  payloadSector?: SharedArrayBuffer;
   toSentList?: LinkList<Task>;
   resultList?: LinkList<Task>;
   recycleList?: LinkList<Task>;
@@ -218,11 +220,22 @@ export const lock2 = ({
 
   const payloadSAB = payload ??
     new SharedArrayBuffer(
-      64 * 1024 * 1024,
+      4 * 1024 * 1024,
       { maxByteLength: 64 * 1024 * 1024 },
     );
-  const encodeTask = encodePayload({ sab: payloadSAB  , headersBuffer});
-  const decodeTask = decodePayload({ sab: payloadSAB , headersBuffer});
+  const payloadLockSAB = payloadSector ??
+    new SharedArrayBuffer(LockBound.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2);
+
+  const encodeTask = encodePayload({
+    sab: payloadSAB,
+    headersBuffer,
+    lockSector: payloadLockSAB,
+  });
+  const decodeTask = decodePayload({
+    sab: payloadSAB,
+    headersBuffer,
+    lockSector: payloadLockSAB,
+  });
 
   const LastLocal = new Uint32Array(1)
   const LastWorker = new Uint32Array(1)
@@ -288,7 +301,7 @@ const slotOffset = (at: number) =>
 
     // Take the highest free bit: idx = 31 - clz32(free)
     uwuIdx = 31 - clz32(free);
-    encodeTask(task, uwuIdx);
+    if (!encodeTask(task, uwuIdx)) return false;
     
     return encodeAt(task, uwuIdx, 1 << uwuIdx);
 
@@ -385,7 +398,17 @@ const slotOffset = (at: number) =>
 
 
   const decodeAt = (at: number, bit: number): boolean => {
-    const task = makeTaskFrom(headersBuffer, slotOffset(at));
+    const recycled = recyclecList.shift?.() as Task | undefined;
+    let task: Task;
+    if (recycled) {
+      fillTaskFrom(recycled, headersBuffer, slotOffset(at));
+      recycled.value = null;
+      recycled.resolve = def;
+      recycled.reject = def;
+      task = recycled;
+    } else {
+      task = makeTaskFrom(headersBuffer, slotOffset(at));
+    }
 
 
     // workerBits[0] = LastWorker[0] ^=  bit

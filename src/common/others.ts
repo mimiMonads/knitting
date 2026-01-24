@@ -45,13 +45,8 @@ export const getCallerFilePath = () => {
   const stackOffset = 3;
   const href = getCallerFilePathForBun(stackOffset);
 
-  let at = 0
-  if (linkingMap.has(href)){
-    linkingMap.set(href,at)
-  }else{
-    let at = linkingMap.get(href)!
-    linkingMap.set(href, ++at)
-  }
+  const at = linkingMap.get(href) ?? 0;
+  linkingMap.set(href, at + 1);
 
   return [href, at] as [string, number];
 };

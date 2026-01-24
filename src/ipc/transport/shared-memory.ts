@@ -58,12 +58,12 @@ export const createSharedMemoryTransport = (
     : new Int32Array(sab, SIGNAL_OFFSETS.op, 1);
 
   if (isMainThread) {
-    op[0] = 0;
+    Atomics.store(new Int32Array(sab, SIGNAL_OFFSETS.op, 1), 0, 0);
   }
 
   const rxStatus = new Int32Array(sab, SIGNAL_OFFSETS.rxStatus, 1);
 
-  rxStatus[0] = 1;
+  Atomics.store(rxStatus, 0, 1);
   return {
     sab,
     op,
