@@ -1,12 +1,10 @@
 import { type MultiQueue } from "./tx-queue.ts";
-import { type MainSignal, OP } from "../ipc/transport/shared-memory.ts";
+import { type MainSignal } from "../ipc/transport/shared-memory.ts";
 import { MessageChannel } from "node:worker_threads";
-import type { WorkerSettings } from "../types.ts";
 
 export const hostDispatcherLoop = ({
   signalBox: {
     opView,
-    op,
     txStatus,
     rxStatus,
   },
@@ -14,108 +12,42 @@ export const hostDispatcherLoop = ({
     completeFrame,
     hasPendingFrames,
     flushToWorker,
-    rejectFrame,
-    completeImmediate,
+    txIdle,
   },
   channelHandler,
-  workerOptions,
 }: {
   queue: MultiQueue;
   signalBox: MainSignal;
   channelHandler: ChannelHandler;
-  totalNumberOfThread: number;
-  workerOptions?: WorkerSettings;
 }) => {
-  let catchEarly = true;
-  let a = 0;
   const check = () => {
-    switch (op[0]) {
-      case OP.FastResolve: {
-        completeImmediate();
-        op[0] = OP.AllTasksDone;
-        Promise.resolve().then(check);
-        return;
-      }
-      case OP.WorkerWaiting:
-        txStatus[0] = 1;
+    txStatus[0] = 1;
+    let progressed = false;
 
-        if (rxStatus[0] === 1) {
-          Atomics.notify(opView, 0, 1);
-          completeFrame();
-          Promise.resolve().then(check);
-          return;
-        }
+    const resolved = completeFrame() as number | undefined;
+    if ((resolved ?? 0) > 0) progressed = true;
 
-        do {
-          completeFrame();
-        } while (op[0] === OP.WorkerWaiting);
-
-        txStatus[0] = 0;
-
-        Promise.resolve().then(check);
-        return;
-      case OP.AllTasksDone:
-        if (hasPendingFrames()) {
-          Atomics.notify(opView, 0, 1);
-          flushToWorker();
-          Promise.resolve().then(check);
-        } else {
-          txStatus[0] = 0;
-          op[0] = OP.MainStop;
-          check.isRunning = false;
-          catchEarly = true;
-          //console.log(a);
-        }
-        return;
-
-      case OP.WaitingForMore:
-        if (hasPendingFrames()) {
-          flushToWorker();
-
-          Promise.resolve().then(check);
-        } else {
-          if (catchEarly === true) {
-            catchEarly = false;
-            Promise.resolve().then(check);
-
-            return;
-          }
-          op[0] = OP.MainReadyToRead;
-          channelHandler.notify();
-        }
-        return;
-      case OP.ErrorThrown: {
-        // Error was thrown in the worker queue
-        rejectFrame();
-        op[0] = OP.MainReadyToRead;
-        if (catchEarly === true) {
-          catchEarly = false;
-          Promise.resolve().then(check);
-          return;
-        }
-
-        channelHandler.notify();
-
-        return;
-      }
-
-      case OP.HighPriorityResolve:
-      case OP.HighPriorityResolveLock:
-      case OP.MainReadyToRead: {
-        if (catchEarly === true) {
-          catchEarly = false;
-          Promise.resolve().then(check);
-          return;
-        }
-        channelHandler.notify();
-        return;
-      }
-      case OP.MainSend:
-      case OP.MainSendLock:
-        a++;
-        Promise.resolve().then(check);
-        return;
+    while (hasPendingFrames()) {
+      if (!flushToWorker()) break;
+      progressed = true;
     }
+
+    if (hasPendingFrames() && rxStatus[0] === 0) {
+      Atomics.notify(opView, 0, 1);
+    }
+
+    if (progressed) {
+      Promise.resolve().then(check);
+      return;
+    }
+
+    if (!txIdle()) {
+      channelHandler.notify();
+      return;
+    }
+
+    txStatus[0] = 0;
+    check.isRunning = false;
   };
 
   // This is not the best way to do it but it should work for now

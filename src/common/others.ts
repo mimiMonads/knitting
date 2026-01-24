@@ -62,7 +62,6 @@ export const beat = (): number => Number(hrtime.bigint()) / 1e4;
 
 import { createWriteStream, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { OP_TAG } from "../ipc/transport/shared-memory.ts";
 
 export const signalDebuggerV2 = ({
   thread,
@@ -113,9 +112,7 @@ export const signalDebuggerV2 = ({
 
       const line =
         `${color}${isMain ? "M" : "T"}${thread}${reset}${tab}${tab}` + // thread
-        `${tag}${
-          // @ts-ignore
-          String(OP_TAG[last]! ?? last).padStart(1, " ")}${reset}${tab}` + // tag + prev value
+        `${tag}${String(last).padStart(1, " ")}${reset}${tab}` + // tag + prev value
         `${(now - born).toFixed(2).padStart(9)}${tab}` + // since born
         `${(now - lastBeat).toFixed(2).padStart(9)}${tab}` + // since last
         `${hits.toString().padStart(8)}${tab}` + // hits of prev

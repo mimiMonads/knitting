@@ -2,11 +2,9 @@ import { isMainThread, workerData } from "node:worker_threads";
 import { createWorkerRxQueue } from "./rx-queue.ts";
 import {
   createSharedMemoryTransport,
-  OP,
-  workerSignal,
 } from "../ipc/transport/shared-memory.ts";
 import { lock2 } from "../memory/lock.ts";
-import type { DebugOptions, WorkerData } from "../types.ts";
+import type { WorkerData } from "../types.ts";
 import { getFunctions } from "./get-functions.ts";
 import { pauseGeneric, sleepUntilChanged } from "./timers.ts";
 
@@ -59,11 +57,10 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     
 
 
-  const timeToAwait = Math.max(1, workerData.totalNumberOfThread) * 50;
-  const totalNumberOfThread = workerData.totalNumberOfThread;
-  const moreThanOneThread = totalNumberOfThread > 1;
+  const spinMicroseconds = Math.max(1, workerData.totalNumberOfThread) * 50;
+  const parkMs = Math.max(1, workerData.totalNumberOfThread) * 50;
 
-  const { opView, op, rxStatus, txStatus } = signals;
+  const { opView, rxStatus, txStatus } = signals;
 
   const pauseUntil = sleepUntilChanged({
     opView,
@@ -92,104 +89,55 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     throw "no imports where found uwu";
   }
 
-  const signal = workerSignal(signals);
-
   const {
-    enqueue,
     enqueueLock,
-    serviceOne,
+    serviceBatchImmediate,
     hasCompleted,
-    write,
-    allDone,
-    serviceOneImmediate,
+    writeBatch,
     hasPending,
-    blockingResolve,
-    blockingResolveLock,
-    preResolve,
-    hasFramesToOptimize,
   } = createWorkerRxQueue({
     listOfFunctions,
-    signal,
-    signals,
-    moreThanOneThread,
     workerOptions,
     lock: lockState,
     returnLock: returnLockState,
   });
 
-  rxStatus[0] = 0;
+  rxStatus[0] = 1;
 
-  while (true) {
-    switch (op[0]) {
-      case OP.AllTasksDone:
-      case OP.WaitingForMore:
-      case OP.ErrorThrown:
-      case OP.WakeUp: {
-        pauseGeneric();
-        continue;
-      }
-      case OP.HighPriorityResolve: {
-        await blockingResolve();
-        continue;
-      }
-      case OP.HighPriorityResolveLock: {
-        await blockingResolveLock();
-        continue;
+  const BATCH_MAX = 32;
+  const WRITE_MAX = 32;
+
+ 
+    let wakeSeq = Atomics.load(opView, 0);
+
+    while (true) {
+      let progressed = false;
+
+      if (enqueueLock()) {
+        progressed = true;
       }
 
-      case OP.WorkerWaiting: {
-        if (hasPending()) {
-          await serviceOneImmediate();
-        } else {
-          if (hasFramesToOptimize()) {
-            preResolve();
-          } else {
-            if (txStatus[0] === 1) continue;
-            pauseUntil(OP.WorkerWaiting, timeToAwait, 1);
-          }
-        }
-
-        continue;
+      if (hasPending()) {
+        const worked = await serviceBatchImmediate(BATCH_MAX);
+        if (worked > 0) progressed = true;
       }
 
-      case OP.MainReadyToRead: {
-        if (hasCompleted()) {
-          write();
+      if (hasCompleted()) {
+        if (writeBatch(WRITE_MAX) > 0) progressed = true;
+      }
+    
+
+      if (!progressed) {
+        if (txStatus[0] === 1) {
+          pauseGeneric();
           continue;
         }
-
-        await serviceOne();
-
-        if (allDone()) {
-          op[0] = OP.AllTasksDone;
-          continue;
-        }
-
-        continue;
-      }
-      case OP.MainSend:
-        {
-          enqueue();
-        }
-
-        continue;
-      case OP.MainSendLock:
-        {
-          enqueueLock();
-        }
-
-        continue;
-      case OP.FastResolve: {
-        pauseUntil(OP.FastResolve, 15, 5);
-        continue;
-      }
-      case OP.MainStop: {
-        pauseUntil(OP.MainStop, 15, 50);
-        continue;
+        pauseUntil(wakeSeq, spinMicroseconds, parkMs);
+        wakeSeq = Atomics.load(opView, 0);
       }
     }
   }
-};
+
 
 if (isMainThread === false) {
   workerMainLoop(workerData as WorkerData);

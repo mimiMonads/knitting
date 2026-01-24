@@ -1,5 +1,5 @@
-import { LockBound, Task , TaskIndex } from "./lock.ts";
-
+import { LockBound,  TaskIndex } from "./lock.ts";
+import type { Task  } from "./lock.ts";
 
 /**
  * 

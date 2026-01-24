@@ -11,7 +11,7 @@ export const toVoid = task({ f: async (_: void) => {} });
 export const toObject = task({ f: async (a: object) => a });
 
 if (isMain) {
-  const { call, fastCall, shutdown, send } = createPool({})({
+  const { call, shutdown, send } = createPool({})({
     toNumber,
     toString,
     toBigInt,
@@ -20,7 +20,7 @@ if (isMain) {
     toObject,
   });
 
-  const sizes = [1, 10, 100];
+  const sizes = [1, 100];
 
   // helpers
   const runCF = async <T>(n: number, fn: () => Promise<T>) => {
@@ -28,9 +28,7 @@ if (isMain) {
     send(); // flush CF batch
     await Promise.all(promises);
   };
-  const runFF = async <T>(n: number, fn: () => Promise<T>) => {
-    await Promise.all(Array.from({ length: n }, fn));
-  };
+
   const runClassic = async <T>(n: number, val: T) => {
     await Promise.all(Array.from({ length: n }, () => toResolve(val)));
   };
@@ -38,24 +36,15 @@ if (isMain) {
   const user = (_, i: number) => ({
     id: i,
     name: `User ${i}`,
-    age: Math.floor(Math.random() * 80),
-    tags: Array.from(
-      { length: 10 },
-      () => Math.random().toString(36).slice(2),
-    ),
-    address: {
-      city: "Testville",
-      zip: Math.floor(Math.random() * 90000 + 10000),
-    },
   });
 
-  const times = 100;
+  const times = 200;
   const string = "helloWorld";
   const bigString = "helloWorld".repeat(times);
   const num = 77777;
   const min = -(2n ** 63n - 1n);
   const max = 2n ** 64n - 1n;
-  const smallArray = [...Object.values(user(null, 1))];
+  const smallArray = [1,2,3,4,5,6,7,8];
 
   const obj = user(null, 1);
 
@@ -68,101 +57,6 @@ if (isMain) {
     users: Array.from({ length: times }, user),
   };
 
-  group("knitting fast", () => {
-    bench(`string -> (1)`, async () => {
-      await fastCall.toString(string);
-    });
-    bench(`large string -> (1)`, async () => {
-      await fastCall.toString(bigString);
-    });
-    bench(`number -> (1)`, async () => {
-      await fastCall.toNumber(num);
-    });
-    bench(
-      `min bigint -> (1)`,
-      async () => await fastCall.toBigInt(min),
-    );
-    bench(
-      `max bigint -> (1)`,
-      async () => await fastCall.toBigInt(max),
-    );
-    bench(
-      `boolean true -> (1)`,
-      async () => await fastCall.toBoolean(true),
-    );
-    bench(
-      `boolean false -> (1)`,
-      async () => await fastCall.toBoolean(false),
-    );
-    bench(`void -> (1)`, async () => await fastCall.toVoid());
-    bench(
-      `small array -> (1)`,
-      async () => await fastCall.toObject(smallArray),
-    );
-    bench(
-      `big Array -> (1)`,
-      async () => await fastCall.toObject(bigArray),
-    );
-    bench(`object -> (1)`, async () => await fastCall.toObject(obj));
-    bench(
-      `big object -> (1)`,
-      async () => await fastCall.toObject(bigObj),
-    );
-
-    const firstRemoved = sizes.slice(1);
-
-    for (const n of firstRemoved) {
-      bench(`string -> (${n})`, async () => {
-        await runFF(n, async () => fastCall.toString(string));
-      });
-      bench(`large string -> (${n})`, async () => {
-        await runFF(n, async () => fastCall.toString(bigString));
-      });
-      bench(`number -> (${n})`, async () => {
-        await runFF(n, async () => fastCall.toNumber(num));
-      });
-      bench(
-        `min bigint -> (${n})`,
-        async () => await runFF(n, async () => fastCall.toBigInt(min)),
-      );
-
-      bench(
-        `max bigint -> (${n})`,
-        async () => await runFF(n, async () => fastCall.toBigInt(max)),
-      );
-      bench(
-        `boolean true -> (${n})`,
-        async () => await runFF(n, async () => fastCall.toBoolean(true)),
-      );
-
-      bench(
-        `boolean false -> (${n})`,
-        async () => await runFF(n, async () => fastCall.toBoolean(false)),
-      );
-
-      bench(
-        `void -> (${n})`,
-        async () => await runFF(n, async () => fastCall.toVoid()),
-      );
-      bench(
-        `small array -> (${n})`,
-        async () => await runFF(n, async () => fastCall.toObject(smallArray)),
-      );
-
-      bench(
-        `big Array -> (${n})`,
-        async () => await runFF(n, async () => fastCall.toObject(bigArray)),
-      );
-      bench(
-        `object -> (${n})`,
-        async () => await runFF(n, async () => fastCall.toObject(obj)),
-      );
-      bench(
-        `big object -> (${n})`,
-        async () => await runFF(n, async () => fastCall.toObject(bigObj)),
-      );
-    }
-  });
 
   group("knitting", () => {
     for (const n of sizes) {

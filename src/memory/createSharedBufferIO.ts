@@ -1,6 +1,6 @@
 
 import { Buffer as NodeBuffer } from "node:buffer";
-import { LockBound, Task, TaskIndex } from "./lock.ts";
+import { LockBound, TaskIndex } from "./lock.ts";
 const page = 1024 * 4;
 
 const textEncode = new TextEncoder();

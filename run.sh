@@ -2,8 +2,8 @@
 set -euo pipefail
 
 # Usage:
-#   ./run-benches.sh            # writes *.md
-#   ./run-benches.sh --json     # writes *.json and passes --json to the benches
+#   ./run.sh            # writes *.md
+#   ./run.sh --json     # writes *.json and passes --json to the benches
 #
 # Flags:
 #   --bench-dir=<path>          # default: bench

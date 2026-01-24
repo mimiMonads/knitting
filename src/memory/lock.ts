@@ -51,7 +51,6 @@ export type Task = [
   value: unknown;
   resolve: (value?: unknown) => void;
   reject: (reason?: unknown) => void;
-  payloadType?: number;
 };
 
 export enum TaskIndex {
@@ -89,7 +88,6 @@ export const makeTask = () => {
     value: unknown
     resolve: (value?: unknown)=>void
     reject:  (reason?: unknown)=>void
-    payloadType?: number
   } as unknown as Task
 
 
@@ -342,10 +340,10 @@ const slotOffset = (at: number) =>
    */
   const resolveHost = ({
     queue,
-    decode
+    onResolved,
   }: {
     queue: Task[],
-    decode: ReturnType<typeof decodePayload>
+    onResolved?: (task: Task) => void,
   }) => {
 
     const getTask = takeTask({
@@ -353,8 +351,8 @@ const slotOffset = (at: number) =>
     })
 
 
-    return (): boolean => {
-    let modified = false;
+    return (): number => {
+    let modified = 0;
     // TODO: check if shadowing here is needed
     let uwuIdx = 0 | 0, uwuBit = 0 | 0
     // bits that changed since last time on worker side
@@ -366,7 +364,7 @@ const slotOffset = (at: number) =>
       uwuIdx = 31 - clz32(diff);
     
       const task = getTask(headersBuffer, uwuIdx)
-      decode(task,uwuIdx)
+      decodeTask(task,uwuIdx)
       // once we got it, we free it 
       storeWorker(
         // create the mask 
@@ -374,10 +372,11 @@ const slotOffset = (at: number) =>
       )
 
       settleTask(task)
+      onResolved?.(task)
       // clear that bit from diff
       diff &= ~uwuBit >>> 0;
 
-      modified = true;
+      modified++;
     }
 
     return modified;
