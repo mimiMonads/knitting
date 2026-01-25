@@ -1,4 +1,5 @@
 import { Worker } from "node:worker_threads";
+import { withResolvers } from "../../src/common/with-resolvers.ts";
 
 // ─── Worker Code ──────────────────────────────────────────────────────────────
 const workerCode = `
@@ -73,7 +74,7 @@ for (let i = 0; i < WORKER_COUNT; i++) {
 // ─── Public API: Round-Robin Message Dispatch ────────────────────────────────
 export function toResolve(payload?: unknown): Promise<unknown> {
   const id = nextId++;
-  const def = Promise.withResolvers();
+  const def = withResolvers();
 
   const index = nextWorkerIndex++ % WORKER_COUNT;
   maps[index].set(id, def);

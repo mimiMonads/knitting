@@ -1,4 +1,3 @@
-import "../polyfills/promise-with-resolvers.ts";
 import LinkList from "../ipc/tools/LinkList.ts";
 import { TaskFlag, TaskIndex, type Task, type Lock2 } from "../memory/lock.ts";
 import type {

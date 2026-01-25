@@ -1,4 +1,5 @@
 import { Worker } from "node:worker_threads";
+import { withResolvers } from "../../src/common/with-resolvers.ts";
 
 const workerCode = `
   import { parentPort } from 'node:worker_threads';
@@ -50,7 +51,7 @@ let nextId = 0;
 
 export function toResolve(message?: unknown) {
   const id = nextId++;
-  const def = Promise.withResolvers();
+  const def = withResolvers();
   map.set(id, def);
   worker.postMessage({ id, payload: message });
   return def.promise;

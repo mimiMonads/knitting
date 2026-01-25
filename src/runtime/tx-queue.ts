@@ -1,6 +1,6 @@
-import "../polyfills/promise-with-resolvers.ts";
 import LinkedList from "../ipc/tools/LinkList.ts";
 import { makeTask, TaskIndex, type Task, type Lock2 } from "../memory/lock.ts";
+import { withResolvers } from "../common/with-resolvers.ts";
 
 type RawArguments = unknown;
 type WorkerResponse = unknown;
@@ -113,7 +113,7 @@ export function createHostTxQueue({
 
       const index = freeSockets.pop()!;
       const slot = queue[index];
-      const deferred = Promise.withResolvers<WorkerResponse>();
+      const deferred = withResolvers<WorkerResponse>();
 
       // Set info
       slot.value = rawArgs;

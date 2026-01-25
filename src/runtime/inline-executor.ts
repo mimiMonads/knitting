@@ -1,5 +1,6 @@
 import type { WorkerCall, tasks } from "../types.ts";
 import { MessageChannel } from "node:worker_threads";
+import { withResolvers } from "../common/with-resolvers.ts";
 
 type TaskID = number;
 type FunctionID = number;
@@ -111,7 +112,7 @@ export const createInlineExecutor = ({
 
   const call = ({ fnNumber }: WorkerCall) => (args: unknown) => {
     const taskID = genTaskID();
-    const deferred = Promise.withResolvers();
+    const deferred = withResolvers();
     promisesMap.set(taskID, deferred);
 
     const index = allocIndex();
