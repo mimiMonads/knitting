@@ -235,5 +235,3 @@ export const createPool = ({
     send: () => runnable.forEach((fn) => fn()),
   } as Pool<T>;
 };
-
-export const createPoolLock = (options: CreatePool) => createPool(options);
