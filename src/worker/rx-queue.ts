@@ -52,12 +52,12 @@ export const createWorkerRxQueue = (
       return false;
     }
 
-    let task = lock.resolved.shift?.() as Task | undefined;
+    let task = lock.resolved.shift() as Task | undefined;
     while (task) {
       task.resolve = PLACE_HOLDER;
       task.reject = PLACE_HOLDER;
       enqueueSlot(task);
-      task = lock.resolved.shift?.() as Task | undefined;
+      task = lock.resolved.shift() as Task | undefined;
     }
 
     return true;
@@ -106,9 +106,7 @@ export const createWorkerRxQueue = (
     },
     serviceBatchImmediate: async (max: number, timeBudgetMs?: number) => {
       let processed = 0;
-      const deadline = timeBudgetMs
-        ? performance.now() + timeBudgetMs
-        : null;
+
 
       while (processed < max && toWork.size !== 0) {
         const slot = toWork.shift()!;
@@ -118,14 +116,16 @@ export const createWorkerRxQueue = (
             [slot[TaskIndex.FuntionID]](slot.value);
           hasAnythingFinished++;
           completedFrames.push(slot);
+         
         } catch (err) {
           slot.value = err;
           hasAnythingFinished++;
           errorFrames.push(slot);
+         
         }
 
         processed++;
-        if (deadline && performance.now() >= deadline) break;
+       
       }
 
       return processed;

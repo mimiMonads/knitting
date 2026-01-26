@@ -21,7 +21,10 @@ export const hostDispatcherLoop = ({
   channelHandler: ChannelHandler;
   }) => {
   const check = () => {
-    Atomics.store(txStatus, 0, 1);
+    
+    // THIS IS JUST A HINT
+    txStatus[0] = 1
+    //Atomics.store(txStatus, 0, 1);
     let progressed = false;
 
     const resolved = completeFrame() as number | undefined;
@@ -46,7 +49,9 @@ export const hostDispatcherLoop = ({
       return;
     }
 
-    Atomics.store(txStatus, 0, 0);
+    // THIS IS JUST A HINT
+    txStatus[0] = 0
+    //Atomics.store(txStatus, 0, 0);
     check.isRunning = false;
   };
 

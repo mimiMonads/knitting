@@ -64,13 +64,6 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
 
   const { opView, rxStatus, txStatus } = signals;
 
-  const pauseUntil = sleepUntilChanged({
-    opView,
-    at: 0,
-    rxStatus,
-    txStatus,
-  });
-
   const listOfFunctions = await getFunctions({
     list: workerData.list,
     isWorker: true,
@@ -108,6 +101,15 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
 
   const BATCH_MAX = 32;
   const WRITE_MAX = 32;
+
+  const pauseUntil = sleepUntilChanged({
+    opView,
+    at: 0,
+    rxStatus,
+    txStatus,
+    enqueueLock,
+    write: () => hasCompleted() ? writeBatch(WRITE_MAX) : 0,
+  });
 
  
     let wakeSeq = Atomics.load(opView, 0);
