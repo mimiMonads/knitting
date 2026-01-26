@@ -61,7 +61,16 @@ export type ValidInput =
   | void
   | JSONValue
   | Map<Serializable, Serializable>
-  | Set<Serializable>;
+  | Set<Serializable>
+  | symbol
+  | Uint8Array
+  | Int32Array
+  | Float64Array
+  | BigInt64Array
+  | BigUint64Array
+  | DataView
+  | Error
+  | Date;
 
 export type Args = ValidInput | Serializable;
 

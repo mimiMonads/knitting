@@ -7,8 +7,39 @@ import { NumericBuffer } from "../ipc/protocol/parsers/NumericBuffer.ts";
 
 const memory = new ArrayBuffer(8);
 const Float64View = new Float64Array(memory);
-const UBigInt64View = new BigUint64Array(memory);
+const BigInt64View = new BigInt64Array(memory);
 const Uint32View = new Uint32Array(memory);
+const BIGINT64_MIN = -(1n << 63n);
+const BIGINT64_MAX = (1n << 63n) - 1n;
+
+const encodeBigIntBinary = (value: bigint) => {
+  let sign = 0;
+  let abs = value;
+  if (value < 0n) {
+    sign = 1;
+    abs = -value;
+  }
+
+  const bytes: number[] = [];
+  while (abs > 0n) {
+    bytes.push(Number(abs & 0xffn));
+    abs >>= 8n;
+  }
+
+  const out = new Uint8Array(1 + bytes.length);
+  out[0] = sign;
+  for (let i = 0; i < bytes.length; i++) out[i + 1] = bytes[i];
+  return out;
+};
+
+const decodeBigIntBinary = (bytes: Uint8Array) => {
+  const sign = bytes[0];
+  let value = 0n;
+  for (let i = bytes.length - 1; i >= 1; i--) {
+    value = (value << 8n) | BigInt(bytes[i]);
+  }
+  return sign === 1 ? -value : value;
+};
 
 const initStaticIO = (headersBuffer: Uint32Array) => {
   const u32Bytes = Uint32Array.BYTES_PER_ELEMENT;
@@ -60,7 +91,25 @@ export const encodePayload = ({
   const args = task.value
   switch (typeof args) {
     case "bigint":
-      UBigInt64View[0] = args;
+      if (args < BIGINT64_MIN || args > BIGINT64_MAX) {
+        const binary = encodeBigIntBinary(args);
+        if (staticIO && binary.byteLength <= staticIO.maxBytes) {
+          const written = staticIO.writeBinary(binary, slotIndex);
+          if (written !== -1) {
+            task[TaskIndex.Type] = PayloadBuffer.StaticBigInt;
+            task[TaskIndex.PayloadLen] = written;
+            task[TaskIndex.Start] = 0;
+            task[TaskIndex.End] = 0;
+            return true;
+          }
+        }
+
+        task[TaskIndex.Type] = PayloadBuffer.BigInt;
+        if (!reserveDynamic(task, binary.byteLength)) return false;
+        io.writeBinary(binary, task[TaskIndex.Start])
+        return true
+      }
+      BigInt64View[0] = args;
       task[TaskIndex.Type] = PayloadSingal.BigInt;
       task[TaskIndex.Start] = Uint32View[0];
       task[TaskIndex.End] = Uint32View[1];
@@ -98,6 +147,24 @@ export const encodePayload = ({
       }
 
       switch (args.constructor) {
+        case Uint8Array: {
+          const bytes = (args as Uint8Array).byteLength;
+          if (staticIO && bytes <= staticIO.maxBytes) {
+            const written = staticIO.writeBinary(args as Uint8Array, slotIndex);
+            if (written !== -1) {
+              task[TaskIndex.Type] = PayloadBuffer.StaticBinary;
+              task[TaskIndex.PayloadLen] = written;
+              task[TaskIndex.Start] = 0;
+              task[TaskIndex.End] = 0;
+              return true;
+            }
+          }
+
+          task[TaskIndex.Type] = PayloadBuffer.Binary;
+          if (!reserveDynamic(task, bytes)) return false;
+          io.writeBinary(args as Uint8Array, task[TaskIndex.Start]);
+          return true;
+        }
         case Object:
         case Array: {
           const text = JSON.stringify(args)
@@ -133,6 +200,67 @@ export const encodePayload = ({
           io.write8Binary(float64, task[TaskIndex.Start])
           return true
         }
+        case Int32Array: {
+          const view = args as Int32Array;
+          const bytes = view.byteLength;
+          task[TaskIndex.Type] = PayloadBuffer.Int32Array;
+          if (!reserveDynamic(task, bytes)) return false;
+          io.writeBinary(new Uint8Array(view.buffer, view.byteOffset, view.byteLength), task[TaskIndex.Start]);
+          return true;
+        }
+        case Float64Array: {
+          const view = args as Float64Array;
+          const bytes = view.byteLength;
+          task[TaskIndex.Type] = PayloadBuffer.Float64Array;
+          if (!reserveDynamic(task, bytes)) return false;
+          io.write8Binary(view, task[TaskIndex.Start]);
+          return true;
+        }
+        case BigInt64Array: {
+          const view = args as BigInt64Array;
+          const bytes = view.byteLength;
+          task[TaskIndex.Type] = PayloadBuffer.BigInt64Array;
+          if (!reserveDynamic(task, bytes)) return false;
+          io.writeBinary(new Uint8Array(view.buffer, view.byteOffset, view.byteLength), task[TaskIndex.Start]);
+          return true;
+        }
+        case BigUint64Array: {
+          const view = args as BigUint64Array;
+          const bytes = view.byteLength;
+          task[TaskIndex.Type] = PayloadBuffer.BigUint64Array;
+          if (!reserveDynamic(task, bytes)) return false;
+          io.writeBinary(new Uint8Array(view.buffer, view.byteOffset, view.byteLength), task[TaskIndex.Start]);
+          return true;
+        }
+        case DataView: {
+          const view = args as DataView;
+          const bytes = view.byteLength;
+          task[TaskIndex.Type] = PayloadBuffer.DataView;
+          if (!reserveDynamic(task, bytes)) return false;
+          io.writeBinary(new Uint8Array(view.buffer, view.byteOffset, view.byteLength), task[TaskIndex.Start]);
+          return true;
+        }
+        case Error: {
+          const err = args as Error;
+          const payload = JSON.stringify({
+            name: err.name,
+            message: err.message,
+            stack: err.stack ?? "",
+          });
+          const bytes = Buffer.byteLength(payload, "utf8");
+          task[TaskIndex.Type] = PayloadBuffer.Error;
+          if (!reserveDynamic(task, bytes)) return false;
+          task[TaskIndex.PayloadLen] = io.writeUtf8(payload, task[TaskIndex.Start]);
+          return true;
+        }
+        case Date: {
+          const time = (args as Date).getTime();
+          Float64View[0] = time;
+          task[TaskIndex.Type] = PayloadBuffer.Date;
+          task[TaskIndex.Start] = Uint32View[0];
+          task[TaskIndex.End] = Uint32View[1];
+          return true;
+        }
       }
 
       {
@@ -163,7 +291,28 @@ export const encodePayload = ({
         return true
       }
     case "symbol":
-      throw "notImplemented yet"
+      {
+        const key = Symbol.keyFor(args);
+        if (key === undefined) {
+          throw "only Symbol.for(...) keys are supported";
+        }
+        const textBytes = Buffer.byteLength(key, "utf8");
+        if (staticIO && textBytes <= staticIO.maxBytes) {
+          const written = staticIO.writeUtf8(key, slotIndex);
+          if (written !== -1) {
+            task[TaskIndex.Type] = PayloadBuffer.StaticSymbol;
+            task[TaskIndex.PayloadLen] = written;
+            task[TaskIndex.Start] = 0;
+            task[TaskIndex.End] = 0;
+            return true;
+          }
+        }
+
+        task[TaskIndex.Type] = PayloadBuffer.Symbol;
+        if (!reserveDynamic(task, textBytes)) return false;
+        task[TaskIndex.PayloadLen] = io.writeUtf8(key, task[TaskIndex.Start]);
+        return true;
+      }
     case "undefined":
       task[TaskIndex.Type]  = PayloadSingal.Undefined
       return true
@@ -205,7 +354,7 @@ export const decodePayload = ({
     case PayloadSingal.BigInt:
       Uint32View[0] = task[TaskIndex.Start];
       Uint32View[1] = task[TaskIndex.End];
-      task.value = UBigInt64View[0];
+      task.value = BigInt64View[0];
       return;
     case PayloadSingal.True:
       task.value = true;
@@ -258,6 +407,118 @@ export const decodePayload = ({
       task.value = JSON.parse(
         staticIO!.readUtf8(0, task[TaskIndex.PayloadLen], slotIndex)
       )
+    return
+    case PayloadBuffer.BigInt:
+      task.value = decodeBigIntBinary(
+        io.readBytesCopy(
+          task[TaskIndex.Start],
+          task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
+        )
+      )
+      registry.free(task[TaskIndex.slotBuffer])
+    return
+    case PayloadBuffer.StaticBigInt:
+      task.value = decodeBigIntBinary(
+        staticIO!.readBytesCopy(0, task[TaskIndex.PayloadLen], slotIndex)
+      )
+    return
+    case PayloadBuffer.Symbol:
+      task.value = Symbol.for(
+        io.readUtf8(
+          task[TaskIndex.Start],
+          task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
+        )
+      )
+      registry.free(task[TaskIndex.slotBuffer])
+    return
+    case PayloadBuffer.StaticSymbol:
+      task.value = Symbol.for(
+        staticIO!.readUtf8(0, task[TaskIndex.PayloadLen], slotIndex)
+      )
+    return
+    case PayloadBuffer.Int32Array: {
+      const bytes = io.readBytesCopy(
+        task[TaskIndex.Start],
+        task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
+      )
+      task.value = new Int32Array(
+        bytes.buffer,
+        bytes.byteOffset,
+        bytes.byteLength >>> 2
+      )
+      registry.free(task[TaskIndex.slotBuffer])
+    return
+    }
+    case PayloadBuffer.Float64Array: {
+      task.value = io.read8BytesFloatCopy(
+        task[TaskIndex.Start],
+        task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
+      )
+      registry.free(task[TaskIndex.slotBuffer])
+    return
+    }
+    case PayloadBuffer.BigInt64Array: {
+      const bytes = io.readBytesCopy(
+        task[TaskIndex.Start],
+        task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
+      )
+      task.value = new BigInt64Array(
+        bytes.buffer,
+        bytes.byteOffset,
+        bytes.byteLength >>> 3
+      )
+      registry.free(task[TaskIndex.slotBuffer])
+    return
+    }
+    case PayloadBuffer.BigUint64Array: {
+      const bytes = io.readBytesCopy(
+        task[TaskIndex.Start],
+        task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
+      )
+      task.value = new BigUint64Array(
+        bytes.buffer,
+        bytes.byteOffset,
+        bytes.byteLength >>> 3
+      )
+      registry.free(task[TaskIndex.slotBuffer])
+    return
+    }
+    case PayloadBuffer.DataView: {
+      const bytes = io.readBytesCopy(
+        task[TaskIndex.Start],
+        task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
+      )
+      task.value = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+      registry.free(task[TaskIndex.slotBuffer])
+    return
+    }
+    case PayloadBuffer.Error: {
+      const text = io.readUtf8(
+        task[TaskIndex.Start],
+        task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
+      )
+      const parsed = JSON.parse(text) as { name?: string; message?: string; stack?: string }
+      const err = new Error(parsed.message ?? "")
+      if (parsed.name) err.name = parsed.name
+      if (parsed.stack) err.stack = parsed.stack
+      task.value = err
+      registry.free(task[TaskIndex.slotBuffer])
+    return
+    }
+    case PayloadBuffer.Date:
+      Uint32View[0] = task[TaskIndex.Start]
+      Uint32View[1] = task[TaskIndex.End]
+      task.value = new Date(Float64View[0])
+    return
+    case PayloadBuffer.Binary:
+      task.value = io.readBytesCopy(
+        task[TaskIndex.Start],
+        task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
+      )
+      registry.free(task[TaskIndex.slotBuffer])
+    return
+    case PayloadBuffer.StaticBinary:
+      task.value = staticIO!.readBytesCopy(0, task[TaskIndex.PayloadLen], slotIndex)
     return
     case PayloadBuffer.Serializable:
       task.value = deserialize(

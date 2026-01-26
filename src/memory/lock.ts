@@ -29,6 +29,19 @@ export enum PayloadBuffer {
   NumericBuffer = 14,
   StaticString = 15,
   StaticJson = 16,
+  Binary = 17,
+  StaticBinary = 18,
+  Int32Array = 19,
+  Float64Array = 20,
+  BigInt64Array = 21,
+  BigUint64Array = 22,
+  DataView = 23,
+  Error = 24,
+  Date = 25,
+  Symbol = 26,
+  StaticSymbol = 27,
+  BigInt = 28,
+  StaticBigInt = 29,
 }
 
 
