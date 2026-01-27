@@ -1,6 +1,7 @@
 import { type MultiQueue } from "./tx-queue.ts";
 import { type MainSignal } from "../ipc/transport/shared-memory.ts";
 import { MessageChannel, type MessagePort } from "node:worker_threads";
+import { IS_BUN, IS_DENO } from "../common/runtime.ts";
 
 export const hostDispatcherLoop = ({
   signalBox: {
@@ -31,28 +32,37 @@ export const hostDispatcherLoop = ({
     txStatus[0] = 1
     let progressed = false;
 
-
-    do{
+    if (a_load(rxStatus, 0) === 0 && hasPendingFrames() ) {
+      
+      a_store(opView, 0, 1);
+      a_notify(opView, 0, 1);
+      do{
       progressed = false;
+      if ((completeFrame() ?? 0) > 0) progressed = true;
+
           while (hasPendingFrames()) {
           if (!flushToWorker()) break;
           progressed = true;
         }
 
-        if ((completeFrame() ?? 0) > 0) progressed = true;
+    }while(progressed)
+    }
+
+    do{
+      progressed = false;
+          if ((completeFrame() ?? 0) > 0) progressed = true;
+          
+          while (hasPendingFrames()) {
+          if (!flushToWorker()) break;
+          progressed = true;
+        }
+
+        
     }while(progressed)
 
 
-    if (hasPendingFrames() && a_load(rxStatus, 0) === 0) {
-      a_store(opView, 0, 1);
-      a_notify(opView, 0, 1);
-    }
-
-
-  
-
     if (!txIdle()) {
-      notify();
+      scheduleNotify();
       return;
     }
 
@@ -64,6 +74,13 @@ export const hostDispatcherLoop = ({
 
   // This is not the best way to do it but it should work for now
   check.isRunning = false;
+
+  const scheduleNotify =
+    IS_BUN && typeof queueMicrotask === "function"
+      ? () => queueMicrotask(check)
+      : IS_DENO && typeof setImmediate === "function"
+      ? () => setImmediate(check)
+      : notify;
 
   return check;
 };

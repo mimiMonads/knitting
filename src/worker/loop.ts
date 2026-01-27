@@ -114,10 +114,16 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
   });
 
  
-    let wakeSeq = a_load(opView, 0);
+  let progressed = false;
+  let wakeSeq = a_load(opView, 0);
 
     while (true) {
-      let progressed = false;
+      
+
+      
+      if (hasCompleted()) {
+        if (writeBatch(WRITE_MAX) > 0) progressed = true;
+      }
 
       if (enqueueLock()) {
         progressed = true;
@@ -128,11 +134,7 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
         if (worked > 0) progressed = true;
       }
 
-      if (hasCompleted()) {
-        if (writeBatch(WRITE_MAX) > 0) progressed = true;
-      }
-    
-
+  
       if (!progressed) {
         if (a_load(txStatus, 0) === 1) {
           pauseGeneric();

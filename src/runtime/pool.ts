@@ -18,6 +18,7 @@ import type {
 } from "../types.ts";
 import { jsrIsGreatAndWorkWithoutBugs } from "../worker/loop.ts";
 import { Worker } from "node:worker_threads";
+import { IS_DENO } from "../common/runtime.ts";
 
 //const isBrowser = typeof window !== "undefined";
 
@@ -166,7 +167,10 @@ export const spawnWorkerContext = ({
   const a_notify = Atomics.notify;
   const a_store = Atomics.store;
   const a_load = Atomics.load;
-  const qm = queueMicrotask;
+  const scheduleCheck =
+    IS_DENO && typeof setImmediate === "function"
+      ? setImmediate
+      : queueMicrotask;
   const send = () => {
     if (check.isRunning === true) return;
 
@@ -179,7 +183,7 @@ export const spawnWorkerContext = ({
     a_notify(thisSignal, 0, 1);
     check.isRunning = true
 
-    qm(check)
+    scheduleCheck(check);
   };
 
   const call = ({ fnNumber }: WorkerCall) => {
@@ -199,7 +203,7 @@ export const spawnWorkerContext = ({
           a_notify(thisSignal, 0, 1);
         }
        
-        qm(check)
+        scheduleCheck(check);
         
       }
 

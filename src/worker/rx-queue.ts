@@ -38,10 +38,15 @@ export const createWorkerRxQueue = (
   const completedFrames = new LinkList<Task>();
   const errorFrames = new LinkList<Task>();
 
-  const enqueueSlot = (slot: Task) => {
-    toWork.push(slot);
-    return true;
-  };
+  const toWorkPush = (slot: Task) => toWork.push(slot);
+  const toWorkShift = () => toWork.shift();
+  const completedShift = () => completedFrames.shift();
+  const completedUnshift = (slot: Task) => completedFrames.unshift(slot);
+  const completedPush = (slot: Task) => completedFrames.push(slot);
+  const errorShift = () => errorFrames.shift();
+  const errorUnshift = (slot: Task) => errorFrames.unshift(slot);
+  const errorPush = (slot: Task) => errorFrames.push(slot);
+  const recyclePush = (slot: Task) => lock.recyclecList.push(slot);
 
   const hasCompleted = workerOptions?.resolveAfterFinishingAll === true
     ? () => hasAnythingFinished !== 0 && toWork.size === 0
@@ -56,7 +61,7 @@ export const createWorkerRxQueue = (
     while (task) {
       task.resolve = PLACE_HOLDER;
       task.reject = PLACE_HOLDER;
-      enqueueSlot(task);
+      toWorkPush(task);
       task = lock.resolved.shift() as Task | undefined;
     }
 
@@ -67,24 +72,24 @@ export const createWorkerRxQueue = (
     slot[TaskIndex.FlagsToHost] = isError ? TaskFlag.Reject : 0;
     if (!returnLock.encode(slot)) return false;
     hasAnythingFinished--;
-    lock.recyclecList.push(slot);
+    recyclePush(slot);
     return true;
   };
 
   const writeOne = () => {
     if (errorFrames.size > 0) {
-      const slot = errorFrames.shift()!;
+      const slot = errorShift()!;
       if (!sendReturn(slot, true)) {
-        errorFrames.unshift(slot);
+        errorUnshift(slot);
         return false;
       }
       return true;
     }
 
     if (completedFrames.size > 0) {
-      const slot = completedFrames.shift()!;
+      const slot = completedShift()!;
       if (!sendReturn(slot, false)) {
-        completedFrames.unshift(slot);
+        completedUnshift(slot);
         return false;
       }
       return true;
@@ -109,18 +114,18 @@ export const createWorkerRxQueue = (
 
 
       while (processed < max && toWork.size !== 0) {
-        const slot = toWork.shift()!;
+        const slot = toWorkShift()!;
 
         try {
           slot.value = await jobs
             [slot[TaskIndex.FuntionID]](slot.value);
           hasAnythingFinished++;
-          completedFrames.push(slot);
+          completedPush(slot);
          
         } catch (err) {
           slot.value = err;
           hasAnythingFinished++;
-          errorFrames.push(slot);
+          errorPush(slot);
          
         }
 

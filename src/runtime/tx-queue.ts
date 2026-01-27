@@ -46,11 +46,12 @@ export function createHostTxQueue({
 
   // Local count
   const toBeSent = new LinkedList<QueueTask>();
-  const toBeSentPush = toBeSent.push.bind(toBeSent);
-  const toBeSentShift = toBeSent.shift.bind(toBeSent);
-  const freePush = freeSockets.push.bind(freeSockets);
-  const freePop = freeSockets.pop.bind(freeSockets);
-  const queuePush = queue.push.bind(queue);
+  const toBeSentPush = (task: QueueTask) => toBeSent.push(task);
+  const toBeSentShift = () => toBeSent.shift();
+  const freePush = (id: number) => freeSockets.push(id);
+  const freePop = () => freeSockets.pop();
+  const queuePush = (task: QueueTask) => queue.push(task);
+  const { encode , encodeManyFrom} = lock
   let toBeSentCount = 0;
   let inUsed = 0;
 
@@ -88,7 +89,7 @@ export function createHostTxQueue({
 
   const flushToWorker = () => {
     if (toBeSentCount === 0) return false;
-    const encoded = lock.encodeManyFrom(toBeSent, toBeSentCount);
+    const encoded = encodeManyFrom(toBeSent);
     if (encoded === 0) return false;
     toBeSentCount -= encoded;
     return true;
@@ -123,7 +124,7 @@ export function createHostTxQueue({
       slot.resolve = deferred.resolve;
       slot.reject = deferred.reject;
 
-      if (!lock.encode(slot)) {
+      if (!encode(slot)) {
         toBeSentPush(slot);
         toBeSentCount++;
       }

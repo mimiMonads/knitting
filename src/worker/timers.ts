@@ -2,7 +2,7 @@ type PauseOptions = {
   pauseInNanoseconds?: number;
 };
 
-const DEFAULT_PAUSE_TIME = 200;
+const DEFAULT_PAUSE_TIME = 500;
 
 const a_load = Atomics.load;
 const a_store = Atomics.store;
@@ -35,7 +35,7 @@ export const sleepUntilChanged = (
     txStatus: Int32Array;
     pauseInNanoseconds?: number;
     at: number;
-    enqueueLock?: () => boolean;
+    enqueueLock: () => boolean;
     write?: () => number | boolean;
   },
 ) => {
@@ -46,7 +46,7 @@ export const sleepUntilChanged = (
   const tryProgress = () => {
     let progressed = false;
 
-    if (enqueueLock?.()) progressed = true;
+    if (enqueueLock()) progressed = true;
 
     if (write) {
       const wrote = write();
