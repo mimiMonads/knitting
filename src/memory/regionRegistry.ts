@@ -17,6 +17,12 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
   const startAndIndex = new Uint32Array(LockBound.slots);
   const size64bit = new Uint32Array(LockBound.slots);
 
+  // Atomics aliases (hot path)
+  const a_load = Atomics.load;
+  const a_store = Atomics.store;
+  // Uint32Array method alias (hot path)
+  const saiCopyWithin = startAndIndex.copyWithin.bind(startAndIndex);
+
   const clz32 = Math.clz32;
 
   const EMPTY = 0xFFFFFFFF >>> 0;
@@ -67,7 +73,7 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
 
   const updateTable = () => {
     // state = which bits are currently "in use" under toggle-protocol
-    const w = Atomics.load(workerBits, 0) | 0;
+    const w = a_load(workerBits, 0) | 0;
     const state = (hostLast ^ w) >>> 0;
 
     // freeBits = bits where host/worker agree (toggle resolved)
@@ -136,14 +142,14 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
       usedBits |= freeBit;
 
       hostLast ^= freeBit;
-      return Atomics.store(hostBits, 0, hostLast);
+      return a_store(hostBits, 0, hostLast);
     }
 
     // ========= gap at beginning =========
     const firstStart = sai[0] & START_MASK;
     if (firstStart >= (size >>> 0)) {
       // shift right by 1 (native memmove)
-      sai.copyWithin(1, 0, tl);
+      saiCopyWithin(1, 0, tl);
 
       sai[0] = slotIndex;
       sz[slotIndex] = size;
@@ -155,7 +161,7 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
       usedBits |= freeBit;
 
       hostLast ^= freeBit;
-      return Atomics.store(hostBits, 0, hostLast);
+      return a_store(hostBits, 0, hostLast);
     }
 
     // ========= search for a gap between entries =========
@@ -171,7 +177,7 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
       if ((nextStart - curEnd) >>> 0 < (size >>> 0)) continue;
 
       // shift right from (at+1) to insert at (at+1)
-      sai.copyWithin(at + 2, at + 1, tl);
+      saiCopyWithin(at + 2, at + 1, tl);
 
       sai[at + 1] = (curEnd | slotIndex) >>> 0;
       sz[slotIndex] = size;
@@ -183,7 +189,7 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
       usedBits |= freeBit;
 
       hostLast ^= freeBit;
-      return Atomics.store(hostBits, 0, hostLast);
+      return a_store(hostBits, 0, hostLast);
     }
 
     // ========= append at end =========
@@ -203,7 +209,7 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
       usedBits |= freeBit;
 
       hostLast ^= freeBit;
-      return Atomics.store(hostBits, 0, hostLast);
+      return a_store(hostBits, 0, hostLast);
     }
 
     return -1;
@@ -211,7 +217,7 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
 
   const free = (index: number) => {
     workerLast ^= 1 << index;
-    Atomics.store(workerBits, 0, workerLast);
+    a_store(workerBits, 0, workerLast);
   };
 
   return {

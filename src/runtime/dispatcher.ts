@@ -1,6 +1,6 @@
 import { type MultiQueue } from "./tx-queue.ts";
 import { type MainSignal } from "../ipc/transport/shared-memory.ts";
-import { MessageChannel } from "node:worker_threads";
+import { MessageChannel, type MessagePort } from "node:worker_threads";
 
 export const hostDispatcherLoop = ({
   signalBox: {
@@ -20,32 +20,39 @@ export const hostDispatcherLoop = ({
   signalBox: MainSignal;
   channelHandler: ChannelHandler;
   }) => {
+  const a_load = Atomics.load;
+  const a_store = Atomics.store;
+  const a_notify = Atomics.notify;
+  const notify = channelHandler.notify.bind(channelHandler);
+
   const check = () => {
     
     // THIS IS JUST A HINT
     txStatus[0] = 1
-    //Atomics.store(txStatus, 0, 1);
     let progressed = false;
 
-    const resolved = completeFrame() as number | undefined;
-    if ((resolved ?? 0) > 0) progressed = true;
 
-    while (hasPendingFrames()) {
-      if (!flushToWorker()) break;
-      progressed = true;
+    do{
+      progressed = false;
+          while (hasPendingFrames()) {
+          if (!flushToWorker()) break;
+          progressed = true;
+        }
+
+        if ((completeFrame() ?? 0) > 0) progressed = true;
+    }while(progressed)
+
+
+    if (hasPendingFrames() && a_load(rxStatus, 0) === 0) {
+      a_store(opView, 0, 1);
+      a_notify(opView, 0, 1);
     }
 
-    if (hasPendingFrames() && Atomics.load(rxStatus, 0) === 0) {
-      Atomics.notify(opView, 0, 1);
-    }
 
-    if (progressed) {
-      Promise.resolve().then(check);
-      return;
-    }
+  
 
     if (!txIdle()) {
-      channelHandler.notify();
+      notify();
       return;
     }
 
@@ -63,13 +70,19 @@ export const hostDispatcherLoop = ({
 
 export class ChannelHandler {
   public channel: MessageChannel;
+  public port1: MessagePort;
+  public port2: MessagePort;
+  readonly #post2: (message: unknown) => void;
 
   constructor() {
     this.channel = new MessageChannel();
+    this.port1 = this.channel.port1;
+    this.port2 = this.channel.port2;
+    this.#post2 = this.port2.postMessage.bind(this.port2);
   }
 
   public notify(): void {
-    this.channel.port2.postMessage(null);
+    this.#post2(null);
   }
 
   /**
@@ -78,9 +91,9 @@ export class ChannelHandler {
    */
   public open(f: () => void): void {
     //@ts-ignore
-    this.channel.port1.onmessage = f;
-    this.channel.port2.start();
-    this.channel.port1.start();
+    this.port1.onmessage = f;
+    this.port2.start();
+    this.port1.start();
   }
 
   /**
@@ -88,10 +101,10 @@ export class ChannelHandler {
    */
   public close(): void {
     //@ts-ignore
-    this.channel.port1.onmessage = null;
+    this.port1.onmessage = null;
     //@ts-ignore
-    this.channel.port2.onmessage = null;
-    this.channel.port1.close();
-    this.channel.port2.close();
+    this.port2.onmessage = null;
+    this.port1.close();
+    this.port2.close();
   }
 }

@@ -162,18 +162,24 @@ export const spawnWorkerContext = ({
   ) as Worker;
 
   const thisSignal = signalBox.opView;
+  const a_add = Atomics.add;
+  const a_notify = Atomics.notify;
+  const a_store = Atomics.store;
+  const a_load = Atomics.load;
+  const qm = queueMicrotask;
   const send = () => {
     if (check.isRunning === true) return;
 
     // Prevent worker from sleeping before the dispatcher loop starts.
-    Atomics.store(signalBox.txStatus, 0, 1);
+    signalBox.txStatus[0] = 1
+    //Atomics.store(signalBox.txStatus, 0, 1);
     // Use opView as a wake counter in lock2 mode to avoid lost wakeups.
-    Atomics.add(thisSignal, 0, 1);
-    if (Atomics.load(signalBox.rxStatus, 0) === 0) {
-      Atomics.notify(thisSignal, 0, 1);
-    }
-    check.isRunning = true;
-    Promise.resolve().then(check);
+    
+    a_add(thisSignal, 0, 1);
+    a_notify(thisSignal, 0, 1);
+    check.isRunning = true
+
+    qm(check)
   };
 
   const call = ({ fnNumber }: WorkerCall) => {
@@ -185,13 +191,16 @@ export const spawnWorkerContext = ({
       if (check.isRunning === false) {
         check.isRunning = true;
         // Prevent worker from sleeping before the dispatcher loop starts.
-        Atomics.store(signalBox.txStatus, 0, 1);
+        a_store(signalBox.txStatus, 0, 1);
         // Use opView as a wake counter in lock2 mode to avoid lost wakeups.
-        Atomics.add(thisSignal, 0, 1);
-        if (Atomics.load(signalBox.rxStatus, 0) === 0) {
-          Atomics.notify(thisSignal, 0, 1);
+        //Atomics.add(thisSignal, 0, 1);
+        if (a_load(signalBox.rxStatus, 0) === 0) {
+          a_add(thisSignal, 0, 1);
+          a_notify(thisSignal, 0, 1);
         }
-        Promise.resolve().then(check);
+       
+        qm(check)
+        
       }
 
       return pro;

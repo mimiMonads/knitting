@@ -2,12 +2,20 @@ type PauseOptions = {
   pauseInNanoseconds?: number;
 };
 
-const DEFAULT_PAUSE_TIME = 500;
+const DEFAULT_PAUSE_TIME = 200;
+
+const a_load = Atomics.load;
+const a_store = Atomics.store;
+const a_wait = Atomics.wait;
+const p_now = performance.now.bind(performance);
+const a_pause: ((n: number) => void) | undefined = "pause" in Atomics
+  ? (Atomics.pause as (n: number) => void)
+  : undefined;
 
 export const whilePausing = ({ pauseInNanoseconds }: PauseOptions) => {
   const forNanoseconds = pauseInNanoseconds ?? DEFAULT_PAUSE_TIME;
 
-  return "pause" in Atomics ? () => Atomics.pause(forNanoseconds) : () => {};
+  return a_pause ? () => a_pause(forNanoseconds) : () => {};
 };
 
 export const pauseGeneric = whilePausing({});
@@ -57,33 +65,33 @@ export const sleepUntilChanged = (
     spinMicroseconds: number,
     parkMs?: number,
   ) => {
-    const until = performance.now() + (spinMicroseconds / 1000);
+    const until = p_now() + (spinMicroseconds / 1000);
 
     do {
       if (
-        Atomics.load(opView, at) !== value || Atomics.load(txStatus, 0) === 1
+        a_load(opView, at) !== value || a_load(txStatus, 0) === 1
       ) return;
 
       if (tryProgress()) return;
 
       pause();
     } while (
-      performance.now() < until
+      p_now() < until
     );
 
     if (tryProgress()) return;
 
-    Atomics.store(rxStatus, 0, 0)
+    a_store(rxStatus, 0, 0)
 
 
-    Atomics.wait(
+    a_wait(
       opView,
       at,
       value,
       parkMs ?? 50,
     );
 
-    Atomics.store(rxStatus, 0, 1)
+    a_store(rxStatus, 0, 1)
 
   };
 };

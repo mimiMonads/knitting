@@ -63,6 +63,8 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
   const parkMs = Math.max(1, workerData.totalNumberOfThread) * 50;
 
   const { opView, rxStatus, txStatus } = signals;
+  const a_store = Atomics.store;
+  const a_load = Atomics.load;
 
   const listOfFunctions = await getFunctions({
     list: workerData.list,
@@ -97,10 +99,10 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     returnLock: returnLockState,
   });
 
-  Atomics.store(rxStatus, 0, 1);
+  a_store(rxStatus, 0, 1);
 
   const BATCH_MAX = 32;
-  const WRITE_MAX = 32;
+  const WRITE_MAX = 64;
 
   const pauseUntil = sleepUntilChanged({
     opView,
@@ -112,7 +114,7 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
   });
 
  
-    let wakeSeq = Atomics.load(opView, 0);
+    let wakeSeq = a_load(opView, 0);
 
     while (true) {
       let progressed = false;
@@ -132,12 +134,12 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     
 
       if (!progressed) {
-        if (Atomics.load(txStatus, 0) === 1) {
+        if (a_load(txStatus, 0) === 1) {
           pauseGeneric();
           continue;
         }
         pauseUntil(wakeSeq, spinMicroseconds, parkMs);
-        wakeSeq = Atomics.load(opView, 0);
+        wakeSeq = a_load(opView, 0);
       }
     }
   }

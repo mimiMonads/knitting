@@ -57,8 +57,11 @@ export const createInlineExecutor = ({
   let isInMacro = false;
 
   const channel = new MessageChannel();
+  const port1 = channel.port1;
+  const port2 = channel.port2;
+  const post2 = port2.postMessage.bind(port2);
   //@ts-ignore
-  channel.port1.onmessage = processNext;
+  port1.onmessage = processNext;
 
   const hasPending = () => pendingHead < pendingQueue.length;
 
@@ -96,7 +99,7 @@ export const createInlineExecutor = ({
       cleanup(index);
     }
 
-    if (working > 0) channel.port2.postMessage(null);
+    if (working > 0) post2(null);
   }
 
   function cleanup(index: number) {
@@ -134,17 +137,17 @@ export const createInlineExecutor = ({
   const send = () => {
     if (working === 0 || isInMacro) return;
     isInMacro = true;
-    channel.port2.postMessage(null);
+    post2(null);
   };
 
   return {
     kills: () => {
       //@ts-ignore
-      channel.port1.onmessage = null;
-      channel.port1.close();
+      port1.onmessage = null;
+      port1.close();
       //@ts-ignore
-      channel.port2.onmessage = null;
-      channel.port2.close();
+      port2.onmessage = null;
+      port2.close();
       pendingQueue.length = 0;
       pendingHead = 0;
       freeStack.length = 0;

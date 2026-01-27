@@ -14,6 +14,8 @@ const SIGNAL_OFFSETS = {
   txStatus: CACHE_LINE_BYTES * 2,
 } as const;
 
+const a_store = Atomics.store;
+
 export type Sab = {
   size?: number;
   sharedSab?: SharedArrayBuffer;
@@ -58,12 +60,12 @@ export const createSharedMemoryTransport = (
     : new Int32Array(sab, SIGNAL_OFFSETS.op, 1);
 
   if (isMainThread) {
-    Atomics.store(new Int32Array(sab, SIGNAL_OFFSETS.op, 1), 0, 0);
+    a_store(new Int32Array(sab, SIGNAL_OFFSETS.op, 1), 0, 0);
   }
 
   const rxStatus = new Int32Array(sab, SIGNAL_OFFSETS.rxStatus, 1);
 
-  Atomics.store(rxStatus, 0, 1);
+  a_store(rxStatus, 0, 1);
   return {
     sab,
     op,

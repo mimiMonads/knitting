@@ -259,6 +259,16 @@ let LastWorker = 0 >>> 0;
 
   const resolved = resultList ?? new LinkList<Task>();
 
+  // Atomics aliases (hot path)
+  const a_load = Atomics.load;
+  const a_store = Atomics.store;
+
+  // LinkedList method aliases (hot path)
+  const toBeSentPush = toBeSent.push.bind(toBeSent);
+  const toBeSentShift = toBeSent.shift.bind(toBeSent);
+  const toBeSentUnshift = toBeSent.unshift.bind(toBeSent);
+  const recycleShift = recyclecList.shift.bind(recyclecList);
+  const resolvedPush = resolved.push.bind(resolved);
 
 
 const SLOT_SIZE = LockBound.padding + TaskIndex.TotalBuff;
@@ -268,54 +278,72 @@ const clz32 = Math.clz32
 const slotOffset = (at: number) =>
   (at * SLOT_SIZE) +  LockBound.padding ;
 
-  const enlist = (task: Task) => toBeSent.push(task)
+  const enlist = (task: Task) => toBeSentPush(task)
 
 
-  const encodeAll = (): boolean => {
-   
-    let node = (toBeSent as any).shift() as Task | undefined;
+  const encodeWithState = (task: Task, state: number): number => {
+    const free = (~state) >>> 0;
+    if (free === 0) return 0;
 
-    const lastWorkerBits =  Atomics.load(workerBits, 0)
- 
-    if (!node) return true;
+    uwuIdx = 31 - clz32(free);
+    if (!encodeTask(task, uwuIdx)) return 0;
 
+    uwuBit = 1 << uwuIdx;
+    encodeAt(task, uwuIdx, uwuBit);
+    return uwuBit;
+  };
 
-    while (node) {
-      const task = node;
+  const encodeManyFrom = (list: LinkList<Task>, limit = Infinity): number => {
+    if (limit <= 0) return 0;
 
-      if (!encode(task, LastLocal ^  lastWorkerBits)) {
-        // could not encode this one → put it back at the front
-        // (if your LinkList has a different "push-front" name, swap here)
-        toBeSent.unshift(task);
+    const shiftFrom = list === toBeSent ? toBeSentShift : list.shift.bind(list);
+    const unshiftTo = list === toBeSent ? toBeSentUnshift : list.unshift.bind(list);
 
-        return false;
+    const workerSnapshot = a_load(workerBits, 0);
+    let state = LastLocal ^ workerSnapshot;
+    let encoded = 0;
+
+    while (encoded < limit) {
+      const task = shiftFrom();
+      if (!task) break;
+
+      const bit = encodeWithState(task, state);
+      if (bit === 0) {
+        unshiftTo(task);
+        break;
       }
 
-      node = toBeSent.shift() as Task | undefined;
+      state ^= bit;
+      encoded++;
     }
 
-    // we drained the queue successfully
-    return true;
+    return encoded;
+  };
+
+  const encodeAll = (): boolean => {
+    if (toBeSent.isEmpty) return true;
+    encodeManyFrom(toBeSent, toBeSent.size);
+    return toBeSent.isEmpty;
   };
 
   let uwuIdx = 0 | 0, uwuBit = 0 | 0
 
-  const a_s = Atomics.store
-  const storeHost = (bit: number) => a_s(hostBits, 0, LastLocal ^= bit)
-    const storeWorker = (bit: number) => a_s(workerBits, 0, LastWorker ^=  bit)
+  const storeHost = (bit: number) => a_store(hostBits, 0, LastLocal ^= bit)
+    const storeWorker = (bit: number) => a_store(workerBits, 0, LastWorker ^=  bit)
   const encode = (
     task: Task,
-    state: number = (LastLocal ^ Atomics.load(workerBits , 0)) ,
+    state: number = (LastLocal ^ a_load(workerBits , 0)) ,
   ): boolean => {
-   // free bits are ~state (only consider lower SLOT bits)
-    let free = (~state >>> 0) //  & SLOT_MASK;
+    const free = (~state) >>> 0;
     if (free === 0) return false;
 
-    // Take the highest free bit: idx = 31 - clz32(free)
-    uwuIdx = 31 - clz32(free);
-    if (!encodeTask(task, uwuIdx)) return false;
-    
-    return encodeAt(task, uwuIdx, 1 << uwuIdx);
+    const idx = 31 - clz32(free);
+    uwuIdx = idx;
+    if (!encodeTask(task, idx)) return false;
+
+    const bit = 1 << idx;
+    uwuBit = bit;
+    return encodeAt(task, idx, bit);
 
   
   };
@@ -348,7 +376,7 @@ const slotOffset = (at: number) =>
     let modified = false;
 
     // bits that changed since last time on worker side
-    let diff = Atomics.load(hostBits, 0) ^ LastWorker;
+    let diff = a_load(hostBits, 0) ^ LastWorker;
     //diff &= SLOT_MASK;
 
     // Process all set bits in `diff`, one by one using clz32
@@ -388,7 +416,7 @@ const slotOffset = (at: number) =>
     // TODO: check if shadowing here is needed
     let uwuIdx = 0 | 0, uwuBit = 0 | 0
     // bits that changed since last time on worker side
-    let diff = Atomics.load(hostBits, 0) ^ LastWorker;
+    let diff = a_load(hostBits, 0) ^ LastWorker;
     //diff &= SLOT_MASK;
 
     // Process all set bits in `diff`, one by one using clz32
@@ -417,7 +445,7 @@ const slotOffset = (at: number) =>
 
 
   const decodeAt = (at: number, bit: number): boolean => {
-    const recycled = recyclecList.shift() as Task | undefined;
+    const recycled = recycleShift() as Task | undefined;
     let task: Task;
     if (recycled) {
       fillTaskFrom(recycled, headersBuffer, slotOffset(at));
@@ -429,14 +457,13 @@ const slotOffset = (at: number) =>
       task = makeTaskFrom(headersBuffer, slotOffset(at));
     }
 
-
     // workerBits[0] = LastWorker[0] ^=  bit
    
     decodeTask(task, at)
     storeWorker(bit)
 
 
-    resolved.push(task);
+    resolvedPush(task);
 
     return true;
   };
@@ -446,6 +473,7 @@ const slotOffset = (at: number) =>
   return {
     enlist,
     encode,
+    encodeManyFrom,
     encodeAll,
     decode,
     hasSpace,
