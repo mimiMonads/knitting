@@ -73,7 +73,7 @@ const results = await Promise.all(jobs);
 
 ## API Overview
 
-### `task({ f, href? })`
+### `task({ f, href?, timeout? })`
 
 Wraps a function (sync or async) so it can be registered and executed in
 workers. `call.*()` always returns a promise.
@@ -92,6 +92,22 @@ export const add = task<[number, number], number>({
 });
 ```
 
+Single-task short mode:
+
+```ts
+export const world = task({
+  f: async () => "world",
+}).createPool({
+  threads: 2,
+});
+
+if (isMain) {
+  const results = await Promise.all([world.call()]);
+  console.log("Results:", results);
+  world.shutdown();
+}
+```
+
 ### `createPool(options)(tasks)`
 
 Creates a worker pool and returns:
@@ -106,9 +122,10 @@ Key options:
   an extra lane.
 - `balancer?: "robinRound" | "firstIdle" | "randomLane" | "firstIdleOrRandom"`
   task routing strategy.
-- `worker?: { resolveAfterFinishingAll?: true; NoSideEffects?: true }`
+- `worker?: { resolveAfterFinishingAll?: true; timers?: WorkerTimers }`
+- `dispatcher?: DispatcherSettings`
 - `debug?: { extras?: boolean; logMain?: boolean; logHref?: boolean;
-  logImportedUrl?: boolean; threadOrder?: boolean | number }`
+  logImportedUrl?: boolean }`
 - `source?: string` override the worker entry module.
 
 Example with an inline executor lane:
@@ -117,6 +134,35 @@ Example with an inline executor lane:
 const pool = createPool({
   threads: 3,
   inliner: { position: "last" },
+})({ add });
+```
+
+#### Runtime tuning options
+
+You can tune idle behavior and backoff:
+
+- `worker.timers.spinMicroseconds?: number` busy‑spin budget before parking (µs).
+- `worker.timers.parkMs?: number` `Atomics.wait` timeout when parked (ms).
+- `worker.timers.pauseNanoseconds?: number` `Atomics.pause` duration while spinning (ns).
+- `dispatcher.stallFreeLoops?: number` notify loops before backoff starts.
+- `dispatcher.maxBackoffMs?: number` max backoff delay (ms).
+
+Example:
+
+```ts
+const pool = createPool({
+  threads: 2,
+  worker: {
+    timers: { 
+      spinMicroseconds: 40, 
+      parkMs: 10, 
+      pauseNanoseconds: 200 
+      },
+  },
+  dispatcher: {
+    stallFreeLoops: 64,
+    maxBackoffMs: 5,
+  },
 })({ add });
 ```
 

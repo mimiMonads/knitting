@@ -13,6 +13,7 @@ import type {
   FixPoint,
   FunctionMapType,
   Pool,
+  SingleTaskPool,
   ReturnFixed,
   WorkerInvoke,
   tasks,
@@ -20,25 +21,6 @@ import type {
 
 export const isMain = isMainThread;
 export { endpointSymbol };
-
-export const task = <
-  A extends Args = void,
-  B extends Args = void,
->(
-  I: FixPoint<A, B>,
-): ReturnFixed<A, B> => {
-  const [ href , at] = getCallerFilePath()
-
-  const importedFrom = I?.href ?? new URL(href).href;
-
-  return ({
-    ...I,
-    id: genTaskID(),
-    importedFrom,
-    at,
-    [endpointSymbol]: true,
-  }) as const;
-};
 
 
 /**
@@ -89,6 +71,7 @@ export const createPool = ({
   balancer,
   source,
   worker,
+  dispatcher,
 }: CreatePool) =>
 <T extends tasks>(tasks: T): Pool<T> => {
   /**
@@ -153,6 +136,7 @@ export const createPool = ({
       totalNumberOfThread,
       source,
       workerOptions: worker,
+      dispatcher,
     })
   );
 
@@ -234,4 +218,50 @@ export const createPool = ({
     fastCall: Object.fromEntries(fastEntries) as unknown as FunctionMapType<T>,
     send: () => runnable.forEach((fn) => fn()),
   } as Pool<T>;
+};
+
+const SINGLE_TASK_KEY = "__task__";
+
+const createSingleTaskPool = <A extends Args, B extends Args>(
+  single: ReturnFixed<A, B>,
+  options?: CreatePool,
+): SingleTaskPool<A, B> => {
+  const pool = createPool(options ?? {})({
+    [SINGLE_TASK_KEY]: single,
+  } as tasks);
+
+  return {
+    call: pool.call[SINGLE_TASK_KEY] as SingleTaskPool<A, B>["call"],
+    fastCall: pool.fastCall[SINGLE_TASK_KEY] as SingleTaskPool<A, B>["fastCall"],
+    send: pool.send,
+    shutdown: pool.shutdown,
+  };
+};
+
+export const task = <
+  A extends Args = void,
+  B extends Args = void,
+>(
+  I: FixPoint<A, B>,
+): ReturnFixed<A, B> => {
+  const [ href , at] = getCallerFilePath()
+
+  const importedFrom = I?.href ?? new URL(href).href;
+
+  const out = ({
+    ...I,
+    id: genTaskID(),
+    importedFrom,
+    at,
+    [endpointSymbol]: true,
+  }) as ReturnFixed<A, B>;
+
+  out.createPool = (options?: CreatePool) => {
+    if (isMainThread === false) {
+      return out as unknown as SingleTaskPool<A, B>;
+    }
+    return createSingleTaskPool(out, options);
+  };
+
+  return out;
 };

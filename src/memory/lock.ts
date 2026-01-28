@@ -135,7 +135,7 @@ const fillTaskFrom = (task: Task, array: ArrayLike<number>, at: number) => {
 
 const makeTaskFrom = (array: ArrayLike<number>, at: number) => {
 
-   const task = new Uint32Array(TaskIndex.Size) as Uint32Array & {
+   const task = new Uint32Array(TaskIndex.Size) as unknown as Uint32Array & {
     value: unknown
     resolve: (value?: unknown)=>void
     reject:  (reason?: unknown)=>void
@@ -265,6 +265,7 @@ export const lock2 = ({
 
   let LastLocal = 0 >>> 0
 let LastWorker = 0 >>> 0;
+  let lastTake = 32;
 
   const toBeSent = toSentList ?? new LinkList();
   const recyclecList = recycleList ?? new LinkList()
@@ -398,25 +399,31 @@ const slotOffset = (at: number) =>
    * WORKER SIDE: decode
    */
   const decode = (): boolean => {
-    let modified = false;
-
     // bits that changed since last time on worker side
     let diff = a_load(hostBits, 0) ^ LastWorker;
-    //diff &= SLOT_MASK;
+    if (diff === 0) return false;
 
-    // Process all set bits in `diff`, one by one using clz32
-    while (diff !== 0) {
+    let last = lastTake;
+
+    if (last === 32) {
       uwuIdx = 31 - clz32(diff);
-    
       decodeAt(uwuIdx, uwuBit = 1 << uwuIdx);
-
-      // clear that bit from diff
-      diff &= ~uwuBit >>> 0;
-
-      modified = true;
+      diff ^= uwuBit;
+      last = uwuIdx;
     }
 
-    return modified;
+    while (diff !== 0) {
+      let pick = diff & ((1 << last) - 1);
+      if (pick === 0) pick = diff;
+      uwuIdx = 31 - clz32(pick);
+      decodeAt(uwuIdx, uwuBit = 1 << uwuIdx);
+      diff ^= uwuBit;
+      last = uwuIdx;
+    }
+
+    lastTake = last;
+    if (a_load(hostBits, 0) === (LastWorker >>> 0)) lastTake = 32;
+    return true;
   };
 
 
@@ -436,18 +443,20 @@ const slotOffset = (at: number) =>
     })
 
     const HAS_RESOLVE = onResolved ? true : false
+    let lastResolved = 32;
 
 
     return (): number => {
-    let diff = (a_load(hostBits, 0) ^ LastWorker) >>> 0;
+    let diff = a_load(hostBits, 0) ^ LastWorker;
     if (diff === 0) return 0;
 
     let modified = 0;
     let consumedBits = 0 >>> 0;
+    let last = lastResolved;
 
-    while (diff !== 0) {
+    if (last === 32) {
       const idx = 31 - clz32(diff);
-      const  uwubit = (1 << idx) >>> 0;
+      const  uwubit = 1 << idx;
 
       const task = getTask(headersBuffer, idx);
       decodeTask(task, idx);
@@ -458,9 +467,29 @@ const slotOffset = (at: number) =>
         onResolved!(task)
       }
 
-
-      diff = (diff & ~uwubit) >>> 0;
+      diff ^= uwubit;
       modified++;
+      last = idx;
+    }
+
+    while (diff !== 0) {
+      let pick = diff & ((1 << last) - 1);
+      if (pick === 0) pick = diff;
+      const idx = 31 - clz32(pick);
+      const  uwubit = 1 << idx;
+
+      const task = getTask(headersBuffer, idx);
+      decodeTask(task, idx);
+
+      consumedBits ^= uwubit;
+      settleTask(task);
+      if(HAS_RESOLVE){
+        onResolved!(task)
+      }
+
+      diff ^= uwubit;
+      modified++;
+      last = idx;
     }
 
     if (consumedBits !== 0) {
@@ -468,6 +497,8 @@ const slotOffset = (at: number) =>
       a_store(workerBits, 0, LastWorker);
     }
 
+    lastResolved = last;
+    if (a_load(hostBits, 0) === LastWorker) lastResolved = 32;
     return modified;
   };
   }

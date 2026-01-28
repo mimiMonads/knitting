@@ -76,6 +76,15 @@ export type Args = ValidInput | Serializable;
 
 export type MaybePromise<T> = T | Promise<T>;
 
+export type TaskTimeout =
+  | number
+  | {
+    time: number;
+    maybe?: true;
+    default?: unknown;
+    error?: unknown;
+  };
+
 type BivariantCallback<Args extends unknown[], R> = {
   bivarianceHack(...args: Args): R;
 }["bivarianceHack"];
@@ -112,6 +121,7 @@ export type FunctionMapType<T extends Record<string, TaskLike>> = {
 export interface FixPoint<A extends Args, B extends Args> {
   readonly href?: string;
   readonly f: TaskFn<A, B>;
+  readonly timeout?: TaskTimeout;
 }
 
 export type SecondPart = {
@@ -127,6 +137,16 @@ export type SecondPart = {
   readonly importedFrom: string;
 };
 
+export type SingleTaskPool<
+  A extends Args = Args,
+  B extends Args = Args,
+> = {
+  call: PromiseWrapped<TaskFn<A, B>>;
+  fastCall: PromiseWrapped<TaskFn<A, B>>;
+  send: () => void;
+  shutdown: () => void;
+};
+
 export type Pool<T extends Record<string, TaskLike>> = {
   shutdown: () => void;
   call: FunctionMapType<T>;
@@ -139,7 +159,10 @@ export type ReturnFixed<
   B extends Args = undefined,
 > =
   & FixPoint<A, B>
-  & SecondPart;
+  & SecondPart
+  & {
+    createPool: (options?: CreatePool) => SingleTaskPool<A, B>;
+  };
 
 export type External = unknown;
 
@@ -159,12 +182,37 @@ export type DebugOptions = {
   //logThreads?: boolean;
   logHref?: boolean;
   logImportedUrl?: boolean;
-  threadOrder?: Boolean | number;
 };
 
 export type WorkerSettings = {
   resolveAfterFinishingAll?: true;
-  NoSideEffects?: true;
+  timers?: WorkerTimers;
+};
+
+export type WorkerTimers = {
+  /**
+   * Busy-spin budget before parking (microseconds).
+   */
+  spinMicroseconds?: number;
+  /**
+   * Atomics.wait timeout when parked (milliseconds).
+   */
+  parkMs?: number;
+  /**
+   * Atomics.pause duration during spin (nanoseconds).
+   */
+  pauseNanoseconds?: number;
+};
+
+export type DispatcherSettings = {
+  /**
+   * How many immediate notify loops before backoff kicks in.
+   */
+  stallFreeLoops?: number;
+  /**
+   * Max backoff delay (milliseconds).
+   */
+  maxBackoffMs?: number;
 };
 
 export type CreatePool = {
@@ -172,6 +220,7 @@ export type CreatePool = {
   inliner?: Inliner;
   balancer?: Balancer;
   worker?: WorkerSettings;
+  dispatcher?: DispatcherSettings;
   debug?: DebugOptions;
   source?: string;
 };

@@ -6,7 +6,7 @@ import {
 import { lock2 } from "../memory/lock.ts";
 import type { WorkerData } from "../types.ts";
 import { getFunctions } from "./get-functions.ts";
-import { pauseGeneric, sleepUntilChanged } from "./timers.ts";
+import { pauseGeneric, sleepUntilChanged, whilePausing } from "./timers.ts";
 import { SET_IMMEDIATE } from "../common/runtime.ts";
 
 export const jsrIsGreatAndWorkWithoutBugs = () => null;
@@ -60,8 +60,14 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     
 
 
-  const spinMicroseconds = Math.max(1, workerData.totalNumberOfThread) * 50;
-  const parkMs = Math.max(1, workerData.totalNumberOfThread) * 50;
+  const timers = workerOptions?.timers;
+  const spinMicroseconds = timers?.spinMicroseconds ??
+    Math.max(1, workerData.totalNumberOfThread) * 50;
+  const parkMs = timers?.parkMs ??
+    Math.max(1, workerData.totalNumberOfThread) * 50;
+  const pauseSpin = typeof timers?.pauseNanoseconds === "number"
+    ? whilePausing({ pauseInNanoseconds: timers.pauseNanoseconds })
+    : pauseGeneric;
 
   const { opView, rxStatus, txStatus } = signals;
   const a_store = Atomics.store;
@@ -111,6 +117,7 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     at: 0,
     rxStatus,
     txStatus,
+    pauseInNanoseconds: timers?.pauseNanoseconds,
     enqueueLock,
     write: () => hasCompleted() ? writeBatch(WRITE_MAX) : 0,
   });
@@ -178,7 +185,7 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
 
       if (!progressed) {
         if (a_load(txStatus, 0) === 1) {
-          pauseGeneric();
+          pauseSpin();
           continue;
         }
         pauseUntil(wakeSeq, spinMicroseconds, parkMs);

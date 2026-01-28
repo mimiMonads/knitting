@@ -1,6 +1,7 @@
 import { type MultiQueue } from "./tx-queue.ts";
 import { type MainSignal } from "../ipc/transport/shared-memory.ts";
 import { MessageChannel, type MessagePort } from "node:worker_threads";
+import type { DispatcherSettings } from "../types.ts";
 import { IS_BUN, IS_DENO, SET_IMMEDIATE } from "../common/runtime.ts";
 
 export const hostDispatcherLoop = ({
@@ -16,18 +17,20 @@ export const hostDispatcherLoop = ({
     txIdle,
   },
   channelHandler,
+  dispatcherOptions,
 }: {
   queue: MultiQueue;
   signalBox: MainSignal;
   channelHandler: ChannelHandler;
+  dispatcherOptions?: DispatcherSettings;
   }) => {
   const a_load = Atomics.load;
   const a_store = Atomics.store;
   const a_notify = Atomics.notify;
   const notify = channelHandler.notify.bind(channelHandler);
   let stallCount = 0;
-  const STALL_FREE_LOOPS = 128;
-  const MAX_BACKOFF_MS = 10;
+  const STALL_FREE_LOOPS = dispatcherOptions?.stallFreeLoops ?? 128;
+  const MAX_BACKOFF_MS = dispatcherOptions?.maxBackoffMs ?? 10;
 
   const check = () => {
     
@@ -95,31 +98,17 @@ export const hostDispatcherLoop = ({
 
   const scheduleNotify = () => {
     if (stallCount <= STALL_FREE_LOOPS) {
-      if (IS_BUN && typeof queueMicrotask === "function") {
-        queueMicrotask(check);
-        return;
-      }
-      if (IS_DENO && typeof SET_IMMEDIATE === "function") {
-        SET_IMMEDIATE(check);
-        return;
-      }
       notify();
       return;
     }
 
-    const delay = Math.min(
+
+
+      setTimeout(check, Math.min(
       MAX_BACKOFF_MS,
       Math.max(0, stallCount - STALL_FREE_LOOPS - 1),
-    );
-    if (typeof setTimeout === "function") {
-      setTimeout(check, delay);
-      return;
-    }
-    if (IS_DENO && typeof SET_IMMEDIATE === "function") {
-      SET_IMMEDIATE(check);
-      return;
-    }
-    notify();
+    ));
+   
   };
 
   return check;

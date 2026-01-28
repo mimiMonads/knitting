@@ -16,6 +16,7 @@ import {
 } from "../memory/lock.ts";
 import type {
   DebugOptions,
+  DispatcherSettings,
   LockBuffers,
   WorkerCall,
   WorkerContext,
@@ -40,6 +41,7 @@ export const spawnWorkerContext = ({
   source,
   at,
   workerOptions,
+  dispatcher,
 }: {
   list: string[];
   ids: number[];
@@ -51,6 +53,7 @@ export const spawnWorkerContext = ({
 
   source?: string;
   workerOptions?: WorkerSettings;
+  dispatcher?: DispatcherSettings;
 }) => {
   const tsFileUrl = new URL(import.meta.url);
 
@@ -130,6 +133,7 @@ export const spawnWorkerContext = ({
     signalBox,
     queue,
     channelHandler,
+    dispatcherOptions: dispatcher,
     //thread,
     //debugSignal: debug?.logMain ?? false,
     //perf,
@@ -173,10 +177,8 @@ export const spawnWorkerContext = ({
   const a_notify = Atomics.notify;
   const a_store = Atomics.store;
   const a_load = Atomics.load;
-  const scheduleCheck =
-    IS_DENO && typeof SET_IMMEDIATE === "function"
-      ? SET_IMMEDIATE
-      : queueMicrotask;
+  const scheduleCheck = queueMicrotask
+
   const send = () => {
     if (check.isRunning === true) return;
 

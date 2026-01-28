@@ -1,4 +1,4 @@
-import type { WorkerCall, tasks } from "../types.ts";
+import type { TaskTimeout, WorkerCall, tasks } from "../types.ts";
 import { MessageChannel } from "node:worker_threads";
 import { withResolvers } from "../common/with-resolvers.ts";
 
@@ -32,6 +32,70 @@ type SlotMacro = [
   SlotStateMacro,
 ];
 
+const enum TimeoutKind {
+  Reject = 0,
+  Resolve = 1,
+}
+
+type TimeoutSpec = {
+  ms: number;
+  kind: TimeoutKind;
+  value: unknown;
+};
+
+const normalizeTimeout = (timeout?: TaskTimeout): TimeoutSpec | undefined => {
+  if (timeout == null) return undefined;
+  if (typeof timeout === "number") {
+    return timeout >= 0
+      ? { ms: timeout, kind: TimeoutKind.Reject, value: new Error("Task timeout") }
+      : undefined;
+  }
+  const ms = timeout.time;
+  if (!(ms >= 0)) return undefined;
+  if ("default" in timeout) {
+    return { ms, kind: TimeoutKind.Resolve, value: timeout.default };
+  }
+  if (timeout.maybe === true) {
+    return { ms, kind: TimeoutKind.Resolve, value: undefined };
+  }
+  if ("error" in timeout) {
+    return { ms, kind: TimeoutKind.Reject, value: timeout.error };
+  }
+  return { ms, kind: TimeoutKind.Reject, value: new Error("Task timeout") };
+};
+
+const raceTimeout = (
+  promise: PromiseLike<unknown>,
+  spec: TimeoutSpec,
+): Promise<unknown> =>
+  new Promise((resolve, reject) => {
+    let done = false;
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      if (spec.kind === TimeoutKind.Resolve) {
+        resolve(spec.value);
+      } else {
+        reject(spec.value);
+      }
+    }, spec.ms);
+
+    promise.then(
+      (value) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+
 export const createInlineExecutor = ({
   tasks,
   genTaskID,
@@ -39,9 +103,10 @@ export const createInlineExecutor = ({
   tasks: tasks;
   genTaskID: () => number;
 }) => {
-  const funcs = Object.values(tasks)
-    .sort((a, b) => a.id - b.id)
-    .map((p) => p.f as (args: unknown) => unknown);
+  const entries = Object.values(tasks)
+    .sort((a, b) => a.id - b.id);
+  const funcs = entries.map((p) => p.f as (args: unknown) => unknown);
+  const timeouts = entries.map((p) => normalizeTimeout(p.timeout));
 
   const initCap = 16;
   const newSlot = (): SlotMacro => [0, null, 0, null, SlotStateMacro.Free];
@@ -113,13 +178,16 @@ export const createInlineExecutor = ({
       };
 
       try {
-        const res = funcs[slot[SlotPos.FunctionID]](slot[SlotPos.Args]);
+        const fnId = slot[SlotPos.FunctionID];
+        const res = funcs[fnId](slot[SlotPos.Args]);
         if (!isThenable(res)) {
           settle(false, res, false);
           continue;
         }
+        const timeout = timeouts[fnId];
+        const pending = timeout ? raceTimeout(res, timeout) : res;
         awaiting++;
-        res.then(
+        pending.then(
           (value) => settle(false, value, true),
           (err) => settle(true, err, true),
         );
