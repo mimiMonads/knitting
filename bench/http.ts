@@ -12,7 +12,7 @@ const payloadText = JSON.stringify({
 const contentType = "application/json; charset=utf-8";
 
 export const echo = task({
-  f: async (value: string) => value,
+  f: (value: string) => value,
 });
 
 const { call, send, shutdown } = createPool({})({ echo });

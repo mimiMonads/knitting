@@ -133,10 +133,10 @@ Deno.test("resolveHost decodes into queue and acks worker bits", () => {
     lock.encode(task);
   }
 
-  const resolveHost = lock.resolveHost({ queue, decode });
+  const resolveHost = lock.resolveHost({ queue, });
 
   assert(resolveHost());
   assertEquals(results, responses);
   assertEquals(lock.workerBits[0], lock.hostBits[0]);
-  assertEquals(resolveHost(), false);
+  assertEquals(resolveHost(), 0);
 });

@@ -1,5 +1,12 @@
 import LinkedList from "../ipc/tools/LinkList.ts";
-import { makeTask, TaskIndex, type Task, type Lock2 } from "../memory/lock.ts";
+import {
+  makeTask,
+  PromisePayloadMarker,
+  type PromisePayloadResult,
+  TaskIndex,
+  type Task,
+  type Lock2,
+} from "../memory/lock.ts";
 import { withResolvers } from "../common/with-resolvers.ts";
 
 type RawArguments = unknown;
@@ -54,6 +61,12 @@ export function createHostTxQueue({
   const { encode , encodeManyFrom} = lock
   let toBeSentCount = 0;
   let inUsed = 0;
+  let pendingPromises = 0;
+
+  const isPromisePending = (task: QueueTask) =>
+    (task as QueueTask & { [PromisePayloadMarker]?: true })[
+      PromisePayloadMarker
+    ] === true;
 
   const resolveReturn = returnLock.resolveHost({
     queue,
@@ -65,7 +78,17 @@ export function createHostTxQueue({
 
   // Helpers
   const hasPendingFrames = () => toBeSentCount > 0;
-  const txIdle = () => toBeSentCount === 0 && inUsed === 0;
+  const txIdle = () =>
+    toBeSentCount === 0 && (inUsed - pendingPromises) === 0;
+
+  const handleEncodeFailure = (task: QueueTask) => {
+    if (isPromisePending(task)) {
+      pendingPromises++;
+      return;
+    }
+    toBeSentPush(task);
+    toBeSentCount++;
+  };
 
   const rejectAll = (reason: string) => {
     for (let index = 0; index < queue.length; index++) {
@@ -75,6 +98,8 @@ export function createHostTxQueue({
           slot.reject(reason);
         } catch {
         }
+        slot.resolve = PLACE_HOLDER;
+        slot.reject = PLACE_HOLDER;
 
         queue[index] = newSlot(index);
       }
@@ -85,6 +110,7 @@ export function createHostTxQueue({
     }
     toBeSentCount = 0;
     inUsed = 0;
+    pendingPromises = 0;
   };
 
   const flushToWorker = () => {
@@ -92,6 +118,14 @@ export function createHostTxQueue({
     const encoded = encodeManyFrom(toBeSent);
     if (encoded === 0) return false;
     toBeSentCount -= encoded;
+    return true;
+  };
+
+  const enqueueKnown = (task: QueueTask) => {
+    if (!encode(task)) {
+      handleEncodeFailure(task);
+      return false;
+    }
     return true;
   };
 
@@ -125,8 +159,7 @@ export function createHostTxQueue({
       slot.reject = deferred.reject;
 
       if (!encode(slot)) {
-        toBeSentPush(slot);
-        toBeSentCount++;
+        handleEncodeFailure(slot);
       }
 
       inUsed++;
@@ -134,5 +167,22 @@ export function createHostTxQueue({
       return deferred.promise;
     },
     flushToWorker,
+    enqueueKnown,
+    settlePromisePayload: (task: QueueTask, result: PromisePayloadResult) => {
+      if (task.reject === PLACE_HOLDER) return false;
+      if (pendingPromises > 0) pendingPromises--;
+      if (result.status === "rejected") {
+        try {
+          task.reject(result.reason);
+        } catch {
+        }
+        inUsed--;
+        freePush(task[TaskIndex.ID]);
+        return false;
+      }
+
+      task.value = result.value;
+      return enqueueKnown(task);
+    },
   };
 }

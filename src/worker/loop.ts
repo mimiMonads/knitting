@@ -1,4 +1,4 @@
-import { isMainThread, workerData } from "node:worker_threads";
+import { isMainThread, workerData, MessageChannel } from "node:worker_threads";
 import { createWorkerRxQueue } from "./rx-queue.ts";
 import {
   createSharedMemoryTransport,
@@ -7,6 +7,7 @@ import { lock2 } from "../memory/lock.ts";
 import type { WorkerData } from "../types.ts";
 import { getFunctions } from "./get-functions.ts";
 import { pauseGeneric, sleepUntilChanged } from "./timers.ts";
+import { SET_IMMEDIATE } from "../common/runtime.ts";
 
 export const jsrIsGreatAndWorkWithoutBugs = () => null;
 
@@ -92,6 +93,7 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     hasCompleted,
     writeBatch,
     hasPending,
+    getAwaiting,
   } = createWorkerRxQueue({
     listOfFunctions,
     workerOptions,
@@ -113,14 +115,43 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     write: () => hasCompleted() ? writeBatch(WRITE_MAX) : 0,
   });
 
- 
-  let progressed = false;
+  const channel = new MessageChannel();
+  const port1 = channel.port1;
+  const port2 = channel.port2;
+  const post2 = port2.postMessage.bind(port2);
+  let isInMacro = false;
+  let awaitingSpins = 0;
+  let lastAwaiting = 0;
+  const MAX_AWAITING_MS = 10;
+
   let wakeSeq = a_load(opView, 0);
 
-    while (true) {
-      
+  const scheduleMacro = () => {
+    if (isInMacro) return;
+    isInMacro = true;
+    post2(null);
+  };
 
-      
+  const scheduleTimer = (delayMs: number) => {
+    if (isInMacro) return;
+    isInMacro = true;
+    if (typeof setTimeout === "function") {
+      setTimeout(loop, delayMs);
+      return;
+    }
+    if (delayMs === 0 && typeof SET_IMMEDIATE === "function") {
+      SET_IMMEDIATE(loop);
+      return;
+    }
+    post2(null);
+  };
+
+  const loop = () => {
+    isInMacro = false;
+
+    while (true) {
+      let progressed = false;
+
       if (hasCompleted()) {
         if (writeBatch(WRITE_MAX) > 0) progressed = true;
       }
@@ -130,11 +161,21 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
       }
 
       if (hasPending()) {
-        const worked = await serviceBatchImmediate(BATCH_MAX);
-        if (worked > 0) progressed = true;
+        if (serviceBatchImmediate() > 0) progressed = true;
       }
 
-  
+      const awaiting = getAwaiting();
+      if (awaiting > 0) {
+        if (awaiting !== lastAwaiting) awaitingSpins = 0;
+        lastAwaiting = awaiting;
+        awaitingSpins++;
+        const delay = Math.min(MAX_AWAITING_MS, Math.max(0, awaitingSpins - 1));
+        scheduleTimer(delay);
+        return;
+      }
+      awaitingSpins = 0;
+      lastAwaiting = 0;
+
       if (!progressed) {
         if (a_load(txStatus, 0) === 1) {
           pauseGeneric();
@@ -144,7 +185,12 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
         wakeSeq = a_load(opView, 0);
       }
     }
-  }
+  };
+
+  //@ts-ignore
+  port1.onmessage = loop;
+  scheduleMacro();
+}
 
 
 if (isMainThread === false) {

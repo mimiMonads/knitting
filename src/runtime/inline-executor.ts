@@ -41,7 +41,7 @@ export const createInlineExecutor = ({
 }) => {
   const funcs = Object.values(tasks)
     .sort((a, b) => a.id - b.id)
-    .map((p) => p.f as (...args: any[]) => Promise<any>);
+    .map((p) => p.f as (args: unknown) => unknown);
 
   const initCap = 16;
   const newSlot = (): SlotMacro => [0, null, 0, null, SlotStateMacro.Free];
@@ -54,6 +54,7 @@ export const createInlineExecutor = ({
 
   const promisesMap = new Map<TaskID, Deferred>();
   let working = 0;
+  let awaiting = 0;
   let isInMacro = false;
 
   const channel = new MessageChannel();
@@ -61,9 +62,15 @@ export const createInlineExecutor = ({
   const port2 = channel.port2;
   const post2 = port2.postMessage.bind(port2);
   //@ts-ignore
-  port1.onmessage = processNext;
+  port1.onmessage = processLoop;
 
   const hasPending = () => pendingHead < pendingQueue.length;
+  const isThenable = (value: unknown): value is PromiseLike<unknown> => {
+    if (value == null) return false;
+    const type = typeof value;
+    if (type !== "object" && type !== "function") return false;
+    return typeof (value as { then?: unknown }).then === "function";
+  };
 
   function allocIndex(): number {
     if (freeStack.length) return freeStack.pop()!;
@@ -82,24 +89,52 @@ export const createInlineExecutor = ({
     return freeStack.pop()!;
   }
 
-  async function processNext() {
-    if (!hasPending()) return;
-    const index = pendingQueue[pendingHead++]!;
-    if (pendingHead === pendingQueue.length) {
-      pendingQueue.length = 0;
-      pendingHead = 0;
-    }
-    const slot = queue[index];
-    try {
-      const res = await funcs[slot[SlotPos.FunctionID]](slot[SlotPos.Args]);
-      promisesMap.get(slot[SlotPos.TaskID])?.resolve(res);
-    } catch (err) {
-      promisesMap.get(slot[SlotPos.TaskID])?.reject(err);
-    } finally {
-      cleanup(index);
+  function processLoop() {
+    while (hasPending()) {
+      const index = pendingQueue[pendingHead++]!;
+      if (pendingHead === pendingQueue.length) {
+        pendingQueue.length = 0;
+        pendingHead = 0;
+      }
+      const slot = queue[index];
+      const settle = (
+        isError: boolean,
+        value: unknown,
+        wasAwaited: boolean,
+      ) => {
+        const taskID = slot[SlotPos.TaskID];
+        if (isError) {
+          promisesMap.get(taskID)?.reject(value);
+        } else {
+          promisesMap.get(taskID)?.resolve(value);
+        }
+        cleanup(index);
+        if (wasAwaited) awaiting--;
+      };
+
+      try {
+        const res = funcs[slot[SlotPos.FunctionID]](slot[SlotPos.Args]);
+        if (!isThenable(res)) {
+          settle(false, res, false);
+          continue;
+        }
+        awaiting++;
+        res.then(
+          (value) => settle(false, value, true),
+          (err) => settle(true, err, true),
+        );
+      } catch (err) {
+        settle(true, err, false);
+      }
     }
 
-    if (working > 0) post2(null);
+    if (awaiting > 0) {
+      // Keep the macro chain alive while async tasks are pending.
+      post2(null);
+      return;
+    }
+
+    isInMacro = false;
   }
 
   function cleanup(index: number) {

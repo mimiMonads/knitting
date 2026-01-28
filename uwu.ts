@@ -1,28 +1,22 @@
 import { createPool, isMain, task } from "./knitting.ts";
 
-export const hello = task({
-  f: async () => "hello",
-});
+
 export const world = task({
-  f: async () => "world",
+  f: () => {
+    const { resolve } = Promise.withResolvers()
+    setTimeout(resolve, 5000)
+
+  },
 });
 
-export const { shutdown, fastCall } = createPool({
-  threads: 1,
+export const { shutdown, call } = createPool({
 })({
-  hello,
   world,
 });
 
 if (isMain) {
   await Promise.all([
-    fastCall.hello(),
-    fastCall.world(),
-        fastCall.hello(),
-    fastCall.world(),
+    call.world(),
   ])
-    .then((results) => {
-      console.log("Results:", results);
-    })
     .finally(shutdown);
 }

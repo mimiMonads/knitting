@@ -4,7 +4,7 @@ import { format, print } from "./ulti/json-parse.ts";
 import { NumericBuffer } from "../src/ipc/protocol/parsers/NumericBuffer.ts";
 
 export const fn = task({
-  f: async ([start, end]: [number, number]): Promise<number[]> => {
+  f: ([start, end]: [number, number]): number[] => {
     const primes: number[] = [];
 
     if (end < 2) return primes;

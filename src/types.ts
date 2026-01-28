@@ -74,21 +74,44 @@ export type ValidInput =
 
 export type Args = ValidInput | Serializable;
 
-export type tasks = Record<string, Composed>;
+export type MaybePromise<T> = T | Promise<T>;
 
-export type Composed = {
-  readonly f: (...args: any) => any;
-} & SecondPart;
+type BivariantCallback<Args extends unknown[], R> = {
+  bivarianceHack(...args: Args): R;
+}["bivarianceHack"];
 
-export type ComposedWithKey = Composed & { name: string };
+export type TaskFn<A extends Args, B extends Args> = BivariantCallback<
+  [A],
+  MaybePromise<B>
+>;
 
-export type FunctionMapType<T extends Record<string, FixPoint<Args, Args>>> = {
-  [K in keyof T]: T[K]["f"];
+type TaskLike = { readonly f: (...args: any[]) => any };
+
+export type Composed<A extends Args = Args, B extends Args = Args> =
+  & FixPoint<A, B>
+  & SecondPart;
+
+export type tasks = Record<string, Composed<any, any>>;
+
+export type ComposedWithKey = Composed<any, any> & { name: string };
+
+type PromiseWrapped<F extends (...args: any[]) => any> = (
+  ...args: PromisifyArgs<Parameters<F>>
+) => Promise<Awaited<ReturnType<F>>>;
+
+type PromiseInput<T> = T | Promise<T>;
+
+type PromisifyArgs<T extends unknown[]> = {
+  [K in keyof T]: PromiseInput<T[K]>;
+};
+
+export type FunctionMapType<T extends Record<string, TaskLike>> = {
+  [K in keyof T]: PromiseWrapped<T[K]["f"]>;
 };
 
 export interface FixPoint<A extends Args, B extends Args> {
   readonly href?: string;
-  readonly f: (args: A) => Promise<B>;
+  readonly f: TaskFn<A, B>;
 }
 
 export type SecondPart = {
@@ -104,7 +127,7 @@ export type SecondPart = {
   readonly importedFrom: string;
 };
 
-export type Pool<T extends Record<string, FixPoint<Args, Args>>> = {
+export type Pool<T extends Record<string, TaskLike>> = {
   shutdown: () => void;
   call: FunctionMapType<T>;
   fastCall: FunctionMapType<T>;

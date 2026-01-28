@@ -8,7 +8,7 @@ const payload = new Uint8Array(1024);
 for (let i = 0; i < payload.length; i++) payload[i] = i & 0xff;
 
 export const echo = task<Uint8Array, Uint8Array>({
-  f: async (value) => value,
+  f: (value) => value,
 });
 
 const { call, send, shutdown } = createPool({})({ echo });

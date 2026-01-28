@@ -1,7 +1,7 @@
 import { type MultiQueue } from "./tx-queue.ts";
 import { type MainSignal } from "../ipc/transport/shared-memory.ts";
 import { MessageChannel, type MessagePort } from "node:worker_threads";
-import { IS_BUN, IS_DENO } from "../common/runtime.ts";
+import { IS_BUN, IS_DENO, SET_IMMEDIATE } from "../common/runtime.ts";
 
 export const hostDispatcherLoop = ({
   signalBox: {
@@ -25,12 +25,16 @@ export const hostDispatcherLoop = ({
   const a_store = Atomics.store;
   const a_notify = Atomics.notify;
   const notify = channelHandler.notify.bind(channelHandler);
+  let stallCount = 0;
+  const STALL_FREE_LOOPS = 128;
+  const MAX_BACKOFF_MS = 10;
 
   const check = () => {
     
     // THIS IS JUST A HINT
     txStatus[0] = 1
     let progressed = false;
+    let anyProgressed = false;
 
     if (a_load(rxStatus, 0) === 0 && hasPendingFrames() ) {
       
@@ -38,11 +42,15 @@ export const hostDispatcherLoop = ({
       a_notify(opView, 0, 1);
       do{
       progressed = false;
-      if ((completeFrame() ?? 0) > 0) progressed = true;
+      if ((completeFrame() ?? 0) > 0) {
+        progressed = true;
+        anyProgressed = true;
+      }
 
           while (hasPendingFrames()) {
           if (!flushToWorker()) break;
           progressed = true;
+          anyProgressed = true;
         }
 
     }while(progressed)
@@ -50,11 +58,15 @@ export const hostDispatcherLoop = ({
 
     do{
       progressed = false;
-          if ((completeFrame() ?? 0) > 0) progressed = true;
+          if ((completeFrame() ?? 0) > 0) {
+            progressed = true;
+            anyProgressed = true;
+          }
           
           while (hasPendingFrames()) {
           if (!flushToWorker()) break;
           progressed = true;
+          anyProgressed = true;
         }
 
         
@@ -62,6 +74,11 @@ export const hostDispatcherLoop = ({
 
 
     if (!txIdle()) {
+      if (anyProgressed || hasPendingFrames()) {
+        stallCount = 0;
+      } else {
+        stallCount++;
+      }
       scheduleNotify();
       return;
     }
@@ -70,17 +87,40 @@ export const hostDispatcherLoop = ({
     txStatus[0] = 0
     //Atomics.store(txStatus, 0, 0);
     check.isRunning = false;
+    stallCount = 0;
   };
 
   // This is not the best way to do it but it should work for now
   check.isRunning = false;
 
-  const scheduleNotify =
-    IS_BUN && typeof queueMicrotask === "function"
-      ? () => queueMicrotask(check)
-      : IS_DENO && typeof setImmediate === "function"
-      ? () => setImmediate(check)
-      : notify;
+  const scheduleNotify = () => {
+    if (stallCount <= STALL_FREE_LOOPS) {
+      if (IS_BUN && typeof queueMicrotask === "function") {
+        queueMicrotask(check);
+        return;
+      }
+      if (IS_DENO && typeof SET_IMMEDIATE === "function") {
+        SET_IMMEDIATE(check);
+        return;
+      }
+      notify();
+      return;
+    }
+
+    const delay = Math.min(
+      MAX_BACKOFF_MS,
+      Math.max(0, stallCount - STALL_FREE_LOOPS - 1),
+    );
+    if (typeof setTimeout === "function") {
+      setTimeout(check, delay);
+      return;
+    }
+    if (IS_DENO && typeof SET_IMMEDIATE === "function") {
+      SET_IMMEDIATE(check);
+      return;
+    }
+    notify();
+  };
 
   return check;
 };

@@ -7,7 +7,13 @@ import {
   type Sab,
 } from "../ipc/transport/shared-memory.ts";
 import { ChannelHandler, hostDispatcherLoop } from "./dispatcher.ts";
-import { lock2, LockBound, TaskIndex } from "../memory/lock.ts";
+import {
+  lock2,
+  LockBound,
+  type PromisePayloadResult,
+  type Task,
+  TaskIndex,
+} from "../memory/lock.ts";
 import type {
   DebugOptions,
   LockBuffers,
@@ -18,7 +24,7 @@ import type {
 } from "../types.ts";
 import { jsrIsGreatAndWorkWithoutBugs } from "../worker/loop.ts";
 import { Worker } from "node:worker_threads";
-import { IS_DENO } from "../common/runtime.ts";
+import { IS_DENO, SET_IMMEDIATE } from "../common/runtime.ts";
 
 //const isBrowser = typeof window !== "undefined";
 
@@ -168,8 +174,8 @@ export const spawnWorkerContext = ({
   const a_store = Atomics.store;
   const a_load = Atomics.load;
   const scheduleCheck =
-    IS_DENO && typeof setImmediate === "function"
-      ? setImmediate
+    IS_DENO && typeof SET_IMMEDIATE === "function"
+      ? SET_IMMEDIATE
       : queueMicrotask;
   const send = () => {
     if (check.isRunning === true) return;
@@ -185,6 +191,11 @@ export const spawnWorkerContext = ({
 
     scheduleCheck(check);
   };
+
+  lock.setPromiseHandler((task: Task, result: PromisePayloadResult) => {
+    queue.settlePromisePayload(task, result);
+    send();
+  });
 
   const call = ({ fnNumber }: WorkerCall) => {
     const enqueues = enqueue(fnNumber);

@@ -66,6 +66,17 @@ export type Task = [
   reject: (reason?: unknown) => void;
 };
 
+export const PromisePayloadMarker = Symbol.for("knitting.promise.payload");
+
+export type PromisePayloadResult =
+  | { status: "fulfilled"; value: unknown }
+  | { status: "rejected"; reason: unknown };
+
+export type PromisePayloadHandler = (
+  task: Task,
+  result: PromisePayloadResult,
+) => void;
+
 export enum TaskIndex {
   /**
    * Flags for host
@@ -238,10 +249,13 @@ export const lock2 = ({
   const payloadLockSAB = payloadSector ??
     new SharedArrayBuffer(LockBound.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2);
 
+  let promiseHandler: PromisePayloadHandler | undefined;
+
   const encodeTask = encodePayload({
     sab: payloadSAB,
     headersBuffer,
     lockSector: payloadLockSAB,
+    onPromise: (task, result) => promiseHandler?.(task, result),
   });
   const decodeTask = decodePayload({
     sab: payloadSAB,
@@ -496,6 +510,9 @@ const slotOffset = (at: number) =>
     hostBits,
     workerBits,
     recyclecList,
-    resolveHost
+    resolveHost,
+    setPromiseHandler: (handler?: PromisePayloadHandler) => {
+      promiseHandler = handler;
+    },
   };
 };

@@ -3,12 +3,12 @@ import { createPool, isMain, task } from "../knitting.ts";
 import { shutdownWorkers, toResolve } from "./postmessage/single.ts";
 import { format, print } from "./ulti/json-parse.ts";
 // ───────────────────────── fixed points ─────────────────────────
-export const toNumber = task({ f: async (a: number) => a });
-export const toString = task({ f: async (a: string) => a });
-export const toBigInt = task({ f: async (a: bigint) => a });
-export const toBoolean = task({ f: async (a: boolean) => a });
-export const toVoid = task({ f: async (_: void) => {} });
-export const toObject = task({ f: async (a: object) => a });
+export const toNumber = task({ f: (a: number) => a });
+export const toString = task({ f: (a: string) => a });
+export const toBigInt = task({ f: (a: bigint) => a });
+export const toBoolean = task({ f: (a: boolean) => a });
+export const toVoid = task({ f: (_: void) => {} });
+export const toObject = task({ f: (a: object) => a });
 
 if (isMain) {
   const { call, shutdown, send } = createPool({})({

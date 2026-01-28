@@ -5,7 +5,7 @@ import { LockBound, makeTask, TaskIndex } from "../src/memory/lock.ts";
 
 
 // AI Written needs review
-// const align64 = (n: number) => (n + 63) & ~63;
+const align64 = (n: number) => (n + 63) & ~63;
 
 const makeRegistry = () =>
   register({
@@ -31,7 +31,7 @@ const allocNoSync = (registry: ReturnType<typeof makeRegistry>, size: number) =>
 const expectedStartAndIndex = (sizes: number[]) =>
   [[0,0] , ...sizes.map( (_,i,a) => {
 
-    const  val = a.slice(0,i + 1).reduce((acc,c) => acc+ ((64 + c) >>> 6), 0)
+    const  val = a.slice(0,i + 1).reduce((acc,c) => acc+ (align64(c) >>> 6), 0)
     return [val, ++i]
   }).slice(0,-1)]
 
@@ -44,7 +44,7 @@ Deno.test("check packing in startAndIndexToArray", () => {
   const result = [[0,0] , ...sizes.map( (_,i,a) => {
 
     // add them together and index [postion + padding , index]
-    const  val = a.slice(0,i + 1).reduce((acc,c) => acc+ ((64 + c) >>> 6), 0) 
+    const  val = a.slice(0,i + 1).reduce((acc,c) => acc+ (align64(c) >>> 6), 0) 
     return [val, ++i]
   }).slice(0,-1)] 
 
@@ -71,7 +71,7 @@ Deno.test("updateTable delete front", () => {
   const result = [[0,0] , ...sizes.map( (_,i,a) => {
 
     // add them together and index [postion + padding , index]
-    const  val = a.slice(0,i + 1).reduce((acc,c) => acc+ ((64 + c) >>> 6), 0) 
+    const  val = a.slice(0,i + 1).reduce((acc,c) => acc+ (align64(c) >>> 6), 0) 
     return [val, ++i]
   }).slice(0,-1)] 
 
@@ -109,7 +109,7 @@ Deno.test("updateTable delete Back", () => {
   const result = [[0,0] , ...sizes.map( (_,i,a) => {
 
     // add them together and index [postion + padding , index]
-    const  val = a.slice(0,i + 1).reduce((acc,c) => acc+ ((64 + c) >>> 6), 0) 
+    const  val = a.slice(0,i + 1).reduce((acc,c) => acc+ (align64(c) >>> 6), 0) 
     return [val, ++i]
   }).slice(0,-1)] 
 
@@ -147,7 +147,7 @@ Deno.test("updateTable delete middle", () => {
   const result = [[0,0] , ...sizes.map( (_,i,a) => {
 
     // add them together and index [postion + padding , index]
-    const  val = a.slice(0,i + 1).reduce((acc,c) => acc+ ((64 + c) >>> 6), 0) 
+    const  val = a.slice(0,i + 1).reduce((acc,c) => acc+ (align64(c) >>> 6), 0) 
     return [val, ++i]
   }).slice(0,-1)] 
 
@@ -183,7 +183,7 @@ Deno.test("check Start from Task", () => {
 
   const result = sizes.reduce( (acc,v) => (
     // reduce and adding padding and  >>> 6
-    acc.push((acc[acc.length - 1] + v + 64) & ~63 ),
+    acc.push(acc[acc.length - 1] + align64(v)),
     acc ), 
   [0]).slice(0,-1)
 
@@ -263,7 +263,7 @@ Deno.test("free does not allow reuse before updateTable", () => {
   task[TaskIndex.PayloadLen] = 64;
   registry.allocTask(task);
 
-  assertEquals(task[TaskIndex.Start], lastStart + 128);
+  assertEquals(task[TaskIndex.Start], lastStart + 64);
 });
 
 Deno.test("updateTable reuses freed slots in gaps and at start", () => {
@@ -283,7 +283,7 @@ Deno.test("updateTable reuses freed slots in gaps and at start", () => {
   registry.allocTask(second);
 
   assertEquals(first[TaskIndex.Start], 0);
-  assertEquals(second[TaskIndex.Start], tasks[1][TaskIndex.Start] + 128);
+  assertEquals(second[TaskIndex.Start], tasks[1][TaskIndex.Start] + 64);
 });
 
 Deno.test("updateTable resets usedBits when all slots freed", () => {
@@ -301,4 +301,3 @@ Deno.test("updateTable resets usedBits when all slots freed", () => {
 
   assertEquals(task[TaskIndex.Start], 0);
 });
-

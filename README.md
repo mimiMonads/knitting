@@ -75,7 +75,8 @@ const results = await Promise.all(jobs);
 
 ### `task({ f, href? })`
 
-Wraps an async function so it can be registered and executed in workers.
+Wraps a function (sync or async) so it can be registered and executed in
+workers. `call.*()` always returns a promise.
 
 Guidelines:
 
@@ -134,6 +135,8 @@ The transport supports common structured data:
 - `undefined` and `null`
 - `Object` and `Array`
 - `Map` and `Set`
+- `Promise<supported>` (resolved on the host before dispatch; rejections
+  propagate to the caller)
 
 If you need to pass several values, prefer a single object or tuple:
 

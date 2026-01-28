@@ -1,4 +1,12 @@
-import { LockBound, PayloadBuffer, PayloadSingal, type Task, TaskIndex } from "./lock.ts";
+import {
+  LockBound,
+  PayloadBuffer,
+  PayloadSingal,
+  PromisePayloadMarker,
+  type PromisePayloadHandler,
+  type Task,
+  TaskIndex,
+} from "./lock.ts";
 import { register } from "./regionRegistry.ts"
 import { createSharedDynamicBufferIO, createSharedStaticBufferIO } from "./createSharedBufferIO.ts"
 import { deserialize, serialize } from "node:v8";
@@ -11,6 +19,13 @@ const BigInt64View = new BigInt64Array(memory);
 const Uint32View = new Uint32Array(memory);
 const BIGINT64_MIN = -(1n << 63n);
 const BIGINT64_MAX = (1n << 63n) - 1n;
+
+const isThenable = (value: unknown): value is PromiseLike<unknown> => {
+  if (value == null) return false;
+  const type = typeof value;
+  if (type !== "object" && type !== "function") return false;
+  return typeof (value as { then?: unknown }).then === "function";
+};
 
 const encodeBigIntBinary = (value: bigint) => {
   let sign = 0;
@@ -66,11 +81,13 @@ const initStaticIO = (headersBuffer: Uint32Array) => {
 export const encodePayload = ({
   lockSector,
   sab,
-  headersBuffer
+  headersBuffer,
+  onPromise,
 }: {
   lockSector?: SharedArrayBuffer;
   sab?: SharedArrayBuffer;
-  headersBuffer: Uint32Array 
+  headersBuffer: Uint32Array;
+  onPromise?: PromisePayloadHandler;
 }  ) =>  { 
   
   const registry = register({
@@ -119,6 +136,25 @@ export const encodePayload = ({
         task.value === true ? PayloadSingal.True : PayloadSingal.False;
       return true;
     case "function":
+      if (isThenable(args)) {
+        const markedTask = task as Task & { [PromisePayloadMarker]?: true };
+        if (markedTask[PromisePayloadMarker] !== true) {
+          markedTask[PromisePayloadMarker] = true;
+          args.then(
+            (value) => {
+              delete markedTask[PromisePayloadMarker];
+              task.value = value;
+              onPromise?.(task, { status: "fulfilled", value });
+            },
+            (reason) => {
+              delete markedTask[PromisePayloadMarker];
+              task.value = reason;
+              onPromise?.(task, { status: "rejected", reason });
+            },
+          );
+        }
+        return false;
+      }
       throw "you cant pass a function ";
     case "number":
 
@@ -144,6 +180,25 @@ export const encodePayload = ({
       if (args === null) {
         task[TaskIndex.Type] = PayloadSingal.Null
         return true
+      }
+      if (isThenable(args)) {
+        const markedTask = task as Task & { [PromisePayloadMarker]?: true };
+        if (markedTask[PromisePayloadMarker] !== true) {
+          markedTask[PromisePayloadMarker] = true;
+          (args as PromiseLike<unknown>).then(
+            (value) => {
+              delete markedTask[PromisePayloadMarker];
+              task.value = value;
+              onPromise?.(task, { status: "fulfilled", value });
+            },
+            (reason) => {
+              delete markedTask[PromisePayloadMarker];
+              task.value = reason;
+              onPromise?.(task, { status: "rejected", reason });
+            },
+          );
+        }
+        return false;
       }
 
       switch (args.constructor) {

@@ -27,12 +27,18 @@ export const createWorkerRxQueue = (
   };
 
   let hasAnythingFinished = 0;
+  let awaiting = 0;
 
-  type AsyncFunction = (...args: any[]) => Promise<any>;
+  const isThenable = (value: unknown): value is PromiseLike<unknown> => {
+    if (value == null) return false;
+    const type = typeof value;
+    if (type !== "object" && type !== "function") return false;
+    return typeof (value as { then?: unknown }).then === "function";
+  };
 
   const jobs = listOfFunctions.reduce((acc, fixed) => (
-    acc.push(fixed.f), acc
-  ), [] as AsyncFunction[]);
+    acc.push(fixed.f as (args: unknown) => unknown), acc
+  ), [] as Array<(args: unknown) => unknown>);
 
   const toWork = new LinkList<Task>();
   const completedFrames = new LinkList<Task>();
@@ -76,6 +82,24 @@ export const createWorkerRxQueue = (
     return true;
   };
 
+  const settleNow = (
+    slot: Task,
+    isError: boolean,
+    value: unknown,
+    wasAwaited: boolean,
+  ) => {
+    slot.value = value;
+    hasAnythingFinished++;
+    if (wasAwaited) awaiting--;
+    if (!sendReturn(slot, isError)) {
+      if (isError) {
+        errorPush(slot);
+      } else {
+        completedPush(slot);
+      }
+    }
+  };
+
   const writeOne = () => {
     if (errorFrames.size > 0) {
       const slot = errorShift()!;
@@ -109,23 +133,27 @@ export const createWorkerRxQueue = (
       }
       return wrote;
     },
-    serviceBatchImmediate: async (max: number, timeBudgetMs?: number) => {
+    serviceBatchImmediate: () => {
       let processed = 0;
 
 
-      while (processed < max && toWork.size !== 0) {
+      while (toWork.size !== 0) {
         const slot = toWorkShift()!;
 
         try {
-          slot.value = await jobs
-            [slot[TaskIndex.FuntionID]](slot.value);
-          hasAnythingFinished++;
-          completedPush(slot);
+          const result = jobs[slot[TaskIndex.FuntionID]](slot.value);
+          if (isThenable(result)) {
+            awaiting++;
+            result.then(
+              (value) => settleNow(slot, false, value, true),
+              (err) => settleNow(slot, true, err, true),
+            );
+          } else {
+            settleNow(slot, false, result, false);
+          }
          
         } catch (err) {
-          slot.value = err;
-          hasAnythingFinished++;
-          errorPush(slot);
+          settleNow(slot, true, err, false);
          
         }
 
@@ -136,5 +164,7 @@ export const createWorkerRxQueue = (
       return processed;
     },
     enqueueLock,
+    hasAwaiting: () => awaiting > 0,
+    getAwaiting: () => awaiting,
   };
 };

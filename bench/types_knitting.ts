@@ -4,7 +4,7 @@ import { TaskIndex } from "../src/memory/lock.ts";
 import { format, print } from "./ulti/json-parse.ts";
 
 export const echo = task<unknown, unknown>({
-  f: async (value) => value,
+  f:  (value) => value,
 });
 
 if (isMain) {
@@ -57,6 +57,8 @@ if (isMain) {
   const err = new Error("bench error");
   const date = new Date(1_700_000_000_000);
   const sym = Symbol.for("knitting.bench");
+  const promiseNumber = Promise.resolve(123.456);
+  const promiseJson = Promise.resolve({ ok: true, payload: "x".repeat(32) });
 
   const bigIntSmall = 123n;
   const bigIntLarge = 1n << 70n;
@@ -99,6 +101,14 @@ if (isMain) {
       bench(`Date -> (${n})`, async () => await runBatch(n, date));
       bench(`Symbol.for -> (${n})`, async () => await runBatch(n, sym));
        })
+    }
+;
+
+    for (const n of sizes) {
+      group("knitting-promise-args " + n, () => {
+      bench(`promise number -> (${n})`, async () => await runBatch(n, promiseNumber));
+      bench(`promise object -> (${n})`, async () => await runBatch(n, promiseJson));
+      })
     }
 ;
 

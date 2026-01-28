@@ -4,7 +4,7 @@ import { shutdownWorkers, toResolve } from "./postmessage/multi.ts";
 import { format, print } from "./ulti/json-parse.ts";
 
 export const inLine = task({
-  f: async (a?: object | void | Set<number>) => a,
+  f: (a?: object | void | Set<number>) => a,
 });
 
 const obj = {
@@ -12,7 +12,7 @@ const obj = {
   arr: [1, 2, 3, 4],
 };
 
-const { shutdown, call, send } = createPool(
+const { shutdown, call } = createPool(
   { threads: 4 },
 )({
   inLine,
@@ -26,12 +26,8 @@ if (isMain) {
       summary(() => {
         for (const size of sizes) {
           bench(`4 thread → (${size})`, async () => {
-            const arr = Array(size)
-              .fill(0)
-              .map(() => call.inLine(obj));
-
-            send();
-            await Promise.all(arr);
+            await Promise.all(Array(size)
+              .map(() => call.inLine(obj)));
           });
         }
       });
@@ -41,16 +37,9 @@ if (isMain) {
       summary(() => {
         for (const size of sizes) {
           bench(`4 thread → (${size})`, async () => {
-            // build an array of `size` promises
-            const arr = Array(size)
-              .fill(0)
-              .map(() => toResolve(obj));
-
-            // kick off workers
-            send();
-
             // wait for all to resolve
-            await Promise.all(arr);
+            await Promise.all(Array(size)
+              .map(() => toResolve(obj)));
           });
         }
       });

@@ -4,7 +4,7 @@ import { shutdownWorkers, toResolve } from "./postmessage/single.ts";
 import { format, print } from "./ulti/json-parse.ts";
 
 export const fn = task({
-  f: async (a: object) => a,
+  f: (a: object) => a,
 });
 
 const threads = 1;
@@ -32,21 +32,21 @@ if (isMain) {
   const sizes = [10, 100, 1000];
 
   boxplot(async () => {
-    group("worker", () => {
-      summary(() => {
-        for (const size of sizes) {
-          bench(`${threads} thread → (${size})`, async () => {
-            await meh(size);
-          });
-        }
-      });
-    });
-
     group("knitting", () => {
       summary(() => {
         for (const size of sizes) {
           bench(`${threads} thread → (${size})`, async () => {
             await timesFun(size);
+          });
+        }
+      });
+    });
+
+    group("worker", () => {
+      summary(() => {
+        for (const size of sizes) {
+          bench(`${threads} thread → (${size})`, async () => {
+            await meh(size);
           });
         }
       });
