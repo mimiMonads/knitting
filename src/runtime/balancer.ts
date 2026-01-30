@@ -10,6 +10,9 @@ type manager = {
 
 export const managerMethod = ({ contexts, balancer, handlers }: manager) => {
   const max = handlers.length;
+  const strategy = typeof balancer === "object" && balancer
+    ? balancer.strategy
+    : balancer;
 
   if (contexts.length < 2) {
     throw new Error(
@@ -23,7 +26,7 @@ export const managerMethod = ({ contexts, balancer, handlers }: manager) => {
     throw new Error("No handlers provided.");
   }
 
-  switch (balancer ?? "robinRound") {
+  switch (strategy ?? "robinRound") {
     case "robinRound":
       return roundRobin(contexts)(handlers)(max ?? handlers.length);
     case "firstIdle":
@@ -35,7 +38,7 @@ export const managerMethod = ({ contexts, balancer, handlers }: manager) => {
   }
 
   // Unreachable code, but just in case uwu
-  throw new Error(`Unknown balancer: ${balancer}`);
+  throw new Error(`Unknown balancer: ${strategy}`);
 };
 
 export function roundRobin(

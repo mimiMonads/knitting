@@ -1,7 +1,6 @@
 import { bench, boxplot, group, run as mitataRun, summary } from "mitata";
 import { createPool, isMain, task } from "../knitting.ts";
 import { format, print } from "./ulti/json-parse.ts";
-import { NumericBuffer } from "../src/ipc/protocol/parsers/NumericBuffer.ts";
 
 export const fn = task({
   f: ([start, end]: [number, number]): number[] => {
@@ -30,8 +29,8 @@ export const fn = task({
 
 if (isMain) {
   const N = 10_000_000; // search range: [1..N]
-  const CHUNK_SIZE = 100_000;
-  const THREADS = [2, 3, 4, 5, 6]; // extra worker threads to compare
+  const CHUNK_SIZE = 400_000;
+  const THREADS = [2, 3, 4, 5, 6, 7 ]; // extra worker threads to compare
 
   const partition = (end: number, chunk: number): [number, number][] => {
     const ranges: [number, number][] = [];

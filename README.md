@@ -17,12 +17,6 @@ This package is published on JSR:
 deno add jsr:@vixeny/knitting
 ```
 
-For local development in this repo, you can also import from `./knitting.ts`.
-
-```ts
-import { createPool, isMain, task } from "./knitting.ts";
-```
-
 
 ## Quick Start
 
@@ -76,7 +70,8 @@ const results = await Promise.all(jobs);
 ### `task({ f, href?, timeout? })`
 
 Wraps a function (sync or async) so it can be registered and executed in
-workers. `call.*()` always returns a promise.
+workers. `call.*()` always returns a promise. Inputs can also be promises,
+they’ll be awaited before dispatch.
 
 Guidelines:
 
@@ -118,9 +113,10 @@ Creates a worker pool and returns:
 Key options:
 
 - `threads?: number` number of worker threads (default `1`).
-- `inliner?: { position?: "first" | "last" }` run tasks on the main thread as
+- `inliner?: { position?: "first" | "last"; batchSize?: number }` run tasks on the main thread as
   an extra lane.
 - `balancer?: "robinRound" | "firstIdle" | "randomLane" | "firstIdleOrRandom"`
+  or `{ strategy: "robinRound" | "firstIdle" | "randomLane" | "firstIdleOrRandom" }`
   task routing strategy.
 - `worker?: { resolveAfterFinishingAll?: true; timers?: WorkerTimers }`
 - `dispatcher?: DispatcherSettings`
@@ -133,7 +129,7 @@ Example with an inline executor lane:
 ```ts
 const pool = createPool({
   threads: 3,
-  inliner: { position: "last" },
+  inliner: { position: "last", batchSize: 1 },
 })({ add });
 ```
 
@@ -206,6 +202,8 @@ You can control how calls are routed:
 - `"firstIdle"` prefer idle workers
 - `"randomLane"` choose a random worker
 - `"firstIdleOrRandom"` idle first, then random
+
+You can also pass `{ strategy: "..." }` if you prefer an object form.
 
 ## Best Practices
 

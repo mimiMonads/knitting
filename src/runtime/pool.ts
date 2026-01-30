@@ -25,7 +25,10 @@ import type {
 } from "../types.ts";
 import { jsrIsGreatAndWorkWithoutBugs } from "../worker/loop.ts";
 import { Worker } from "node:worker_threads";
-import { IS_DENO, SET_IMMEDIATE } from "../common/runtime.ts";
+
+enum Comment {
+  thisIsAHint = 0,
+}
 
 //const isBrowser = typeof window !== "undefined";
 
@@ -175,7 +178,6 @@ export const spawnWorkerContext = ({
   const thisSignal = signalBox.opView;
   const a_add = Atomics.add;
   const a_notify = Atomics.notify;
-  const a_store = Atomics.store;
   const a_load = Atomics.load;
   const scheduleCheck = queueMicrotask
 
@@ -183,8 +185,8 @@ export const spawnWorkerContext = ({
     if (check.isRunning === true) return;
 
     // Prevent worker from sleeping before the dispatcher loop starts.
-    signalBox.txStatus[0] = 1
-    //Atomics.store(signalBox.txStatus, 0, 1);
+    // Best-effort hint only; non-atomic by design.
+    signalBox.txStatus[Comment.thisIsAHint] = 1;
     // Use opView as a wake counter in lock2 mode to avoid lost wakeups.
     
     a_add(thisSignal, 0, 1);
@@ -208,7 +210,8 @@ export const spawnWorkerContext = ({
       if (check.isRunning === false) {
         check.isRunning = true;
         // Prevent worker from sleeping before the dispatcher loop starts.
-        a_store(signalBox.txStatus, 0, 1);
+        // Best-effort hint only; non-atomic by design.
+        signalBox.txStatus[Comment.thisIsAHint] = 1;
         // Use opView as a wake counter in lock2 mode to avoid lost wakeups.
         //Atomics.add(thisSignal, 0, 1);
         if (a_load(signalBox.rxStatus, 0) === 0) {

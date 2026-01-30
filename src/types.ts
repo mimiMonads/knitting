@@ -76,6 +76,8 @@ export type Args = ValidInput | Serializable;
 
 export type MaybePromise<T> = T | Promise<T>;
 
+export type TaskInput = Args | PromiseLike<Args>;
+
 export type TaskTimeout =
   | number
   | {
@@ -89,14 +91,14 @@ type BivariantCallback<Args extends unknown[], R> = {
   bivarianceHack(...args: Args): R;
 }["bivarianceHack"];
 
-export type TaskFn<A extends Args, B extends Args> = BivariantCallback<
-  [A],
+export type TaskFn<A extends TaskInput, B extends Args> = BivariantCallback<
+  [Awaited<A>],
   MaybePromise<B>
 >;
 
 type TaskLike = { readonly f: (...args: any[]) => any };
 
-export type Composed<A extends Args = Args, B extends Args = Args> =
+export type Composed<A extends TaskInput = Args, B extends Args = Args> =
   & FixPoint<A, B>
   & SecondPart;
 
@@ -118,7 +120,7 @@ export type FunctionMapType<T extends Record<string, TaskLike>> = {
   [K in keyof T]: PromiseWrapped<T[K]["f"]>;
 };
 
-export interface FixPoint<A extends Args, B extends Args> {
+export interface FixPoint<A extends TaskInput, B extends Args> {
   readonly href?: string;
   readonly f: TaskFn<A, B>;
   readonly timeout?: TaskTimeout;
@@ -138,7 +140,7 @@ export type SecondPart = {
 };
 
 export type SingleTaskPool<
-  A extends Args = Args,
+  A extends TaskInput = Args,
   B extends Args = Args,
 > = {
   call: PromiseWrapped<TaskFn<A, B>>;
@@ -155,7 +157,7 @@ export type Pool<T extends Record<string, TaskLike>> = {
 };
 
 export type ReturnFixed<
-  A extends Args = undefined,
+  A extends TaskInput = undefined,
   B extends Args = undefined,
 > =
   & FixPoint<A, B>
@@ -168,13 +170,24 @@ export type External = unknown;
 
 export type Inliner = {
   position?: "first" | "last";
+  /**
+   * Inline tasks per event loop tick.
+   * Defaults to 1 when inliner is enabled.
+   */
+  batchSize?: number;
 };
 
-export type Balancer =
+export type BalancerStrategy =
   | "robinRound"
   | "firstIdle"
   | "randomLane"
   | "firstIdleOrRandom";
+
+export type Balancer =
+  | BalancerStrategy
+  | {
+    strategy: BalancerStrategy;
+  };
 
 export type DebugOptions = {
   extras?: boolean;

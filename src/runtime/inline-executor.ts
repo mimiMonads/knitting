@@ -99,9 +99,11 @@ const raceTimeout = (
 export const createInlineExecutor = ({
   tasks,
   genTaskID,
+  batchSize,
 }: {
   tasks: tasks;
   genTaskID: () => number;
+  batchSize?: number;
 }) => {
   const entries = Object.values(tasks)
     .sort((a, b) => a.id - b.id);
@@ -119,8 +121,10 @@ export const createInlineExecutor = ({
 
   const promisesMap = new Map<TaskID, Deferred>();
   let working = 0;
-  let awaiting = 0;
   let isInMacro = false;
+  const batchLimit = Number.isFinite(batchSize)
+    ? Math.max(1, Math.floor(batchSize ?? 1))
+    : Number.POSITIVE_INFINITY;
 
   const channel = new MessageChannel();
   const port1 = channel.port1;
@@ -155,7 +159,8 @@ export const createInlineExecutor = ({
   }
 
   function processLoop() {
-    while (hasPending()) {
+    let processed = 0;
+    while (hasPending() && processed < batchLimit) {
       const index = pendingQueue[pendingHead++]!;
       if (pendingHead === pendingQueue.length) {
         pendingQueue.length = 0;
@@ -165,7 +170,6 @@ export const createInlineExecutor = ({
       const settle = (
         isError: boolean,
         value: unknown,
-        wasAwaited: boolean,
       ) => {
         const taskID = slot[SlotPos.TaskID];
         if (isError) {
@@ -174,30 +178,30 @@ export const createInlineExecutor = ({
           promisesMap.get(taskID)?.resolve(value);
         }
         cleanup(index);
-        if (wasAwaited) awaiting--;
       };
 
       try {
         const fnId = slot[SlotPos.FunctionID];
         const res = funcs[fnId](slot[SlotPos.Args]);
         if (!isThenable(res)) {
-          settle(false, res, false);
+          settle(false, res);
+          processed++;
           continue;
         }
         const timeout = timeouts[fnId];
         const pending = timeout ? raceTimeout(res, timeout) : res;
-        awaiting++;
         pending.then(
-          (value) => settle(false, value, true),
-          (err) => settle(true, err, true),
+          (value) => settle(false, value),
+          (err) => settle(true, err),
         );
+        processed++;
       } catch (err) {
-        settle(true, err, false);
+        settle(true, err);
+        processed++;
       }
     }
 
-    if (awaiting > 0) {
-      // Keep the macro chain alive while async tasks are pending.
+    if (hasPending()) {
       post2(null);
       return;
     }

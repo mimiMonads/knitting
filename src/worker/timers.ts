@@ -2,7 +2,11 @@ type PauseOptions = {
   pauseInNanoseconds?: number;
 };
 
-const DEFAULT_PAUSE_TIME = 500;
+enum Comment {
+  thisIsAHint = 0,
+}
+
+const DEFAULT_PAUSE_TIME = 250;
 
 const a_load = Atomics.load;
 const a_store = Atomics.store;
@@ -69,7 +73,8 @@ export const sleepUntilChanged = (
 
     do {
       if (
-        a_load(opView, at) !== value || a_load(txStatus, 0) === 1
+        a_load(opView, at) !== value ||
+        txStatus[Comment.thisIsAHint] === 1
       ) return;
 
       if (tryProgress()) return;

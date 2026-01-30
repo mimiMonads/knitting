@@ -37,7 +37,7 @@ for arg in "$@"; do
   esac
 done
 
-mkdir -p "$RESULTS_DIR"/{node,deno,bun}
+# mkdir -p "$RESULTS_DIR"/{node,deno,bun}
 
 # Find only files directly inside BENCH_DIR (ignore nested)
 while IFS= read -r -d '' file; do

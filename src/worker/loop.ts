@@ -33,6 +33,9 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     throw new Error("worker missing return lock SABs");
   }
 
+  enum Comment {
+    thisIsAHint = 0,
+  }
   const signals = createSharedMemoryTransport({
     sabObject: {
       sharedSab: sab,
@@ -184,7 +187,7 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
       lastAwaiting = 0;
 
       if (!progressed) {
-        if (a_load(txStatus, 0) === 1) {
+        if (txStatus[Comment.thisIsAHint] === 1) {
           pauseSpin();
           continue;
         }

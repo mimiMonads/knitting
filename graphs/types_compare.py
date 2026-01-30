@@ -2,8 +2,9 @@
 import os, re, json, math, glob, argparse
 import matplotlib.pyplot as plt
 
-COUNT_RE = re.compile(r"\((\d+)\)")
-ARROW_SPLIT_RE = re.compile(r"\s*->\s*")
+COUNT_RE = re.compile(r"(?:\(|→\s*|->\s*)\s*(\d+)\s*\)?\s*$")
+ARROW_SUFFIX_RE = re.compile(r"(?:->|→)\s*$")
+UNIT_RE = re.compile(r"([-+]?\d*\.?\d+)\s*(ns|µs|us|ms|s)\b", re.IGNORECASE)
 
 # Keep a stable, human-friendly order for type labels
 PREFERRED_TYPE_ORDER = [
@@ -17,6 +18,13 @@ PREFERRED_TYPE_ORDER = [
 ]
 
 from PIL import Image
+
+GROUP_ORDER = ["Worker", "Knitting", "Knitting Fast"]
+GROUP_COLORS = {
+    "Worker": "#1f77b4",
+    "Knitting": "#ff7f0e",
+    "Knitting Fast": "#2ca02c",
+}
 
 def _stitch_images_horizontally(img_paths, out_path, padding=16, bg=(255, 255, 255)):
     """Open images, scale to the same height, and stitch horizontally with padding."""
@@ -54,31 +62,49 @@ def _stitch_images_horizontally(img_paths, out_path, padding=16, bg=(255, 255, 2
 
 def parse_name(name: str):
     """
-    Split "string -> (10)" into ("string", 10).
-    If not match, returns (cleaned_name, None).
+    Extract ("string", 10) from labels like:
+      - "string -> (10)"
+      - "string (10)"
+      - "string → 10"
     """
     if not isinstance(name, str):
-        return (str(name), None)
-    parts = ARROW_SPLIT_RE.split(name.strip(), maxsplit=1)
-    base = parts[0].strip()
+        name = str(name)
+    s = name.strip()
+    if not s:
+        return ("", None)
+    m = COUNT_RE.search(s)
     count = None
-    if len(parts) > 1:
-        m = COUNT_RE.search(parts[1])
-        if m:
-            try:
-                count = int(m.group(1))
-            except:
-                count = None
+    base = s
+    if m:
+        try:
+            count = int(m.group(1))
+        except:
+            count = None
+        base = s[:m.start()].strip()
+        base = ARROW_SUFFIX_RE.sub("", base).strip()
+        if not base:
+            base = s
     return (base, count)
 
 def to_us(v):
-    # Values look like raw microseconds already; keep numeric as-is.
+    # Mitata stats are in nanoseconds; normalize to microseconds.
     if isinstance(v, (int, float)):
-        return float(v)
-    try:
-        return float(str(v))
-    except:
+        return float(v) / 1000.0
+    if not isinstance(v, str):
         return math.nan
+    s = v.replace("µ", "u")
+    m = UNIT_RE.search(s)
+    if not m:
+        try:
+            return float(s.strip()) / 1000.0
+        except:
+            return math.nan
+    num = float(m.group(1)); unit = m.group(2).lower()
+    if unit == "ns": return num / 1000.0
+    if unit in ("us",): return num
+    if unit == "ms": return num * 1000.0
+    if unit == "s":  return num * 1_000_000.0
+    return num
 
 def read_types_file(path):
     with open(path, "r", encoding="utf-8") as f:
@@ -94,6 +120,16 @@ def read_types_file(path):
         elif lk.startswith("worker"):
             groups["worker"] = obj[key]
     return groups
+
+def runtime_title_from_path(path: str):
+    base = os.path.splitext(os.path.basename(path))[0].lower()
+    if base.startswith("node_"):
+        return "Node.js"
+    if base.startswith("deno_"):
+        return "Deno"
+    if base.startswith("bun_"):
+        return "Bun"
+    return base.replace("_", " ").title()
 
 def collect_by_count(entries):
     """
@@ -123,6 +159,12 @@ def aligned_type_list(*dicts):
     others = sorted([t for t in all_types if t not in PREFERRED_TYPE_ORDER])
     return ordered + others
 
+def available_counts(*maps):
+    counts = set()
+    for m in maps:
+        counts.update(m.keys())
+    return sorted(counts)
+
 def plot_one(runtime_title, count, data_map, out_path):
     """
     data_map: label -> dict[type] -> avg_us, labels are Worker, Knitting, Knitting fast
@@ -151,19 +193,94 @@ def plot_one(runtime_title, count, data_map, out_path):
     print(f"[ok] wrote {out_path}")
     return True
 
+def plot_combined(count, items, out_path):
+    """
+    items: list of (runtime_title, worker_by_count, knit_by_count, knitfast_by_count)
+    """
+    if not items:
+        return False
+
+    # Build maps for this count
+    per_runtime = []
+    for title, w_map, k_map, kf_map in items:
+        dm = {}
+        if count in w_map:
+            dm["Worker"] = w_map[count]
+        if count in k_map:
+            dm["Knitting"] = k_map[count]
+        if count in kf_map:
+            dm["Knitting Fast"] = kf_map[count]
+        if dm:
+            per_runtime.append((title, dm))
+
+    if not per_runtime:
+        return False
+
+    types = aligned_type_list(
+        *[tmap for _, dm in per_runtime for tmap in dm.values()]
+    )
+    if not types:
+        return False
+
+    markers = ["o", "s", "^", "D", "v", "P", "X"]
+    group_styles = {
+        "Worker": "-",
+        "Knitting": "--",
+        "Knitting Fast": ":",
+    }
+
+    x = list(range(len(types)))
+    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+    for idx, (title, dm) in enumerate(per_runtime):
+        marker = markers[idx % len(markers)]
+        for group in GROUP_ORDER:
+            tmap = dm.get(group)
+            if not tmap:
+                continue
+            y = [tmap.get(t, math.nan) for t in types]
+            if all(math.isnan(v) for v in y):
+                continue
+            ax.plot(
+                x,
+                y,
+                marker=marker,
+                linestyle=group_styles.get(group, "-"),
+                color=GROUP_COLORS.get(group),
+                label=f"{title} — {group}",
+            )
+
+    ax.set_yscale("log")
+    ax.set_xticks(x)
+    ax.set_xticklabels(types, rotation=30, ha="right")
+    ax.set_ylabel("Average Latency (µs, log scale)")
+    ax.set_title(f"Types Benchmark — Combined (count={count})")
+    ax.grid(True, which="both", linestyle="--", alpha=0.5)
+
+    handles, labels = ax.get_legend_handles_labels()
+    if handles:
+        ax.legend(handles, labels, ncol=2, fontsize=8)
+
+    fig.tight_layout()
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    plt.savefig(out_path, dpi=160)
+    plt.close()
+    print(f"[ok] wrote {out_path}")
+    return True
+
 def process_file(path, out_dir):
     groups = read_types_file(path)
     base = os.path.splitext(os.path.basename(path))[0]
-    runtime_title = base.replace("_", " ").title()
+    runtime_title = runtime_title_from_path(path)
 
-    worker_by_count   = collect_by_count(groups.get("worker", []))
-    knit_by_count     = collect_by_count(groups.get("knitting", []))
+    worker_by_count = collect_by_count(groups.get("worker", []))
+    knit_by_count = collect_by_count(groups.get("knitting", []))
     knitfast_by_count = collect_by_count(groups.get("knitting fast", []))
 
     any_plotted = False
     out_paths = []
 
-    for count in (1, 10, 100):
+    counts = available_counts(worker_by_count, knit_by_count, knitfast_by_count)
+    for count in counts:
         dm = {}
         if count in worker_by_count:
             dm["Worker"] = worker_by_count[count]
@@ -184,14 +301,9 @@ def process_file(path, out_dir):
         return
 
     # Build a “container” image that shows all counts at once (skip any missing)
-    # Order: 1 | 10 | 100
-    montage_inputs = [
-        os.path.join(out_dir, f"{base}_types_count1.png"),
-        os.path.join(out_dir, f"{base}_types_count10.png"),
-        os.path.join(out_dir, f"{base}_types_count100.png"),
-    ]
     montage_out = os.path.join(out_dir, f"{base}_types_all.png")
-    _stitch_images_horizontally(montage_inputs, montage_out)
+    _stitch_images_horizontally(out_paths, montage_out)
+    return (runtime_title, worker_by_count, knit_by_count, knitfast_by_count)
 
 
 def main():
@@ -206,9 +318,26 @@ def main():
         print(f"[warn] no *_types.json found in {args.input}")
         return
 
+    combined_items = []
     for path in files:
-        process_file(path, args.out)
+        data = process_file(path, args.out)
+        if data:
+            combined_items.append(data)
+
+    # Combined chart across runtimes (per count), plus montage across counts.
+    if len(combined_items) > 1:
+        all_maps = []
+        for _, w_map, k_map, kf_map in combined_items:
+            all_maps.extend([w_map, k_map, kf_map])
+        all_counts = available_counts(*all_maps)
+        combined_paths = []
+        for count in all_counts:
+            out_path = os.path.join(args.out, f"types_combined_count{count}.png")
+            if plot_combined(count, combined_items, out_path):
+                combined_paths.append(out_path)
+        if combined_paths:
+            montage_out = os.path.join(args.out, "types_combined_all.png")
+            _stitch_images_horizontally(combined_paths, montage_out)
 
 if __name__ == "__main__":
     main()
-

@@ -1,21 +1,129 @@
 import { bench, group, run as mitataRun } from "mitata";
+import { Buffer } from "node:buffer";
 import { createPool, isMain, task } from "../knitting.ts";
+import { toResolve, shutdownWorkers } from "./postmessage/single.ts";
 import { format, print } from "./ulti/json-parse.ts";
 
-// 100% AI but I needed to check 
+const payloadObject = {
+  msg: "hello world",
+  id: 32
+};
 
-const payload = new Uint8Array(1024);
-for (let i = 0; i < payload.length; i++) payload[i] = i & 0xff;
+const payloadText = JSON.stringify(payloadObject);
+const contentType = "application/json; charset=utf-8";
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
 
-export const echo = task<Uint8Array, Uint8Array>({
-  f: (value) => value,
-});
+const toText = (data: unknown) => {
+  if (typeof data === "string") return data;
+  if (data instanceof Uint8Array) return textDecoder.decode(data);
+  if (data instanceof ArrayBuffer) {
+    return textDecoder.decode(new Uint8Array(data));
+  }
+  if (ArrayBuffer.isView(data)) {
+    return textDecoder.decode(
+      new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
+    );
+  }
+  return String(data);
+};
 
-const { call, send, shutdown } = createPool({})({ echo });
+const parseJson = (data: unknown) => JSON.parse(toText(data));
 
 type ServerHandle = {
   url: string;
   close: () => Promise<void>;
+};
+
+const handleRequest = async (req: Request): Promise<Response> => {
+  const body = req.method === "POST" ? await req.text() : "";
+  const parsed = body ? JSON.parse(body) : payloadObject;
+  const reply = JSON.stringify(parsed);
+  return new Response(reply, {
+    status: 200,
+    headers: { "content-type": contentType },
+  });
+};
+
+const startHttpServer = async (): Promise<ServerHandle> => {
+  const isBun = typeof Bun !== "undefined";
+  const isDeno = typeof Deno !== "undefined";
+
+  if (isBun && typeof Bun.serve === "function") {
+    const server = Bun.serve({
+      port: 0,
+      fetch: handleRequest,
+    });
+    return {
+      url: `http://127.0.0.1:${server.port}/echo`,
+      close: async () => {
+        server.stop();
+      },
+    };
+  }
+
+  if (isDeno && typeof Deno.serve === "function") {
+    const controller = new AbortController();
+    const server = Deno.serve(
+      { port: 0, signal: controller.signal },
+      handleRequest,
+    );
+    const addr = server.addr as Deno.NetAddr;
+    return {
+      url: `http://127.0.0.1:${addr.port}/echo`,
+      close: async () => {
+        controller.abort();
+        await server.finished;
+      },
+    };
+  }
+
+  const { createServer } = await import("node:http");
+  const server = createServer(async (req, res) => {
+    const chunks: Uint8Array[] = [];
+    req.on("data", (chunk) => {
+      if (typeof chunk === "string") {
+        chunks.push(Buffer.from(chunk));
+      } else {
+        chunks.push(chunk);
+      }
+    });
+    req.on("end", () => {
+      const body = Buffer.concat(chunks).toString("utf8");
+      const parsed = body ? JSON.parse(body) : payloadObject;
+      const reply = JSON.stringify(parsed);
+      res.statusCode = 200;
+      res.setHeader("content-type", contentType);
+      res.end(reply);
+    });
+    req.on("error", () => {
+      res.statusCode = 500;
+      res.end("error");
+    });
+  });
+
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", () => resolve());
+  });
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  return {
+    url: `http://127.0.0.1:${port}/echo`,
+    close: async () => {
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => (err ? reject(err) : resolve()));
+      });
+    },
+  };
+};
+
+const post = async (url: string, body: string) => {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "content-type": contentType },
+    body,
+  });
+  parseJson(await res.text());
 };
 
 const concatUint8 = (a: Uint8Array, b: Uint8Array) => {
@@ -84,7 +192,7 @@ const decodeFrame = (buffer: Uint8Array): ParsedFrame | null => {
   };
 };
 
-const encodeFrame = (payloadBytes: Uint8Array, opcode = 0x2) => {
+const encodeFrame = (payloadBytes: Uint8Array, opcode = 0x1) => {
   const length = payloadBytes.length;
   let header: Uint8Array;
 
@@ -115,7 +223,7 @@ const encodeFrame = (payloadBytes: Uint8Array, opcode = 0x2) => {
   return out;
 };
 
-const startServer = async (): Promise<ServerHandle> => {
+const startWebSocketServer = async (): Promise<ServerHandle> => {
   const isBun = typeof Bun !== "undefined";
   const isDeno = typeof Deno !== "undefined";
 
@@ -128,7 +236,8 @@ const startServer = async (): Promise<ServerHandle> => {
       },
       websocket: {
         message(ws, message) {
-          ws.send(message);
+          const parsed = parseJson(message);
+          ws.send(JSON.stringify(parsed));
         },
       },
     });
@@ -149,7 +258,8 @@ const startServer = async (): Promise<ServerHandle> => {
       }
       const { socket, response } = Deno.upgradeWebSocket(req);
       socket.onmessage = (event) => {
-        socket.send(event.data);
+        const parsed = parseJson(event.data);
+        socket.send(JSON.stringify(parsed));
       };
       return response;
     });
@@ -219,7 +329,9 @@ const startServer = async (): Promise<ServerHandle> => {
         }
 
         if (frame.opcode === 0x1 || frame.opcode === 0x2) {
-          socket.write(encodeFrame(frame.payload, 0x2));
+          const parsed = parseJson(frame.payload);
+          const reply = textEncoder.encode(JSON.stringify(parsed));
+          socket.write(encodeFrame(reply, 0x1));
         }
       }
     });
@@ -249,7 +361,6 @@ const startServer = async (): Promise<ServerHandle> => {
 const connectClient = (url: string) =>
   new Promise<WebSocket>((resolve, reject) => {
     const ws = new WebSocket(url);
-    ws.binaryType = "arraybuffer";
 
     const onOpen = () => {
       ws.removeEventListener("open", onOpen);
@@ -267,13 +378,14 @@ const connectClient = (url: string) =>
     ws.addEventListener("error", onError);
   });
 
-const createSendMany = (ws: WebSocket, body: Uint8Array) => {
+const createSendMany = (ws: WebSocket, body: string) => {
   let pending = 0;
   let resolve: (() => void) | null = null;
   let reject: ((reason?: unknown) => void) | null = null;
 
-  ws.addEventListener("message", () => {
+  ws.addEventListener("message", (event) => {
     if (pending <= 0) return;
+    parseJson(event.data);
     pending -= 1;
     if (pending === 0 && resolve) {
       const done = resolve;
@@ -307,22 +419,35 @@ const createSendMany = (ws: WebSocket, body: Uint8Array) => {
   };
 };
 
-if (isMain) {
-  const server = await startServer();
-  const ws = await connectClient(server.url);
-  const sendMany = createSendMany(ws, payload);
+export const echo = task({
+  f: (value: typeof payloadObject) => value,
+});
 
-  const sizes = [1, 10, 50, 100];
+if (isMain) {
+  const { call, send, shutdown } = createPool({ threads: 1 })({ echo });
+  const httpServer = await startHttpServer();
+  const wsServer = await startWebSocketServer();
+  const ws = await connectClient(wsServer.url);
+  const sendMany = createSendMany(ws, payloadText);
+
+  await call.echo(payloadObject);
+  send();
+  await toResolve(payloadObject);
+  await post(httpServer.url, payloadText);
+  await sendMany(1);
+
+  const sizes = [1, 50, 100];
 
   group("knitting", () => {
     for (const n of sizes) {
       bench(`1 thread → (${n})`, async () => {
-        const arr = Array.from({ length: n }, () => call.echo(payload));
+        const arr = Array.from({ length: n }, () => call.echo(payloadObject));
         send();
         await Promise.all(arr);
       });
     }
   });
+
 
   group("websocket", () => {
     for (const n of sizes) {
@@ -331,6 +456,26 @@ if (isMain) {
       });
     }
   });
+
+  group("worker", () => {
+    for (const n of sizes) {
+      bench(`postMessage → (${n})`, async () => {
+        const arr = Array.from({ length: n }, () => toResolve(payloadObject));
+        await Promise.all(arr);
+      });
+    }
+  });
+
+  group("http", () => {
+    for (const n of sizes) {
+      bench(`local → (${n})`, async () => {
+        const arr = Array.from({ length: n }, () => post(httpServer.url, payloadText));
+        await Promise.all(arr);
+      });
+    }
+  });
+
+
 
   await mitataRun({ format, print });
 
@@ -344,6 +489,8 @@ if (isMain) {
   ws.close();
   await closeWait;
 
-  await server.close();
+  await wsServer.close();
+  await httpServer.close();
   await shutdown();
+  await shutdownWorkers();
 }

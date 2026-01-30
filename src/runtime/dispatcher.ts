@@ -4,6 +4,10 @@ import { MessageChannel, type MessagePort } from "node:worker_threads";
 import type { DispatcherSettings } from "../types.ts";
 import { IS_BUN, IS_DENO, SET_IMMEDIATE } from "../common/runtime.ts";
 
+enum Comment {
+  thisIsAHint = 0,
+}
+
 export const hostDispatcherLoop = ({
   signalBox: {
     opView,
@@ -32,15 +36,17 @@ export const hostDispatcherLoop = ({
   const STALL_FREE_LOOPS = dispatcherOptions?.stallFreeLoops ?? 128;
   const MAX_BACKOFF_MS = dispatcherOptions?.maxBackoffMs ?? 10;
 
+  let progressed = false;
+  let anyProgressed = false;
+
   const check = () => {
     
-    // THIS IS JUST A HINT
-    txStatus[0] = 1
-    let progressed = false;
-    let anyProgressed = false;
+    // Best-effort hint only; non-atomic by design.
+    txStatus[Comment.thisIsAHint] = 1;
 
     if (a_load(rxStatus, 0) === 0 && hasPendingFrames() ) {
-      
+      // Best-effort hint only; non-atomic by design.
+      txStatus[Comment.thisIsAHint] = 1;
       a_store(opView, 0, 1);
       a_notify(opView, 0, 1);
       do{
@@ -86,9 +92,8 @@ export const hostDispatcherLoop = ({
       return;
     }
 
-    // THIS IS JUST A HINT
-    txStatus[0] = 0
-    //Atomics.store(txStatus, 0, 0);
+    // Best-effort hint only; non-atomic by design.
+    txStatus[Comment.thisIsAHint] = 0;
     check.isRunning = false;
     stallCount = 0;
   };

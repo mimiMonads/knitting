@@ -28,7 +28,6 @@ if (isMain) {
     for (const n of sizes) {
       bench(`1 thread → (${n})`, async () => {
         const arr = Array.from({ length: n }, () => toResolve());
-        send();
         await Promise.all(arr);
       });
     }

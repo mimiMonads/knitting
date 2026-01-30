@@ -13,6 +13,7 @@ import type {
   FixPoint,
   FunctionMapType,
   Pool,
+  TaskInput,
   SingleTaskPool,
   ReturnFixed,
   WorkerInvoke,
@@ -144,6 +145,7 @@ export const createPool = ({
     const mainThread = createInlineExecutor({
       tasks,
       genTaskID,
+      batchSize: inliner?.batchSize ?? 1,
     });
 
     if (inliner?.position === "first") {
@@ -222,7 +224,7 @@ export const createPool = ({
 
 const SINGLE_TASK_KEY = "__task__";
 
-const createSingleTaskPool = <A extends Args, B extends Args>(
+const createSingleTaskPool = <A extends TaskInput, B extends Args>(
   single: ReturnFixed<A, B>,
   options?: CreatePool,
 ): SingleTaskPool<A, B> => {
@@ -239,7 +241,7 @@ const createSingleTaskPool = <A extends Args, B extends Args>(
 };
 
 export const task = <
-  A extends Args = void,
+  A extends TaskInput = void,
   B extends Args = void,
 >(
   I: FixPoint<A, B>,

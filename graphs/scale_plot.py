@@ -5,27 +5,27 @@ import re, os, json, math, argparse
 import matplotlib.pyplot as plt
 
 RUNTIME_FILES = {
-    "Node.js": "../results/node_scale.json",
-    "Deno":    "../results/deno_scale.json",
-    "Bun":     "../results/bun_scale.json",
+    "Node.js": "node_scale.json",
+    "Deno":    "deno_scale.json",
+    "Bun":     "bun_scale.json",
 }
 
 RUNTIME_COLORS = {"Node.js": "#1f77b4", "Deno": "#2ca02c", "Bun": "#d62728"}
 KNIT_COLORS    = {"Node.js": "#aec7e8",  "Deno": "#98df8a", "Bun": "#ff9896"}
 
 # capture "(10)"/"(100)"/"(1000)" and also "→ 5000"
-COUNT_RE = re.compile(r"(?:→\s*|\()\s*(\d{1,6})\b")
+COUNT_RE = re.compile(r"(?:→\s*|->\s*|\()\s*(\d{1,6})\b")
 UNIT_RE  = re.compile(r"([-+]?\d*\.?\d+)\s*(ns|µs|us|ms|s)\b", re.IGNORECASE)
 
 def to_us(v):
-    if isinstance(v, (int, float)):  # assume µs if unitless
-        return float(v)
+    if isinstance(v, (int, float)):  # mitata stats are ns
+        return float(v) / 1000.0
     if not isinstance(v, str):
         return math.nan
     s = v.replace("µ", "u")
     m = UNIT_RE.search(s)
     if not m:
-        try: return float(s.strip())
+        try: return float(s.strip()) / 1000.0
         except: return math.nan
     num = float(m.group(1)); unit = m.group(2).lower()
     if unit == "ns": return num / 1000.0
