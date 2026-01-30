@@ -6,6 +6,10 @@ enum Comment {
   thisIsAHint = 0,
 }
 
+const maybeGc = typeof (globalThis as { gc?: () => void }).gc === "function"
+  ? (globalThis as { gc: () => void }).gc.bind(globalThis)
+  : () => {};
+
 const DEFAULT_PAUSE_TIME = 250;
 
 const a_load = Atomics.load;
@@ -70,7 +74,7 @@ export const sleepUntilChanged = (
     parkMs?: number,
   ) => {
     const until = p_now() + (spinMicroseconds / 1000);
-
+    
     do {
       if (
         a_load(opView, at) !== value ||
@@ -86,8 +90,8 @@ export const sleepUntilChanged = (
 
     if (tryProgress()) return;
 
-    a_store(rxStatus, 0, 0)
-
+    a_store(rxStatus, 0, 0);
+    maybeGc();
 
     a_wait(
       opView,
@@ -96,7 +100,7 @@ export const sleepUntilChanged = (
       parkMs ?? 50,
     );
 
-    a_store(rxStatus, 0, 1)
+    a_store(rxStatus, 0, 1);
 
   };
 };

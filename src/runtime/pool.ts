@@ -44,6 +44,7 @@ export const spawnWorkerContext = ({
   source,
   at,
   workerOptions,
+  workerExecArgv,
   dispatcher,
 }: {
   list: string[];
@@ -56,6 +57,7 @@ export const spawnWorkerContext = ({
 
   source?: string;
   workerOptions?: WorkerSettings;
+  workerExecArgv?: string[];
   dispatcher?: DispatcherSettings;
 }) => {
   const tsFileUrl = new URL(import.meta.url);
@@ -148,32 +150,47 @@ export const spawnWorkerContext = ({
 
   let worker;
 
-  worker = new poliWorker(
-    source ?? (
-      // isBrowser
-      //   ? tsFileUrl.href // correct in browser
-      //   :
-      tsFileUrl
-    ),
-    {
-      //@ts-ignore Reason
-      type: "module",
-      //@ts-ignore
-      workerData: {
-        sab: signals.sab,
-        list,
-        ids,
-        at,
-        thread,
-        debug,
-        workerOptions,
-        totalNumberOfThread,
-        startAt: signalBox.startAt,
-        lock: lockBuffers,
-        returnLock: returnLockBuffers,
-      } as WorkerData,
-    },
-  ) as Worker;
+  const workerUrl = source ?? (
+    // isBrowser
+    //   ? tsFileUrl.href // correct in browser
+    //   :
+    tsFileUrl
+  );
+  const workerDataPayload = {
+    sab: signals.sab,
+    list,
+    ids,
+    at,
+    thread,
+    debug,
+    workerOptions,
+    totalNumberOfThread,
+    startAt: signalBox.startAt,
+    lock: lockBuffers,
+    returnLock: returnLockBuffers,
+  } as WorkerData;
+  const baseWorkerOptions = {
+    //@ts-ignore Reason
+    type: "module",
+    //@ts-ignore
+    workerData: workerDataPayload,
+  } as {
+    type: "module";
+    workerData: WorkerData;
+    execArgv?: string[];
+  };
+  const withExecArgv = workerExecArgv && workerExecArgv.length > 0
+    ? { ...baseWorkerOptions, execArgv: workerExecArgv }
+    : baseWorkerOptions;
+  try {
+    worker = new poliWorker(workerUrl, withExecArgv) as Worker;
+  } catch (error) {
+    if ((error as { code?: string })?.code === "ERR_WORKER_INVALID_EXEC_ARGV") {
+      worker = new poliWorker(workerUrl, baseWorkerOptions) as Worker;
+    } else {
+      throw error;
+    }
+  }
 
   const thisSignal = signalBox.opView;
   const a_add = Atomics.add;
@@ -205,7 +222,6 @@ export const spawnWorkerContext = ({
     const enqueues = enqueue(fnNumber);
     return (args: Uint8Array) => {
 
-      const pro = enqueues(args)
       
       if (check.isRunning === false) {
         check.isRunning = true;
@@ -223,7 +239,7 @@ export const spawnWorkerContext = ({
         
       }
 
-      return pro;
+      return enqueues(args);
     };
   };
 

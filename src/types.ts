@@ -1,11 +1,11 @@
 import { endpointSymbol } from "./common/task-symbol.ts";
-export type WorkerCall = {
+type WorkerCall = {
   fnNumber: number;
 };
 
-export type WorkerInvoke = (args: Uint8Array) => Promise<unknown>;
+type WorkerInvoke = (args: Uint8Array) => Promise<unknown>;
 
-export interface WorkerContext {
+interface WorkerContext {
   txIdle(): boolean;
   send(): void;
   call(descriptor: WorkerCall): WorkerInvoke;
@@ -13,9 +13,9 @@ export interface WorkerContext {
   kills(): void;
 }
 
-export type CreateContext = WorkerContext;
+type CreateContext = WorkerContext;
 
-export type WorkerData = {
+type WorkerData = {
   sab: SharedArrayBuffer;
   list: string[];
   ids: number[];
@@ -29,7 +29,7 @@ export type WorkerData = {
   returnLock: LockBuffers;
 };
 
-export type LockBuffers = {
+type LockBuffers = {
   headers: SharedArrayBuffer;
   lockSector: SharedArrayBuffer;
   payload: SharedArrayBuffer;
@@ -56,7 +56,7 @@ interface JSONArray extends Array<JSONValue> {}
 
 type Serializable = string | object | number | boolean | bigint;
 
-export type ValidInput =
+type ValidInput =
   | bigint
   | void
   | JSONValue
@@ -72,13 +72,13 @@ export type ValidInput =
   | Error
   | Date;
 
-export type Args = ValidInput | Serializable;
+type Args = ValidInput | Serializable;
 
-export type MaybePromise<T> = T | Promise<T>;
+type MaybePromise<T> = T | Promise<T>;
 
-export type TaskInput = Args | PromiseLike<Args>;
+type TaskInput = Args | PromiseLike<Args>;
 
-export type TaskTimeout =
+type TaskTimeout =
   | number
   | {
     time: number;
@@ -91,20 +91,20 @@ type BivariantCallback<Args extends unknown[], R> = {
   bivarianceHack(...args: Args): R;
 }["bivarianceHack"];
 
-export type TaskFn<A extends TaskInput, B extends Args> = BivariantCallback<
+type TaskFn<A extends TaskInput, B extends Args> = BivariantCallback<
   [Awaited<A>],
   MaybePromise<B>
 >;
 
 type TaskLike = { readonly f: (...args: any[]) => any };
 
-export type Composed<A extends TaskInput = Args, B extends Args = Args> =
+type Composed<A extends TaskInput = Args, B extends Args = Args> =
   & FixPoint<A, B>
   & SecondPart;
 
-export type tasks = Record<string, Composed<any, any>>;
+type tasks = Record<string, Composed<any, any>>;
 
-export type ComposedWithKey = Composed<any, any> & { name: string };
+type ComposedWithKey = Composed<any, any> & { name: string };
 
 type PromiseWrapped<F extends (...args: any[]) => any> = (
   ...args: PromisifyArgs<Parameters<F>>
@@ -116,17 +116,17 @@ type PromisifyArgs<T extends unknown[]> = {
   [K in keyof T]: PromiseInput<T[K]>;
 };
 
-export type FunctionMapType<T extends Record<string, TaskLike>> = {
+type FunctionMapType<T extends Record<string, TaskLike>> = {
   [K in keyof T]: PromiseWrapped<T[K]["f"]>;
 };
 
-export interface FixPoint<A extends TaskInput, B extends Args> {
+interface FixPoint<A extends TaskInput, B extends Args> {
   readonly href?: string;
   readonly f: TaskFn<A, B>;
   readonly timeout?: TaskTimeout;
 }
 
-export type SecondPart = {
+type SecondPart = {
   readonly [endpointSymbol]: true;
   readonly id: number;
   /**
@@ -139,7 +139,7 @@ export type SecondPart = {
   readonly importedFrom: string;
 };
 
-export type SingleTaskPool<
+type SingleTaskPool<
   A extends TaskInput = Args,
   B extends Args = Args,
 > = {
@@ -149,14 +149,14 @@ export type SingleTaskPool<
   shutdown: () => void;
 };
 
-export type Pool<T extends Record<string, TaskLike>> = {
+type Pool<T extends Record<string, TaskLike>> = {
   shutdown: () => void;
   call: FunctionMapType<T>;
   fastCall: FunctionMapType<T>;
   send: () => void;
 };
 
-export type ReturnFixed<
+type ReturnFixed<
   A extends TaskInput = undefined,
   B extends Args = undefined,
 > =
@@ -166,9 +166,9 @@ export type ReturnFixed<
     createPool: (options?: CreatePool) => SingleTaskPool<A, B>;
   };
 
-export type External = unknown;
+type External = unknown;
 
-export type Inliner = {
+type Inliner = {
   position?: "first" | "last";
   /**
    * Inline tasks per event loop tick.
@@ -177,19 +177,19 @@ export type Inliner = {
   batchSize?: number;
 };
 
-export type BalancerStrategy =
+type BalancerStrategy =
   | "robinRound"
   | "firstIdle"
   | "randomLane"
   | "firstIdleOrRandom";
 
-export type Balancer =
+type Balancer =
   | BalancerStrategy
   | {
     strategy: BalancerStrategy;
   };
 
-export type DebugOptions = {
+type DebugOptions = {
   extras?: boolean;
   logMain?: boolean;
   //logThreads?: boolean;
@@ -197,12 +197,12 @@ export type DebugOptions = {
   logImportedUrl?: boolean;
 };
 
-export type WorkerSettings = {
+type WorkerSettings = {
   resolveAfterFinishingAll?: true;
   timers?: WorkerTimers;
 };
 
-export type WorkerTimers = {
+type WorkerTimers = {
   /**
    * Busy-spin budget before parking (microseconds).
    */
@@ -217,7 +217,7 @@ export type WorkerTimers = {
   pauseNanoseconds?: number;
 };
 
-export type DispatcherSettings = {
+type DispatcherSettings = {
   /**
    * How many immediate notify loops before backoff kicks in.
    */
@@ -228,21 +228,60 @@ export type DispatcherSettings = {
   maxBackoffMs?: number;
 };
 
-export type CreatePool = {
+type CreatePool = {
   threads?: number;
   inliner?: Inliner;
   balancer?: Balancer;
   worker?: WorkerSettings;
+  /**
+   * Extra Node.js execArgv flags for worker threads (e.g. ["--expose-gc"]).
+   * Defaults to process.execArgv plus "--expose-gc" when allowed.
+   */
+  workerExecArgv?: string[];
   dispatcher?: DispatcherSettings;
   debug?: DebugOptions;
   source?: string;
 };
 
-export type { Task } from "./memory/lock.ts";
+// NOTE: Explicit export list with `as` keeps JSR type resolution stable,
+// especially for curried APIs like `createPool`.
+export type {
+  WorkerCall as WorkerCall,
+  WorkerInvoke as WorkerInvoke,
+  WorkerContext as WorkerContext,
+  CreateContext as CreateContext,
+  WorkerData as WorkerData,
+  LockBuffers as LockBuffers,
+  ValidInput as ValidInput,
+  Args as Args,
+  MaybePromise as MaybePromise,
+  TaskInput as TaskInput,
+  TaskTimeout as TaskTimeout,
+  TaskFn as TaskFn,
+  Composed as Composed,
+  tasks as tasks,
+  ComposedWithKey as ComposedWithKey,
+  FunctionMapType as FunctionMapType,
+  FixPoint as FixPoint,
+  SecondPart as SecondPart,
+  SingleTaskPool as SingleTaskPool,
+  Pool as Pool,
+  ReturnFixed as ReturnFixed,
+  External as External,
+  Inliner as Inliner,
+  BalancerStrategy as BalancerStrategy,
+  Balancer as Balancer,
+  DebugOptions as DebugOptions,
+  WorkerSettings as WorkerSettings,
+  WorkerTimers as WorkerTimers,
+  DispatcherSettings as DispatcherSettings,
+  CreatePool as CreatePool,
+};
+export type { Task as Task } from "./memory/lock.ts";
 export {
-  LockBound,
-  PayloadBuffer,
-  PayloadSingal,
-  TaskIndex,
+  LockBound as LockBound,
+  PayloadBuffer as PayloadBuffer,
+  PayloadSingal as PayloadSingal,
+  TaskIndex as TaskIndex,
 } from "./memory/lock.ts";
-export type { RegisterMalloc } from "./memory/regionRegistry.ts";
+export type { RegisterMalloc as RegisterMalloc } from "./memory/regionRegistry.ts";

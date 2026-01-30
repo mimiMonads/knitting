@@ -181,8 +181,21 @@ export const createInlineExecutor = ({
       };
 
       try {
+        const args = slot[SlotPos.Args];
+        if (isThenable(args)) {
+          Promise.resolve(args).then(
+            (value) => {
+              slot[SlotPos.Args] = value;
+              pendingQueue.push(index);
+              if (!isInMacro) send();
+            },
+            (err) => settle(true, err),
+          );
+          processed++;
+          continue;
+        }
         const fnId = slot[SlotPos.FunctionID];
-        const res = funcs[fnId](slot[SlotPos.Args]);
+        const res = funcs[fnId](args);
         if (!isThenable(res)) {
           settle(false, res);
           processed++;
@@ -232,11 +245,27 @@ export const createInlineExecutor = ({
     slot[SlotPos.FunctionID] = fnNumber;
     slot[SlotPos.State] = SlotStateMacro.Pending;
     stateArr[index] = SlotStateMacro.Pending;
-    pendingQueue.push(index);
     working++;
 
-    // Start macro‑chain if idle
-    if (!isInMacro) send();
+    const enqueue = () => {
+      pendingQueue.push(index);
+      if (!isInMacro) send();
+    };
+
+    if (isThenable(args)) {
+      Promise.resolve(args).then(
+        (value) => {
+          slot[SlotPos.Args] = value;
+          enqueue();
+        },
+        (err) => {
+          deferred.reject(err);
+          cleanup(index);
+        },
+      );
+    } else {
+      enqueue();
+    }
 
     return deferred.promise;
   };

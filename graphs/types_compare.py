@@ -1,6 +1,9 @@
 
 import os, re, json, math, glob, argparse
 import matplotlib.pyplot as plt
+from plot_style import apply_dark_style, DARK_BG_RGB
+
+apply_dark_style()
 
 COUNT_RE = re.compile(r"(?:\(|→\s*|->\s*)\s*(\d+)\s*\)?\s*$")
 ARROW_SUFFIX_RE = re.compile(r"(?:->|→)\s*$")
@@ -26,7 +29,7 @@ GROUP_COLORS = {
     "Knitting Fast": "#2ca02c",
 }
 
-def _stitch_images_horizontally(img_paths, out_path, padding=16, bg=(255, 255, 255)):
+def _stitch_images_horizontally(img_paths, out_path, padding=16, bg=DARK_BG_RGB):
     """Open images, scale to the same height, and stitch horizontally with padding."""
     images = []
     for p in img_paths:

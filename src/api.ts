@@ -20,8 +20,28 @@ import type {
   tasks,
 } from "./types.ts";
 
-export const isMain = isMainThread;
-export { endpointSymbol };
+// NOTE: Explicit API typings keep JSR from widening curried signatures.
+type ToListAndIds = {
+  list: string[];
+  ids: number[];
+  at: number[];
+};
+
+type ToListAndIdsFn = (args: tasks) => ToListAndIds;
+
+type CreatePoolFactory = (
+  options: CreatePool,
+) => <T extends tasks>(tasks: T) => Pool<T>;
+
+type TaskFactory = <
+  A extends TaskInput = void,
+  B extends Args = void,
+>(
+  I: FixPoint<A, B>,
+) => ReturnFixed<A, B>;
+
+export const isMain: boolean = isMainThread;
+export { endpointSymbol as endpointSymbol };
 
 
 /**
@@ -32,9 +52,9 @@ export { endpointSymbol };
  *  correctlly map them. 
  * 
  */
-export const toListAndIds = (
+export const toListAndIds: ToListAndIdsFn = (
   args: tasks,
-) => {
+): ToListAndIds => {
   const result = Object.values(args)
     .reduce(
       (acc, v) => (
@@ -54,24 +74,21 @@ export const toListAndIds = (
       ],
     );
 
-  return Object.fromEntries([
-    ["list", [...result[0]]],
-    ["ids", [...result[1]]],
-    ["at", [...result[2]]]
-  ]) as {
-    list: string[];
-    ids: number[];
-    at: number[];
+  return {
+    list: [...result[0]],
+    ids: [...result[1]],
+    at: [...result[2]],
   };
 };
 
-export const createPool = ({
+export const createPool: CreatePoolFactory = ({
   threads,
   debug,
   inliner,
   balancer,
   source,
   worker,
+  workerExecArgv,
   dispatcher,
 }: CreatePool) =>
 <T extends tasks>(tasks: T): Pool<T> => {
@@ -125,6 +142,33 @@ export const createPool = ({
   const totalNumberOfThread = (threads ?? 1) +
     (usingInliner ? 1 : 0);
 
+  const allowedFlags = typeof process !== "undefined" &&
+      process.allowedNodeEnvironmentFlags
+    ? process.allowedNodeEnvironmentFlags
+    : null;
+  const sanitizeExecArgv = (flags?: string[]) => {
+    if (!flags || flags.length === 0) return undefined;
+    if (!allowedFlags) return flags;
+    const filtered = flags.filter((flag) => {
+      const key = flag.split("=", 1)[0];
+      return allowedFlags.has(key);
+    });
+    return filtered.length > 0 ? filtered : undefined;
+  };
+  const defaultExecArgv = workerExecArgv ??
+    (typeof process !== "undefined" && Array.isArray(process.execArgv)
+      ? (
+        allowedFlags?.has("--expose-gc") === true
+          ? (
+            process.execArgv.includes("--expose-gc")
+              ? process.execArgv
+              : [...process.execArgv, "--expose-gc"]
+          )
+          : process.execArgv
+      )
+      : undefined);
+  const execArgv = sanitizeExecArgv(defaultExecArgv);
+
   let workers = Array.from({
     length: threads ?? 1,
   }).map((_, thread) =>
@@ -137,6 +181,7 @@ export const createPool = ({
       totalNumberOfThread,
       source,
       workerOptions: worker,
+      workerExecArgv: execArgv,
       dispatcher,
     })
   );
@@ -240,7 +285,7 @@ const createSingleTaskPool = <A extends TaskInput, B extends Args>(
   };
 };
 
-export const task = <
+export const task: TaskFactory = <
   A extends TaskInput = void,
   B extends Args = void,
 >(

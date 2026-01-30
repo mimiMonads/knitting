@@ -1,6 +1,9 @@
 import os, re, json, argparse
 import math
 import matplotlib.pyplot as plt
+from plot_style import apply_dark_style
+
+apply_dark_style()
 
 RUNTIME_FILES = {
     "Node.js": "node_withload.json",

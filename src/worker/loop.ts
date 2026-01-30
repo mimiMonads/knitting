@@ -158,24 +158,21 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
 
   const loop = () => {
     isInMacro = false;
-
+    let progressed = true
+    let awaiting = 0
     while (true) {
-      let progressed = false;
+       progressed = enqueueLock();
 
       if (hasCompleted()) {
         if (writeBatch(WRITE_MAX) > 0) progressed = true;
-      }
-
-      if (enqueueLock()) {
-        progressed = true;
       }
 
       if (hasPending()) {
         if (serviceBatchImmediate() > 0) progressed = true;
       }
 
-      const awaiting = getAwaiting();
-      if (awaiting > 0) {
+       
+      if ((awaiting = getAwaiting()) > 0) {
         if (awaiting !== lastAwaiting) awaitingSpins = 0;
         lastAwaiting = awaiting;
         awaitingSpins++;
@@ -183,8 +180,8 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
         scheduleTimer(delay);
         return;
       }
-      awaitingSpins = 0;
-      lastAwaiting = 0;
+      awaitingSpins = lastAwaiting = 0;
+    
 
       if (!progressed) {
         if (txStatus[Comment.thisIsAHint] === 1) {
