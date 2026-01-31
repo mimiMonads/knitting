@@ -36,7 +36,7 @@ if (isMain) {
 
   const setPayload = new Set<unknown>(["x", "y", 1, 2, 3]);
 
-  const u8 = new Uint8Array(0);
+  const u8 = new Uint8Array(1024);
   for (let i = 0; i < u8.length; i++) u8[i] = i & 0xff;
 
   const i32 = new Int32Array(256);

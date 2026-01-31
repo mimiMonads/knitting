@@ -19,3 +19,17 @@ export const RUNTIME = (
 
 export const SET_IMMEDIATE =
   typeof globals.setImmediate === "function" ? globals.setImmediate : undefined;
+
+export const HAS_SAB_GROW =
+  typeof SharedArrayBuffer === "function" &&
+  typeof (SharedArrayBuffer.prototype as { grow?: unknown }).grow === "function";
+
+export const createSharedArrayBuffer = (
+  byteLength: number,
+  maxByteLength?: number,
+) => {
+  if (HAS_SAB_GROW && typeof maxByteLength === "number") {
+    return new SharedArrayBuffer(byteLength, { maxByteLength });
+  }
+  return new SharedArrayBuffer(byteLength);
+};

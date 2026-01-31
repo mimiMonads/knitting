@@ -2,13 +2,9 @@
 
 # playgroud
 
-
 dest/
 
 results/
-
-
-charts/
 
 log/
 
@@ -210,4 +206,3 @@ __pycache__/
 # Benchmark outputs / generated graphs
 /results/graphs/*.png
 /results/graphs/*.pdf
-

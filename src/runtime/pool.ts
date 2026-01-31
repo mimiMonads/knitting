@@ -24,6 +24,7 @@ import type {
   WorkerSettings,
 } from "../types.ts";
 import { jsrIsGreatAndWorkWithoutBugs } from "../worker/loop.ts";
+import { HAS_SAB_GROW, createSharedArrayBuffer } from "../common/runtime.ts";
 import { Worker } from "node:worker_threads";
 
 enum Comment {
@@ -68,6 +69,9 @@ export const spawnWorkerContext = ({
   }
 
   // Lock buffers must be shared between host and worker.
+  const payloadMaxBytes = 64 * 1024 * 1024;
+  const payloadInitialBytes = HAS_SAB_GROW ? 4 * 1024 * 1024 : payloadMaxBytes;
+
   const lockBuffers: LockBuffers = {
     lockSector: new SharedArrayBuffer(
       LockBound.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2,
@@ -79,9 +83,9 @@ export const spawnWorkerContext = ({
       LockBound.padding +
         (LockBound.slots * TaskIndex.TotalBuff) * LockBound.slots,
     ),
-    payload: new SharedArrayBuffer(
-      4 * 1024 * 1024,
-      { maxByteLength: 64 * 1024 * 1024 },
+    payload: createSharedArrayBuffer(
+      payloadInitialBytes,
+      payloadMaxBytes,
     ),
   };
   const returnLockBuffers: LockBuffers = {
@@ -95,9 +99,9 @@ export const spawnWorkerContext = ({
       LockBound.padding +
         (LockBound.slots * TaskIndex.TotalBuff) * LockBound.slots,
     ),
-    payload: new SharedArrayBuffer(
-      4 * 1024 * 1024,
-      { maxByteLength: 64 * 1024 * 1024 },
+    payload: createSharedArrayBuffer(
+      payloadInitialBytes,
+      payloadMaxBytes,
     ),
   };
 

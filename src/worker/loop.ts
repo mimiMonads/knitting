@@ -194,8 +194,19 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     }
   };
 
-  //@ts-ignore
-  port1.onmessage = loop;
+  const port1Any = port1 as unknown as {
+    on?: (event: string, handler: () => void) => void;
+    onmessage?: ((event: unknown) => void) | null;
+    start?: () => void;
+  };
+  if (typeof port1Any.on === "function") {
+    port1Any.on("message", loop);
+  } else {
+    // @ts-ignore
+    port1Any.onmessage = loop;
+  }
+  port1Any.start?.();
+  (port2 as unknown as { start?: () => void }).start?.();
   scheduleMacro();
 }
 

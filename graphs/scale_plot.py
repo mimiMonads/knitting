@@ -20,21 +20,21 @@ KNIT_COLORS    = {"Node.js": "#aec7e8",  "Deno": "#98df8a", "Bun": "#ff9896"}
 COUNT_RE = re.compile(r"(?:→\s*|->\s*|\()\s*(\d{1,6})\b")
 UNIT_RE  = re.compile(r"([-+]?\d*\.?\d+)\s*(ns|µs|us|ms|s)\b", re.IGNORECASE)
 
-def to_us(v):
+def to_ns(v):
     if isinstance(v, (int, float)):  # mitata stats are ns
-        return float(v) / 1000.0
+        return float(v)
     if not isinstance(v, str):
         return math.nan
     s = v.replace("µ", "u")
     m = UNIT_RE.search(s)
     if not m:
-        try: return float(s.strip()) / 1000.0
+        try: return float(s.strip())
         except: return math.nan
     num = float(m.group(1)); unit = m.group(2).lower()
-    if unit == "ns": return num / 1000.0
-    if unit in ("us",): return num
-    if unit == "ms": return num * 1000.0
-    if unit == "s":  return num * 1_000_000.0
+    if unit == "ns": return num
+    if unit in ("us",): return num * 1000.0
+    if unit == "ms": return num * 1_000_000.0
+    if unit == "s":  return num * 1_000_000_000.0
     return num
 
 def label_to_count(label: str | None):
@@ -53,14 +53,14 @@ def extract_rows(obj):
     def push(group, label, avg):
         g = (group or "").lower()
         if g in rows and avg is not None:
-            rows[g].append((str(label or ""), to_us(avg)))
+            rows[g].append((str(label or ""), to_ns(avg)))
 
     def scan_entry_dict(d, group_hint=None):
         if not isinstance(d, dict): return
         label = d.get("label") or d.get("name") or ""
         avg = d.get("avg") or d.get("average") or d.get("mean")
         if avg is None and isinstance(d.get("stats"), dict):
-            avg = d["stats"].get("avg")  # typically ns; to_us() converts
+            avg = d["stats"].get("avg")  # typically ns; to_ns() converts
         g = (d.get("group") or d.get("mode") or group_hint or "").lower()
         if g not in ("worker", "knitting"):
             low = str(label).lower()
@@ -132,7 +132,7 @@ def main():
                 color=KNIT_COLORS[runtime], label=f"{runtime} Knitting")
 
     ax.set_yscale("log")
-    ax.set_ylabel("Average Latency (µs, log scale)")
+    ax.set_ylabel("Average Latency (ns, log scale)")
     ax.set_title("Scale Benchmark (1 core): Worker vs Knitting")
     if x_labels_ref:
         ax.set_xticks(list(range(len(x_labels_ref))))

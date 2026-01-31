@@ -1,9 +1,15 @@
 
 import { Buffer as NodeBuffer } from "node:buffer";
 import { LockBound, TaskIndex } from "./lock.ts";
+import {
+  HAS_SAB_GROW,
+  IS_DENO,
+  createSharedArrayBuffer,
+} from "../common/runtime.ts";
 const page = 1024 * 4;
 
 const textEncode = new TextEncoder();
+const textDecode = new TextDecoder();
 
 enum SignalEnumOptions {
   header = 64,
@@ -21,56 +27,78 @@ export const createSharedDynamicBufferIO = ({
 }) => {
 
 
+  const maxBytes = 64 * 1024 * 1024;
+  const initialBytes = HAS_SAB_GROW ? 4 * 1024 * 1024 : maxBytes;
   const lockSAB =
       sab ??
-      new SharedArrayBuffer(
-        4 * 1024 * 1024,
-        { maxByteLength: 64 * 1024 * 1024 },
+      createSharedArrayBuffer(
+        initialBytes,
+        maxBytes,
       );
 
   let u8 = new Uint8Array(lockSAB, SignalEnumOptions.header);
-  let buf = NodeBuffer.from(lockSAB, SignalEnumOptions.header);
+  const useNodeBuffer = !IS_DENO;
+  const makeBufferView = (buffer: SharedArrayBuffer) => {
+    if (!useNodeBuffer) return undefined;
+    try {
+      const view = NodeBuffer.from(buffer, SignalEnumOptions.header);
+      if (view.buffer !== buffer) return undefined;
+      return view;
+    } catch {
+      return undefined;
+    }
+  };
+  let buf = makeBufferView(lockSAB);
   let f64 = new Float64Array(lockSAB, SignalEnumOptions.header);
 
   const capacityBytes = () => lockSAB.byteLength - SignalEnumOptions.header;
 
   const ensureCapacity = (neededBytes: number) => {
-    if (capacityBytes() >= neededBytes) return;
+    if (capacityBytes() >= neededBytes) return true;
+    if (!HAS_SAB_GROW || typeof lockSAB.grow !== "function") return false;
 
-    lockSAB.grow(
-      alignUpto64(
-        SignalEnumOptions.header + neededBytes + SignalEnumOptions.safePadding,
-      ),
-    );
+    try {
+      lockSAB.grow(
+        alignUpto64(
+          SignalEnumOptions.header + neededBytes + SignalEnumOptions.safePadding,
+        ),
+      );
+    } catch {
+      return false;
+    }
 
     u8 = new Uint8Array(
       lockSAB,
       SignalEnumOptions.header,
       lockSAB.byteLength - SignalEnumOptions.header,
     );
-    buf = NodeBuffer.from(
-      lockSAB,
-      SignalEnumOptions.header,
-      lockSAB.byteLength - SignalEnumOptions.header,
-    );
+    buf = makeBufferView(lockSAB);
     f64 = new Float64Array(
       lockSAB,
       SignalEnumOptions.header,
       (lockSAB.byteLength - SignalEnumOptions.header) >>> 3,
     );
+    return true;
   };
 
-  const readUtf8 = (start: number, end: number) => buf.toString("utf8", start, end);
+  const readUtf8 = (start: number, end: number) => {
+    if (buf) return buf.toString("utf8", start, end);
+    return textDecode.decode(u8.subarray(start, end));
+  };
 
   const writeBinary = (src: Uint8Array, start = 0) => {
-    ensureCapacity(start + src.byteLength);
+    if (!ensureCapacity(start + src.byteLength)) {
+      throw new RangeError("Shared buffer capacity exceeded");
+    }
     u8.set(src, start);
     return src.byteLength;
   };
 
   const write8Binary = (src: Float64Array, start = 0) => {
     const bytes = src.byteLength;
-    ensureCapacity(start + bytes);
+    if (!ensureCapacity(start + bytes)) {
+      throw new RangeError("Shared buffer capacity exceeded");
+    }
     f64.set(src, start >>> 3);
     return bytes
   };
@@ -133,10 +161,13 @@ export const createSharedStaticBufferIO = ({
   },
   (_,i) => new Uint8Array(headersBuffer, slotStartBytes(i), writableBytes))
 
-  const arrBuffSec = Array.from({
-    length: LockBound.slots
-  },
-  (_,i) => NodeBuffer.from(headersBuffer, slotStartBytes(i), writableBytes))
+  const useNodeBuffer = !IS_DENO;
+  const arrBuffSec = useNodeBuffer
+    ? Array.from(
+      { length: LockBound.slots },
+      (_, i) => NodeBuffer.from(headersBuffer, slotStartBytes(i), writableBytes),
+    )
+    : [];
 
   const arrF64Sec = Array.from({
     length: LockBound.slots
@@ -164,8 +195,10 @@ export const createSharedStaticBufferIO = ({
 
   };
 
-  const readUtf8 = (start: number, end: number,at:number) => 
-    arrBuffSec[at].toString("utf8", start, end);
+  const readUtf8 = (start: number, end: number,at:number) => {
+    if (useNodeBuffer) return arrBuffSec[at].toString("utf8", start, end);
+    return textDecode.decode(arrU8Sec[at].subarray(start, end));
+  };
 
   const writeBinary = (src: Uint8Array, at: number, start = 0) => {
     if (!canWrite(start, src.byteLength)) return -1;

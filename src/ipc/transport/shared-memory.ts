@@ -2,6 +2,7 @@ export type SignalArguments = ReturnType<typeof createSharedMemoryTransport>;
 export type MainSignal = ReturnType<typeof mainSignal>;
 import { isMainThread } from "node:worker_threads";
 import { beat, signalDebuggerV2 } from "../../common/others.ts";
+import { createSharedArrayBuffer } from "../../common/runtime.ts";
 import { type DebugOptions } from "../../types.ts";
 
 const page = 1024 * 4;
@@ -35,11 +36,9 @@ export const createSharedMemoryTransport = (
   const toGrow = sabObject?.size ?? page;
   const sab = sabObject?.sharedSab
     ? sabObject.sharedSab
-    : new SharedArrayBuffer(
+    : createSharedArrayBuffer(
       toGrow + (toGrow % page),
-      {
-        maxByteLength: page * page,
-      },
+      page * page,
     );
 
   const startAt = beat();

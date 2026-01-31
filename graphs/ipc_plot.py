@@ -25,24 +25,24 @@ GROUP_COLORS = {
 COUNT_RE = re.compile(r"(?:→\s*|->\s*|\()\s*(\d{1,6})\b")
 UNIT_RE  = re.compile(r"([-+]?\d*\.?\d+)\s*(ns|µs|us|ms|s)\b", re.IGNORECASE)
 
-def to_us(v):
+def to_ns(v):
     # Accept numbers (assume ns) or strings w/ units
     if isinstance(v, (int, float)):
-        return float(v) / 1000.0
+        return float(v)
     if not isinstance(v, str):
         return math.nan
     s = v.replace("µ", "u")
     m = UNIT_RE.search(s)
     if not m:
         try:
-            return float(s.strip()) / 1000.0
+            return float(s.strip())
         except:
             return math.nan
     num = float(m.group(1)); unit = m.group(2).lower()
-    if unit == "ns": return num / 1000.0
-    if unit in ("us",): return num
-    if unit == "ms": return num * 1000.0
-    if unit == "s":  return num * 1_000_000.0
+    if unit == "ns": return num
+    if unit in ("us",): return num * 1000.0
+    if unit == "ms": return num * 1_000_000.0
+    if unit == "s":  return num * 1_000_000_000.0
     return num
 
 def label_to_count(label: str | None):
@@ -76,7 +76,7 @@ def iter_sections(obj):
                 yield section
 
 def extract_groups(obj):
-    out = {g: {} for g in GROUP_ORDER}  # group -> {count: avg_us}
+    out = {g: {} for g in GROUP_ORDER}  # group -> {count: avg_ns}
 
     def scan_entries(group_key, entries):
         for entry in entries or []:
@@ -88,9 +88,9 @@ def extract_groups(obj):
             count = label_to_count(str(label))
             if count is None:
                 continue
-            avg_us = to_us(avg)
-            if not math.isnan(avg_us):
-                out[group_key][count] = avg_us
+            avg_ns = to_ns(avg)
+            if not math.isnan(avg_ns):
+                out[group_key][count] = avg_ns
 
     for section in iter_sections(obj):
         for key, entries in section.items():
@@ -135,9 +135,13 @@ def plot_one(path, out_path, title):
         )
 
     plt.yscale("log")
+    if 100 in counts:
+        plt.axhline(100_000.0, color="#a0a0a0", linestyle=":", linewidth=1.0, alpha=0.7, zorder=0)
+        plt.text(0.99, 100_000.0, "100 µs", transform=plt.gca().get_yaxis_transform(),
+                 ha="right", va="bottom", fontsize=8, color="#b8b8b8")
     plt.xticks(x, [str(c) for c in counts])
     plt.xlabel("Message count")
-    plt.ylabel("Average latency (us, log scale)")
+    plt.ylabel("Average latency (ns, log scale)")
     plt.title(f"IPC Benchmark — {title}")
     plt.grid(True, which="both", linestyle="--", alpha=0.5)
     plt.legend()
@@ -189,10 +193,14 @@ def plot_combined(items, out_path):
             )
 
     ax.set_yscale("log")
+    if 100 in all_counts:
+        ax.axhline(100_000.0, color="#a0a0a0", linestyle=":", linewidth=1.0, alpha=0.7, zorder=0)
+        ax.text(0.99, 100_000.0, "100 µs", transform=ax.get_yaxis_transform(),
+                ha="right", va="bottom", fontsize=8, color="#b8b8b8")
     ax.set_xticks(x)
     ax.set_xticklabels([str(c) for c in all_counts])
     ax.set_xlabel("Message count")
-    ax.set_ylabel("Average latency (us, log scale)")
+    ax.set_ylabel("Average latency (ns, log scale)")
     ax.grid(True, which="both", linestyle="--", alpha=0.5)
 
     handles, labels = ax.get_legend_handles_labels()

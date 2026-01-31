@@ -12,10 +12,15 @@ const { shutdown, call, send } = createPool(
 )({ inLine });
 
 if (isMain) {
-  const sizes = [1, 10, 100, 1000];
+
+
+  const sizes = [10, 100, 1000];
 
   // ───────────────────────── knitting (call) ────────────────────
   group("knitting", () => {
+      bench(`1 thread → (1)`, async () => {
+        await  call.inLine();
+      });
     for (const n of sizes) {
       bench(`1 thread → (${n})`, async () => {
         await Promise.all(Array.from({ length: n }, () => call.inLine()));
@@ -25,6 +30,9 @@ if (isMain) {
 
   // ───────────────────────── worker (toResolve) ─────────────────────────
   group("worker", () => {
+      bench(`1 thread → (1)`, async () =>
+        await toResolve()
+      );
     for (const n of sizes) {
       bench(`1 thread → (${n})`, async () => {
         const arr = Array.from({ length: n }, () => toResolve());

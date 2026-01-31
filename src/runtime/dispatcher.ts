@@ -141,10 +141,19 @@ export class ChannelHandler {
    * This is the setup so `notify` can send a message to the port 1.
    */
   public open(f: () => void): void {
-    //@ts-ignore
-    this.port1.onmessage = f;
-    this.port2.start();
-    this.port1.start();
+    const port1 = this.port1 as unknown as {
+      on?: (event: string, handler: () => void) => void;
+      onmessage?: ((event: unknown) => void) | null;
+      start?: () => void;
+    };
+    if (typeof port1.on === "function") {
+      port1.on("message", f);
+    } else {
+      // @ts-ignore
+      port1.onmessage = f;
+    }
+    this.port1.start?.();
+    this.port2.start?.();
   }
 
   /**

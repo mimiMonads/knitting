@@ -14,7 +14,7 @@ const DEFAULT_PAUSE_TIME = 250;
 
 const a_load = Atomics.load;
 const a_store = Atomics.store;
-const a_wait = Atomics.wait;
+const a_wait = typeof Atomics.wait === "function" ? Atomics.wait : undefined;
 const p_now = performance.now.bind(performance);
 const a_pause: ((n: number) => void) | undefined = "pause" in Atomics
   ? (Atomics.pause as (n: number) => void)
@@ -88,17 +88,26 @@ export const sleepUntilChanged = (
       p_now() < until
     );
 
+    maybeGc();
     if (tryProgress()) return;
 
     a_store(rxStatus, 0, 0);
-    maybeGc();
+    
 
-    a_wait(
-      opView,
-      at,
-      value,
-      parkMs ?? 50,
-    );
+    if (a_wait) {
+      a_wait(
+        opView,
+        at,
+        value,
+        parkMs ?? 50,
+      );
+    } else {
+      const untilPark = p_now() + (parkMs ?? 50);
+      while (p_now() < untilPark) {
+        if (a_load(opView, at) !== value) break;
+        pause();
+      }
+    }
 
     a_store(rxStatus, 0, 1);
 

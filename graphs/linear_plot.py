@@ -19,23 +19,23 @@ KNIT_COLORS    = {"Node.js": "#aec7e8",  "Deno": "#98df8a", "Bun": "#ff9896"}
 UNIT_RE  = re.compile(r"([-+]?\d*\.?\d+)\s*(ns|µs|us|ms|s)\b", re.IGNORECASE)
 COUNT_RE = re.compile(r"(?:→\s*|->\s*|\()\s*(\d{1,5})\b")  # handles "→ 100", "-> 100", "(100)"
 
-def to_us(v):
+def to_ns(v):
     if isinstance(v, (int, float)):  # mitata stats are ns
-        return float(v) / 1000.0
+        return float(v)
     if not isinstance(v, str):
         return math.nan
     s = v.replace("µ", "u")
     m = UNIT_RE.search(s)
     if not m:
         try:
-            return float(s.strip()) / 1000.0
+            return float(s.strip())
         except:
             return math.nan
     num = float(m.group(1)); unit = m.group(2).lower()
-    if unit == "ns": return num / 1000.0
-    if unit in ("us",): return num
-    if unit == "ms": return num * 1000.0
-    if unit == "s":  return num * 1_000_000.0
+    if unit == "ns": return num
+    if unit in ("us",): return num * 1000.0
+    if unit == "ms": return num * 1_000_000.0
+    if unit == "s":  return num * 1_000_000_000.0
     return num
 
 def label_to_count(label: str | None):
@@ -48,13 +48,13 @@ def read_json(path):
         return json.load(f)
 
 def extract_rows(obj):
-    """Return {'worker': [(label, avg_us), ...], 'knitting': [...]} from many shapes."""
+    """Return {'worker': [(label, avg_ns), ...], 'knitting': [...]} from many shapes."""
     rows = {"worker": [], "knitting": []}
 
     def push(group, label, avg):
         g = (group or "").lower()
         if g in rows and avg is not None:
-            rows[g].append((str(label or ""), to_us(avg)))
+            rows[g].append((str(label or ""), to_ns(avg)))
 
     def scan_entry_dict(d, group_hint=None):
         # d is a single bench row dict with fields like name/label and stats.avg
@@ -63,7 +63,7 @@ def extract_rows(obj):
         avg = (d.get("avg") or d.get("average") or d.get("mean"))
         if avg is None and isinstance(d.get("stats"), dict):
             avg = d["stats"].get("avg")
-            # These dumps have ns in stats.avg; convert in to_us()
+            # These dumps have ns in stats.avg; convert in to_ns()
         g = (d.get("group") or d.get("mode") or group_hint or "").lower()
         if g not in ("worker", "knitting"):
             low = str(label).lower()
@@ -138,7 +138,11 @@ def main():
                 color=KNIT_COLORS[runtime], label=f"{runtime} Knitting")
 
     ax.set_yscale("symlog")
-    ax.set_ylabel("Average Latency (µs, log scale)")
+    if x_labels_ref and 100 in [label_to_count(lab) for lab in x_labels_ref]:
+        ax.axhline(100_000.0, color="#a0a0a0", linestyle=":", linewidth=1.0, alpha=0.7, zorder=0)
+        ax.text(0.99, 100_000.0, "100 µs", transform=ax.get_yaxis_transform(),
+                ha="right", va="bottom", fontsize=8, color="#b8b8b8")
+    ax.set_ylabel("Average Latency (ns, log scale)")
     ax.set_title("Latency Benchmark: Worker vs Knitting")
     if x_labels_ref:
         ax.set_xticks(list(range(len(x_labels_ref))))

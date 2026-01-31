@@ -89,24 +89,24 @@ def parse_name(name: str):
             base = s
     return (base, count)
 
-def to_us(v):
-    # Mitata stats are in nanoseconds; normalize to microseconds.
+def to_ns(v):
+    # Mitata stats are in nanoseconds; keep in nanoseconds.
     if isinstance(v, (int, float)):
-        return float(v) / 1000.0
+        return float(v)
     if not isinstance(v, str):
         return math.nan
     s = v.replace("µ", "u")
     m = UNIT_RE.search(s)
     if not m:
         try:
-            return float(s.strip()) / 1000.0
+            return float(s.strip())
         except:
             return math.nan
     num = float(m.group(1)); unit = m.group(2).lower()
-    if unit == "ns": return num / 1000.0
-    if unit in ("us",): return num
-    if unit == "ms": return num * 1000.0
-    if unit == "s":  return num * 1_000_000.0
+    if unit == "ns": return num
+    if unit in ("us",): return num * 1000.0
+    if unit == "ms": return num * 1_000_000.0
+    if unit == "s":  return num * 1_000_000_000.0
     return num
 
 def read_types_file(path):
@@ -137,13 +137,13 @@ def runtime_title_from_path(path: str):
 def collect_by_count(entries):
     """
     entries: list of dicts with fields name, stats.avg
-    returns: dict[count] -> dict[type_label] -> avg_us
+    returns: dict[count] -> dict[type_label] -> avg_ns
     """
     out = {}
     for e in entries or []:
         name = e.get("name")
         stats = e.get("stats", {})
-        avg = to_us(stats.get("avg"))
+        avg = to_ns(stats.get("avg"))
         typ, cnt = parse_name(name or "")
         if cnt is None or math.isnan(avg):
             continue
@@ -170,7 +170,7 @@ def available_counts(*maps):
 
 def plot_one(runtime_title, count, data_map, out_path):
     """
-    data_map: label -> dict[type] -> avg_us, labels are Worker, Knitting, Knitting fast
+    data_map: label -> dict[type] -> avg_ns, labels are Worker, Knitting, Knitting fast
     """
     types = aligned_type_list(*data_map.values())
     if not types:
@@ -184,8 +184,16 @@ def plot_one(runtime_title, count, data_map, out_path):
         plt.plot(x, y, marker="o", linestyle="-", label=label)
 
     plt.yscale("log")
+    if count == 1:
+        plt.axhline(1_000.0, color="#a0a0a0", linestyle=":", linewidth=1.0, alpha=0.7, zorder=0)
+        plt.text(0.99, 1_000.0, "1 µs", transform=plt.gca().get_yaxis_transform(),
+                 ha="right", va="bottom", fontsize=8, color="#b8b8b8")
+    elif count == 100:
+        plt.axhline(100_000.0, color="#a0a0a0", linestyle=":", linewidth=1.0, alpha=0.7, zorder=0)
+        plt.text(0.99, 100_000.0, "100 µs", transform=plt.gca().get_yaxis_transform(),
+                 ha="right", va="bottom", fontsize=8, color="#b8b8b8")
     plt.xticks(x, types, rotation=30, ha="right")
-    plt.ylabel("Average Latency (µs, log scale)")
+    plt.ylabel("Average Latency (ns, log scale)")
     plt.title(f"{runtime_title} — Types Benchmark (count={count})")
     plt.grid(True, which="both", linestyle="--", alpha=0.5)
     plt.legend()
@@ -253,9 +261,17 @@ def plot_combined(count, items, out_path):
             )
 
     ax.set_yscale("log")
+    if count == 1:
+        ax.axhline(1_000.0, color="#a0a0a0", linestyle=":", linewidth=1.0, alpha=0.7, zorder=0)
+        ax.text(0.99, 1_000.0, "1 µs", transform=ax.get_yaxis_transform(),
+                ha="right", va="bottom", fontsize=8, color="#b8b8b8")
+    elif count == 100:
+        ax.axhline(100_000.0, color="#a0a0a0", linestyle=":", linewidth=1.0, alpha=0.7, zorder=0)
+        ax.text(0.99, 100_000.0, "100 µs", transform=ax.get_yaxis_transform(),
+                ha="right", va="bottom", fontsize=8, color="#b8b8b8")
     ax.set_xticks(x)
     ax.set_xticklabels(types, rotation=30, ha="right")
-    ax.set_ylabel("Average Latency (µs, log scale)")
+    ax.set_ylabel("Average Latency (ns, log scale)")
     ax.set_title(f"Types Benchmark — Combined (count={count})")
     ax.grid(True, which="both", linestyle="--", alpha=0.5)
 

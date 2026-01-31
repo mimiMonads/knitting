@@ -1,5 +1,6 @@
 import LinkList from "../ipc/tools/LinkList.ts";
 import { decodePayload, encodePayload } from "./payloadCodec.ts";
+import { HAS_SAB_GROW, createSharedArrayBuffer } from "../common/runtime.ts";
 
 
 /**
@@ -241,10 +242,12 @@ export const lock2 = ({
   bufferHeadersBuffer
   );
 
+  const payloadMaxBytes = 64 * 1024 * 1024;
+  const payloadInitialBytes = HAS_SAB_GROW ? 4 * 1024 * 1024 : payloadMaxBytes;
   const payloadSAB = payload ??
-    new SharedArrayBuffer(
-      4 * 1024 * 1024,
-      { maxByteLength: 64 * 1024 * 1024 },
+    createSharedArrayBuffer(
+      payloadInitialBytes,
+      payloadMaxBytes,
     );
   const payloadLockSAB = payloadSector ??
     new SharedArrayBuffer(LockBound.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2);
