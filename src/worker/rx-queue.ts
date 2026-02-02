@@ -123,21 +123,22 @@ export const createWorkerRxQueue = (
     ? () => hasAnythingFinished !== 0 && toWork.size === 0
     : () => hasAnythingFinished !== 0;
 
-  const enqueueLock = () => {
-    if (!lock.decode()) {
-      return false;
-    }
+const { decode, resolved } = lock;
+const resolvedShift = resolved.shift.bind(resolved);
 
-    let task = lock.resolved.shift() as Task | undefined;
-    while (task) {
-      task.resolve = PLACE_HOLDER;
-      task.reject = PLACE_HOLDER;
-      toWorkPush(task);
-      task = lock.resolved.shift() as Task | undefined;
-    }
 
-    return true;
-  };
+const enqueueLock = () => {
+  if (!decode()) return false;
+
+  let task = resolvedShift();
+  while (task) {
+    task.resolve = PLACE_HOLDER;
+    task.reject  = PLACE_HOLDER;
+    toWorkPush(task);
+    task = resolvedShift();
+  }
+  return true;
+};
 
   const sendReturn = (slot: Task, isError: boolean) => {
     slot[TaskIndex.FlagsToHost] = isError ? TaskFlag.Reject : 0;

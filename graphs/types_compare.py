@@ -29,6 +29,8 @@ GROUP_COLORS = {
     "Knitting Fast": "#2ca02c",
 }
 
+RUNTIME_DIRS = ["node", "deno", "bun"]
+
 def _stitch_images_horizontally(img_paths, out_path, padding=16, bg=DARK_BG_RGB):
     """Open images, scale to the same height, and stitch horizontally with padding."""
     images = []
@@ -133,6 +135,24 @@ def runtime_title_from_path(path: str):
     if base.startswith("bun_"):
         return "Bun"
     return base.replace("_", " ").title()
+
+def find_types_files(input_dir: str):
+    candidate_roots = [
+        os.path.join(input_dir, "ms"),
+        os.path.join(input_dir, "json"),
+        input_dir,
+    ]
+    for root in candidate_roots:
+        runtime_files = []
+        for runtime in RUNTIME_DIRS:
+            runtime_path = os.path.join(root, runtime)
+            runtime_files.extend(glob.glob(os.path.join(runtime_path, "*_types.json")))
+        if runtime_files:
+            return sorted(set(runtime_files))
+        root_files = glob.glob(os.path.join(root, "*_types.json"))
+        if root_files:
+            return sorted(set(root_files))
+    return []
 
 def collect_by_count(entries):
     """
@@ -332,7 +352,7 @@ def main():
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
-    files = sorted(glob.glob(os.path.join(args.input, "*_types.json")))
+    files = find_types_files(args.input)
     if not files:
         print(f"[warn] no *_types.json found in {args.input}")
         return

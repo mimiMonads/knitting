@@ -6,9 +6,10 @@ enum Comment {
   thisIsAHint = 0,
 }
 
-const maybeGc = typeof (globalThis as { gc?: () => void }).gc === "function"
-  ? (globalThis as { gc: () => void }).gc.bind(globalThis)
-  : () => {};
+const maybeGc = (() => {
+  const gc = (globalThis as { gc?: () => void }).gc;
+  return typeof gc === "function" ? gc.bind(globalThis) as () => void : () => {};
+})();
 
 const DEFAULT_PAUSE_TIME = 250;
 
@@ -25,6 +26,8 @@ export const whilePausing = ({ pauseInNanoseconds }: PauseOptions) => {
 
   return a_pause ? () => a_pause(forNanoseconds) : () => {};
 };
+
+
 
 export const pauseGeneric = whilePausing({});
 
@@ -88,7 +91,7 @@ export const sleepUntilChanged = (
       p_now() < until
     );
 
-    maybeGc();
+    //maybeGc();
     if (tryProgress()) return;
 
     a_store(rxStatus, 0, 0);

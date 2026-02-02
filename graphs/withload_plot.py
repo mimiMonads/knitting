@@ -11,6 +11,7 @@ RUNTIME_FILES = {
     "Bun":     "bun_withload.json",
 }
 
+RUNTIME_DIRS = {"Node.js": "node", "Deno": "deno", "Bun": "bun"}
 # Patterns
 BENCH_KEY_RE = re.compile(r"^knitting:\s*primes", re.IGNORECASE)
 EXTRA_THREADS_RE = re.compile(r"main\s*\+\s*(\d+)\s*extra\s*threads", re.IGNORECASE)
@@ -18,6 +19,19 @@ EXTRA_THREADS_RE = re.compile(r"main\s*\+\s*(\d+)\s*extra\s*threads", re.IGNOREC
 def read_json(path):
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+def resolve_runtime_path(input_dir, runtime, filename):
+    runtime_dir = RUNTIME_DIRS.get(runtime, runtime.lower())
+    candidates = [
+        os.path.join(input_dir, "ms", runtime_dir, filename),
+        os.path.join(input_dir, "json", runtime_dir, filename),
+        os.path.join(input_dir, runtime_dir, filename),
+        os.path.join(input_dir, filename),
+    ]
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    return None
 
 def ns_to_seconds(v):
     # avg values are in ns here
@@ -74,9 +88,9 @@ def main():
     # Collect per-runtime series
     per_runtime_times = {}  # runtime -> {threads: seconds}
     for runtime, fname in RUNTIME_FILES.items():
-        path = os.path.join(args.input, fname)
-        if not os.path.exists(path):
-            print(f"[warn] missing {path}, skipping {runtime}")
+        path = resolve_runtime_path(args.input, runtime, fname)
+        if not path:
+            print(f"[warn] missing {fname} under {args.input}, skipping {runtime}")
             continue
         obj = read_json(path)
         times = extract_series(obj)

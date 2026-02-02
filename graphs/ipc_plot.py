@@ -13,6 +13,7 @@ RUNTIME_FILES = {
     "Bun":     "bun_ipc.json",
 }
 
+RUNTIME_DIRS = {"Node.js": "node", "Deno": "deno", "Bun": "bun"}
 GROUP_ORDER = ["knitting", "worker", "websocket", "http"]
 GROUP_COLORS = {
     "knitting": "#1f77b4",
@@ -66,6 +67,19 @@ def read_json(path):
     decoder = json.JSONDecoder()
     obj, _ = decoder.raw_decode(text[start:])
     return obj
+
+def resolve_runtime_path(input_dir, runtime, filename):
+    runtime_dir = RUNTIME_DIRS.get(runtime, runtime.lower())
+    candidates = [
+        os.path.join(input_dir, "ms", runtime_dir, filename),
+        os.path.join(input_dir, "json", runtime_dir, filename),
+        os.path.join(input_dir, runtime_dir, filename),
+        os.path.join(input_dir, filename),
+    ]
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    return None
 
 def iter_sections(obj):
     if isinstance(obj, dict):
@@ -237,9 +251,9 @@ def main():
     any_plotted = False
     combined_items = []
     for runtime, filename in RUNTIME_FILES.items():
-        path = os.path.join(args.input, filename)
-        if not os.path.isfile(path):
-            print(f"[warn] missing {path}, skipping {runtime}")
+        path = resolve_runtime_path(args.input, runtime, filename)
+        if not path:
+            print(f"[warn] missing {filename} under {args.input}, skipping {runtime}")
             continue
         base = os.path.splitext(filename)[0]
         out_path = os.path.join(out_dir, f"{base}.png")

@@ -221,7 +221,7 @@ export const lock2 = ({
   // [ workerBits:Int32 (4 bytes) ]
   const LockBoundSAB =
     LockBoundSector ??
-    new SharedArrayBuffer(LockBound.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2);
+    new SharedArrayBuffer(LockBound.padding * 3 + Uint32Array.BYTES_PER_ELEMENT * 2);
 
   const hostBits = new Uint32Array(LockBoundSAB, LockBound.padding, 1);
   const workerBits = new Uint32Array(
@@ -250,7 +250,7 @@ export const lock2 = ({
       payloadMaxBytes,
     );
   const payloadLockSAB = payloadSector ??
-    new SharedArrayBuffer(LockBound.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2);
+    new SharedArrayBuffer(LockBound.padding * 3 + Uint32Array.BYTES_PER_ELEMENT * 2);
 
   let promiseHandler: PromisePayloadHandler | undefined;
 
@@ -268,7 +268,7 @@ export const lock2 = ({
 
   let LastLocal = 0 >>> 0
 let LastWorker = 0 >>> 0;
-  let lastTake = 32;
+  let lastTake = 32 | 0;
 
   const toBeSent = toSentList ?? new LinkList();
   const recyclecList = recycleList ?? new LinkList()
@@ -303,17 +303,17 @@ const slotOffset = (at: number) =>
     const free = (~state) >>> 0;
     if (free === 0) return 0;
 
-    uwuIdx = 31 - clz32(free);
-    if (!encodeTask(task, uwuIdx)) return 0;
+  
+    if (!encodeTask(task, uwuIdx = 31 - clz32(free))) return 0;
 
-    uwuBit = 1 << uwuIdx;
-    encodeAt(task, uwuIdx, uwuBit);
+    
+    encodeAt(task, uwuIdx, uwuBit = 1 << uwuIdx);
     return uwuBit;
   };
 
   const encodeManyFrom = (list: LinkList<Task>): number => {
-    const workerSnapshot = a_load(workerBits, 0);
-    let state = LastLocal ^ workerSnapshot;
+   
+    let state = LastLocal ^ a_load(workerBits, 0);
     let encoded = 0;
 
     if (list === toBeSent) {
@@ -355,7 +355,7 @@ const slotOffset = (at: number) =>
     return toBeSent.isEmpty;
   };
 
-  let uwuIdx = 0 | 0, uwuBit = 0 | 0
+  let uwuIdx = 0 | 0, uwuBit = 0 >>> 0
 
   const storeHost = (bit: number) => a_store(hostBits, 0, LastLocal ^= bit)
     const storeWorker = (bit: number) => a_store(workerBits, 0, LastWorker ^=  bit)
@@ -366,13 +366,11 @@ const slotOffset = (at: number) =>
     const free = (~state) >>> 0;
     if (free === 0) return false;
 
-    const idx = 31 - clz32(free);
-    uwuIdx = idx;
-    if (!encodeTask(task, idx)) return false;
 
-    const bit = 1 << idx;
-    uwuBit = bit;
-    return encodeAt(task, idx, bit);
+    if (!encodeTask(task, uwuIdx = 31 - clz32(free))) return false;
+
+   
+    return encodeAt(task, uwuIdx, uwuBit = 1 << uwuIdx);
 
   
   };
@@ -403,29 +401,29 @@ const slotOffset = (at: number) =>
    */
   const decode = (): boolean => {
     // bits that changed since last time on worker side
-    let diff = a_load(hostBits, 0) ^ LastWorker;
+    let diff = (a_load(hostBits, 0) ^ LastWorker) 
+   
     if (diff === 0) return false;
 
     let last = lastTake;
 
     if (last === 32) {
-      uwuIdx = 31 - clz32(diff);
-      decodeAt(uwuIdx, uwuBit = 1 << uwuIdx);
+      
+      decodeAt(uwuIdx = 31 - clz32(diff), uwuBit = 1 << (last = uwuIdx));
       diff ^= uwuBit;
-      last = uwuIdx;
     }
 
     while (diff !== 0) {
-      let pick = diff & ((1 << last) - 1);
+      let pick = diff & ((1 << last) - 1) ;
       if (pick === 0) pick = diff;
-      uwuIdx = 31 - clz32(pick);
-      decodeAt(uwuIdx, uwuBit = 1 << uwuIdx);
+     
+      decodeAt(uwuIdx = 31 - clz32(pick), uwuBit = 1 << (last = uwuIdx));
       diff ^= uwuBit;
-      last = uwuIdx;
+  
     }
 
     lastTake = last;
-    if (a_load(hostBits, 0) === (LastWorker >>> 0)) lastTake = 32;
+  
     return true;
   };
 
@@ -450,7 +448,7 @@ const slotOffset = (at: number) =>
 
 
     return (): number => {
-    let diff = a_load(hostBits, 0) ^ LastWorker;
+    let diff = (a_load(hostBits, 0) ^ LastWorker) >>> 0
     if (diff === 0) return 0;
 
     let modified = 0;
@@ -476,7 +474,7 @@ const slotOffset = (at: number) =>
     }
 
     while (diff !== 0) {
-      let pick = diff & ((1 << last) - 1);
+      let pick = diff & ((1 << last) - 1) >>> 0;
       if (pick === 0) pick = diff;
       const idx = 31 - clz32(pick);
       const  uwubit = 1 << idx;
@@ -496,7 +494,7 @@ const slotOffset = (at: number) =>
     }
 
     if (consumedBits !== 0) {
-      LastWorker = (LastWorker ^ consumedBits) >>> 0;
+      LastWorker = (LastWorker ^ consumedBits) ;
       a_store(workerBits, 0, LastWorker);
     }
 

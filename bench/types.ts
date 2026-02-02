@@ -11,7 +11,7 @@ export const toVoid = task({ f: (_: void) => {} });
 export const toObject = task({ f: (a: object) => a });
 
 if (isMain) {
-  const { call, shutdown, send } = createPool({})({
+  const { call, shutdown, } = createPool({})({
     toNumber,
     toString,
     toBigInt,

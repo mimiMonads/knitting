@@ -46,7 +46,7 @@ export const spawnWorkerContext = ({
   at,
   workerOptions,
   workerExecArgv,
-  dispatcher,
+  host,
 }: {
   list: string[];
   ids: number[];
@@ -59,7 +59,7 @@ export const spawnWorkerContext = ({
   source?: string;
   workerOptions?: WorkerSettings;
   workerExecArgv?: string[];
-  dispatcher?: DispatcherSettings;
+  host?: DispatcherSettings;
 }) => {
   const tsFileUrl = new URL(import.meta.url);
 
@@ -142,7 +142,7 @@ export const spawnWorkerContext = ({
     signalBox,
     queue,
     channelHandler,
-    dispatcherOptions: dispatcher,
+    dispatcherOptions: host,
     //thread,
     //debugSignal: debug?.logMain ?? false,
     //perf,

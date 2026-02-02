@@ -228,17 +228,31 @@ type DispatcherSettings = {
   maxBackoffMs?: number;
 };
 
+/**
+ * @deprecated Use `host` in CreatePool instead.
+ */
+type DispatcherOptions = {
+  host?: DispatcherSettings;
+};
+
 type CreatePool = {
   threads?: number;
   inliner?: Inliner;
   balancer?: Balancer;
   worker?: WorkerSettings;
   /**
+   * Host dispatcher backoff and scheduling options.
+   */
+  host?: DispatcherSettings;
+  /**
    * Extra Node.js execArgv flags for worker threads (e.g. ["--expose-gc"]).
    * Defaults to process.execArgv plus "--expose-gc" when allowed.
    */
   workerExecArgv?: string[];
-  dispatcher?: DispatcherSettings;
+  /**
+   * @deprecated Use `host` instead.
+   */
+  dispatcher?: DispatcherOptions | DispatcherSettings;
   debug?: DebugOptions;
   source?: string;
 };
@@ -275,6 +289,7 @@ export type {
   WorkerSettings as WorkerSettings,
   WorkerTimers as WorkerTimers,
   DispatcherSettings as DispatcherSettings,
+  DispatcherOptions as DispatcherOptions,
   CreatePool as CreatePool,
 };
 export type { Task as Task } from "./memory/lock.ts";

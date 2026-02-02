@@ -1,5 +1,6 @@
 import { assertEquals } from "jsr:@std/assert";
-import { createPool, task } from "../knitting.ts";
+import { createPool } from "../knitting.ts";
+import { addOne, delayedEcho } from "./fixtures/loop_tasks.ts";
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -20,17 +21,6 @@ const withTimeout = async <T>(promise: Promise<T>, ms: number) => {
   }
 };
 
-export const addOne = task<number, number>({
-  f: (value) => value + 1,
-});
-
-export const delayedEcho = task<number, number>({
-  f: async (value) => {
-    await delay(value);
-    return value;
-  },
-});
-
 Deno.test("worker loop progresses across async work and idle periods", async () => {
   const { call, send, shutdown } = createPool({
     threads: 1,
@@ -40,7 +30,7 @@ Deno.test("worker loop progresses across async work and idle periods", async () 
         parkMs: 5,
       },
     },
-    dispatcher: {
+    host: {
       stallFreeLoops: 0,
       maxBackoffMs: 1,
     },

@@ -59,4 +59,4 @@ export function toResolve(message?: unknown) {
 
 const shutdownWorkers = async () => worker.terminate();
 
-export { shutdownWorkers };
+export { shutdownWorkers as shutdownWorkers };

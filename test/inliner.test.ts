@@ -1,13 +1,6 @@
 import { assertEquals } from "jsr:@std/assert";
-import { createPool, task } from "../knitting.ts";
-
-export const hello = task({
-  f: () => "hello ",
-});
-
-export const world = task({
-  f: (args: string) => args + " world!",
-});
+import { createPool } from "../knitting.ts";
+import { hello, world } from "./fixtures/hello_world.ts";
 
 Deno.test("inliner awaits promise arguments before invoking task", async () => {
   const { call, shutdown } = createPool({

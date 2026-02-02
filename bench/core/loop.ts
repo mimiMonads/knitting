@@ -23,7 +23,7 @@ const { call, send, shutdown } = createPool({
       parkMs: 5,
     },
   },
-  dispatcher: {
+  host: {
     stallFreeLoops: 0,
     maxBackoffMs: 1,
   },

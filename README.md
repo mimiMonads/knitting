@@ -14,7 +14,7 @@ call them from the main thread with a small, typed API.
 This package is published on JSR:
 
 ```bash
-deno add jsr:@vixeny/knitting
+deno add --npm jsr:@vixeny/knitting
 ```
 
 
@@ -119,7 +119,7 @@ Key options:
   or `{ strategy: "robinRound" | "firstIdle" | "randomLane" | "firstIdleOrRandom" }`
   task routing strategy.
 - `worker?: { resolveAfterFinishingAll?: true; timers?: WorkerTimers }`
-- `dispatcher?: DispatcherSettings`
+- `host?: DispatcherSettings`
 - `debug?: { extras?: boolean; logMain?: boolean; logHref?: boolean;
   logImportedUrl?: boolean }`
 - `source?: string` override the worker entry module.
@@ -140,8 +140,8 @@ You can tune idle behavior and backoff:
 - `worker.timers.spinMicroseconds?: number` busy‑spin budget before parking (µs).
 - `worker.timers.parkMs?: number` `Atomics.wait` timeout when parked (ms).
 - `worker.timers.pauseNanoseconds?: number` `Atomics.pause` duration while spinning (ns).
-- `dispatcher.stallFreeLoops?: number` notify loops before backoff starts.
-- `dispatcher.maxBackoffMs?: number` max backoff delay (ms).
+- `host.stallFreeLoops?: number` notify loops before backoff starts.
+- `host.maxBackoffMs?: number` max backoff delay (ms).
 
 Example:
 
@@ -155,7 +155,7 @@ const pool = createPool({
       pauseNanoseconds: 200 
       },
   },
-  dispatcher: {
+  host: {
     stallFreeLoops: 64,
     maxBackoffMs: 5,
   },

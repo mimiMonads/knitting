@@ -424,14 +424,13 @@ export const echo = task({
 });
 
 if (isMain) {
-  const { call, send, shutdown } = createPool({ threads: 1 })({ echo });
+  const { call, shutdown } = createPool({ threads: 1 })({ echo });
   const httpServer = await startHttpServer();
   const wsServer = await startWebSocketServer();
   const ws = await connectClient(wsServer.url);
   const sendMany = createSendMany(ws, payloadText);
 
   await call.echo(payloadObject);
-  send();
   await toResolve(payloadObject);
   await post(httpServer.url, payloadText);
   await sendMany(1);
@@ -442,7 +441,6 @@ if (isMain) {
     for (const n of sizes) {
       bench(`1 thread → (${n})`, async () => {
         const arr = Array.from({ length: n }, () => call.echo(payloadObject));
-        send();
         await Promise.all(arr);
       });
     }

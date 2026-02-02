@@ -1,38 +1,15 @@
 import { assertEquals } from "jsr:@std/assert";
-import { createPool, task } from "../knitting.ts";
-import { cpus } from "node:os";
-
-export const toNumber = task<number, number>({
-  f: async (a) => a,
-});
-
-export const toString = task<string, string>({
-  f: async (a) => a,
-});
-
-export const toHelloWorld = task<string, string>({
-  f: async (a) => a + " world",
-});
-
-export const toBigInt = task<bigint, bigint>({
-  f: async (a) => a,
-});
-
-export const toBoolean = task<boolean, boolean>({
-  f: async (a) => a,
-});
-
-export const toVoid = task({
-  f: async (a) => a,
-});
-
-export const toObject = task({
-  f: async (a: object | null) => a,
-});
-
-export const toSet = task({
-  f: async (a: Set<number>) => a,
-});
+import { createPool } from "../knitting.ts";
+import {
+  toBigInt,
+  toBoolean,
+  toHelloWorld,
+  toNumber,
+  toObject,
+  toSet,
+  toString,
+  toVoid,
+} from "./fixtures/parameter_tasks.ts";
 
 const setNumb = new Set([1, 2, 3, 4, 5, 6]);
 
@@ -107,7 +84,7 @@ Deno.test("Using one thread calling with multiple arguments", async () => {
 
 Deno.test("Using all thread calling with multiple arguments", async () => {
   const { call, shutdown, send } = createPool({
-    threads: cpus().length / 4,
+    threads: 2,
   })({
     toNumber,
     toString,

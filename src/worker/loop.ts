@@ -68,9 +68,13 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     Math.max(1, workerData.totalNumberOfThread) * 50;
   const parkMs = timers?.parkMs ??
     Math.max(1, workerData.totalNumberOfThread) * 50;
-  const pauseSpin = typeof timers?.pauseNanoseconds === "number"
+
+const pauseSpin = (() => {
+  const fn = typeof timers?.pauseNanoseconds === "number"
     ? whilePausing({ pauseInNanoseconds: timers.pauseNanoseconds })
     : pauseGeneric;
+  return () => fn(); // always a closure wrapper
+})();
 
   const { opView, rxStatus, txStatus } = signals;
   const a_store = Atomics.store;
@@ -156,23 +160,34 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     post2(null);
   };
 
+  const _enqueueLock = enqueueLock;
+const _hasCompleted = hasCompleted;
+const _writeBatch = writeBatch;
+const _hasPending = hasPending;
+const _serviceBatchImmediate = serviceBatchImmediate;
+const _getAwaiting = getAwaiting;
+const _pauseSpin = pauseSpin;
+const _pauseUntil = pauseUntil;
+
+
+
   const loop = () => {
     isInMacro = false;
     let progressed = true
     let awaiting = 0
     while (true) {
-       progressed = enqueueLock();
+       progressed = _enqueueLock();
 
-      if (hasCompleted()) {
-        if (writeBatch(WRITE_MAX) > 0) progressed = true;
+      if (_hasCompleted()) {
+        if (_writeBatch(WRITE_MAX) > 0) progressed = true;
       }
 
-      if (hasPending()) {
-        if (serviceBatchImmediate() > 0) progressed = true;
+      if (_hasPending()) {
+        if (_serviceBatchImmediate() > 0) progressed = true;
       }
 
        
-      if ((awaiting = getAwaiting()) > 0) {
+      if ((awaiting = _getAwaiting()) > 0) {
         if (awaiting !== lastAwaiting) awaitingSpins = 0;
         lastAwaiting = awaiting;
         awaitingSpins++;
@@ -185,10 +200,10 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
 
       if (!progressed) {
         if (txStatus[Comment.thisIsAHint] === 1) {
-          pauseSpin();
+          _pauseSpin();
           continue;
         }
-        pauseUntil(wakeSeq, spinMicroseconds, parkMs);
+        _pauseUntil(wakeSeq, spinMicroseconds, parkMs);
         wakeSeq = a_load(opView, 0);
       }
     }

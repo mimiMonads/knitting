@@ -13,6 +13,7 @@ RUNTIME_FILES = {
     "Bun":     "bun_scale.json",
 }
 
+RUNTIME_DIRS = {"Node.js": "node", "Deno": "deno", "Bun": "bun"}
 RUNTIME_COLORS = {"Node.js": "#1f77b4", "Deno": "#2ca02c", "Bun": "#d62728"}
 KNIT_COLORS    = {"Node.js": "#aec7e8",  "Deno": "#98df8a", "Bun": "#ff9896"}
 
@@ -45,6 +46,19 @@ def label_to_count(label: str | None):
 def read_json(path):
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
+
+def resolve_runtime_path(input_dir, runtime, filename):
+    runtime_dir = RUNTIME_DIRS.get(runtime, runtime.lower())
+    candidates = [
+        os.path.join(input_dir, "ms", runtime_dir, filename),
+        os.path.join(input_dir, "json", runtime_dir, filename),
+        os.path.join(input_dir, runtime_dir, filename),
+        os.path.join(input_dir, filename),
+    ]
+    for path in candidates:
+        if os.path.isfile(path):
+            return path
+    return None
 
 def extract_rows(obj):
     """Return {'worker': [(label, avg_us), ...], 'knitting': [...]} from array-of-sections or dict."""
@@ -114,9 +128,9 @@ def main():
     x_labels_ref = None
 
     for runtime, filename in RUNTIME_FILES.items():
-        path = os.path.join(args.input, filename)
-        if not os.path.isfile(path):
-            print(f"[warn] missing {path}, skipping {runtime}")
+        path = resolve_runtime_path(args.input, runtime, filename)
+        if not path:
+            print(f"[warn] missing {filename} under {args.input}, skipping {runtime}")
             continue
         rows = extract_rows(read_json(path))
         labels, w_vals, k_vals = align_by_count(rows)

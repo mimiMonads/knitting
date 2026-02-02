@@ -9,10 +9,9 @@ export const world = task({
 });
 
 const { call, shutdown } = createPool({
-  threads: 3,
-  inliner: {
-    position: "last"
-  }
+  host: {
+    maxBackoffMs: 300,
+  },
 })({
   hello,
   world,
@@ -21,7 +20,7 @@ const { call, shutdown } = createPool({
 if (isMain) {
   Promise.all(
     Array.from({
-      length: 5,
+      length: 10000,
     }).map(
       () => call.world(call.hello()),
     ),

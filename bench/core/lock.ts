@@ -5,9 +5,9 @@ import {
   makeTask,
   TaskIndex,
   type Task,
-} from "../src/memory/lock.ts";
-import { decodePayload } from "../src/memory/payloadCodec.ts";
-import { format, print } from "./ulti/json-parse.ts";
+} from "../../src/memory/lock.ts";
+import { decodePayload } from "../../src/memory/payloadCodec.ts";
+import { format, print } from "./../ulti/json-parse.ts";
 
 const makeLock = () => lock2({});
 const makeLockWithBuffers = () => {

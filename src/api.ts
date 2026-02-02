@@ -10,6 +10,8 @@ import type {
   Args,
   ComposedWithKey,
   CreatePool,
+  DispatcherOptions,
+  DispatcherSettings,
   FixPoint,
   FunctionMapType,
   Pool,
@@ -90,6 +92,7 @@ export const createPool: CreatePoolFactory = ({
   worker,
   workerExecArgv,
   dispatcher,
+  host,
 }: CreatePool) =>
 <T extends tasks>(tasks: T): Pool<T> => {
   /**
@@ -169,6 +172,14 @@ export const createPool: CreatePoolFactory = ({
       : undefined);
   const execArgv = sanitizeExecArgv(defaultExecArgv);
 
+  const isDispatcherOptions = (
+    value: DispatcherOptions | DispatcherSettings | undefined,
+  ): value is DispatcherOptions =>
+    typeof value === "object" && value !== null && "host" in value;
+
+  const hostDispatcher: DispatcherSettings | undefined = host ??
+    (isDispatcherOptions(dispatcher) ? dispatcher.host : dispatcher);
+
   let workers = Array.from({
     length: threads ?? 1,
   }).map((_, thread) =>
@@ -182,7 +193,7 @@ export const createPool: CreatePoolFactory = ({
       source,
       workerOptions: worker,
       workerExecArgv: execArgv,
-      dispatcher,
+      host: hostDispatcher,
     })
   );
 
