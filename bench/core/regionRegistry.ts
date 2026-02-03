@@ -1,7 +1,7 @@
 import { bench, group, run as mitataRun } from "mitata";
-import { register } from "../src/memory/regionRegistry.ts";
-import { LockBound, makeTask, TaskIndex } from "../src/memory/lock.ts";
-import { format, print } from "./ulti/json-parse.ts";
+import { register } from "../../src/memory/regionRegistry.ts";
+import { LockBound, makeTask, TaskIndex } from "../../src/memory/lock.ts";
+import { format, print } from "./../ulti/json-parse.ts";
 
 // make with AI, recheck later 
 

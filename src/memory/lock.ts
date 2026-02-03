@@ -282,9 +282,9 @@ let LastWorker = 0 >>> 0;
   const a_store = Atomics.store;
 
   // LinkedList method aliases (hot path)
-  const toBeSentPush = (task: Task) => toBeSent.push(task);
-  const toBeSentShift = () => toBeSent.shift();
-  const toBeSentUnshift = (task: Task) => toBeSent.unshift(task);
+  const toBeSentPush = toBeSent.push;
+  const toBeSentShift = toBeSent.shift;
+  const toBeSentUnshift = toBeSent.unshift;
   const recycleShift = () => recyclecList.shift();
   const resolvedPush = (task: Task) => resolved.push(task);
 
@@ -293,10 +293,9 @@ const SLOT_SIZE = LockBound.padding + TaskIndex.TotalBuff;
 
 
 const clz32 = Math.clz32
-const slotOffset = (at: number) =>
-  (at * SLOT_SIZE) +  LockBound.padding ;
 
-  const enlist = (task: Task) => toBeSentPush(task)
+
+  const enlist = toBeSentPush
 
 
   const encodeWithState = (task: Task, state: number): number => {
@@ -377,7 +376,7 @@ const slotOffset = (at: number) =>
 
   const encodeAt = (task: Task, at: number, bit: number): boolean => {
     // write headers for this slot
-    const off = slotOffset(at);
+    const off = (at * SLOT_SIZE) +  LockBound.padding;
 
   headersBuffer[off]     = task[0];
   headersBuffer[off + 1] = task[1];
@@ -509,13 +508,13 @@ const slotOffset = (at: number) =>
     const recycled = recycleShift() as Task | undefined;
     let task: Task;
     if (recycled) {
-      fillTaskFrom(recycled, headersBuffer, slotOffset(at));
+      fillTaskFrom(recycled, headersBuffer, (at * SLOT_SIZE) +  LockBound.padding);
       recycled.value = null;
       recycled.resolve = def;
       recycled.reject = def;
       task = recycled;
     } else {
-      task = makeTaskFrom(headersBuffer, slotOffset(at));
+      task = makeTaskFrom(headersBuffer, (at * SLOT_SIZE) +  LockBound.padding);
     }
 
     // workerBits[0] = LastWorker[0] ^=  bit

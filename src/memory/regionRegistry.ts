@@ -1,224 +1,208 @@
 import { LockBound, TaskIndex } from "./lock.ts";
 import type { Task } from "./lock.ts";
 
-
 export type RegisterMalloc = ReturnType<typeof register>;
 
 export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => {
+  // Cache constants (avoid module/property traffic in hot paths)
+  const PADDING = LockBound.padding | 0;
+  const SLOTS = LockBound.slots | 0;
+
   const lockSAB =
     lockSector ??
-    new SharedArrayBuffer(
-      LockBound.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2,
-    );
+    new SharedArrayBuffer(PADDING * 3 + Int32Array.BYTES_PER_ELEMENT * 2);
 
-  const hostBits = new Int32Array(lockSAB, LockBound.padding, 1);
-  const workerBits = new Int32Array(lockSAB, LockBound.padding * 2, 1);
+  // Atomics want Int32Array for stable int32 pipeline
+  const hostBits = new Int32Array(lockSAB, PADDING, 1);
+  const workerBits = new Int32Array(lockSAB, PADDING * 2, 1);
 
-  const startAndIndex = new Uint32Array(LockBound.slots);
-  const size64bit = new Uint32Array(LockBound.slots);
+  // Keep these int32: your domain is small (< 2^31), and EMPTY sentinel is -1.
+  const startAndIndex = new Int32Array(SLOTS); // packed: (start | slot)
+  const size64 = new Int32Array(SLOTS);        // aligned sizes (bytes), int32
 
-  // Atomics aliases (hot path)
+  // Atomics aliases (monomorphic call sites)
   const a_load = Atomics.load;
   const a_store = Atomics.store;
-  // Uint32Array method alias (hot path)
-  const saiCopyWithin = startAndIndex.copyWithin.bind(startAndIndex);
 
+  // Math alias (also monomorphic)
   const clz32 = Math.clz32;
 
-  const EMPTY = 0xFFFFFFFF >>> 0;
-  const SLOT_MASK = 31;
-  const START_MASK = (~SLOT_MASK) >>> 0;
+  // Packed entry layout:
+  // low 5 bits = slot (0..31)
+  // remaining bits = start (multiple of 64 => lower 6 bits = 0, so low 5 are safe)
+  const EMPTY = -1;         // 0xFFFF_FFFF
+  const SLOT_MASK = 31;     // 0b11111
+  const START_MASK = -32;   // 0xFFFF_FFE0 (clear low 5 bits)
+  const ALIGN_MASK = -64;   // align to 64 bytes
+
+  // Cache task indices (avoid enum object lookups in JS output)
+  const IDX_PL = TaskIndex.PayloadLen | 0;
+  const IDX_START = TaskIndex.Start | 0;
+  const IDX_SLOTBUF = TaskIndex.slotBuffer | 0;
 
   startAndIndex.fill(EMPTY);
 
-  let tableLength = 0;
-  let usedBits = 0 | 0;
+  // State
+  let tableLength = 0 | 0;  // 0..32
+  let usedBits = 0 | 0;     // int32 bitset: 1 means slot currently used
+  let hostLast = 0 | 0;     // toggle protocol (host)
+  let workerLast = 0 | 0;   // toggle protocol (worker)
+  let updateCtr = 0 | 0;    // mod-8 counter
 
-  // scalar state (faster than Uint32Array(1))
-  let hostLast = 0 | 0;
-  let workerLast = 0 | 0;
-
-  // cheaper modulo-8 counter
-  let updateTableCounter = 0;
-
-  const startAndIndexToArray = (length: number) =>
-    Array.from(startAndIndex.subarray(0, length));
-
-  const compactSectorStable = (b: number) => {
-    const sai = startAndIndex;
-    let w = 0 | 0;
-    let r = 0 | 0;
-
-    b = b | 0;
-
-    for (; r + 3 < b; r += 4) {
-      const v0 = sai[r];
-      const v1 = sai[r + 1];
-      const v2 = sai[r + 2];
-      const v3 = sai[r + 3];
-
-      if (v0 !== EMPTY) sai[w++] = v0;
-      if (v1 !== EMPTY) sai[w++] = v1;
-      if (v2 !== EMPTY) sai[w++] = v2;
-      if (v3 !== EMPTY) sai[w++] = v3;
-    }
-
-    for (; r < b; r++) {
-      const v = sai[r];
-      if (v !== EMPTY) sai[w++] = v;
-    }
-
-    return w;
-  };
-
+  // Single-pass: remove freed entries + compact
   const updateTable = () => {
-    // state = which bits are currently "in use" under toggle-protocol
+    if ((tableLength | 0) === 0) return;
+
     const w = a_load(workerBits, 0) | 0;
-    const state = (hostLast ^ w) >>> 0;
+    const state = (hostLast ^ w) | 0;
 
-    // freeBits = bits where host/worker agree (toggle resolved)
-    let freeBits = (~state) >>> 0;
-
-    if (tableLength === 0 || freeBits === 0) return;
-
-    // all cleared
-    if (freeBits === EMPTY) {
+    // If host/worker agree on all bits, everything is resolved -> free all.
+    if (state === 0) {
       tableLength = 0;
-      usedBits = 0 | 0;
+      usedBits = 0;
       return;
     }
 
-    // only bother with bits we actually consider used
-    freeBits &= usedBits;
+    // Bits that are now free among those we believe used:
+    // freeBits = (~state) & usedBits
+    const freeBits = ((~state) & usedBits) | 0;
     if (freeBits === 0) return;
 
     const sai = startAndIndex;
+    let widx = 0 | 0;
 
-    for (let i = 0; i < tableLength; i++) {
-      const v = sai[i];
+    // Keep stable order, just skip freed slots
+    for (let r = 0; r < (tableLength | 0); r++) {
+      const v = sai[r] | 0;
       if (v === EMPTY) continue;
 
-      // if this slot is now free, clear entry
-      if ((freeBits & (1 << (v & SLOT_MASK))) !== 0) {
-        sai[i] = EMPTY;
-      }
+      const bit = (1 << (v & SLOT_MASK)) | 0;
+      if ((freeBits & bit) !== 0) continue; // freed -> drop
+
+      sai[widx++] = v;
     }
 
-    usedBits &= ~freeBits;
-    tableLength = compactSectorStable(tableLength);
+    tableLength = widx | 0;
+    usedBits = (usedBits & ~freeBits) | 0;
   };
 
   const allocTask = (task: Task) => {
-    // update every 8 allocs, using bitmask counter
-    updateTableCounter = (updateTableCounter + 1) & 7;
-    if (updateTableCounter === 0) updateTable();
+    // update every 8 allocs
+    updateCtr = (updateCtr + 1) & 7;
+    if (updateCtr === 0) updateTable();
 
-    // align payload length to 64 bytes
-    const payloadLen = task[TaskIndex.PayloadLen] | 0;
-    const size = (payloadLen + 63) & ~63;
+    // size aligned to 64 bytes (int32)
+    const payloadLen = task[IDX_PL] | 0;
+    const size = (payloadLen + 63) & ALIGN_MASK;
 
-    // inline loadFreeBit()
-    const freeBits = (~usedBits) >>> 0;
-    const freeBit = (freeBits & -freeBits) >>> 0;
+    // lowest free bit in ~usedBits
+    const freeBits = (~usedBits) | 0;
+    const freeBit = (freeBits & -freeBits) | 0;
 
     if (freeBit === 0) return -1;
-    if (tableLength >= LockBound.slots) return -1;
+    if ((tableLength | 0) >= SLOTS) return -1;
 
-    const slotIndex = 31 - clz32(freeBit);
+    const slotIndex = (31 - clz32(freeBit)) | 0;
 
     const sai = startAndIndex;
-    const sz = size64bit;
-    const tl = tableLength;
+    const sz = size64;
+    const tl = tableLength | 0;
 
-    // ========= FAST PATH: empty table =========
+    // ---- fast path: empty table ----
     if (tl === 0) {
-      sai[0] = slotIndex;
+      sai[0] = slotIndex;     // start=0
       sz[slotIndex] = size;
 
-      task[TaskIndex.Start] = 0;
-      task[TaskIndex.slotBuffer] = slotIndex;
+      task[IDX_START] = 0;
+      task[IDX_SLOTBUF] = slotIndex;
 
       tableLength = 1;
-      usedBits |= freeBit;
+      usedBits = (usedBits | freeBit) | 0;
 
-      hostLast ^= freeBit;
-      return a_store(hostBits, 0, hostLast);
+      hostLast = (hostLast ^ freeBit) | 0;
+      a_store(hostBits, 0, hostLast);
+      return hostLast;
     }
 
-    // ========= gap at beginning =========
-    const firstStart = sai[0] & START_MASK;
-    if (firstStart >= (size >>> 0)) {
-      // shift right by 1 (native memmove)
-      saiCopyWithin(1, 0, tl);
+    // ---- gap at beginning ----
+    const firstStart = (sai[0] & START_MASK) | 0;
+    if (firstStart >= size) {
+      // shift right by 1 (tl <= 31)
+      for (let i = tl; i > 0; i--) sai[i] = sai[i - 1];
 
       sai[0] = slotIndex;
       sz[slotIndex] = size;
 
-      task[TaskIndex.Start] = 0;
-      task[TaskIndex.slotBuffer] = slotIndex;
+      task[IDX_START] = 0;
+      task[IDX_SLOTBUF] = slotIndex;
 
-      tableLength = tl + 1;
-      usedBits |= freeBit;
+      tableLength = (tl + 1) | 0;
+      usedBits = (usedBits | freeBit) | 0;
 
-      hostLast ^= freeBit;
-      return a_store(hostBits, 0, hostLast);
+      hostLast = (hostLast ^ freeBit) | 0;
+      a_store(hostBits, 0, hostLast);
+      return hostLast;
     }
 
-    // ========= search for a gap between entries =========
+    // ---- search for gap between entries ----
     for (let at = 0; at + 1 < tl; at++) {
-      const cur = sai[at];
+      const cur = sai[at] | 0;
 
-      const curStart = cur & START_MASK;
-      const curEnd = (curStart + (sz[cur & SLOT_MASK] >>> 0)) >>> 0;
+      const curStart = (cur & START_MASK) | 0;
+      const curSlot = (cur & SLOT_MASK) | 0;
+      const curEnd = (curStart + (sz[curSlot] | 0)) | 0;
 
-      const nextStart = sai[at + 1] & START_MASK;
-
-      // gap >= size ?
-      if ((nextStart - curEnd) >>> 0 < (size >>> 0)) continue;
+      const nextStart = (sai[at + 1] & START_MASK) | 0;
+      if ((nextStart - curEnd) < size) continue;
 
       // shift right from (at+1) to insert at (at+1)
-      saiCopyWithin(at + 2, at + 1, tl);
+      for (let i = tl; i > at + 1; i--) sai[i] = sai[i - 1];
 
-      sai[at + 1] = (curEnd | slotIndex) >>> 0;
+      sai[at + 1] = (curEnd | slotIndex) | 0;
       sz[slotIndex] = size;
 
-      task[TaskIndex.Start] = curEnd;
-      task[TaskIndex.slotBuffer] = slotIndex;
+      task[IDX_START] = curEnd;
+      task[IDX_SLOTBUF] = slotIndex;
 
-      tableLength = tl + 1;
-      usedBits |= freeBit;
+      tableLength = (tl + 1) | 0;
+      usedBits = (usedBits | freeBit) | 0;
 
-      hostLast ^= freeBit;
-      return a_store(hostBits, 0, hostLast);
+      hostLast = (hostLast ^ freeBit) | 0;
+      a_store(hostBits, 0, hostLast);
+      return hostLast;
     }
 
-    // ========= append at end =========
-    if (tl < LockBound.slots) {
-      const last = sai[tl - 1];
+    // ---- append at end ----
+    {
+      const last = sai[tl - 1] | 0;
+      const lastStart = (last & START_MASK) | 0;
+      const lastSlot = (last & SLOT_MASK) | 0;
+      const newStart = (lastStart + (sz[lastSlot] | 0)) | 0;
 
-      const lastStart = last & START_MASK;
-      const newStart = (lastStart + (sz[last & SLOT_MASK] >>> 0)) >>> 0;
-
-      sai[tl] = (newStart | slotIndex) >>> 0;
+      sai[tl] = (newStart | slotIndex) | 0;
       sz[slotIndex] = size;
 
-      task[TaskIndex.Start] = newStart;
-      task[TaskIndex.slotBuffer] = slotIndex;
+      task[IDX_START] = newStart;
+      task[IDX_SLOTBUF] = slotIndex;
 
-      tableLength = tl + 1;
-      usedBits |= freeBit;
+      tableLength = (tl + 1) | 0;
+      usedBits = (usedBits | freeBit) | 0;
 
-      hostLast ^= freeBit;
-      return a_store(hostBits, 0, hostLast);
+      hostLast = (hostLast ^ freeBit) | 0;
+      a_store(hostBits, 0, hostLast);
+      return hostLast;
     }
-
-    return -1;
   };
 
   const free = (index: number) => {
-    workerLast ^= 1 << index;
+    const bit = (1 << (index | 0)) | 0;
+    workerLast = (workerLast ^ bit) | 0;
     a_store(workerBits, 0, workerLast);
   };
+
+  // Debug helper (keep out of hot paths)
+  const startAndIndexToArray = (length: number) =>
+    Array.from(startAndIndex.subarray(0, length | 0));
 
   return {
     allocTask,
