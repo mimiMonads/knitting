@@ -10,13 +10,19 @@ export const echo = task<unknown, unknown>({
 if (isMain) {
   const { call, shutdown, send } = createPool({ threads: 1 })({ echo });
 
-  const sizes = [1,100];
+  const sizes = [1,1000];
 
-  const runBatch = async (n: number, payload: unknown) => {
+  const runOne = async (payload: unknown) => await call.echo(payload);
+  
+  const runMany = async (n: number, payload: unknown) => {
     const arr = Array.from({ length: n }, () => call.echo(payload));
     send();
     await Promise.all(arr);
   };
+  
+  const runBatch = async (n: number, payload: unknown) =>
+     n === 1 ? runOne(payload) : runMany(n,payload)
+    ;
 
   const jsonObj = {
     msg: "hello",

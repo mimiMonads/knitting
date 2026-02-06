@@ -2,7 +2,6 @@ import { type MultiQueue } from "./tx-queue.ts";
 import { type MainSignal } from "../ipc/transport/shared-memory.ts";
 import { MessageChannel, type MessagePort } from "node:worker_threads";
 import type { DispatcherSettings } from "../types.ts";
-import { IS_BUN, IS_DENO, SET_IMMEDIATE } from "../common/runtime.ts";
 
 enum Comment {
   thisIsAHint = 0,
@@ -16,6 +15,7 @@ export const hostDispatcherLoop = ({
   },
   queue: {
     completeFrame,
+    completeFrameOne,
     hasPendingFrames,
     flushToWorker,
     txIdle,
@@ -38,52 +38,86 @@ export const hostDispatcherLoop = ({
 
   let progressed = false;
   let anyProgressed = false;
+  let mask = 0
+  const resolveOne = completeFrameOne ?? completeFrame;
+
+      const runDrainLoop = () => {
+      do {
+        progressed = false;
+        if ((completeFrame() ?? 0) > 0) {
+          progressed = true;
+          anyProgressed = true;
+        }
+
+        while (hasPendingFrames()) {
+          if (!flushToWorker()) break;
+          progressed = true;
+          anyProgressed = true;
+        }
+      } while (progressed);
+    };
+
+          const runDrainSlowLoop = () => {
+      do {
+        progressed = false;
+        if ((resolveOne() ?? 0) > 0) {
+          progressed = true;
+          anyProgressed = true;
+        }
+      } while (progressed);
+    }
+
+    const wakeWorker = () => {
+      a_store(opView, 0, 1);
+      a_notify(opView, 0, 1);
+    };
+
+ 
 
   const check = () => {
     
-    // Best-effort hint only; non-atomic by design.
+
     txStatus[Comment.thisIsAHint] = 1;
+    mask = 0;
+    mask += hasPendingFrames() ? 1 : 0;
+    mask += completeFrameOne() > 0 ? 2 : 0;
+    mask += a_load(rxStatus, 0) === 0 ? 4 : 0;
 
-    if (a_load(rxStatus, 0) === 0 && hasPendingFrames() ) {
-      // Best-effort hint only; non-atomic by design.
-      txStatus[Comment.thisIsAHint] = 1;
-      a_store(opView, 0, 1);
-      a_notify(opView, 0, 1);
-      do{
-      progressed = false;
-      if ((completeFrame() ?? 0) > 0) {
-        progressed = true;
-        anyProgressed = true;
-      }
-
-          while (hasPendingFrames()) {
-          if (!flushToWorker()) break;
-          progressed = true;
-          anyProgressed = true;
-        }
-
-    }while(progressed)
+    switch (mask) {
+      case 0:
+        break;
+      case 1:
+        runDrainLoop();
+        break;
+      case 2:
+        runDrainSlowLoop()
+        break;
+      case 3:
+        runDrainLoop();
+        break;
+      case 4:
+        break;
+      case 5:
+        wakeWorker();
+        runDrainLoop();
+        break;
+      case 6:
+        wakeWorker();
+        runDrainSlowLoop()
+        break;
+      case 7:
+        wakeWorker();
+        runDrainLoop();
+        break;
+      default:
+        break;
     }
 
-    do{
-      progressed = false;
-          if ((completeFrame() ?? 0) > 0) {
-            progressed = true;
-            anyProgressed = true;
-          }
-          
-          while (hasPendingFrames()) {
-          if (!flushToWorker()) break;
-          progressed = true;
-          anyProgressed = true;
-        }
 
-        
-    }while(progressed)
-
-
+    txStatus[Comment.thisIsAHint] = 0;
     if (!txIdle()) {
-      if (anyProgressed || hasPendingFrames()) {
+
+      if (anyProgressed) {
         stallCount = 0;
       } else {
         stallCount++;

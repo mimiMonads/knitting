@@ -75,6 +75,13 @@ export function createHostTxQueue({
       freePush(task[TaskIndex.ID]);
     },
   });
+  const resolveReturnOne = returnLock.resolveHostOne({
+    queue,
+    onResolved: (task) => {
+      inUsed--;
+      freePush(task[TaskIndex.ID]);
+    },
+  });
 
   // Helpers
   const hasPendingFrames = () => toBeSentCount > 0;
@@ -133,7 +140,9 @@ export function createHostTxQueue({
     rejectAll,
     hasPendingFrames,
     txIdle,
+    hasPendingFramesToResolve: lock.hasPendingFramesToResolve,
     completeFrame: resolveReturn,
+    completeFrameOne: resolveReturnOne,
     enqueue: (functionID: FunctionID) => (rawArgs: RawArguments) => {
       // Expanding size if needed
       if (inUsed === queue.length) {

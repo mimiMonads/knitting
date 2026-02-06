@@ -502,6 +502,55 @@ const clz32 = Math.clz32
     return modified;
   };
   }
+  const hasPendingFramesToResolve = () => (a_load(hostBits, 0) ^ LastWorker) !== 0 ? 2 : 0
+
+  const resolveHostOne = ({
+    queue,
+    onResolved,
+  }: {
+    queue: Task[],
+    onResolved?: (task: Task) => void,
+  }) => {
+    const getTask = takeTask({
+      queue,
+    });
+
+    const HAS_RESOLVE = onResolved ? true : false;
+    let lastResolved = 32;
+
+    return (): number => {
+      const hostState = a_load(hostBits, 0) >>> 0;
+      let diff = (hostState ^ LastWorker) >>> 0;
+      if (diff === 0) {
+        // Publish ack state every call for low-latency producer visibility.
+        a_store(workerBits, 0, LastWorker);
+        lastResolved = 32;
+        return 0;
+      }
+
+      let pick = diff;
+      if (lastResolved !== 32) {
+        pick = (diff & ((1 << lastResolved) - 1)) >>> 0;
+        if (pick === 0) pick = diff;
+      }
+
+      const idx = 31 - clz32(pick);
+      const uwubit = (1 << idx) >>> 0;
+
+      const task = getTask(headersBuffer, idx);
+      decodeTask(task, idx);
+      settleTask(task);
+      if (HAS_RESOLVE) onResolved!(task);
+
+      LastWorker = (LastWorker ^ uwubit) >>> 0;
+      // Always signal with store so producer can refill freed slot quickly.
+      a_store(workerBits, 0, LastWorker);
+
+      lastResolved = idx;
+      if ((a_load(hostBits, 0) >>> 0) === LastWorker) lastResolved = 32;
+      return 1;
+    };
+  };
 
 
   const decodeAt = (at: number, bit: number): boolean => {
@@ -542,6 +591,8 @@ const clz32 = Math.clz32
     workerBits,
     recyclecList,
     resolveHost,
+    resolveHostOne,
+    hasPendingFramesToResolve,
     setPromiseHandler: (handler?: PromisePayloadHandler) => {
       promiseHandler = handler;
     },
