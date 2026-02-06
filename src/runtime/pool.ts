@@ -8,11 +8,11 @@ import {
 } from "../ipc/transport/shared-memory.ts";
 import { ChannelHandler, hostDispatcherLoop } from "./dispatcher.ts";
 import {
+  HEADER_BYTE_LENGTH,
+  LOCK_SECTOR_BYTE_LENGTH,
   lock2,
-  LockBound,
   type PromisePayloadResult,
   type Task,
-  TaskIndex,
 } from "../memory/lock.ts";
 import type {
   DebugOptions,
@@ -73,32 +73,18 @@ export const spawnWorkerContext = ({
   const payloadInitialBytes = HAS_SAB_GROW ? 4 * 1024 * 1024 : payloadMaxBytes;
 
   const lockBuffers: LockBuffers = {
-    lockSector: new SharedArrayBuffer(
-      LockBound.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2,
-    ),
-    payloadSector: new SharedArrayBuffer(
-      LockBound.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2,
-    ),
-    headers: new SharedArrayBuffer(
-      LockBound.padding +
-        (LockBound.slots * TaskIndex.TotalBuff) * LockBound.slots,
-    ),
+    lockSector: new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH),
+    payloadSector: new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH),
+    headers: new SharedArrayBuffer(HEADER_BYTE_LENGTH),
     payload: createSharedArrayBuffer(
       payloadInitialBytes,
       payloadMaxBytes,
     ),
   };
   const returnLockBuffers: LockBuffers = {
-    lockSector: new SharedArrayBuffer(
-      LockBound.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2,
-    ),
-    payloadSector: new SharedArrayBuffer(
-      LockBound.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2,
-    ),
-    headers: new SharedArrayBuffer(
-      LockBound.padding +
-        (LockBound.slots * TaskIndex.TotalBuff) * LockBound.slots,
-    ),
+    lockSector: new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH),
+    payloadSector: new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH),
+    headers: new SharedArrayBuffer(HEADER_BYTE_LENGTH),
     payload: createSharedArrayBuffer(
       payloadInitialBytes,
       payloadMaxBytes,

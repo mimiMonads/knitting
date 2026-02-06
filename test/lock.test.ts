@@ -1,6 +1,13 @@
 import { assert, assertEquals } from "jsr:@std/assert";
 import LinkList from "../src/ipc/tools/LinkList.ts";
-import { LockBound, lock2, makeTask, TaskIndex } from "../src/memory/lock.ts";
+import {
+  HEADER_BYTE_LENGTH,
+  LOCK_SECTOR_BYTE_LENGTH,
+  LockBound,
+  lock2,
+  makeTask,
+  TaskIndex,
+} from "../src/memory/lock.ts";
 import { decodePayload } from "../src/memory/payloadCodec.ts";
 
 const makeLock = () => {
@@ -94,12 +101,9 @@ Deno.test("decode syncs worker bits", () => {
 
 Deno.test("resolveHost decodes into queue and acks worker bits", () => {
   const lockSector = new SharedArrayBuffer(
-    LockBound.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2,
+    LOCK_SECTOR_BYTE_LENGTH,
   );
-  const headers = new SharedArrayBuffer(
-    LockBound.padding +
-      (LockBound.slots * TaskIndex.TotalBuff) * LockBound.slots,
-  );
+  const headers = new SharedArrayBuffer(HEADER_BYTE_LENGTH);
   const payload = new SharedArrayBuffer(
     64 * 1024 * 1024,
     { maxByteLength: 64 * 1024 * 1024 },

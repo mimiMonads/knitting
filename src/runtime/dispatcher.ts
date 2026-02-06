@@ -46,12 +46,12 @@ export const hostDispatcherLoop = ({
 
     if (a_load(rxStatus, 0) === 0 && hasPendingFrames() ) {
       // Best-effort hint only; non-atomic by design.
-      txStatus[Comment.thisIsAHint] = 1;
+      //txStatus[Comment.thisIsAHint] = 1;
       a_store(opView, 0, 1);
       a_notify(opView, 0, 1);
       do{
       progressed = false;
-      if ((completeFrame() ?? 0) > 0) {
+      if (completeFrame() > 0) {
         progressed = true;
         anyProgressed = true;
       }
@@ -67,21 +67,21 @@ export const hostDispatcherLoop = ({
 
     do{
       progressed = false;
-          if ((completeFrame() ?? 0) > 0) {
-            progressed = true;
-            anyProgressed = true;
+          if (completeFrame() > 0) {
+            anyProgressed =  progressed = true
           }
           
           while (hasPendingFrames()) {
           if (!flushToWorker()) break;
-          progressed = true;
-          anyProgressed = true;
+           anyProgressed =  progressed = true;
+        
         }
 
         
     }while(progressed)
 
 
+       txStatus[Comment.thisIsAHint] = 0
     if (!txIdle()) {
       if (anyProgressed || hasPendingFrames()) {
         stallCount = 0;

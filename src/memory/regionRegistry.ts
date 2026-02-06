@@ -1,4 +1,10 @@
-import { LockBound, TaskIndex } from "./lock.ts";
+import {
+  LockBound,
+  LOCK_HOST_BITS_OFFSET_BYTES,
+  LOCK_SECTOR_BYTE_LENGTH,
+  LOCK_WORKER_BITS_OFFSET_BYTES,
+  TaskIndex,
+} from "./lock.ts";
 import type { Task } from "./lock.ts";
 
 
@@ -7,12 +13,10 @@ export type RegisterMalloc = ReturnType<typeof register>;
 export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => {
   const lockSAB =
     lockSector ??
-    new SharedArrayBuffer(
-      LockBound.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2,
-    );
+    new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH);
 
-  const hostBits = new Int32Array(lockSAB, LockBound.padding, 1);
-  const workerBits = new Int32Array(lockSAB, LockBound.padding * 2, 1);
+  const hostBits = new Int32Array(lockSAB, LOCK_HOST_BITS_OFFSET_BYTES, 1);
+  const workerBits = new Int32Array(lockSAB, LOCK_WORKER_BITS_OFFSET_BYTES, 1);
 
   const startAndIndex = new Uint32Array(LockBound.slots);
   const size64bit = new Uint32Array(LockBound.slots);

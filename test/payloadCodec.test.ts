@@ -1,7 +1,7 @@
 import { assertEquals } from "jsr:@std/assert";
 import { decodePayload, encodePayload } from "../src/memory/payloadCodec.ts";
 import {
-  LockBound,
+  LOCK_SECTOR_BYTE_LENGTH,
   makeTask,
   type PromisePayloadHandler,
   TaskIndex,
@@ -11,7 +11,7 @@ import { withResolvers } from "../src/common/with-resolvers.ts";
 
 const makeCodec = (onPromise?: PromisePayloadHandler) => {
   const lockSector = new SharedArrayBuffer(
-    LockBound.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2,
+    LOCK_SECTOR_BYTE_LENGTH,
   );
   const payload = new SharedArrayBuffer(40000);
   const headersBuffer = new Uint32Array(16);

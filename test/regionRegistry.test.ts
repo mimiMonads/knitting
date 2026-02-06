@@ -1,6 +1,10 @@
 import { assertEquals } from "jsr:@std/assert";
 import { register } from "../src/memory/regionRegistry.ts";
-import { LockBound, makeTask, TaskIndex } from "../src/memory/lock.ts";
+import {
+  LOCK_SECTOR_BYTE_LENGTH,
+  makeTask,
+  TaskIndex,
+} from "../src/memory/lock.ts";
 
 
 
@@ -9,9 +13,7 @@ const align64 = (n: number) => (n + 63) & ~63;
 
 const makeRegistry = () =>
   register({
-    lockSector: new SharedArrayBuffer(
-      LockBound.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2,
-    ),
+    lockSector: new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH),
   });
 
 const track64andIndex = (startAndIndex: number) => [ startAndIndex >>> 6 , startAndIndex & 31 ]

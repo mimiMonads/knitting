@@ -144,13 +144,13 @@ export const createSharedStaticBufferIO = ({
 
 
   const u32Bytes = Uint32Array.BYTES_PER_ELEMENT;
-  const slotStride = LockBound.padding + TaskIndex.TotalBuff;
+  const slotStride = LockBound.header + TaskIndex.TotalBuff;
   const writableBytes = (TaskIndex.TotalBuff - TaskIndex.Size) * u32Bytes;
 
 
   // Offsets are in Uint32 slots to match the header layout in lock.ts.
   const slotOffset = (at: number) =>
-    (at * slotStride) + LockBound.padding;
+    (at * slotStride) + LockBound.header;
   const slotStartBytes = (at: number) =>
     (slotOffset(at) + TaskIndex.Size) * u32Bytes;
 

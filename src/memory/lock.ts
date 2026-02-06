@@ -43,6 +43,12 @@ export enum PayloadBuffer {
   StaticSymbol = 27,
   BigInt = 28,
   StaticBigInt = 29,
+  StaticSerializable = 30,
+  StaticInt32Array = 31,
+  StaticFloat64Array = 32,
+  StaticBigInt64Array = 33,
+  StaticBigUint64Array = 34,
+  StaticDataView = 35,
 }
 
 
@@ -50,6 +56,7 @@ export enum PayloadBuffer {
 export enum LockBound {
   padding = 64,
   slots = 32,
+  header = 0,
 }
 
 export type Task = [
@@ -95,12 +102,26 @@ export enum TaskIndex {
   PayloadLen = 5,
   slotBuffer = 6,
   Size = 8,
-  TotalBuff = 32
+  TotalBuff = 128
 }
 
 export enum TaskFlag {
   Reject = 1 << 0,
 }
+
+// Lock-sector layout in bytes.
+// Keep host/worker words one cache-line apart to avoid false sharing.
+export const LOCK_WORD_BYTES = Int32Array.BYTES_PER_ELEMENT;
+export const LOCK_HOST_BITS_OFFSET_BYTES = LockBound.padding;
+export const LOCK_WORKER_BITS_OFFSET_BYTES = LockBound.padding * 2;
+export const LOCK_SECTOR_BYTE_LENGTH =
+  LOCK_WORKER_BITS_OFFSET_BYTES + LOCK_WORD_BYTES;
+
+// Header layout in Uint32 units.
+export const HEADER_SLOT_STRIDE_U32 = LockBound.header + TaskIndex.TotalBuff;
+export const HEADER_U32_LENGTH =
+  LockBound.header + (HEADER_SLOT_STRIDE_U32 * LockBound.slots);
+export const HEADER_BYTE_LENGTH = HEADER_U32_LENGTH * Uint32Array.BYTES_PER_ELEMENT;
 
 
 let INDEX_ID = 0;
@@ -159,9 +180,7 @@ const takeTask = ({ queue }: {
 }) =>
   (array: ArrayLike<number>, at: number) => {
  
-    const slotOffset = (at * (
-      LockBound.padding + TaskIndex.TotalBuff
-    )) + LockBound.padding;
+    const slotOffset = (at * HEADER_SLOT_STRIDE_U32) + LockBound.header;
   
     const task = queue[array[slotOffset + TaskIndex["ID"]]]
     fillTaskFrom(task, array, slotOffset);
@@ -221,12 +240,12 @@ export const lock2 = ({
   // [ workerBits:Int32 (4 bytes) ]
   const LockBoundSAB =
     LockBoundSector ??
-    new SharedArrayBuffer(LockBound.padding * 3 + Uint32Array.BYTES_PER_ELEMENT * 2);
+    new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH);
 
-  const hostBits = new Uint32Array(LockBoundSAB, LockBound.padding, 1);
+  const hostBits = new Uint32Array(LockBoundSAB, LOCK_HOST_BITS_OFFSET_BYTES, 1);
   const workerBits = new Uint32Array(
     LockBoundSAB,
-    LockBound.padding * 2,
+    LOCK_WORKER_BITS_OFFSET_BYTES,
     1,
   );
 
@@ -234,9 +253,7 @@ export const lock2 = ({
   // (Layout unchanged from your version.)
 
   const bufferHeadersBuffer:SharedArrayBuffer =  headers ??
-      new SharedArrayBuffer(
-        (LockBound.padding + ((LockBound.slots * TaskIndex.TotalBuff)) * LockBound.slots),
-      )
+      new SharedArrayBuffer(HEADER_BYTE_LENGTH)
 
   const headersBuffer = new Uint32Array(
   bufferHeadersBuffer
@@ -250,7 +267,7 @@ export const lock2 = ({
       payloadMaxBytes,
     );
   const payloadLockSAB = payloadSector ??
-    new SharedArrayBuffer(LockBound.padding * 3 + Uint32Array.BYTES_PER_ELEMENT * 2);
+    new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH);
 
   let promiseHandler: PromisePayloadHandler | undefined;
 
@@ -289,12 +306,12 @@ let LastWorker = 0 >>> 0;
   const resolvedPush = (task: Task) => resolved.push(task);
 
 
-const SLOT_SIZE = LockBound.padding + TaskIndex.TotalBuff;
+const SLOT_SIZE = HEADER_SLOT_STRIDE_U32;
 
 
 const clz32 = Math.clz32
 const slotOffset = (at: number) =>
-  (at * SLOT_SIZE) +  LockBound.padding ;
+  (at * SLOT_SIZE) +  LockBound.header ;
 
   const enlist = (task: Task) => toBeSentPush(task)
 
@@ -470,6 +487,11 @@ const slotOffset = (at: number) =>
 
       diff ^= uwubit;
       modified++;
+      if ((modified & 7) === 0 && consumedBits !== 0) {
+        LastWorker = (LastWorker ^ consumedBits);
+        a_store(workerBits, 0, LastWorker);
+        consumedBits = 0;
+      }
       last = idx;
     }
 
@@ -490,6 +512,11 @@ const slotOffset = (at: number) =>
 
       diff ^= uwubit;
       modified++;
+      if ((modified & 7) === 0 && consumedBits !== 0) {
+        LastWorker = (LastWorker ^ consumedBits);
+        a_store(workerBits, 0, LastWorker);
+        consumedBits = 0;
+      }
       last = idx;
     }
 
@@ -499,7 +526,7 @@ const slotOffset = (at: number) =>
     }
 
     lastResolved = last;
-    if (a_load(hostBits, 0) === LastWorker) lastResolved = 32;
+    //if (a_load(hostBits, 0) === LastWorker) lastResolved = 32;
     return modified;
   };
   }

@@ -1,82 +1,18 @@
 import LinkList from "../ipc/tools/LinkList.ts";
 import { TaskFlag, TaskIndex, type Task, type Lock2 } from "../memory/lock.ts";
+import type { WorkerComposedWithKey } from "./get-functions.ts";
 import type {
-  ComposedWithKey,
-  TaskTimeout,
   WorkerSettings,
 } from "../types.ts";
 
 type ArgumentsForCreateWorkerQueue = {
-  listOfFunctions: ComposedWithKey[];
+  listOfFunctions: WorkerComposedWithKey[];
   workerOptions?: WorkerSettings;
   lock: Lock2;
   returnLock: Lock2;
 };
 
 export type CreateWorkerRxQueue = ReturnType<typeof createWorkerRxQueue>;
-const enum TimeoutKind {
-  Reject = 0,
-  Resolve = 1,
-}
-
-type TimeoutSpec = {
-  ms: number;
-  kind: TimeoutKind;
-  value: unknown;
-};
-
-const normalizeTimeout = (timeout?: TaskTimeout): TimeoutSpec | undefined => {
-  if (timeout == null) return undefined;
-  if (typeof timeout === "number") {
-    return timeout >= 0
-      ? { ms: timeout, kind: TimeoutKind.Reject, value: new Error("Task timeout") }
-      : undefined;
-  }
-  const ms = timeout.time;
-  if (!(ms >= 0)) return undefined;
-  if ("default" in timeout) {
-    return { ms, kind: TimeoutKind.Resolve, value: timeout.default };
-  }
-  if (timeout.maybe === true) {
-    return { ms, kind: TimeoutKind.Resolve, value: undefined };
-  }
-  if ("error" in timeout) {
-    return { ms, kind: TimeoutKind.Reject, value: timeout.error };
-  }
-  return { ms, kind: TimeoutKind.Reject, value: new Error("Task timeout") };
-};
-
-const raceTimeout = (
-  promise: PromiseLike<unknown>,
-  spec: TimeoutSpec,
-): Promise<unknown> =>
-  new Promise((resolve, reject) => {
-    let done = false;
-    const timer = setTimeout(() => {
-      if (done) return;
-      done = true;
-      if (spec.kind === TimeoutKind.Resolve) {
-        resolve(spec.value);
-      } else {
-        reject(spec.value);
-      }
-    }, spec.ms);
-
-    promise.then(
-      (value) => {
-        if (done) return;
-        done = true;
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (err) => {
-        if (done) return;
-        done = true;
-        clearTimeout(timer);
-        reject(err);
-      },
-    );
-  });
 // Create and manage a working queue.
 export const createWorkerRxQueue = (
   {
@@ -101,9 +37,8 @@ export const createWorkerRxQueue = (
   };
 
   const jobs = listOfFunctions.reduce((acc, fixed) => (
-    acc.push(fixed.f as (args: unknown) => unknown), acc
+    acc.push(fixed.run), acc
   ), [] as Array<(args: unknown) => unknown>);
-  const timeouts = listOfFunctions.map((fixed) => normalizeTimeout(fixed.timeout));
 
   const toWork = new LinkList<Task>();
   const completedFrames = new LinkList<Task>();
@@ -207,15 +142,13 @@ const enqueueLock = () => {
         const slot = toWorkShift()!;
 
         try {
-          const fnId = slot[TaskIndex.FuntionID];
-          const result = jobs[fnId](slot.value);
+       
+          const result = jobs[slot[TaskIndex.FuntionID]](slot.value);
           if (!isThenable(result)) {
             settleNow(slot, false, result, false);
           } else {
-            const timeout = timeouts[fnId];
-            const pending = timeout ? raceTimeout(result, timeout) : result;
             awaiting++;
-            pending.then(
+            result.then(
               (value) => settleNow(slot, false, value, true),
               (err) => settleNow(slot, true, err, true),
             );

@@ -1,5 +1,7 @@
 import { bench, group, run as mitataRun } from "mitata";
 import {
+  HEADER_BYTE_LENGTH,
+  LOCK_SECTOR_BYTE_LENGTH,
   LockBound,
   lock2,
   makeTask,
@@ -12,12 +14,9 @@ import { format, print } from "./../ulti/json-parse.ts";
 const makeLock = () => lock2({});
 const makeLockWithBuffers = () => {
   const lockSector = new SharedArrayBuffer(
-    LockBound.padding * 3 + Int32Array.BYTES_PER_ELEMENT * 2,
+    LOCK_SECTOR_BYTE_LENGTH,
   );
-  const headers = new SharedArrayBuffer(
-    LockBound.padding +
-      (LockBound.slots * TaskIndex.TotalBuff) * LockBound.slots,
-  );
+  const headers = new SharedArrayBuffer(HEADER_BYTE_LENGTH);
   const payload = new SharedArrayBuffer(
     64 * 1024 * 1024,
     { maxByteLength: 64 * 1024 * 1024 },
