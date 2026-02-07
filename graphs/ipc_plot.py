@@ -57,16 +57,30 @@ def read_json(path):
         text = f.read()
     if not text.strip():
         raise ValueError(f"empty json file: {path}")
-    # Some runtimes print startup logs before JSON; skip to the first JSON token.
-    first_obj = text.find("{")
-    first_arr = text.find("[")
-    starts = [p for p in (first_obj, first_arr) if p != -1]
-    if not starts:
-        raise ValueError(f"no json object found in: {path}")
-    start = min(starts)
+
+    # IPC outputs can be a JSON stream (multiple top-level objects) with logs in between.
     decoder = json.JSONDecoder()
-    obj, _ = decoder.raw_decode(text[start:])
-    return obj
+    objs = []
+    i = 0
+    n = len(text)
+    while i < n:
+        start_obj = text.find("{", i)
+        start_arr = text.find("[", i)
+        starts = [p for p in (start_obj, start_arr) if p != -1]
+        if not starts:
+            break
+        start = min(starts)
+        try:
+            obj, end = decoder.raw_decode(text[start:])
+        except json.JSONDecodeError:
+            i = start + 1
+            continue
+        objs.append(obj)
+        i = start + end
+
+    if not objs:
+        raise ValueError(f"no json object found in: {path}")
+    return objs[0] if len(objs) == 1 else objs
 
 def resolve_runtime_path(input_dir, runtime, filename):
     runtime_dir = RUNTIME_DIRS.get(runtime, runtime.lower())
@@ -86,8 +100,7 @@ def iter_sections(obj):
         yield obj
     elif isinstance(obj, list):
         for section in obj:
-            if isinstance(section, dict):
-                yield section
+            yield from iter_sections(section)
 
 def extract_groups(obj):
     out = {g: {} for g in GROUP_ORDER}  # group -> {count: avg_ns}

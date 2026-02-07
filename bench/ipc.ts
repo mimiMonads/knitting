@@ -452,7 +452,7 @@ export const echo = task({
   f: (value: typeof payloadObject) => value,
 });
 
-const sizes = [1, 50, 100];
+const sizes = [1, 25, 50];
 const warmupCount = 10;
 
 const runWebSocketBench = async () => {
