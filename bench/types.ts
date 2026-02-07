@@ -36,7 +36,7 @@ if (isMain) {
     name: `User ${i}`,
   });
 
-  const times = 32;
+  const times = 8;
   const string = "helloWorld";
   const bigString = "helloWorld".repeat(times);
   const num = 77777;

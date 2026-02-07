@@ -1,7 +1,8 @@
 
 import os, re, json, math, glob, argparse
 import matplotlib.pyplot as plt
-from plot_style import apply_dark_style, DARK_BG_RGB
+from matplotlib.ticker import FuncFormatter
+from plot_style import apply_dark_style
 
 apply_dark_style()
 
@@ -9,18 +10,24 @@ COUNT_RE = re.compile(r"(?:\(|→\s*|->\s*)\s*(\d+)\s*\)?\s*$")
 ARROW_SUFFIX_RE = re.compile(r"(?:->|→)\s*$")
 UNIT_RE = re.compile(r"([-+]?\d*\.?\d+)\s*(ns|µs|us|ms|s)\b", re.IGNORECASE)
 
-# Keep a stable, human-friendly order for type labels
-PREFERRED_TYPE_ORDER = [
-    "string", "large string",
-    "number",
-    "min bigint", "max bigint",
-    "boolean true", "boolean false",
-    "void",
-    "small array", "big Array",
-    "object", "big object",
+# Dev-focused labels plus a small primitive set.
+DEV_IMPORTANT_TYPES = [
+    "object",
+    "big object",
+    "small array",
+    "big Array",
+    "string",
+    "large string",
 ]
 
-from PIL import Image
+PRIMITIVE_TYPES = [
+    "number",
+    "boolean true",
+    "min bigint",
+    "void",
+]
+
+PREFERRED_TYPE_ORDER = DEV_IMPORTANT_TYPES + PRIMITIVE_TYPES
 
 GROUP_ORDER = ["Worker", "Knitting", "Knitting Fast"]
 GROUP_COLORS = {
@@ -30,40 +37,6 @@ GROUP_COLORS = {
 }
 
 RUNTIME_DIRS = ["node", "deno", "bun"]
-
-def _stitch_images_horizontally(img_paths, out_path, padding=16, bg=DARK_BG_RGB):
-    """Open images, scale to the same height, and stitch horizontally with padding."""
-    images = []
-    for p in img_paths:
-        if os.path.exists(p):
-            try:
-                images.append(Image.open(p).convert("RGB"))
-            except Exception as e:
-                print(f"[warn] could not open {p}: {e}")
-    if not images:
-        print(f"[warn] montage: none of {img_paths} exists")
-        return False
-
-    # target height = min of heights to avoid upscaling; resize widths proportionally
-    target_h = min(img.height for img in images)
-    resized = []
-    for img in images:
-        if img.height != target_h:
-            w = int(img.width * (target_h / img.height))
-            img = img.resize((w, target_h), Image.BICUBIC)
-        resized.append(img)
-
-    total_w = sum(img.width for img in resized) + padding * (len(resized) - 1)
-    canvas = Image.new("RGB", (total_w, target_h), bg)
-    x = 0
-    for i, img in enumerate(resized):
-        canvas.paste(img, (x, 0))
-        x += img.width + (padding if i < len(resized) - 1 else 0)
-
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    canvas.save(out_path, quality=92)
-    print(f"[ok] wrote {out_path}")
-    return True
 
 def parse_name(name: str):
     """
@@ -173,20 +146,30 @@ def collect_by_count(entries):
 def aligned_type_list(*dicts):
     """
     Given multiple dict[type] -> value, return a merged, stable-ordered list of types
-    present in at least one dict, following PREFERRED_TYPE_ORDER first, then others.
+    present in at least one dict, following the dev-focused priority list.
     """
     all_types = set()
     for d in dicts:
         all_types.update(list(d.keys()))
     ordered = [t for t in PREFERRED_TYPE_ORDER if t in all_types]
-    others = sorted([t for t in all_types if t not in PREFERRED_TYPE_ORDER])
-    return ordered + others
+    # Keep a safe fallback when input labels differ from expected ones.
+    if ordered:
+        return ordered
+    return sorted(all_types)
 
 def available_counts(*maps):
     counts = set()
     for m in maps:
         counts.update(m.keys())
     return sorted(counts)
+
+def ns_tick_to_us(v, _pos):
+    us = float(v) / 1000.0
+    if us >= 100:
+        return f"{us:.0f} µs"
+    if us >= 10:
+        return f"{us:.1f} µs"
+    return f"{us:.2f} µs"
 
 def plot_one(runtime_title, count, data_map, out_path):
     """
@@ -204,6 +187,7 @@ def plot_one(runtime_title, count, data_map, out_path):
         plt.plot(x, y, marker="o", linestyle="-", label=label)
 
     plt.yscale("log")
+    plt.gca().yaxis.set_major_formatter(FuncFormatter(ns_tick_to_us))
     if count == 1:
         plt.axhline(1_000.0, color="#a0a0a0", linestyle=":", linewidth=1.0, alpha=0.7, zorder=0)
         plt.text(0.99, 1_000.0, "1 µs", transform=plt.gca().get_yaxis_transform(),
@@ -213,7 +197,7 @@ def plot_one(runtime_title, count, data_map, out_path):
         plt.text(0.99, 100_000.0, "100 µs", transform=plt.gca().get_yaxis_transform(),
                  ha="right", va="bottom", fontsize=8, color="#b8b8b8")
     plt.xticks(x, types, rotation=30, ha="right")
-    plt.ylabel("Average Latency (ns, log scale)")
+    plt.ylabel("Average Latency (µs, log scale)")
     plt.title(f"{runtime_title} — Types Benchmark (count={count})")
     plt.grid(True, which="both", linestyle="--", alpha=0.5)
     plt.legend()
@@ -281,6 +265,7 @@ def plot_combined(count, items, out_path):
             )
 
     ax.set_yscale("log")
+    ax.yaxis.set_major_formatter(FuncFormatter(ns_tick_to_us))
     if count == 1:
         ax.axhline(1_000.0, color="#a0a0a0", linestyle=":", linewidth=1.0, alpha=0.7, zorder=0)
         ax.text(0.99, 1_000.0, "1 µs", transform=ax.get_yaxis_transform(),
@@ -291,7 +276,7 @@ def plot_combined(count, items, out_path):
                 ha="right", va="bottom", fontsize=8, color="#b8b8b8")
     ax.set_xticks(x)
     ax.set_xticklabels(types, rotation=30, ha="right")
-    ax.set_ylabel("Average Latency (ns, log scale)")
+    ax.set_ylabel("Average Latency (µs, log scale)")
     ax.set_title(f"Types Benchmark — Combined (count={count})")
     ax.grid(True, which="both", linestyle="--", alpha=0.5)
 
@@ -316,7 +301,6 @@ def process_file(path, out_dir):
     knitfast_by_count = collect_by_count(groups.get("knitting fast", []))
 
     any_plotted = False
-    out_paths = []
 
     counts = available_counts(worker_by_count, knit_by_count, knitfast_by_count)
     for count in counts:
@@ -332,16 +316,10 @@ def process_file(path, out_dir):
         out_path = os.path.join(out_dir, f"{base}_types_count{count}.png")
         ok = plot_one(runtime_title, count, dm, out_path)
         any_plotted = any_plotted or ok
-        if ok:
-            out_paths.append(out_path)
 
     if not any_plotted:
         print(f"[warn] {path}: nothing plotted (no counts found)")
         return
-
-    # Build a “container” image that shows all counts at once (skip any missing)
-    montage_out = os.path.join(out_dir, f"{base}_types_all.png")
-    _stitch_images_horizontally(out_paths, montage_out)
     return (runtime_title, worker_by_count, knit_by_count, knitfast_by_count)
 
 
@@ -369,14 +347,9 @@ def main():
         for _, w_map, k_map, kf_map in combined_items:
             all_maps.extend([w_map, k_map, kf_map])
         all_counts = available_counts(*all_maps)
-        combined_paths = []
         for count in all_counts:
             out_path = os.path.join(args.out, f"types_combined_count{count}.png")
-            if plot_combined(count, combined_items, out_path):
-                combined_paths.append(out_path)
-        if combined_paths:
-            montage_out = os.path.join(args.out, "types_combined_all.png")
-            _stitch_images_horizontally(combined_paths, montage_out)
+            plot_combined(count, combined_items, out_path)
 
 if __name__ == "__main__":
     main()

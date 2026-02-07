@@ -59,9 +59,9 @@ export function createHostTxQueue({
   const freePop = () => freeSockets.pop();
   const queuePush = (task: QueueTask) => queue.push(task);
   const { encode , encodeManyFrom} = lock
-  let toBeSentCount = 0;
-  let inUsed = 0;
-  let pendingPromises = 0;
+  let toBeSentCount = 0 | 0;
+  let inUsed = 0 | 0;
+  let pendingPromises = 0 | 0;
 
   const isPromisePending = (task: QueueTask) =>
     (task as QueueTask & { [PromisePayloadMarker]?: true })[
@@ -71,7 +71,7 @@ export function createHostTxQueue({
   const resolveReturn = returnLock.resolveHost({
     queue,
     onResolved: (task) => {
-      inUsed--;
+      inUsed = (inUsed - 1) | 0;
       freePush(task[TaskIndex.ID]);
     },
   });
@@ -79,15 +79,15 @@ export function createHostTxQueue({
   // Helpers
   const hasPendingFrames = () => toBeSentCount > 0;
   const txIdle = () =>
-    toBeSentCount === 0 && (inUsed - pendingPromises) === 0;
+    toBeSentCount === 0 && inUsed === pendingPromises;
 
   const handleEncodeFailure = (task: QueueTask) => {
     if (isPromisePending(task)) {
-      pendingPromises++;
+      pendingPromises = (pendingPromises + 1) | 0;
       return;
     }
     toBeSentPush(task);
-    toBeSentCount++;
+    toBeSentCount = (toBeSentCount + 1) | 0;
   };
 
   const rejectAll = (reason: string) => {
@@ -108,16 +108,16 @@ export function createHostTxQueue({
     while (toBeSent.size > 0) {
       toBeSentShift();
     }
-    toBeSentCount = 0;
-    inUsed = 0;
-    pendingPromises = 0;
+    toBeSentCount = 0 | 0;
+    inUsed = 0 | 0;
+    pendingPromises = 0 | 0;
   };
 
   const flushToWorker = () => {
     if (toBeSentCount === 0) return false;
-    const encoded = encodeManyFrom(toBeSent);
+    const encoded = encodeManyFrom(toBeSent) | 0;
     if (encoded === 0) return false;
-    toBeSentCount -= encoded;
+    toBeSentCount = (toBeSentCount - encoded) | 0;
     return true;
   };
 
@@ -162,7 +162,7 @@ export function createHostTxQueue({
         handleEncodeFailure(slot);
       }
 
-      inUsed++;
+      inUsed = (inUsed + 1) | 0;
 
       return deferred.promise;
     },
@@ -170,13 +170,13 @@ export function createHostTxQueue({
     enqueueKnown,
     settlePromisePayload: (task: QueueTask, result: PromisePayloadResult) => {
       if (task.reject === PLACE_HOLDER) return false;
-      if (pendingPromises > 0) pendingPromises--;
+      if (pendingPromises > 0) pendingPromises = (pendingPromises - 1) | 0;
       if (result.status === "rejected") {
         try {
           task.reject(result.reason);
         } catch {
         }
-        inUsed--;
+        inUsed = (inUsed - 1) | 0;
         freePush(task[TaskIndex.ID]);
         return false;
       }

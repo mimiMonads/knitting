@@ -20,7 +20,7 @@ const { call, shutdown } = createPool({
 if (isMain) {
   Promise.all(
     Array.from({
-      length: 10000,
+      length: 100,
     }).map(
       () => call.world(call.hello()),
     ),

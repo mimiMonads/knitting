@@ -96,21 +96,13 @@ export const sleepUntilChanged = (
 
     a_store(rxStatus, 0, 0);
     
-
-    if (a_wait) {
-      a_wait(
+      a_wait!(
         opView,
         at,
         value,
-        parkMs ?? 50,
+        60,
       );
-    } else {
-      const untilPark = p_now() + (parkMs ?? 50);
-      while (p_now() < untilPark) {
-        if (a_load(opView, at) !== value) break;
-        pause();
-      }
-    }
+  
 
     a_store(rxStatus, 0, 1);
 

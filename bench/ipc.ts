@@ -419,76 +419,141 @@ const createSendMany = (ws: WebSocket, body: string) => {
   };
 };
 
+const closeWebSocketClient = async (ws: WebSocket | null) => {
+  if (!ws) return;
+  if (ws.readyState === 3) return;
+
+  await new Promise<void>((resolve) => {
+    let done = false;
+    const onClose = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      resolve();
+    };
+
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      ws.removeEventListener("close", onClose);
+      resolve();
+    }, 500);
+
+    ws.addEventListener("close", onClose, { once: true });
+    try {
+      ws.close();
+    } catch {
+      onClose();
+    }
+  });
+};
+
 export const echo = task({
   f: (value: typeof payloadObject) => value,
 });
 
-if (isMain) {
+const sizes = [1, 50, 100];
+const warmupCount = 10;
+
+const runWebSocketBench = async () => {
+  let wsServer: ServerHandle | null = null;
+  let ws: WebSocket | null = null;
+
+  try {
+    wsServer = await startWebSocketServer();
+    ws = await connectClient(wsServer.url);
+    const sendMany = createSendMany(ws, payloadText);
+
+    await sendMany(warmupCount);
+
+    group("websocket", () => {
+      for (const n of sizes) {
+        bench(`local → (${n})`, async () => {
+          await sendMany(n);
+        });
+      }
+    });
+
+    await mitataRun({ format, print });
+  } finally {
+    await closeWebSocketClient(ws).catch(() => {});
+    await wsServer?.close().catch(() => {});
+  }
+};
+
+const runWorkerBench = async () => {
+  try {
+    await Promise.all(
+      Array.from({ length: warmupCount }, () => toResolve(payloadObject)),
+    );
+
+    group("worker", () => {
+      for (const n of sizes) {
+        bench(`postMessage → (${n})`, async () => {
+          const arr = Array.from({ length: n }, () => toResolve(payloadObject));
+          await Promise.all(arr);
+        });
+      }
+    });
+
+    await mitataRun({ format, print });
+  } finally {
+    await Promise.resolve(shutdownWorkers()).catch(() => {});
+  }
+};
+
+const runHttpBench = async () => {
+  let httpServer: ServerHandle | null = null;
+
+  try {
+    httpServer = await startHttpServer();
+    const httpUrl = httpServer.url;
+
+    await Promise.all(
+      Array.from({ length: warmupCount }, () => post(httpUrl, payloadText)),
+    );
+
+    group("http", () => {
+      for (const n of sizes) {
+        bench(`local → (${n})`, async () => {
+          const arr = Array.from({ length: n }, () => post(httpUrl, payloadText));
+          await Promise.all(arr);
+        });
+      }
+    });
+
+    await mitataRun({ format, print });
+  } finally {
+    await httpServer?.close().catch(() => {});
+  }
+};
+
+const runKnittingBench = async () => {
   const { call, shutdown } = createPool({ threads: 1 })({ echo });
-  const httpServer = await startHttpServer();
-  const wsServer = await startWebSocketServer();
-  const ws = await connectClient(wsServer.url);
-  const sendMany = createSendMany(ws, payloadText);
 
-  await call.echo(payloadObject);
-  await toResolve(payloadObject);
-  await post(httpServer.url, payloadText);
-  await sendMany(1);
+  try {
+    await Promise.all(
+      Array.from({ length: warmupCount }, () => call.echo(payloadObject)),
+    );
 
-  const sizes = [1, 50, 100];
+    group("knitting", () => {
+      for (const n of sizes) {
+        bench(`1 thread → (${n})`, async () => {
+          const arr = Array.from({ length: n }, () => call.echo(payloadObject));
+          await Promise.all(arr);
+        });
+      }
+    });
 
-  group("knitting", () => {
-    for (const n of sizes) {
-      bench(`1 thread → (${n})`, async () => {
-        const arr = Array.from({ length: n }, () => call.echo(payloadObject));
-        await Promise.all(arr);
-      });
-    }
-  });
+    await mitataRun({ format, print });
+  } finally {
+    await Promise.resolve(shutdown()).catch(() => {});
+  }
+};
 
-
-  group("websocket", () => {
-    for (const n of sizes) {
-      bench(`local → (${n})`, async () => {
-        await sendMany(n);
-      });
-    }
-  });
-
-  group("worker", () => {
-    for (const n of sizes) {
-      bench(`postMessage → (${n})`, async () => {
-        const arr = Array.from({ length: n }, () => toResolve(payloadObject));
-        await Promise.all(arr);
-      });
-    }
-  });
-
-  group("http", () => {
-    for (const n of sizes) {
-      bench(`local → (${n})`, async () => {
-        const arr = Array.from({ length: n }, () => post(httpServer.url, payloadText));
-        await Promise.all(arr);
-      });
-    }
-  });
-
-
-
-  await mitataRun({ format, print });
-
-  const closeWait = new Promise<void>((resolve) => {
-    if (ws.readyState === WebSocket.CLOSED) {
-      resolve();
-      return;
-    }
-    ws.addEventListener("close", () => resolve());
-  });
-  ws.close();
-  await closeWait;
-
-  await wsServer.close();
-  await httpServer.close();
-  await shutdown();
-  await shutdownWorkers();
+if (isMain) {
+  await runKnittingBench();
+  await runWebSocketBench();
+  await runWorkerBench();
+  await runHttpBench();
 }

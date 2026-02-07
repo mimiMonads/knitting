@@ -2,7 +2,7 @@ import { type MultiQueue } from "./tx-queue.ts";
 import { type MainSignal } from "../ipc/transport/shared-memory.ts";
 import { MessageChannel, type MessagePort } from "node:worker_threads";
 import type { DispatcherSettings } from "../types.ts";
-import { IS_BUN, IS_DENO, SET_IMMEDIATE } from "../common/runtime.ts";
+import {  IS_NODE } from "../common/runtime.ts";
 
 enum Comment {
   thisIsAHint = 0,
@@ -32,21 +32,27 @@ export const hostDispatcherLoop = ({
   const a_store = Atomics.store;
   const a_notify = Atomics.notify;
   const notify = channelHandler.notify.bind(channelHandler);
-  let stallCount = 0;
-  const STALL_FREE_LOOPS = dispatcherOptions?.stallFreeLoops ?? 128;
-  const MAX_BACKOFF_MS = dispatcherOptions?.maxBackoffMs ?? 10;
+  let stallCount = 0 | 0;
+  const STALL_FREE_LOOPS = Math.max(
+    0,
+    (dispatcherOptions?.stallFreeLoops ?? 128) | 0,
+  );
+  const MAX_BACKOFF_MS = Math.max(
+    0,
+    (dispatcherOptions?.maxBackoffMs ?? 10) | 0,
+  );
 
   let progressed = false;
   let anyProgressed = false;
 
   const check = () => {
     
-    // Best-effort hint only; non-atomic by design.
+    
     txStatus[Comment.thisIsAHint] = 1;
 
-    if (a_load(rxStatus, 0) === 0 && hasPendingFrames() ) {
-      // Best-effort hint only; non-atomic by design.
-      //txStatus[Comment.thisIsAHint] = 1;
+ 
+
+    if (a_load(rxStatus, 0) === 0) {
       a_store(opView, 0, 1);
       a_notify(opView, 0, 1);
       do{
@@ -84,9 +90,9 @@ export const hostDispatcherLoop = ({
        txStatus[Comment.thisIsAHint] = 0
     if (!txIdle()) {
       if (anyProgressed || hasPendingFrames()) {
-        stallCount = 0;
+        stallCount = 0 | 0;
       } else {
-        stallCount++;
+        stallCount = (stallCount + 1) | 0;
       }
       scheduleNotify();
       return;
@@ -95,7 +101,7 @@ export const hostDispatcherLoop = ({
     // Best-effort hint only; non-atomic by design.
     txStatus[Comment.thisIsAHint] = 0;
     check.isRunning = false;
-    stallCount = 0;
+    stallCount = 0 | 0;
   };
 
   // This is not the best way to do it but it should work for now
@@ -107,12 +113,10 @@ export const hostDispatcherLoop = ({
       return;
     }
 
-
-
-      setTimeout(check, Math.min(
-      MAX_BACKOFF_MS,
-      Math.max(0, stallCount - STALL_FREE_LOOPS - 1),
-    ));
+    let delay = (stallCount - STALL_FREE_LOOPS - 1) | 0;
+    if (delay < 0) delay = 0;
+    else if (delay > MAX_BACKOFF_MS) delay = MAX_BACKOFF_MS;
+    setTimeout(check, delay);
    
   };
 
