@@ -1,7 +1,7 @@
 
 import os, re, json, math, glob, argparse
 import matplotlib.pyplot as plt
-from matplotlib.ticker import FuncFormatter
+from matplotlib.ticker import FuncFormatter, LogLocator, NullFormatter
 from plot_style import apply_dark_style
 
 apply_dark_style()
@@ -165,11 +165,18 @@ def available_counts(*maps):
 
 def ns_tick_to_us(v, _pos):
     us = float(v) / 1000.0
-    if us >= 100:
-        return f"{us:.0f} µs"
-    if us >= 10:
-        return f"{us:.1f} µs"
-    return f"{us:.2f} µs"
+    if not math.isfinite(us) or us <= 0:
+        return ""
+    exp = int(round(math.log10(us)))
+    return rf"$10^{{{exp}}}$"
+
+def apply_log_axis_magnitude_labels(ax):
+    # Keep a true log axis while exposing decade magnitude directly on the left.
+    ax.set_yscale("log")
+    ax.yaxis.set_major_locator(LogLocator(base=10.0))
+    ax.yaxis.set_minor_locator(LogLocator(base=10.0, subs=(2, 3, 4, 5, 6, 7, 8, 9)))
+    ax.yaxis.set_major_formatter(FuncFormatter(ns_tick_to_us))
+    ax.yaxis.set_minor_formatter(NullFormatter())
 
 def plot_one(runtime_title, count, data_map, out_path):
     """
@@ -186,8 +193,7 @@ def plot_one(runtime_title, count, data_map, out_path):
         y = [tmap.get(t, math.nan) for t in types]
         plt.plot(x, y, marker="o", linestyle="-", label=label)
 
-    plt.yscale("log")
-    plt.gca().yaxis.set_major_formatter(FuncFormatter(ns_tick_to_us))
+    apply_log_axis_magnitude_labels(plt.gca())
     if count == 1:
         plt.axhline(1_000.0, color="#a0a0a0", linestyle=":", linewidth=1.0, alpha=0.7, zorder=0)
         plt.text(0.99, 1_000.0, "1 µs", transform=plt.gca().get_yaxis_transform(),
@@ -197,7 +203,7 @@ def plot_one(runtime_title, count, data_map, out_path):
         plt.text(0.99, 100_000.0, "100 µs", transform=plt.gca().get_yaxis_transform(),
                  ha="right", va="bottom", fontsize=8, color="#b8b8b8")
     plt.xticks(x, types, rotation=30, ha="right")
-    plt.ylabel("Average Latency (µs, log scale)")
+    plt.ylabel("Average Latency (µs, log10 scale)")
     plt.title(f"{runtime_title} — Types Benchmark (count={count})")
     plt.grid(True, which="both", linestyle="--", alpha=0.5)
     plt.legend()
@@ -264,8 +270,7 @@ def plot_combined(count, items, out_path):
                 label=f"{title} — {group}",
             )
 
-    ax.set_yscale("log")
-    ax.yaxis.set_major_formatter(FuncFormatter(ns_tick_to_us))
+    apply_log_axis_magnitude_labels(ax)
     if count == 1:
         ax.axhline(1_000.0, color="#a0a0a0", linestyle=":", linewidth=1.0, alpha=0.7, zorder=0)
         ax.text(0.99, 1_000.0, "1 µs", transform=ax.get_yaxis_transform(),
@@ -276,7 +281,7 @@ def plot_combined(count, items, out_path):
                 ha="right", va="bottom", fontsize=8, color="#b8b8b8")
     ax.set_xticks(x)
     ax.set_xticklabels(types, rotation=30, ha="right")
-    ax.set_ylabel("Average Latency (µs, log scale)")
+    ax.set_ylabel("Average Latency (µs, log10 scale)")
     ax.set_title(f"Types Benchmark — Combined (count={count})")
     ax.grid(True, which="both", linestyle="--", alpha=0.5)
 
