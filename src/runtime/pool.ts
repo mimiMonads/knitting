@@ -233,16 +233,9 @@ export const spawnWorkerContext = ({
     };
   };
 
-  const fastCalling = ({ fnNumber }: WorkerCall) => {
-    const enqueued = call({ fnNumber });
-    return (args: Uint8Array) => enqueued(args);
-  };
-
   const context: WorkerContext & { lock: ReturnType<typeof lock2> } = {
     txIdle,
-    send,
     call,
-    fastCalling,
     kills: () => (
       rejectAll("Thread closed"), channelHandler.close(), worker.terminate()
     ),

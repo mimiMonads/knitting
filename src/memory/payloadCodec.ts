@@ -134,8 +134,6 @@ export const encodePayload = ({
           if (written !== -1) {
             task[TaskIndex.Type] = PayloadBuffer.StaticBigInt;
             task[TaskIndex.PayloadLen] = written;
-            task[TaskIndex.Start] = 0;
-            task[TaskIndex.End] = 0;
             return true;
           }
         }
@@ -228,8 +226,6 @@ export const encodePayload = ({
             if (written !== -1) {
               task[TaskIndex.Type] = PayloadBuffer.StaticBinary;
               task[TaskIndex.PayloadLen] = written;
-              task[TaskIndex.Start] = 0;
-              task[TaskIndex.End] = 0;
               return true;
             }
           }
@@ -247,8 +243,6 @@ export const encodePayload = ({
             const written = writeStaticUtf8(text, slotIndex);
             task[TaskIndex.Type] = PayloadBuffer.StaticJson;
             task[TaskIndex.PayloadLen] = written;
-            task[TaskIndex.Start] = 0;
-            task[TaskIndex.End] = 0;
             return true;
           }
 
@@ -258,8 +252,6 @@ export const encodePayload = ({
             if (written !== -1) {
               task[TaskIndex.Type] = PayloadBuffer.StaticJson;
               task[TaskIndex.PayloadLen] = written;
-              task[TaskIndex.Start] = 0;
-              task[TaskIndex.End] = 0;
               return true;
             }
           }
@@ -277,8 +269,6 @@ export const encodePayload = ({
             if (written !== -1) {
               task[TaskIndex.Type] = PayloadBuffer.StaticSerializable;
               task[TaskIndex.PayloadLen] = written;
-              task[TaskIndex.Start] = 0;
-              task[TaskIndex.End] = 0;
               return true;
             }
           }
@@ -306,8 +296,6 @@ export const encodePayload = ({
             if (written !== -1) {
               task[TaskIndex.Type] = PayloadBuffer.StaticInt32Array;
               task[TaskIndex.PayloadLen] = written;
-              task[TaskIndex.Start] = 0;
-              task[TaskIndex.End] = 0;
               return true;
             }
           }
@@ -325,8 +313,6 @@ export const encodePayload = ({
             if (written !== -1) {
               task[TaskIndex.Type] = PayloadBuffer.StaticFloat64Array;
               task[TaskIndex.PayloadLen] = written;
-              task[TaskIndex.Start] = 0;
-              task[TaskIndex.End] = 0;
               return true;
             }
           }
@@ -347,8 +333,6 @@ export const encodePayload = ({
             if (written !== -1) {
               task[TaskIndex.Type] = PayloadBuffer.StaticBigInt64Array;
               task[TaskIndex.PayloadLen] = written;
-              task[TaskIndex.Start] = 0;
-              task[TaskIndex.End] = 0;
               return true;
             }
           }
@@ -369,8 +353,6 @@ export const encodePayload = ({
             if (written !== -1) {
               task[TaskIndex.Type] = PayloadBuffer.StaticBigUint64Array;
               task[TaskIndex.PayloadLen] = written;
-              task[TaskIndex.Start] = 0;
-              task[TaskIndex.End] = 0;
               return true;
             }
           }
@@ -391,8 +373,6 @@ export const encodePayload = ({
             if (written !== -1) {
               task[TaskIndex.Type] = PayloadBuffer.StaticDataView;
               task[TaskIndex.PayloadLen] = written;
-              task[TaskIndex.Start] = 0;
-              task[TaskIndex.End] = 0;
               return true;
             }
           }
@@ -432,8 +412,6 @@ export const encodePayload = ({
           if (written !== -1) {
             task[TaskIndex.Type] = PayloadBuffer.StaticSerializable;
             task[TaskIndex.PayloadLen] = written;
-            task[TaskIndex.Start] = 0;
-            task[TaskIndex.End] = 0;
             return true;
           }
         }
@@ -452,8 +430,6 @@ export const encodePayload = ({
           if (written !== -1) {
             task[TaskIndex.Type] = PayloadBuffer.StaticString;
             task[TaskIndex.PayloadLen] = written;
-            task[TaskIndex.Start] = 0;
-            task[TaskIndex.End] = 0;
             return true;
           }
         }
@@ -463,8 +439,6 @@ export const encodePayload = ({
           if (written !== -1) {
             task[TaskIndex.Type] = PayloadBuffer.StaticString;
             task[TaskIndex.PayloadLen] = written;
-            task[TaskIndex.Start] = 0;
-            task[TaskIndex.End] = 0;
             return true;
           }
         }
@@ -490,8 +464,6 @@ export const encodePayload = ({
           if (written !== -1) {
             task[TaskIndex.Type] = PayloadBuffer.StaticSymbol;
             task[TaskIndex.PayloadLen] = written;
-            task[TaskIndex.Start] = 0;
-            task[TaskIndex.End] = 0;
             return true;
           }
         }

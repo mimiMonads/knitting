@@ -55,13 +55,11 @@ if (isMain) {
 
 ## Batching Pattern
 
-`call.*()` will enqueue work and usually wakes the dispatcher automatically.
-Calling `send()` after creating a batch makes the intent explicit and can reduce
-latency under load.
+`call.*()` enqueues work and dispatches automatically.
+For batches, create all calls first and then await them together.
 
 ```ts
 const jobs = Array.from({ length: 1_000 }, () => call.hello());
-send();
 const results = await Promise.all(jobs);
 ```
 
@@ -72,6 +70,27 @@ const results = await Promise.all(jobs);
 Wraps a function (sync or async) so it can be registered and executed in
 workers. `call.*()` always returns a promise. Inputs can also be promises,
 they’ll be awaited before dispatch.
+
+#### `href` override behavior (unsafe / experimental)
+
+`task()` normally captures the caller module URL and uses that for worker-side
+task discovery. Passing `href` overrides that module URL and forces workers to
+import from your custom path/URL.
+
+This is not considered safe as a public long-term contract and may be removed
+in a future major release.
+
+Rules for `href`:
+
+- Prefer not using `href`; default caller resolution is the supported path.
+- If you use it, pass an absolute module URL (`file://...` or full URL).
+- Avoid remote URLs (`http(s)://...`) in production; runtime support and
+  security expectations vary across Node/Deno/Bun.
+- Ensure the target module exports top-level `task(...)` values discoverable by
+  workers.
+- Ensure `href` points to a stable module identity (do not use ad-hoc dynamic
+  URL variations for the same task module).
+- Treat this as compatibility-risky and pin versions if you depend on it.
 
 Guidelines:
 
@@ -113,10 +132,10 @@ Creates a worker pool and returns:
 Key options:
 
 - `threads?: number` number of worker threads (default `1`).
-- `inliner?: { position?: "first" | "last"; batchSize?: number }` run tasks on the main thread as
-  an extra lane.
+- `inliner?: { position?: "first" | "last"; batchSize?: number; dispatchThreshold?: number }`
+  run tasks on the main thread as an extra lane.
 - `balancer?: "robinRound" | "firstIdle" | "randomLane" | "firstIdleOrRandom"`
-  or `{ strategy: "robinRound" | "firstIdle" | "randomLane" | "firstIdleOrRandom" }`
+  or `{ strategy?: "robinRound" | "firstIdle" | "randomLane" | "firstIdleOrRandom" }`
   task routing strategy.
 - `worker?: { resolveAfterFinishingAll?: true; timers?: WorkerTimers }`
 - `host?: DispatcherSettings`
@@ -139,15 +158,23 @@ You can tune idle behavior and backoff:
 
 - `worker.timers.spinMicroseconds?: number` busy‑spin budget before parking (µs).
 - `worker.timers.parkMs?: number` `Atomics.wait` timeout when parked (ms).
-- `worker.timers.pauseNanoseconds?: number` `Atomics.pause` duration while spinning (ns).
+- `worker.timers.pauseNanoseconds?: number` `Atomics.pause` duration while spinning (ns). Set to
+  `0` to disable pause calls.
 - `host.stallFreeLoops?: number` notify loops before backoff starts.
 - `host.maxBackoffMs?: number` max backoff delay (ms).
+- `inliner.dispatchThreshold?: number` minimum in-flight calls before routing can use the
+  inline host lane. Defaults to `1`.
 
 Example:
 
 ```ts
 const pool = createPool({
   threads: 2,
+  inliner: {
+    position: "last",
+    batchSize: 1,
+    dispatchThreshold: 16, // keep host free at low load; join only on bigger bursts
+  },
   worker: {
     timers: { 
       spinMicroseconds: 40, 
@@ -203,14 +230,16 @@ You can control how calls are routed:
 - `"randomLane"` choose a random worker
 - `"firstIdleOrRandom"` idle first, then random
 
-You can also pass `{ strategy: "..." }` if you prefer an object form.
+You can also pass `{}` or `{ strategy: "..." }` if you prefer an object form.
+When omitted, strategy defaults to `"robinRound"`.
 
 ## Best Practices
 
 - Export tasks from the module where they are defined.
 - Keep task definitions at top level (avoid conditional exports).
-- Batch many calls, then use `send()` once.
+- Batch many calls, then await with `Promise.all`.
 - Use a tuple or object when you need multiple arguments.
+- Avoid `href` override unless strictly necessary (experimental/unsafe).
 
 ## Benchmarks
 

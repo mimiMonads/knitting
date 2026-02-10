@@ -14,7 +14,7 @@ import {
 const setNumb = new Set([1, 2, 3, 4, 5, 6]);
 
 Deno.test("Using one thread calling with multiple arguments", async () => {
-  const { call, shutdown, send } = createPool({})({
+  const { call, shutdown } = createPool({})({
     toNumber,
     toString,
     toHelloWorld,
@@ -45,8 +45,6 @@ Deno.test("Using one thread calling with multiple arguments", async () => {
     call.toObject(null),
     call.toSet(setNumb),
   ];
-
-  send();
 
   const results = await Promise.all(promises);
 
@@ -83,7 +81,7 @@ Deno.test("Using one thread calling with multiple arguments", async () => {
 });
 
 Deno.test("Using all thread calling with multiple arguments", async () => {
-  const { call, shutdown, send } = createPool({
+  const { call, shutdown } = createPool({
     threads: 2,
   })({
     toNumber,
@@ -112,8 +110,6 @@ Deno.test("Using all thread calling with multiple arguments", async () => {
     call.toNumber(2.2250738585072014e-308),
     call.toObject(null),
   ];
-
-  send();
 
   const results = await Promise.all(promises);
 

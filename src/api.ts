@@ -129,8 +129,6 @@ export const createPool: CreatePoolFactory = ({
     return ({
       shutdown: uwu,
       call: uwu,
-      fastCall: uwu,
-      send: uwu,
     } as Pool<T>);
   }
 
@@ -217,28 +215,26 @@ export const createPool: CreatePoolFactory = ({
       );
     }
   }
+  const inlinerIndex = usingInliner
+    ? (inliner?.position === "first" ? 0 : workers.length - 1)
+    : -1;
+  const inlinerDispatchThreshold = Number.isFinite(inliner?.dispatchThreshold)
+    ? Math.max(1, Math.floor(inliner?.dispatchThreshold ?? 1))
+    : 1;
 
   const indexedFunctions = listOfFunctions.map((fn, index) => ({
     name: fn.name,
     index,
   }));
 
-  const fastHandlers = new Map<string, WorkerInvoke[]>();
   const callHandlers = new Map<string, WorkerInvoke[]>();
 
   for (const { name } of indexedFunctions) {
-    fastHandlers.set(name, []);
     callHandlers.set(name, []);
   }
 
   for (const worker of workers) {
     for (const { name, index } of indexedFunctions) {
-      fastHandlers.get(name)!.push(
-        worker.fastCalling({
-          fnNumber: index,
-        }),
-      );
-
       callHandlers.get(name)!.push(
         worker.call({
           fnNumber: index,
@@ -256,6 +252,12 @@ export const createPool: CreatePoolFactory = ({
         contexts: workers,
         balancer,
         handlers,
+        inlinerGate: usingInliner
+          ? {
+            index: inlinerIndex,
+            threshold: inlinerDispatchThreshold,
+          }
+          : undefined,
       });
 
   const callEntries = Array.from(
@@ -263,18 +265,9 @@ export const createPool: CreatePoolFactory = ({
     ([name, handlers]) => [name, buildInvoker(handlers)],
   );
 
-  const fastEntries = Array.from(
-    fastHandlers.entries(),
-    ([name, handlers]) => [name, buildInvoker(handlers)],
-  );
-
-  const runnable = workers.map((worker) => worker.send);
-
   return {
     shutdown: () => workers.forEach((worker) => worker.kills()),
     call: Object.fromEntries(callEntries) as unknown as FunctionMapType<T>,
-    fastCall: Object.fromEntries(fastEntries) as unknown as FunctionMapType<T>,
-    send: () => runnable.forEach((fn) => fn()),
   } as Pool<T>;
 };
 
@@ -290,8 +283,6 @@ const createSingleTaskPool = <A extends TaskInput, B extends Args>(
 
   return {
     call: pool.call[SINGLE_TASK_KEY] as SingleTaskPool<A, B>["call"],
-    fastCall: pool.fastCall[SINGLE_TASK_KEY] as SingleTaskPool<A, B>["fastCall"],
-    send: pool.send,
     shutdown: pool.shutdown,
   };
 };

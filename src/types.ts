@@ -7,9 +7,7 @@ type WorkerInvoke = (args: Uint8Array) => Promise<unknown>;
 
 interface WorkerContext {
   txIdle(): boolean;
-  send(): void;
   call(descriptor: WorkerCall): WorkerInvoke;
-  fastCalling(descriptor: WorkerCall): WorkerInvoke;
   kills(): void;
 }
 
@@ -121,6 +119,11 @@ type FunctionMapType<T extends Record<string, TaskLike>> = {
 };
 
 interface FixPoint<A extends TaskInput, B extends Args> {
+  /**
+   * Optional module URL override for worker discovery.
+   * Unsafe/experimental: prefer default caller resolution.
+   * May be removed in a future major release.
+   */
   readonly href?: string;
   readonly f: TaskFn<A, B>;
   readonly timeout?: TaskTimeout;
@@ -144,16 +147,12 @@ type SingleTaskPool<
   B extends Args = Args,
 > = {
   call: PromiseWrapped<TaskFn<A, B>>;
-  fastCall: PromiseWrapped<TaskFn<A, B>>;
-  send: () => void;
   shutdown: () => void;
 };
 
 type Pool<T extends Record<string, TaskLike>> = {
   shutdown: () => void;
   call: FunctionMapType<T>;
-  fastCall: FunctionMapType<T>;
-  send: () => void;
 };
 
 type ReturnFixed<
@@ -175,6 +174,11 @@ type Inliner = {
    * Defaults to 1 when inliner is enabled.
    */
   batchSize?: number;
+  /**
+   * Minimum in-flight calls before routing can use the inline host lane.
+   * Defaults to 1 (inline lane available immediately).
+   */
+  dispatchThreshold?: number;
 };
 
 type BalancerStrategy =
@@ -186,7 +190,10 @@ type BalancerStrategy =
 type Balancer =
   | BalancerStrategy
   | {
-    strategy: BalancerStrategy;
+    /**
+     * Optional. Defaults to "robinRound".
+     */
+    strategy?: BalancerStrategy;
   };
 
 type DebugOptions = {
@@ -213,6 +220,7 @@ type WorkerTimers = {
   parkMs?: number;
   /**
    * Atomics.pause duration during spin (nanoseconds).
+   * Set to 0 (or less) to disable pause calls.
    */
   pauseNanoseconds?: number;
 };

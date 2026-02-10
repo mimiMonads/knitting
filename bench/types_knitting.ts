@@ -15,13 +15,12 @@ export const echo = task<unknown, unknown>({
 });
 
 if (isMain) {
-  const { call, shutdown, send } = createPool({ threads: 1 })({ echo });
+  const { call, shutdown } = createPool({ threads: 1 })({ echo });
   const isJsonOutput = process.argv.includes("--json");
   const sizes = [1, 100];
 
   const runBatch = async (n: number, payload: unknown) => {
     const jobs = Array.from({ length: n }, () => call.echo(payload));
-    send();
     await Promise.all(jobs);
   };
 

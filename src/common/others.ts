@@ -24,14 +24,11 @@ const getCallerFilePathForBun = (offset: number) => {
     throw new Error("Unable to determine caller file.");
   }
 
-  let url: URL;
   try {
-    url = new URL(caller);
-  } catch (error) {
-    url = new URL("file://" + caller);
+    return new URL(caller).href;
+  } catch {
+    return pathToFileURL(caller).href;
   }
-
-  return url.href;
 };
 
 /**
@@ -57,6 +54,7 @@ export const beat = (): number => Number(hrtime.bigint()) / 1e4;
 
 import { createWriteStream, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 export const signalDebuggerV2 = ({
   thread,

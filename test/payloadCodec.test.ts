@@ -1,6 +1,7 @@
 import { assertEquals } from "jsr:@std/assert";
 import { decodePayload, encodePayload } from "../src/memory/payloadCodec.ts";
 import {
+  HEADER_U32_LENGTH,
   LOCK_SECTOR_BYTE_LENGTH,
   makeTask,
   type PromisePayloadHandler,
@@ -14,7 +15,7 @@ const makeCodec = (onPromise?: PromisePayloadHandler) => {
     LOCK_SECTOR_BYTE_LENGTH,
   );
   const payload = new SharedArrayBuffer(40000);
-  const headersBuffer = new Uint32Array(16);
+  const headersBuffer = new Uint32Array(HEADER_U32_LENGTH);
 
   return {
     encode: encodePayload({ lockSector, sab: payload, headersBuffer, onPromise }),
@@ -23,27 +24,27 @@ const makeCodec = (onPromise?: PromisePayloadHandler) => {
   };
 };
 
-Deno.test("string payload stores slotBuffer and frees slot 0", () => {
+Deno.test("dynamic string payload stores slotBuffer and frees slot 0", () => {
   const { encode, decode, registry } = makeCodec();
   const task = makeTask();
-  task.value = "";
+  task.value = "x".repeat(700);
 
   assertEquals(encode(task, 0), true);
   assertEquals(task[TaskIndex.slotBuffer], 0);
 
   decode(task, 0);
 
-  assertEquals(task.value, "");
+  assertEquals(task.value, "x".repeat(700));
   assertEquals(registry.workerBits[0] & 1, 1);
 });
 
-Deno.test("string payloads use distinct slotBuffer values", () => {
+Deno.test("dynamic string payloads use distinct slotBuffer values", () => {
   const { encode, decode, registry } = makeCodec();
   const first = makeTask();
   const second = makeTask();
 
-  first.value = "a";
-  second.value = "b";
+  first.value = "a".repeat(700);
+  second.value = "b".repeat(900);
 
   assertEquals(encode(first, 0), true);
   assertEquals(encode(second, 1), true);

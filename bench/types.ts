@@ -7,13 +7,12 @@ import { createSharedTypePayloadCases } from "./ulti/type-payloads.ts";
 export const echo = task<unknown, unknown>({ f: (value) => value });
 
 if (isMain) {
-  const { call, shutdown, send } = createPool({})({ echo });
+  const { call, shutdown } = createPool({})({ echo });
   const sizes = [1, 100];
   const { comparableCases } = createSharedTypePayloadCases();
 
   const runKnitting = async (n: number, payload: unknown) => {
     const jobs = Array.from({ length: n }, () => call.echo(payload));
-    send();
     await Promise.all(jobs);
   };
 

@@ -291,15 +291,6 @@ export const createInlineExecutor = ({
       stateArr.fill(SlotStateMacro.Free);
     },
     call,
-    send,
     txIdle: () => working === 0,
-    fastCalling: (cf: WorkerCall) => {
-      const fn = call(cf);
-      return (a: unknown) => {
-        const p = fn(a);
-        if (!isInMacro) send();
-        return p;
-      };
-    },
   } as const;
 };

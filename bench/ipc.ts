@@ -13,6 +13,9 @@ const payloadText = JSON.stringify(payloadObject);
 const contentType = "application/json; charset=utf-8";
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
+const isBunRuntime = typeof Bun !== "undefined";
+const isDenoRuntime = typeof Deno !== "undefined";
+const isNodeRuntime = !isBunRuntime && !isDenoRuntime;
 
 const toText = (data: unknown) => {
   if (typeof data === "string") return data;
@@ -30,8 +33,54 @@ const toText = (data: unknown) => {
 
 const parseJson = (data: unknown) => JSON.parse(toText(data));
 
+const runConcurrent = async (
+  count: number,
+  op: () => Promise<unknown>,
+) => {
+  if (count <= 0) return;
+
+  let pending = count;
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    for (let i = 0; i < count; i++) {
+      op().then(
+        () => {
+          if (settled) return;
+          pending -= 1;
+          if (pending === 0) {
+            settled = true;
+            resolve();
+          }
+        },
+        (error) => {
+          if (settled) return;
+          settled = true;
+          reject(error);
+        },
+      );
+    }
+  });
+};
+
+const readNodeRequestBody = async (req: {
+  setEncoding: (encoding: string) => unknown;
+  [Symbol.asyncIterator](): AsyncIterator<unknown>;
+}) => {
+  req.setEncoding("utf8");
+  let body = "";
+  for await (const chunk of req) {
+    body += typeof chunk === "string" ? chunk : String(chunk);
+  }
+  return body;
+};
+
 type ServerHandle = {
   url: string;
+  close: () => Promise<void>;
+};
+
+type HttpPoster = {
+  post: (body: string) => Promise<void>;
   close: () => Promise<void>;
 };
 
@@ -46,10 +95,7 @@ const handleRequest = async (req: Request): Promise<Response> => {
 };
 
 const startHttpServer = async (): Promise<ServerHandle> => {
-  const isBun = typeof Bun !== "undefined";
-  const isDeno = typeof Deno !== "undefined";
-
-  if (isBun && typeof Bun.serve === "function") {
+  if (isBunRuntime && typeof Bun.serve === "function") {
     const server = Bun.serve({
       port: 0,
       fetch: handleRequest,
@@ -62,10 +108,10 @@ const startHttpServer = async (): Promise<ServerHandle> => {
     };
   }
 
-  if (isDeno && typeof Deno.serve === "function") {
+  if (isDenoRuntime && typeof Deno.serve === "function") {
     const controller = new AbortController();
     const server = Deno.serve(
-      { port: 0, signal: controller.signal },
+      { port: 0, signal: controller.signal, onListen: () => {} },
       handleRequest,
     );
     const addr = server.addr as Deno.NetAddr;
@@ -80,26 +126,17 @@ const startHttpServer = async (): Promise<ServerHandle> => {
 
   const { createServer } = await import("node:http");
   const server = createServer(async (req, res) => {
-    const chunks: Uint8Array[] = [];
-    req.on("data", (chunk) => {
-      if (typeof chunk === "string") {
-        chunks.push(Buffer.from(chunk));
-      } else {
-        chunks.push(chunk);
-      }
-    });
-    req.on("end", () => {
-      const body = Buffer.concat(chunks).toString("utf8");
-      const parsed = body ? JSON.parse(body) : payloadObject;
+    try {
+      const body = req.method === "POST" ? await readNodeRequestBody(req) : "";
+      const parsed = body.length > 0 ? JSON.parse(body) : payloadObject;
       const reply = JSON.stringify(parsed);
       res.statusCode = 200;
       res.setHeader("content-type", contentType);
       res.end(reply);
-    });
-    req.on("error", () => {
+    } catch {
       res.statusCode = 500;
       res.end("error");
-    });
+    }
   });
 
   await new Promise<void>((resolve) => {
@@ -117,13 +154,78 @@ const startHttpServer = async (): Promise<ServerHandle> => {
   };
 };
 
-const post = async (url: string, body: string) => {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "content-type": contentType },
-    body,
+const createHttpPoster = async (url: string): Promise<HttpPoster> => {
+  if (!isNodeRuntime) {
+    return {
+      post: async (body: string) => {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "content-type": contentType },
+          body,
+        });
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}`);
+        }
+        parseJson(await res.text());
+      },
+      close: async () => {},
+    };
+  }
+
+  const target = new URL(url);
+  const { request, Agent } = await import("node:http");
+  const agent = new Agent({
+    keepAlive: true,
+    keepAliveMsecs: 1000,
+    maxSockets: 256,
+    maxFreeSockets: 256,
   });
-  parseJson(await res.text());
+
+  return {
+    post: (body: string) =>
+      new Promise<void>((resolve, reject) => {
+        const req = request(
+          {
+            method: "POST",
+            protocol: target.protocol,
+            hostname: target.hostname,
+            port: target.port.length > 0 ? Number(target.port) : undefined,
+            path: `${target.pathname}${target.search}`,
+            headers: {
+              "content-type": contentType,
+              "content-length": String(Buffer.byteLength(body, "utf8")),
+            },
+            agent,
+          },
+          (res) => {
+            let text = "";
+            res.setEncoding("utf8");
+            res.on("data", (chunk: string) => {
+              text += chunk;
+            });
+            res.on("end", () => {
+              const status = res.statusCode ?? 0;
+              if (status < 200 || status >= 300) {
+                reject(new Error(`HTTP ${status}`));
+                return;
+              }
+              try {
+                parseJson(text);
+                resolve();
+              } catch (error) {
+                reject(error);
+              }
+            });
+          },
+        );
+
+        req.on("error", reject);
+        req.end(body);
+      }),
+    close: async () => {
+      agent.destroy();
+    },
+  };
 };
 
 const concatUint8 = (a: Uint8Array, b: Uint8Array) => {
@@ -224,10 +326,7 @@ const encodeFrame = (payloadBytes: Uint8Array, opcode = 0x1) => {
 };
 
 const startWebSocketServer = async (): Promise<ServerHandle> => {
-  const isBun = typeof Bun !== "undefined";
-  const isDeno = typeof Deno !== "undefined";
-
-  if (isBun && typeof Bun.serve === "function") {
+  if (isBunRuntime && typeof Bun.serve === "function") {
     const server = Bun.serve({
       port: 0,
       fetch(req, server) {
@@ -250,19 +349,26 @@ const startWebSocketServer = async (): Promise<ServerHandle> => {
     };
   }
 
-  if (isDeno && typeof Deno.serve === "function" && typeof Deno.upgradeWebSocket === "function") {
+  if (
+    isDenoRuntime &&
+    typeof Deno.serve === "function" &&
+    typeof Deno.upgradeWebSocket === "function"
+  ) {
     const controller = new AbortController();
-    const server = Deno.serve({ port: 0, signal: controller.signal }, (req) => {
-      if (req.headers.get("upgrade") !== "websocket") {
-        return new Response("upgrade", { status: 426 });
-      }
-      const { socket, response } = Deno.upgradeWebSocket(req);
-      socket.onmessage = (event) => {
-        const parsed = parseJson(event.data);
-        socket.send(JSON.stringify(parsed));
-      };
-      return response;
-    });
+    const server = Deno.serve(
+      { port: 0, signal: controller.signal, onListen: () => {} },
+      (req) => {
+        if (req.headers.get("upgrade") !== "websocket") {
+          return new Response("upgrade", { status: 426 });
+        }
+        const { socket, response } = Deno.upgradeWebSocket(req);
+        socket.onmessage = (event) => {
+          const parsed = parseJson(event.data);
+          socket.send(JSON.stringify(parsed));
+        };
+        return response;
+      },
+    );
 
     const addr = server.addr as Deno.NetAddr;
     return {
@@ -483,15 +589,12 @@ const runWebSocketBench = async () => {
 
 const runWorkerBench = async () => {
   try {
-    await Promise.all(
-      Array.from({ length: warmupCount }, () => toResolve(payloadObject)),
-    );
+    await runConcurrent(warmupCount, () => toResolve(payloadObject));
 
     group("worker", () => {
       for (const n of sizes) {
         bench(`postMessage → (${n})`, async () => {
-          const arr = Array.from({ length: n }, () => toResolve(payloadObject));
-          await Promise.all(arr);
+          await runConcurrent(n, () => toResolve(payloadObject));
         });
       }
     });
@@ -504,26 +607,31 @@ const runWorkerBench = async () => {
 
 const runHttpBench = async () => {
   let httpServer: ServerHandle | null = null;
+  let httpPoster: HttpPoster | null = null;
+  const httpWarmupCount = Math.max(warmupCount, 25);
 
   try {
     httpServer = await startHttpServer();
     const httpUrl = httpServer.url;
+    httpPoster = await createHttpPoster(httpUrl);
+    const post = (body: string) => httpPoster!.post(body);
 
-    await Promise.all(
-      Array.from({ length: warmupCount }, () => post(httpUrl, payloadText)),
-    );
+    // Prime one request first so measured runs are less sensitive to setup jitter.
+    await post(payloadText);
+
+    await runConcurrent(httpWarmupCount, () => post(payloadText));
 
     group("http", () => {
       for (const n of sizes) {
         bench(`local → (${n})`, async () => {
-          const arr = Array.from({ length: n }, () => post(httpUrl, payloadText));
-          await Promise.all(arr);
+          await runConcurrent(n, () => post(payloadText));
         });
       }
     });
 
     await mitataRun({ format, print });
   } finally {
+    await httpPoster?.close().catch(() => {});
     await httpServer?.close().catch(() => {});
   }
 };
@@ -532,15 +640,12 @@ const runKnittingBench = async () => {
   const { call, shutdown } = createPool({ threads: 1 })({ echo });
 
   try {
-    await Promise.all(
-      Array.from({ length: warmupCount }, () => call.echo(payloadObject)),
-    );
+    await runConcurrent(warmupCount, () => call.echo(payloadObject));
 
     group("knitting", () => {
       for (const n of sizes) {
         bench(`1 thread → (${n})`, async () => {
-          const arr = Array.from({ length: n }, () => call.echo(payloadObject));
-          await Promise.all(arr);
+          await runConcurrent(n, () => call.echo(payloadObject));
         });
       }
     });

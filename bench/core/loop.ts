@@ -15,7 +15,7 @@ export const delayEcho = task<number, number>({
   },
 });
 
-const { call, send, shutdown } = createPool({
+const { call, shutdown } = createPool({
   threads: 1,
   worker: {
     timers: {
@@ -31,13 +31,11 @@ const { call, send, shutdown } = createPool({
 
 const runSyncBatch = (n: number) => {
   const tasks = Array.from({ length: n }, (_, i) => call.add(i));
-  send();
   return Promise.all(tasks);
 };
 
 const runAsyncBatch = (n: number, ms: number) => {
   const tasks = Array.from({ length: n }, () => call.delayEcho(ms));
-  send();
   return Promise.all(tasks);
 };
 

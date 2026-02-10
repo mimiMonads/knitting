@@ -9,6 +9,9 @@ export const world = task({
 });
 
 const { call, shutdown } = createPool({
+  inliner:{
+    dispatchThreshold: 12
+  },
   host: {
     maxBackoffMs: 300,
   },

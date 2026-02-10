@@ -49,7 +49,7 @@ if (isMain) {
   };
 
   const runPrimes = async (threads: number) => {
-    const { call, shutdown, send } = createPool({
+    const { call, shutdown } = createPool({
       threads,
       inliner: {
         position: "last",
@@ -58,7 +58,6 @@ if (isMain) {
     })({ fn });
 
     const tasks = partition(N, CHUNK_SIZE).map((range) => call.fn(range));
-    send(); // flush batch to workers
     const results = await Promise.all(tasks).finally(async () =>
       await shutdown()
     );

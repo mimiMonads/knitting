@@ -22,7 +22,7 @@ const withTimeout = async <T>(promise: Promise<T>, ms: number) => {
 };
 
 Deno.test("worker loop progresses across async work and idle periods", async () => {
-  const { call, send, shutdown } = createPool({
+  const { call, shutdown } = createPool({
     threads: 1,
     worker: {
       timers: {
@@ -42,7 +42,6 @@ Deno.test("worker loop progresses across async work and idle periods", async () 
       call.addOne(2),
       call.delayedEcho(5),
     ];
-    send();
     const result1 = await withTimeout(Promise.all(batch1), 2000);
     assertEquals(result1, [2, 3, 5]);
 
@@ -54,7 +53,6 @@ Deno.test("worker loop progresses across async work and idle periods", async () 
       call.addOne(40),
       call.addOne(-1),
     ];
-    send();
     const result2 = await withTimeout(Promise.all(batch2), 2000);
     assertEquals(result2, [2, 41, 0]);
   } finally {

@@ -7,7 +7,7 @@ export const inLine = task({
   f: (_: void) => {},
 });
 
-const { shutdown, call, send } = createPool(
+const { shutdown, call } = createPool(
   {},
 )({ inLine });
 

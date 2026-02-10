@@ -23,8 +23,9 @@ const a_pause: ((n: number) => void) | undefined = "pause" in Atomics
 
 export const whilePausing = ({ pauseInNanoseconds }: PauseOptions) => {
   const forNanoseconds = pauseInNanoseconds ?? DEFAULT_PAUSE_TIME;
+  if (!a_pause || forNanoseconds <= 0) return () => {};
 
-  return a_pause ? () => a_pause(forNanoseconds) : () => {};
+  return () => a_pause(forNanoseconds);
 };
 
 
@@ -51,6 +52,7 @@ export const sleepUntilChanged = (
   },
 ) => {
   const pause = pauseInNanoseconds
+    !== undefined
     ? whilePausing({ pauseInNanoseconds })
     : pauseGeneric;
 
