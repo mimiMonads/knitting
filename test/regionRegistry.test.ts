@@ -303,3 +303,26 @@ Deno.test("updateTable resets usedBits when all slots freed", () => {
 
   assertEquals(task[TaskIndex.Start], 0);
 });
+
+Deno.test("setSlotLength shrinks slot and exposes gap for next allocation", () => {
+  const registry = makeRegistry();
+
+  const first = allocNoSync(registry, 700 * 3);
+  const second = allocNoSync(registry, 64);
+
+  assertEquals(second[TaskIndex.Start], align64(700 * 3));
+  assertEquals(registry.setSlotLength(first[TaskIndex.slotBuffer], 700), true);
+
+  const third = makeTask();
+  third[TaskIndex.PayloadLen] = 128;
+  registry.allocTask(third);
+
+  assertEquals(third[TaskIndex.Start], align64(700));
+});
+
+Deno.test("setSlotLength rejects growing a slot", () => {
+  const registry = makeRegistry();
+  const task = allocNoSync(registry, 64);
+
+  assertEquals(registry.setSlotLength(task[TaskIndex.slotBuffer], 256), false);
+});

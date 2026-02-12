@@ -300,9 +300,9 @@ export const lock2 = ({
 
   // LinkedList method aliases (hot path)
   const toBeSentPush = (task: Task) => toBeSent.push(task);
-  const toBeSentShift = () => toBeSent.shift();
+  const toBeSentShift = () => toBeSent.shiftNoClear();
   const toBeSentUnshift = (task: Task) => toBeSent.unshift(task);
-  const recycleShift = () => recyclecList.shift();
+  const recycleShift = () => recyclecList.shiftNoClear();
   const resolvedPush = (task: Task) => resolved.push(task);
 
 

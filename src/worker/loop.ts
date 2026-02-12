@@ -149,12 +149,16 @@ const pauseSpin = (() => {
   const scheduleTimer = (delayMs: number) => {
     if (isInMacro) return;
     isInMacro = true;
-    if (typeof setTimeout === "function") {
-      setTimeout(loop, delayMs);
+    if (delayMs <= 0 && typeof SET_IMMEDIATE === "function") {
+      SET_IMMEDIATE(loop);
       return;
     }
-    if (delayMs === 0 && typeof SET_IMMEDIATE === "function") {
-      SET_IMMEDIATE(loop);
+    if (delayMs <= 0) {
+      post2(null);
+      return;
+    }
+    if (typeof setTimeout === "function") {
+      setTimeout(loop, delayMs);
       return;
     }
     post2(null);

@@ -57,15 +57,19 @@ export default class LinkedList<T> implements Iterable<T> {
 
   #growTo(newCap: number): void {
     const oldBuf = this.#buf;
-    const oldMask = this.#mask;
+    const oldCap = this.#mask + 1;
     const n = this.#size;
-
     const next = new Array<T | undefined>(newCap);
+    const head = this.#head;
+    const firstLen = Math.min(n, oldCap - head);
 
-    // copy logical order [head..tail) into [0..n)
-    // this keeps iteration and subsequent ops cache-friendly
-    for (let i = 0; i < n; i++) {
-      next[i] = oldBuf[(this.#head + i) & oldMask];
+    // copy [head..end)
+    for (let i = 0; i < firstLen; i++) {
+      next[i] = oldBuf[head + i];
+    }
+    // copy [0..remaining)
+    for (let i = firstLen; i < n; i++) {
+      next[i] = oldBuf[i - firstLen];
     }
 
     this.#buf = next;
@@ -80,8 +84,11 @@ export default class LinkedList<T> implements Iterable<T> {
    */
   push(value: T): true {
     this.#growIfFull();
-    this.#buf[this.#tail] = value;
-    this.#tail = (this.#tail + 1) & this.#mask;
+    const buf = this.#buf;
+    const mask = this.#mask;
+    const tail = this.#tail;
+    buf[tail] = value;
+    this.#tail = (tail + 1) & mask;
     this.#size++;
     return true;
   }
@@ -92,8 +99,11 @@ export default class LinkedList<T> implements Iterable<T> {
    */
   unshift(value: T): true {
     this.#growIfFull();
-    this.#head = (this.#head - 1) & this.#mask;
-    this.#buf[this.#head] = value;
+    const buf = this.#buf;
+    const mask = this.#mask;
+    const head = (this.#head - 1) & mask;
+    this.#head = head;
+    buf[head] = value;
     this.#size++;
     return true;
   }
@@ -102,11 +112,28 @@ export default class LinkedList<T> implements Iterable<T> {
    * Pop from front (shift)
    */
   shift(): T | undefined {
-    if (this.#size === 0) return undefined;
-    const v = this.#buf[this.#head] as T;
-    this.#buf[this.#head] = undefined; // help GC
-    this.#head = (this.#head + 1) & this.#mask;
-    this.#size--;
+    const size = this.#size;
+    if (size === 0) return undefined;
+    const head = this.#head;
+    const buf = this.#buf;
+    const v = buf[head] as T;
+    buf[head] = undefined; // help GC
+    this.#head = (head + 1) & this.#mask;
+    this.#size = size - 1;
+    return v;
+  }
+
+  /**
+   * Pop from front (shift) without clearing the slot.
+   * Use only for internal pooled-object queues where retaining references is acceptable.
+   */
+  shiftNoClear(): T | undefined {
+    const size = this.#size;
+    if (size === 0) return undefined;
+    const head = this.#head;
+    const v = this.#buf[head] as T;
+    this.#head = (head + 1) & this.#mask;
+    this.#size = size - 1;
     return v;
   }
 

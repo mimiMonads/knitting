@@ -54,7 +54,7 @@ export function createHostTxQueue({
   // Local count
   const toBeSent = new LinkedList<QueueTask>();
   const toBeSentPush = (task: QueueTask) => toBeSent.push(task);
-  const toBeSentShift = () => toBeSent.shift();
+  const toBeSentShift = () => toBeSent.shiftNoClear();
   const freePush = (id: number) => freeSockets.push(id);
   const freePop = () => freeSockets.pop();
   const queuePush = (task: QueueTask) => queue.push(task);

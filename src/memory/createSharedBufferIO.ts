@@ -10,6 +10,18 @@ const page = 1024 * 4;
 
 const textEncode = new TextEncoder();
 const textDecode = new TextDecoder();
+const writeBufferUtf8 = (
+  view: NodeBuffer,
+  str: string,
+  start: number,
+) => (
+  view.write as unknown as (
+    text: string,
+    offset: number,
+    length?: number,
+    encoding?: string,
+  ) => number
+)(str, start, undefined, "utf8");
 
 enum SignalEnumOptions {
   header = 64,
@@ -112,6 +124,13 @@ export const createSharedDynamicBufferIO = ({
     f64.subarray(start >>> 3, end >>> 3);
 
   const writeUtf8 = (str: string, start: number) => {
+    if (buf) {
+      if (!ensureCapacity(start + (str.length * 3))) {
+        throw new RangeError("Shared buffer capacity exceeded");
+      }
+      return writeBufferUtf8(buf, str, start);
+    }
+
     const { written, read } = textEncode.encodeInto(str, 
       u8.subarray(start)
     );
@@ -184,6 +203,12 @@ export const createSharedStaticBufferIO = ({
 
 
   const writeUtf8 = (str: string, at:number) => {
+    if (useNodeBuffer) {
+      const bytes = NodeBuffer.byteLength(str, "utf8");
+      if (!canWrite(0, bytes)) return -1;
+      return writeBufferUtf8(arrBuffSec[at], str, 0);
+    }
+
     const { written, read } = textEncode.encodeInto(str, 
       arrU8Sec[at]
     );

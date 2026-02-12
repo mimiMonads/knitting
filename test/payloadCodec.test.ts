@@ -10,6 +10,9 @@ import {
 import { register } from "../src/memory/regionRegistry.ts";
 import { withResolvers } from "../src/common/with-resolvers.ts";
 
+const align64 = (n: number) => (n + 63) & ~63;
+const textEncoder = new TextEncoder();
+
 const makeCodec = (onPromise?: PromisePayloadHandler) => {
   const lockSector = new SharedArrayBuffer(
     LOCK_SECTOR_BYTE_LENGTH,
@@ -56,6 +59,111 @@ Deno.test("dynamic string payloads use distinct slotBuffer values", () => {
   decode(second, 1);
 
   assertEquals(registry.workerBits[0] & 3, 3);
+});
+
+Deno.test("dynamic string uses written bytes for next dynamic allocation", () => {
+  const { encode } = makeCodec();
+  const first = makeTask();
+  const second = makeTask();
+
+  first.value = "x".repeat(700);
+  second.value = "y".repeat(700);
+
+  assertEquals(encode(first, 0), true);
+  assertEquals(first[TaskIndex.Start], 0);
+  assertEquals(first[TaskIndex.PayloadLen], 700);
+
+  assertEquals(encode(second, 1), true);
+  assertEquals(second[TaskIndex.Start], align64(700));
+});
+
+Deno.test("dynamic object JSON uses written bytes for next dynamic allocation", () => {
+  const { encode } = makeCodec();
+  const first = makeTask();
+  const second = makeTask();
+  const firstValue = { msg: "x".repeat(700) };
+  const secondValue = { msg: "y".repeat(700) };
+  const firstJson = JSON.stringify(firstValue);
+
+  first.value = firstValue;
+  second.value = secondValue;
+
+  assertEquals(encode(first, 0), true);
+  assertEquals(
+    first[TaskIndex.PayloadLen],
+    textEncoder.encode(firstJson).byteLength,
+  );
+
+  assertEquals(encode(second, 1), true);
+  assertEquals(second[TaskIndex.Start], align64(first[TaskIndex.PayloadLen]));
+});
+
+Deno.test("dynamic array JSON uses written bytes for next dynamic allocation", () => {
+  const { encode } = makeCodec();
+  const first = makeTask();
+  const second = makeTask();
+  const firstValue = ["x".repeat(700)];
+  const secondValue = ["y".repeat(700)];
+  const firstJson = JSON.stringify(firstValue);
+
+  first.value = firstValue;
+  second.value = secondValue;
+
+  assertEquals(encode(first, 0), true);
+  assertEquals(
+    first[TaskIndex.PayloadLen],
+    textEncoder.encode(firstJson).byteLength,
+  );
+
+  assertEquals(encode(second, 1), true);
+  assertEquals(second[TaskIndex.Start], align64(first[TaskIndex.PayloadLen]));
+});
+
+Deno.test("dynamic symbol uses written bytes for next dynamic allocation", () => {
+  const { encode } = makeCodec();
+  const first = makeTask();
+  const second = makeTask();
+  const firstKey = "x".repeat(700);
+  const secondKey = "y".repeat(700);
+
+  first.value = Symbol.for(firstKey);
+  second.value = Symbol.for(secondKey);
+
+  assertEquals(encode(first, 0), true);
+  assertEquals(first[TaskIndex.PayloadLen], firstKey.length);
+
+  assertEquals(encode(second, 1), true);
+  assertEquals(second[TaskIndex.Start], align64(first[TaskIndex.PayloadLen]));
+});
+
+Deno.test("dynamic error uses written bytes for next dynamic allocation", () => {
+  const { encode } = makeCodec();
+  const first = makeTask();
+  const second = makeTask();
+  const firstMessage = "x".repeat(700);
+  const secondMessage = "y".repeat(700);
+  const firstPayload = JSON.stringify({
+    name: "Error",
+    message: firstMessage,
+    stack: "",
+  });
+
+  const firstError = new Error(firstMessage);
+  firstError.stack = "";
+  const secondError = new Error(secondMessage);
+  secondError.stack = "";
+
+  first.value = firstError;
+  second.value = secondError;
+
+  assertEquals(encode(first, 0), true);
+  assertEquals(
+    first[TaskIndex.PayloadLen],
+    textEncoder.encode(firstPayload).byteLength,
+  );
+
+  assertEquals(encode(second, 1), true);
+  assertEquals(second[TaskIndex.Start], align64(first[TaskIndex.PayloadLen]));
 });
 
 Deno.test("non-buffer payloads do not modify slotBuffer", () => {

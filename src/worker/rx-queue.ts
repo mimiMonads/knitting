@@ -45,11 +45,11 @@ export const createWorkerRxQueue = (
   const errorFrames = new LinkList<Task>();
 
   const toWorkPush = (slot: Task) => toWork.push(slot);
-  const toWorkShift = () => toWork.shift();
-  const completedShift = () => completedFrames.shift();
+  const toWorkShift = () => toWork.shiftNoClear();
+  const completedShift = () => completedFrames.shiftNoClear();
   const completedUnshift = (slot: Task) => completedFrames.unshift(slot);
   const completedPush = (slot: Task) => completedFrames.push(slot);
-  const errorShift = () => errorFrames.shift();
+  const errorShift = () => errorFrames.shiftNoClear();
   const errorUnshift = (slot: Task) => errorFrames.unshift(slot);
   const errorPush = (slot: Task) => errorFrames.push(slot);
   const recyclePush = (slot: Task) => lock.recyclecList.push(slot);
@@ -59,7 +59,7 @@ export const createWorkerRxQueue = (
     : () => hasAnythingFinished !== 0;
 
 const { decode, resolved } = lock;
-const resolvedShift = resolved.shift.bind(resolved);
+const resolvedShift = resolved.shiftNoClear.bind(resolved);
 
 
 const enqueueLock = () => {

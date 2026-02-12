@@ -10,7 +10,6 @@ import {
 import { register } from "./regionRegistry.ts"
 import { createSharedDynamicBufferIO, createSharedStaticBufferIO } from "./createSharedBufferIO.ts"
 import { deserialize, serialize } from "node:v8";
-import { Buffer } from "node:buffer";
 import { NumericBuffer } from "../ipc/protocol/parsers/NumericBuffer.ts";
 
 const memory = new ArrayBuffer(8);
@@ -19,7 +18,6 @@ const BigInt64View = new BigInt64Array(memory);
 const Uint32View = new Uint32Array(memory);
 const BIGINT64_MIN = -(1n << 63n);
 const BIGINT64_MAX = (1n << 63n) - 1n;
-const { byteLength: utf8ByteLength } = Buffer;
 const { parse: parseJSON, stringify: stringifyJSON } = JSON;
 const { for: symbolFor, keyFor: symbolKeyFor } = Symbol;
 
@@ -100,7 +98,7 @@ export const encodePayload = ({
   onPromise?: PromisePayloadHandler;
 }  ) =>  { 
   
-  const { allocTask } = register({
+  const { allocTask, setSlotLength } = register({
     lockSector,
   });
   const {
@@ -238,16 +236,8 @@ export const encodePayload = ({
         case Object:
         case Array: {
           const text = stringifyJSON(args)
-          let textBytes = 0
-          if((text.length * 3) < staticMaxBytes){
-            const written = writeStaticUtf8(text, slotIndex);
-            task[TaskIndex.Type] = PayloadBuffer.StaticJson;
-            task[TaskIndex.PayloadLen] = written;
-            return true;
-          }
-
-           
-          if ((textBytes = utf8ByteLength(text, "utf8")) <= staticMaxBytes) {
+          const estimatedBytes = text.length * 3;
+          if (estimatedBytes <= staticMaxBytes) {
             const written = writeStaticUtf8(text, slotIndex);
             if (written !== -1) {
               task[TaskIndex.Type] = PayloadBuffer.StaticJson;
@@ -256,9 +246,11 @@ export const encodePayload = ({
             }
           }
 
-          task[TaskIndex.Type] = PayloadBuffer.Json
-          if (!reserveDynamic(task, textBytes)) return false;
-          task[TaskIndex.PayloadLen] = writeDynamicUtf8(text, task[TaskIndex.Start])
+          task[TaskIndex.Type] = PayloadBuffer.Json;
+          if (!reserveDynamic(task, estimatedBytes)) return false;
+          const written = writeDynamicUtf8(text, task[TaskIndex.Start]);
+          task[TaskIndex.PayloadLen] = written;
+          setSlotLength(task[TaskIndex.slotBuffer], written);
           return true
         }
         case Map:
@@ -389,10 +381,12 @@ export const encodePayload = ({
             message: err.message,
             stack: err.stack ?? "",
           });
-          const bytes = utf8ByteLength(payload, "utf8");
+          const estimatedBytes = payload.length * 3;
           task[TaskIndex.Type] = PayloadBuffer.Error;
-          if (!reserveDynamic(task, bytes)) return false;
-          task[TaskIndex.PayloadLen] = writeDynamicUtf8(payload, task[TaskIndex.Start]);
+          if (!reserveDynamic(task, estimatedBytes)) return false;
+          const written = writeDynamicUtf8(payload, task[TaskIndex.Start]);
+          task[TaskIndex.PayloadLen] = written;
+          setSlotLength(task[TaskIndex.slotBuffer], written);
           return true;
         }
         case Date: {
@@ -424,8 +418,8 @@ export const encodePayload = ({
     case "string":
       {
         const text = args as string;
-        let textBytes = 0;
-        if ((text.length * 3) < staticMaxBytes) {
+        const estimatedBytes = text.length * 3;
+        if (estimatedBytes <= staticMaxBytes) {
           const written = writeStaticUtf8(text, slotIndex);
           if (written !== -1) {
             task[TaskIndex.Type] = PayloadBuffer.StaticString;
@@ -434,22 +428,12 @@ export const encodePayload = ({
           }
         }
 
-        if ((textBytes = utf8ByteLength(text, "utf8")) <= staticMaxBytes) {
-          const written = writeStaticUtf8(text, slotIndex);
-          if (written !== -1) {
-            task[TaskIndex.Type] = PayloadBuffer.StaticString;
-            task[TaskIndex.PayloadLen] = written;
-            return true;
-          }
-        }
+        task[TaskIndex.Type] = PayloadBuffer.String;
+        if (!reserveDynamic(task, estimatedBytes)) return false;
 
-        if (textBytes === 0) {
-          textBytes = utf8ByteLength(text, "utf8");
-        }
-
-        task[TaskIndex.Type] = PayloadBuffer.String
-        if (!reserveDynamic(task, textBytes)) return false;
-        task[TaskIndex.PayloadLen] =  writeDynamicUtf8(text, task[TaskIndex.Start])
+        const written = writeDynamicUtf8(text, task[TaskIndex.Start]);
+        task[TaskIndex.PayloadLen] = written;
+        setSlotLength(task[TaskIndex.slotBuffer], written);
         return true
       }
     case "symbol":
@@ -458,8 +442,8 @@ export const encodePayload = ({
         if (key === undefined) {
           throw "only Symbol.for(...) keys are supported";
         }
-        const textBytes = utf8ByteLength(key, "utf8");
-        if (textBytes <= staticMaxBytes) {
+        const estimatedBytes = key.length * 3;
+        if (estimatedBytes <= staticMaxBytes) {
           const written = writeStaticUtf8(key, slotIndex);
           if (written !== -1) {
             task[TaskIndex.Type] = PayloadBuffer.StaticSymbol;
@@ -469,8 +453,10 @@ export const encodePayload = ({
         }
 
         task[TaskIndex.Type] = PayloadBuffer.Symbol;
-        if (!reserveDynamic(task, textBytes)) return false;
-        task[TaskIndex.PayloadLen] = writeDynamicUtf8(key, task[TaskIndex.Start]);
+        if (!reserveDynamic(task, estimatedBytes)) return false;
+        const written = writeDynamicUtf8(key, task[TaskIndex.Start]);
+        task[TaskIndex.PayloadLen] = written;
+        setSlotLength(task[TaskIndex.slotBuffer], written);
         return true;
       }
     case "undefined":

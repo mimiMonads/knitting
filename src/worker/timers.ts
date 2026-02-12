@@ -79,8 +79,9 @@ export const sleepUntilChanged = (
     parkMs?: number,
   ) => {
     const until = p_now() + (spinMicroseconds / 1000);
-    
-    do {
+
+    let spinChecks = 0;
+    while (true) {
       if (
         a_load(opView, at) !== value ||
         txStatus[Comment.thisIsAHint] === 1
@@ -89,9 +90,8 @@ export const sleepUntilChanged = (
       if (tryProgress()) return;
 
       pause();
-    } while (
-      p_now() < until
-    );
+      if ((spinChecks++ & 63) === 0 && p_now() >= until) break;
+    }
 
     //maybeGc();
     if (tryProgress()) return;

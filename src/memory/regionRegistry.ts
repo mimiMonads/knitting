@@ -219,6 +219,21 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
     return -1;
   };
 
+  const setSlotLength = (slotIndex: number, payloadLen: number) => {
+    if ((slotIndex | 0) < 0 || slotIndex >= LockBound.slots) return false;
+
+    const bit = 1 << slotIndex;
+    if ((usedBits & bit) === 0) return false;
+
+    const current = size64bit[slotIndex] >>> 0;
+    const aligned = ((payloadLen | 0) + 63) & ~63;
+    if (aligned < 0) return false;
+    if ((aligned >>> 0) > current) return false;
+
+    size64bit[slotIndex] = aligned >>> 0;
+    return true;
+  };
+
   const free = (index: number) => {
     workerLast ^= 1 << index;
     a_store(workerBits, 0, workerLast);
@@ -226,6 +241,7 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
 
   return {
     allocTask,
+    setSlotLength,
     lockSAB,
     free,
     hostBits,
