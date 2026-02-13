@@ -39,7 +39,7 @@ export const createSharedDynamicBufferIO = ({
   let u8 = new Uint8Array(lockSAB, SignalEnumOptions.header);
   const useNodeBuffer = !IS_DENO;
   const makeBufferView = (buffer: SharedArrayBuffer) => {
-    if (!useNodeBuffer) return undefined;
+    
     try {
       const view = NodeBuffer.from(buffer, SignalEnumOptions.header);
       if (view.buffer !== buffer) return undefined;
@@ -83,13 +83,14 @@ export const createSharedDynamicBufferIO = ({
 
   const readUtf8 = (start: number, end: number) => {
     return buf!.toString("utf8", start, end);
+ 
   };
 
   const writeBinary = (src: Uint8Array, start = 0) => {
     if (!ensureCapacity(start + src.byteLength)) {
       throw new RangeError("Shared buffer capacity exceeded");
     }
-    buf!.set(src, start);
+    u8.set(src, start);
     return src.byteLength;
   };
 
@@ -183,11 +184,15 @@ export const createSharedStaticBufferIO = ({
 
 
   const writeUtf8 = (str: string, at:number) => {
-    return arrBuffSec[at].write(str)
+    if (useNodeBuffer) return arrBuffSec[at]!.write(str);
+    const { written, read } = textEncode.encodeInto(str, arrU8Sec[at]);
+    if (read < str.length) return -1;
+    return written;
   };
 
   const readUtf8 = (start: number, end: number,at:number) => {
-    return arrBuffSec[at].toString("utf8", start, end);
+    if (useNodeBuffer) return arrBuffSec[at]!.toString("utf8", start, end);
+    return textDecode.decode(arrU8Sec[at].subarray(start, end));
   
   };
 
