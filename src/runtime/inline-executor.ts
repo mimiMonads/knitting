@@ -1,36 +1,20 @@
 import type { TaskTimeout, WorkerCall, tasks } from "../types.ts";
 import { MessageChannel } from "node:worker_threads";
 import { withResolvers } from "../common/with-resolvers.ts";
+import RingQueue from "../ipc/tools/RingQueue.ts";
 
-type TaskID = number;
-type FunctionID = number;
+type WorkerCallable = (args: unknown) => unknown;
 
 interface Deferred {
   promise: Promise<unknown>;
-  resolve: (v: unknown) => void;
-  reject: (v: unknown) => void;
+  resolve: (v: unknown | PromiseLike<unknown>) => void;
+  reject: (v?: unknown) => void;
 }
 
 const enum SlotStateMacro {
   Free = -1,
   Pending = 0,
 }
-
-const enum SlotPos {
-  TaskID = 0,
-  Args = 1,
-  FunctionID = 2,
-  _Unused = 3,
-  State = 4,
-}
-
-type SlotMacro = [
-  TaskID,
-  unknown,
-  FunctionID,
-  unknown,
-  SlotStateMacro,
-];
 
 const enum TimeoutKind {
   Reject = 0,
@@ -96,6 +80,25 @@ const raceTimeout = (
     );
   });
 
+const isThenable = (value: unknown): value is PromiseLike<unknown> => {
+  if (value == null) return false;
+  const type = typeof value;
+  if (type !== "object" && type !== "function") return false;
+  return typeof (value as { then?: unknown }).then === "function";
+};
+
+const composeInlineCallable = (
+  fn: WorkerCallable,
+  timeout?: TaskTimeout,
+): WorkerCallable => {
+  const normalized = normalizeTimeout(timeout);
+  if (!normalized) return fn;
+  return (args: unknown) => {
+    const result = fn(args);
+    return isThenable(result) ? raceTimeout(result, normalized) : result;
+  };
+};
+
 export const createInlineExecutor = ({
   tasks,
   genTaskID,
@@ -107,19 +110,22 @@ export const createInlineExecutor = ({
 }) => {
   const entries = Object.values(tasks)
     .sort((a, b) => a.id - b.id);
-  const funcs = entries.map((p) => p.f as (args: unknown) => unknown);
-  const timeouts = entries.map((p) => normalizeTimeout(p.timeout));
+  const runners = entries.map((entry) =>
+    composeInlineCallable(entry.f as WorkerCallable, entry.timeout)
+  );
 
   const initCap = 16;
-  const newSlot = (): SlotMacro => [0, null, 0, null, SlotStateMacro.Free];
-  const queue: SlotMacro[] = Array.from({ length: initCap }, newSlot);
-  let stateArr = new Int8Array(initCap).fill(SlotStateMacro.Free);
-  const freeStack: number[] = [];
-  for (let i = initCap - 1; i >= 0; --i) freeStack.push(i);
-  const pendingQueue: number[] = [];
-  let pendingHead = 0;
+  let fnByIndex = new Int32Array(initCap);
+  let stateByIndex = new Int8Array(initCap).fill(SlotStateMacro.Free);
+  let argsByIndex = new Array<unknown>(initCap);
+  let taskIdByIndex = new Array<number>(initCap).fill(-1);
+  let deferredByIndex = new Array<Deferred | undefined>(initCap);
 
-  const promisesMap = new Map<TaskID, Deferred>();
+  const freeStack = new Array<number>(initCap);
+  let freeTop = initCap;
+  for (let i = 0; i < initCap; i++) freeStack[i] = initCap - 1 - i;
+  const pendingQueue = new RingQueue<number>(initCap);
+
   let working = 0;
   let isInMacro = false;
   const batchLimit = Number.isFinite(batchSize)
@@ -130,86 +136,97 @@ export const createInlineExecutor = ({
   const port1 = channel.port1;
   const port2 = channel.port2;
   const post2 = port2.postMessage.bind(port2);
-  //@ts-ignore
-  port1.onmessage = processLoop;
+  const hasPending = () => pendingQueue.isEmpty === false;
 
-  const hasPending = () => pendingHead < pendingQueue.length;
-  const isThenable = (value: unknown): value is PromiseLike<unknown> => {
-    if (value == null) return false;
-    const type = typeof value;
-    if (type !== "object" && type !== "function") return false;
-    return typeof (value as { then?: unknown }).then === "function";
+  const send = () => {
+    if (working === 0 || isInMacro) return;
+    isInMacro = true;
+    post2(null);
+  };
+
+  const enqueue = (index: number) => {
+    pendingQueue.push(index);
+    if (!isInMacro) send();
+  };
+
+  const enqueueIfCurrent = (index: number, taskID: number) => {
+    if (
+      stateByIndex[index] !== SlotStateMacro.Pending ||
+      taskIdByIndex[index] !== taskID
+    ) return;
+    enqueue(index);
+  };
+
+  const settleIfCurrent = (
+    index: number,
+    taskID: number,
+    isError: boolean,
+    value: unknown,
+  ) => {
+    if (
+      stateByIndex[index] !== SlotStateMacro.Pending ||
+      taskIdByIndex[index] !== taskID
+    ) return;
+
+    const deferred = deferredByIndex[index];
+    if (deferred) {
+      if (isError) deferred.reject(value);
+      else deferred.resolve(value);
+    }
+    cleanup(index);
   };
 
   function allocIndex(): number {
-    if (freeStack.length) return freeStack.pop()!;
+    if (freeTop > 0) return freeStack[--freeTop]!;
 
-    // grow ×2
-    const oldCap = queue.length;
-    const newCap = oldCap * 2;
-    for (let i = oldCap; i < newCap; ++i) {
-      queue.push(newSlot());
-      freeStack.push(i);
+    const oldCap = fnByIndex.length;
+    const newCap = oldCap << 1;
+
+    const nextFnByIndex = new Int32Array(newCap);
+    nextFnByIndex.set(fnByIndex);
+    fnByIndex = nextFnByIndex;
+
+    const nextStateByIndex = new Int8Array(newCap);
+    nextStateByIndex.fill(SlotStateMacro.Free);
+    nextStateByIndex.set(stateByIndex);
+    stateByIndex = nextStateByIndex;
+
+    argsByIndex.length = newCap;
+    taskIdByIndex.length = newCap;
+    taskIdByIndex.fill(-1, oldCap);
+    deferredByIndex.length = newCap;
+
+    for (let i = newCap - 1; i >= oldCap; --i) {
+      freeStack[freeTop++] = i;
     }
-    const newStates = new Int8Array(newCap);
-    newStates.set(stateArr);
-    newStates.fill(SlotStateMacro.Free, oldCap);
-    stateArr = newStates;
-    return freeStack.pop()!;
+    return freeStack[--freeTop]!;
   }
 
   function processLoop() {
     let processed = 0;
-    while (hasPending() && processed < batchLimit) {
-      const index = pendingQueue[pendingHead++]!;
-      if (pendingHead === pendingQueue.length) {
-        pendingQueue.length = 0;
-        pendingHead = 0;
-      }
-      const slot = queue[index];
-      const settle = (
-        isError: boolean,
-        value: unknown,
-      ) => {
-        const taskID = slot[SlotPos.TaskID];
-        if (isError) {
-          promisesMap.get(taskID)?.reject(value);
-        } else {
-          promisesMap.get(taskID)?.resolve(value);
-        }
-        cleanup(index);
-      };
+    while (processed < batchLimit) {
+      const maybeIndex = pendingQueue.shiftNoClear();
+      if (maybeIndex === undefined) break;
+      const index = maybeIndex | 0;
+      if (stateByIndex[index] !== SlotStateMacro.Pending) continue;
+      const taskID = taskIdByIndex[index];
 
       try {
-        const args = slot[SlotPos.Args];
-        if (isThenable(args)) {
-          Promise.resolve(args).then(
-            (value) => {
-              slot[SlotPos.Args] = value;
-              pendingQueue.push(index);
-              if (!isInMacro) send();
-            },
-            (err) => settle(true, err),
-          );
-          processed++;
-          continue;
-        }
-        const fnId = slot[SlotPos.FunctionID];
-        const res = funcs[fnId](args);
+        const args = argsByIndex[index];
+        const fnId = fnByIndex[index];
+        const res = runners[fnId]!(args);
         if (!isThenable(res)) {
-          settle(false, res);
+          settleIfCurrent(index, taskID, false, res);
           processed++;
           continue;
         }
-        const timeout = timeouts[fnId];
-        const pending = timeout ? raceTimeout(res, timeout) : res;
-        pending.then(
-          (value) => settle(false, value),
-          (err) => settle(true, err),
+        res.then(
+          (value) => settleIfCurrent(index, taskID, false, value),
+          (err) => settleIfCurrent(index, taskID, true, err),
         );
         processed++;
       } catch (err) {
-        settle(true, err);
+        settleIfCurrent(index, taskID, true, err);
         processed++;
       }
     }
@@ -223,58 +240,45 @@ export const createInlineExecutor = ({
   }
 
   function cleanup(index: number) {
-    const slot = queue[index];
-    const taskID = slot[SlotPos.TaskID];
     working--;
-    slot[SlotPos.State] = SlotStateMacro.Free;
-    stateArr[index] = SlotStateMacro.Free;
-    freeStack.push(index);
-    promisesMap.delete(taskID);
+    stateByIndex[index] = SlotStateMacro.Free;
+    fnByIndex[index] = 0;
+    taskIdByIndex[index] = -1;
+    argsByIndex[index] = undefined;
+    deferredByIndex[index] = undefined;
+    freeStack[freeTop++] = index;
     if (working === 0) isInMacro = false;
   }
 
   const call = ({ fnNumber }: WorkerCall) => (args: unknown) => {
     const taskID = genTaskID();
-    const deferred = withResolvers();
-    promisesMap.set(taskID, deferred);
+    const deferred = withResolvers<unknown>();
 
     const index = allocIndex();
-    const slot = queue[index];
-    slot[SlotPos.TaskID] = taskID;
-    slot[SlotPos.Args] = args;
-    slot[SlotPos.FunctionID] = fnNumber;
-    slot[SlotPos.State] = SlotStateMacro.Pending;
-    stateArr[index] = SlotStateMacro.Pending;
+    taskIdByIndex[index] = taskID;
+    argsByIndex[index] = args;
+    fnByIndex[index] = fnNumber | 0;
+    deferredByIndex[index] = deferred;
+    stateByIndex[index] = SlotStateMacro.Pending;
     working++;
-
-    const enqueue = () => {
-      pendingQueue.push(index);
-      if (!isInMacro) send();
-    };
 
     if (isThenable(args)) {
       Promise.resolve(args).then(
         (value) => {
-          slot[SlotPos.Args] = value;
-          enqueue();
+          if (taskIdByIndex[index] !== taskID) return;
+          argsByIndex[index] = value;
+          enqueueIfCurrent(index, taskID);
         },
-        (err) => {
-          deferred.reject(err);
-          cleanup(index);
-        },
+        (err) => settleIfCurrent(index, taskID, true, err),
       );
     } else {
-      enqueue();
+      enqueue(index);
     }
 
     return deferred.promise;
   };
-
-  const send = () => {
-    if (working === 0 || isInMacro) return;
-    isInMacro = true;
-    post2(null);
-  };
+  //@ts-ignore
+  port1.onmessage = processLoop;
 
   return {
     kills: () => {
@@ -284,11 +288,16 @@ export const createInlineExecutor = ({
       //@ts-ignore
       port2.onmessage = null;
       port2.close();
-      pendingQueue.length = 0;
-      pendingHead = 0;
+      pendingQueue.clear();
+      freeTop = 0;
       freeStack.length = 0;
-      promisesMap.clear();
-      stateArr.fill(SlotStateMacro.Free);
+      argsByIndex.fill(undefined);
+      taskIdByIndex.fill(-1);
+      deferredByIndex.fill(undefined);
+      fnByIndex.fill(0);
+      stateByIndex.fill(SlotStateMacro.Free);
+      working = 0;
+      isInMacro = false;
     },
     call,
     txIdle: () => working === 0,

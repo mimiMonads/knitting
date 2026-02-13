@@ -113,8 +113,8 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
   };
 
   const allocTask = (task: Task) => {
-    // update every 8 allocs, using bitmask counter
-    updateTableCounter = (updateTableCounter + 1) & 7;
+    // update every 4 allocs, using bitmask counter
+    updateTableCounter = (updateTableCounter + 1) & 3;
     if (updateTableCounter === 0) updateTable();
 
     // align payload length to 64 bytes

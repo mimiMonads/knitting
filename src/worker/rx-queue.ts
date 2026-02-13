@@ -1,4 +1,4 @@
-import LinkList from "../ipc/tools/LinkList.ts";
+import RingQueue from "../ipc/tools/RingQueue.ts";
 import { TaskFlag, TaskIndex, type Task, type Lock2 } from "../memory/lock.ts";
 import type { WorkerComposedWithKey } from "./get-functions.ts";
 import type {
@@ -40,9 +40,9 @@ export const createWorkerRxQueue = (
     acc.push(fixed.run), acc
   ), [] as Array<(args: unknown) => unknown>);
 
-  const toWork = new LinkList<Task>();
-  const completedFrames = new LinkList<Task>();
-  const errorFrames = new LinkList<Task>();
+  const toWork = new RingQueue<Task>();
+  const completedFrames = new RingQueue<Task>();
+  const errorFrames = new RingQueue<Task>();
 
   const toWorkPush = (slot: Task) => toWork.push(slot);
   const toWorkShift = () => toWork.shiftNoClear();

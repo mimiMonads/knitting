@@ -54,21 +54,6 @@ if (isMain) {
     });
   }
 
-  for (const n of sizes) {
-    group("knitting-static-vs-allocator " + n, () => {
-      for (const [name, payload] of staticBoundaryCases) {
-        bench(`${name} -> (${n})`, async () => await runBatch(n, payload));
-      }
-    });
-  }
-
-  for (const n of sizes) {
-    group("knitting-string-length-3x-check " + n, () => {
-      for (const [name, payload] of stringLengthCases) {
-        bench(`${name} -> (${n})`, async () => await runBatch(n, payload));
-      }
-    });
-  }
 
   await mitataRun({ format, print });
   await shutdown();

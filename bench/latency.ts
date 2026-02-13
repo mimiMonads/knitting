@@ -26,6 +26,7 @@ if (isMain) {
         await Promise.all(Array.from({ length: n }, () => call.inLine()));
       });
     }
+    
   });
 
   // ───────────────────────── worker (toResolve) ─────────────────────────
@@ -39,6 +40,7 @@ if (isMain) {
         await Promise.all(arr);
       });
     }
+    
   });
 
 

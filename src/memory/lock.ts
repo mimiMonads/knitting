@@ -1,4 +1,4 @@
-import LinkList from "../ipc/tools/LinkList.ts";
+import RingQueue from "../ipc/tools/RingQueue.ts";
 import { decodePayload, encodePayload } from "./payloadCodec.ts";
 import { HAS_SAB_GROW, createSharedArrayBuffer } from "../common/runtime.ts";
 
@@ -218,9 +218,9 @@ export const lock2 = ({
   LockBoundSector?: SharedArrayBuffer;
   payload?: SharedArrayBuffer;
   payloadSector?: SharedArrayBuffer;
-  toSentList?: LinkList<Task>;
-  resultList?: LinkList<Task>;
-  recycleList?: LinkList<Task>;
+  toSentList?: RingQueue<Task>;
+  resultList?: RingQueue<Task>;
+  recycleList?: RingQueue<Task>;
 }) => {
 
 
@@ -278,18 +278,18 @@ export const lock2 = ({
   let LastWorker = 0 | 0;
   let lastTake = 32 | 0;
 
-  const toBeSent = toSentList ?? new LinkList();
-  const recyclecList = recycleList ?? new LinkList()
+  const toBeSent = toSentList ?? new RingQueue();
+  const recyclecList = recycleList ?? new RingQueue()
 
 
 
-  const resolved = resultList ?? new LinkList<Task>();
+  const resolved = resultList ?? new RingQueue<Task>();
 
   // Atomics aliases (hot path)
   const a_load = Atomics.load;
   const a_store = Atomics.store;
 
-  // LinkedList method aliases (hot path)
+  // RingQueue method aliases (hot path)
   const toBeSentPush = (task: Task) => toBeSent.push(task);
   const toBeSentShift = () => toBeSent.shiftNoClear();
   const toBeSentUnshift = (task: Task) => toBeSent.unshift(task);
@@ -319,7 +319,7 @@ const slotOffset = (at: number) =>
     return uwuBit;
   };
 
-  const encodeManyFrom = (list: LinkList<Task>): number => {
+  const encodeManyFrom = (list: RingQueue<Task>): number => {
    
     let state = (LastLocal ^ a_load(workerBits, 0)) | 0;
     let encoded = 0 | 0;

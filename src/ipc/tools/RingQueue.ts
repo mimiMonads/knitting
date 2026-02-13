@@ -1,7 +1,7 @@
 type ID = number;
 interface Node<T extends [ID, ...any[]]>  { value: T; next: Node<T> | null };
 
-export default class LinkedList<T> implements Iterable<T> {
+export default class RingQueue<T> implements Iterable<T> {
   #buf: (T | null)[];
   #mask: number;
   #head = 0;

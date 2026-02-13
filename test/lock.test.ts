@@ -1,5 +1,5 @@
 import { assert, assertEquals } from "jsr:@std/assert";
-import LinkList from "../src/ipc/tools/LinkList.ts";
+import RingQueue from "../src/ipc/tools/RingQueue.ts";
 import {
   HEADER_BYTE_LENGTH,
   LOCK_SECTOR_BYTE_LENGTH,
@@ -11,7 +11,7 @@ import {
 import { decodePayload } from "../src/memory/payloadCodec.ts";
 
 const makeLock = () => {
-  const toBeSent = new LinkList<ReturnType<typeof makeTask>>();
+  const toBeSent = new RingQueue<ReturnType<typeof makeTask>>();
   const lock = lock2({ toSentList: toBeSent });
   return { lock, toBeSent };
 };

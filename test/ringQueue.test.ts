@@ -1,8 +1,8 @@
 import { assertEquals } from "jsr:@std/assert";
-import LinkedList from "../src/ipc/tools/LinkList.ts";
+import RingQueue from "../src/ipc/tools/RingQueue.ts";
 
 Deno.test("shiftNoClear preserves FIFO order and size accounting", () => {
-  const q = new LinkedList<number>(4);
+  const q = new RingQueue<number>(4);
   q.push(1);
   q.push(2);
   q.push(3);
@@ -15,7 +15,7 @@ Deno.test("shiftNoClear preserves FIFO order and size accounting", () => {
 });
 
 Deno.test("growth keeps logical order after wrap-around", () => {
-  const q = new LinkedList<number>(4);
+  const q = new RingQueue<number>(4);
 
   q.push(0);
   q.push(1);

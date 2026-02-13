@@ -1,5 +1,5 @@
 import { bench, group, run as mitataRun } from "mitata";
-import LinkedList from "../../src/ipc/tools/LinkList.ts";
+import RingQueue from "../../src/ipc/tools/RingQueue.ts";
 import {
   PromisePayloadMarker,
   TaskIndex,
@@ -27,7 +27,7 @@ class TxLockMock {
     return true;
   };
 
-  public encodeManyFrom = (list: LinkedList<Task>): number => {
+  public encodeManyFrom = (list: RingQueue<Task>): number => {
     let encoded = 0;
     while (this.#inFlight.length < this.#capacity) {
       const task = list.shift();

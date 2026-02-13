@@ -1,4 +1,4 @@
-import LinkedList from "../ipc/tools/LinkList.ts";
+import RingQueue from "../ipc/tools/RingQueue.ts";
 import {
   makeTask,
   PromisePayloadMarker,
@@ -52,7 +52,7 @@ export function createHostTxQueue({
   );
 
   // Local count
-  const toBeSent = new LinkedList<QueueTask>();
+  const toBeSent = new RingQueue<QueueTask>();
   const toBeSentPush = (task: QueueTask) => toBeSent.push(task);
   const toBeSentShift = () => toBeSent.shiftNoClear();
   const freePush = (id: number) => freeSockets.push(id);
