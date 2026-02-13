@@ -138,6 +138,8 @@ Key options:
   or `{ strategy?: "robinRound" | "firstIdle" | "randomLane" | "firstIdleOrRandom" }`
   task routing strategy.
 - `worker?: { resolveAfterFinishingAll?: true; timers?: WorkerTimers }`
+- `payloadInitialBytes?: number` initial payload SAB size per worker direction (bytes).
+- `payloadMaxBytes?: number` max payload SAB size per worker direction (bytes).
 - `host?: DispatcherSettings`
 - `debug?: { extras?: boolean; logMain?: boolean; logHref?: boolean;
   logImportedUrl?: boolean }`
@@ -160,6 +162,8 @@ You can tune idle behavior and backoff:
 - `worker.timers.parkMs?: number` `Atomics.wait` timeout when parked (ms).
 - `worker.timers.pauseNanoseconds?: number` `Atomics.pause` duration while spinning (ns). Set to
   `0` to disable pause calls.
+- `payloadInitialBytes?: number` initial payload buffer size in bytes.
+- `payloadMaxBytes?: number` max payload buffer size in bytes.
 - `host.stallFreeLoops?: number` notify loops before backoff starts.
 - `host.maxBackoffMs?: number` max backoff delay (ms).
 - `inliner.dispatchThreshold?: number` minimum in-flight calls before routing can use the

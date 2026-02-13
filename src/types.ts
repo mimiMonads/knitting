@@ -249,6 +249,17 @@ type CreatePool = {
   balancer?: Balancer;
   worker?: WorkerSettings;
   /**
+   * Initial payload SharedArrayBuffer size (bytes) per worker direction.
+   * Defaults to 4 MiB when growable SAB is available, otherwise defaults to
+   * `payloadMaxBytes`.
+   */
+  payloadInitialBytes?: number;
+  /**
+   * Maximum payload SharedArrayBuffer size (bytes) per worker direction.
+   * Defaults to 64 MiB.
+   */
+  payloadMaxBytes?: number;
+  /**
    * Host dispatcher backoff and scheduling options.
    */
   host?: DispatcherSettings;

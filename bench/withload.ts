@@ -30,7 +30,7 @@ export const fn = task({
 if (isMain) {
   const N = 10_000_000; // search range: [1..N]
   const CHUNK_SIZE = 250_000;
-  const THREADS = [2, 3, 4, 5]; // extra worker threads to compare
+  const THREADS = [2, 3, 4, 5, 6]; // extra worker threads to compare
 
   const partition = (end: number, chunk: number): [number, number][] => {
     const ranges: [number, number][] = [];

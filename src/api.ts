@@ -88,6 +88,8 @@ export const createPool: CreatePoolFactory = ({
   debug,
   inliner,
   balancer,
+  payloadInitialBytes,
+  payloadMaxBytes,
   source,
   worker,
   workerExecArgv,
@@ -192,6 +194,8 @@ export const createPool: CreatePoolFactory = ({
       workerOptions: worker,
       workerExecArgv: execArgv,
       host: hostDispatcher,
+      payloadInitialBytes,
+      payloadMaxBytes,
     })
   );
 

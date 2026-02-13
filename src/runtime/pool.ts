@@ -47,6 +47,8 @@ export const spawnWorkerContext = ({
   workerOptions,
   workerExecArgv,
   host,
+  payloadInitialBytes,
+  payloadMaxBytes,
 }: {
   list: string[];
   ids: number[];
@@ -60,6 +62,8 @@ export const spawnWorkerContext = ({
   workerOptions?: WorkerSettings;
   workerExecArgv?: string[];
   host?: DispatcherSettings;
+  payloadInitialBytes?: number;
+  payloadMaxBytes?: number;
 }) => {
   const tsFileUrl = new URL(import.meta.url);
 
@@ -69,16 +73,25 @@ export const spawnWorkerContext = ({
   }
 
   // Lock buffers must be shared between host and worker.
-  const payloadMaxBytes = 64 * 1024 * 1024;
-  const payloadInitialBytes = HAS_SAB_GROW ? 4 * 1024 * 1024 : payloadMaxBytes;
+  const defaultPayloadMaxBytes = 64 * 1024 * 1024;
+  const sanitizeBytes = (value: number | undefined) => {
+    if (!Number.isFinite(value)) return undefined;
+    const bytes = Math.floor(value as number);
+    return bytes > 0 ? bytes : undefined;
+  };
+  const maxBytes = sanitizeBytes(payloadMaxBytes) ?? defaultPayloadMaxBytes;
+  const requestedInitial = sanitizeBytes(payloadInitialBytes);
+  const initialBytes = HAS_SAB_GROW
+    ? Math.min(requestedInitial ?? (4 * 1024 * 1024), maxBytes)
+    : maxBytes;
 
   const lockBuffers: LockBuffers = {
     lockSector: new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH),
     payloadSector: new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH),
     headers: new SharedArrayBuffer(HEADER_BYTE_LENGTH),
     payload: createSharedArrayBuffer(
-      payloadInitialBytes,
-      payloadMaxBytes,
+      initialBytes,
+      maxBytes,
     ),
   };
   const returnLockBuffers: LockBuffers = {
@@ -86,8 +99,8 @@ export const spawnWorkerContext = ({
     payloadSector: new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH),
     headers: new SharedArrayBuffer(HEADER_BYTE_LENGTH),
     payload: createSharedArrayBuffer(
-      payloadInitialBytes,
-      payloadMaxBytes,
+      initialBytes,
+      maxBytes,
     ),
   };
 

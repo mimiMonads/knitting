@@ -28,7 +28,7 @@ export const createSharedDynamicBufferIO = ({
 
 
   const maxBytes = 64 * 1024 * 1024;
-  const initialBytes = HAS_SAB_GROW ? 64 * 1024 * 1024 : maxBytes;
+  const initialBytes = HAS_SAB_GROW ? 4 * 1024 * 1024 : maxBytes;
   const lockSAB =
       sab ??
       createSharedArrayBuffer(
@@ -112,15 +112,13 @@ export const createSharedDynamicBufferIO = ({
 
   const writeUtf8 = (str: string, start: number) => {
 
-    return buf!.write(str, start, undefined, "utf8")
-    // const { written, read } = textEncode.encodeInto(str, 
-    //   u8.subarray(start)
-    // );
+    const written = buf!.write(str, start)
+   
 
-    // if (read < str.length) {
-    //   return writeBinary(textEncode.encode(str), start);
-    // }
-    // return written
+    if (written < str.length) {
+      return writeBinary(textEncode.encode(str), start);
+    }
+    return written
 
   };
 
@@ -185,20 +183,12 @@ export const createSharedStaticBufferIO = ({
 
 
   const writeUtf8 = (str: string, at:number) => {
-    const { written, read } = textEncode.encodeInto(str, 
-      arrU8Sec[at]
-    );
-
-    if (read < str.length) {
-      return -1
-    }
-    return written | 0
-
+    return arrBuffSec[at].write(str)
   };
 
   const readUtf8 = (start: number, end: number,at:number) => {
-    if (useNodeBuffer) return arrBuffSec[at].toString("utf8", start, end);
-    return textDecode.decode(arrU8Sec[at].subarray(start, end));
+    return arrBuffSec[at].toString("utf8", start, end);
+  
   };
 
   const writeBinary = (src: Uint8Array, at: number, start = 0) => {

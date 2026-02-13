@@ -2,7 +2,7 @@ type ID = number;
 interface Node<T extends [ID, ...any[]]>  { value: T; next: Node<T> | null };
 
 export default class LinkedList<T> implements Iterable<T> {
-  #buf: (T | undefined)[];
+  #buf: (T | null)[];
   #mask: number;
   #head = 0;
   #tail = 0;
@@ -11,7 +11,8 @@ export default class LinkedList<T> implements Iterable<T> {
   constructor(capacity = 512) {
     let cap = 2;
     while (cap < capacity) cap <<= 1;
-    this.#buf = new Array<T | undefined>(cap);
+    // Keep the array packed (avoid holey elements in hot queue paths).
+    this.#buf = new Array<T | null>(cap).fill(null);
     this.#mask = cap - 1;
   }
 
@@ -30,7 +31,7 @@ export default class LinkedList<T> implements Iterable<T> {
   clear(): void {
     // Keep buffer allocated; reset pointers (fast)
     // (optional) also drop references to help GC if you want:
-    // for (let i = 0; i < this.#size; i++) this.#buf[(this.#head + i) & this.#mask] = undefined;
+    // for (let i = 0; i < this.#size; i++) this.#buf[(this.#head + i) & this.#mask] = null;
 
     this.#head = 0;
     this.#tail = 0;
@@ -59,7 +60,7 @@ export default class LinkedList<T> implements Iterable<T> {
     const oldBuf = this.#buf;
     const oldCap = this.#mask + 1;
     const n = this.#size;
-    const next = new Array<T | undefined>(newCap);
+    const next = new Array<T | null>(newCap).fill(null);
     const head = this.#head;
     const firstLen = Math.min(n, oldCap - head);
 
@@ -117,7 +118,7 @@ export default class LinkedList<T> implements Iterable<T> {
     const head = this.#head;
     const buf = this.#buf;
     const v = buf[head] as T;
-    buf[head] = undefined; // help GC
+    buf[head] = null; // help GC while keeping packed elements
     this.#head = (head + 1) & this.#mask;
     this.#size = size - 1;
     return v;
@@ -145,9 +146,9 @@ export default class LinkedList<T> implements Iterable<T> {
     const n = this.#size;
 
     while (i < n) {
-      // values should never be undefined inside active range, but keep it safe
+      // values should never be null inside active range, but keep it safe
       const v = buf[idx];
-      if (v !== undefined) yield v as T;
+      if (v !== null) yield v as T;
       idx = (idx + 1) & mask;
       i++;
     }
