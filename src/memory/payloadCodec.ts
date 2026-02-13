@@ -236,8 +236,7 @@ export const encodePayload = ({
         case Object:
         case Array: {
           const text = stringifyJSON(args)
-          const estimatedBytes = text.length * 3;
-          if (estimatedBytes <= staticMaxBytes) {
+          if (text.length <= staticMaxBytes) {
             const written = writeStaticUtf8(text, slotIndex);
             if (written !== -1) {
               task[TaskIndex.Type] = PayloadBuffer.StaticJson;
@@ -247,7 +246,7 @@ export const encodePayload = ({
           }
 
           task[TaskIndex.Type] = PayloadBuffer.Json;
-          if (!reserveDynamic(task, estimatedBytes)) return false;
+          if (!reserveDynamic(task, text.length * 3)) return false;
           const written = writeDynamicUtf8(text, task[TaskIndex.Start]);
           task[TaskIndex.PayloadLen] = written;
           setSlotLength(task[TaskIndex.slotBuffer], written);
@@ -418,7 +417,7 @@ export const encodePayload = ({
     case "string":
       {
         const text = args as string;
-        const estimatedBytes = text.length * 3;
+        const estimatedBytes = text.length ;
         if (estimatedBytes <= staticMaxBytes) {
           const written = writeStaticUtf8(text, slotIndex);
           if (written !== -1) {
