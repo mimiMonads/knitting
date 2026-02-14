@@ -61,6 +61,7 @@ type ValidInput =
   | Map<Serializable, Serializable>
   | Set<Serializable>
   | symbol
+  | ArrayBuffer
   | Uint8Array
   | Int32Array
   | Float64Array
@@ -74,7 +75,10 @@ type Args = ValidInput | Serializable;
 
 type MaybePromise<T> = T | Promise<T>;
 
-type TaskInput = Args | PromiseLike<Args>;
+// Blob payloads are intentionally not supported by the transport.
+type NoBlob<T> = T extends Blob ? never : T;
+
+type TaskInput = NoBlob<Args> | PromiseLike<NoBlob<Args>>;
 
 type TaskTimeout =
   | number
@@ -90,8 +94,8 @@ type BivariantCallback<Args extends unknown[], R> = {
 }["bivarianceHack"];
 
 type TaskFn<A extends TaskInput, B extends Args> = BivariantCallback<
-  [Awaited<A>],
-  MaybePromise<B>
+  [NoBlob<Awaited<A>>],
+  MaybePromise<NoBlob<B>>
 >;
 
 type TaskLike = { readonly f: (...args: any[]) => any };

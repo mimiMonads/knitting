@@ -4,6 +4,7 @@ import {
   HEADER_U32_LENGTH,
   LOCK_SECTOR_BYTE_LENGTH,
   makeTask,
+  PayloadBuffer,
   type PromisePayloadHandler,
   TaskIndex,
 } from "../src/memory/lock.ts";
@@ -164,6 +165,40 @@ Deno.test("dynamic error uses written bytes for next dynamic allocation", () => 
 
   assertEquals(encode(second, 1), true);
   assertEquals(second[TaskIndex.Start], align64(first[TaskIndex.PayloadLen]));
+});
+
+Deno.test("static ArrayBuffer payload round-trips with ArrayBuffer type", () => {
+  const { encode, decode } = makeCodec();
+  const task = makeTask();
+  task.value = new Uint8Array([1, 2, 3, 4, 5]).buffer;
+
+  assertEquals(encode(task, 0), true);
+  assertEquals(task[TaskIndex.Type], PayloadBuffer.StaticArrayBuffer);
+
+  decode(task, 0);
+
+  assertEquals(task.value instanceof ArrayBuffer, true);
+  assertEquals(Array.from(new Uint8Array(task.value as ArrayBuffer)), [1, 2, 3, 4, 5]);
+});
+
+Deno.test("dynamic ArrayBuffer payload stores slotBuffer and frees slot 0", () => {
+  const { encode, decode, registry } = makeCodec();
+  const task = makeTask();
+  const src = new Uint8Array(700);
+  for (let i = 0; i < src.length; i++) src[i] = i & 0xff;
+  task.value = src.buffer;
+
+  assertEquals(encode(task, 0), true);
+  assertEquals(task[TaskIndex.Type], PayloadBuffer.ArrayBuffer);
+  assertEquals(task[TaskIndex.slotBuffer], 0);
+
+  decode(task, 0);
+
+  assertEquals(task.value instanceof ArrayBuffer, true);
+  const out = new Uint8Array(task.value as ArrayBuffer);
+  assertEquals(out[0], 0);
+  assertEquals(out[699], 699 & 0xff);
+  assertEquals(registry.workerBits[0] & 1, 1);
 });
 
 Deno.test("non-buffer payloads do not modify slotBuffer", () => {

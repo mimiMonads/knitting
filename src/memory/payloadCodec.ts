@@ -233,6 +233,23 @@ export const encodePayload = ({
           writeDynamicBinary(args as Uint8Array, task[TaskIndex.Start]);
           return true;
         }
+        case ArrayBuffer: {
+          const view = new Uint8Array(args as ArrayBuffer);
+          const bytes = view.byteLength;
+          if (bytes <= staticMaxBytes) {
+            const written = writeStaticBinary(view, slotIndex);
+            if (written !== -1) {
+              task[TaskIndex.Type] = PayloadBuffer.StaticArrayBuffer;
+              task[TaskIndex.PayloadLen] = written;
+              return true;
+            }
+          }
+
+          task[TaskIndex.Type] = PayloadBuffer.ArrayBuffer;
+          if (!reserveDynamic(task, bytes)) return false;
+          writeDynamicBinary(view, task[TaskIndex.Start]);
+          return true;
+        }
         case Object:
         case Array: {
           const text = stringifyJSON(args)
@@ -710,6 +727,20 @@ export const decodePayload = ({
     return
     case PayloadBuffer.StaticBinary:
       task.value = readStaticBytesCopy(0, task[TaskIndex.PayloadLen], slotIndex)
+    return
+    case PayloadBuffer.ArrayBuffer:
+      task.value = readDynamicBytesCopy(
+        task[TaskIndex.Start],
+        task[TaskIndex.Start] + task[TaskIndex.PayloadLen],
+      ).buffer
+      free(task[TaskIndex.slotBuffer])
+    return
+    case PayloadBuffer.StaticArrayBuffer:
+      task.value = readStaticBytesCopy(
+        0,
+        task[TaskIndex.PayloadLen],
+        slotIndex,
+      ).buffer
     return
     case PayloadBuffer.Serializable:
       task.value = deserialize(

@@ -49,6 +49,8 @@ export enum PayloadBuffer {
   StaticBigInt64Array = 33,
   StaticBigUint64Array = 34,
   StaticDataView = 35,
+  ArrayBuffer = 36,
+  StaticArrayBuffer = 37,
 }
 
 

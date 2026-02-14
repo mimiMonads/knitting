@@ -208,6 +208,8 @@ The transport supports common structured data:
 - `undefined` and `null`
 - `Object` and `Array`
 - `Map` and `Set`
+- `ArrayBuffer`, `Uint8Array`, `Int32Array`, `Float64Array`, `BigInt64Array`,
+  `BigUint64Array`, and `DataView`
 - `Promise<supported>` (resolved on the host before dispatch; rejections
   propagate to the caller)
 
