@@ -20,6 +20,33 @@ Deno.test("inliner awaits promise arguments before invoking task", async () => {
   }
 });
 
+Deno.test("shutdown rejects pending inliner calls", async () => {
+  const { call, shutdown } = createPool({
+    threads: 1,
+    inliner: { position: "first" },
+    balancer: "robinRound",
+  })({ world });
+
+  const never = new Promise<string>(() => {});
+  const pending = call.world(never);
+
+  await shutdown();
+
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const status = await Promise.race([
+    pending.then(
+      () => "resolved",
+      () => "rejected",
+    ),
+    new Promise<string>((resolve) => {
+      timeoutId = setTimeout(() => resolve("pending"), 250);
+    }),
+  ]);
+  if (timeoutId !== undefined) clearTimeout(timeoutId);
+
+  assertEquals(status, "rejected");
+});
+
 Deno.test("inliner.dispatchThreshold keeps inline lane idle below threshold", async () => {
   const { call, shutdown } = createPool({
     threads: 1,

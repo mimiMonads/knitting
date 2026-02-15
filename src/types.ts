@@ -8,7 +8,7 @@ type WorkerInvoke = (args: Uint8Array) => Promise<unknown>;
 interface WorkerContext {
   txIdle(): boolean;
   call(descriptor: WorkerCall): WorkerInvoke;
-  kills(): void;
+  kills(): Promise<void>;
 }
 
 type CreateContext = WorkerContext;
@@ -151,11 +151,11 @@ type SingleTaskPool<
   B extends Args = Args,
 > = {
   call: PromiseWrapped<TaskFn<A, B>>;
-  shutdown: () => void;
+  shutdown: () => Promise<void>;
 };
 
 type Pool<T extends Record<string, TaskLike>> = {
-  shutdown: () => void;
+  shutdown: () => Promise<void>;
   call: FunctionMapType<T>;
 };
 

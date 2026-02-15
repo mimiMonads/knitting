@@ -249,9 +249,11 @@ export const spawnWorkerContext = ({
   const context: WorkerContext & { lock: ReturnType<typeof lock2> } = {
     txIdle,
     call,
-    kills: () => (
-      rejectAll("Thread closed"), channelHandler.close(), worker.terminate()
-    ),
+    kills: async () => {
+      rejectAll("Thread closed");
+      channelHandler.close();
+      await Promise.resolve(worker.terminate()).then(() => {});
+    },
     lock,
   };
 

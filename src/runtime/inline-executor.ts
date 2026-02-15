@@ -281,7 +281,14 @@ export const createInlineExecutor = ({
   port1.onmessage = processLoop;
 
   return {
-    kills: () => {
+    kills: async () => {
+      for (let index = 0; index < stateByIndex.length; index++) {
+        if (stateByIndex[index] !== SlotStateMacro.Pending) continue;
+        try {
+          deferredByIndex[index]?.reject("Thread closed");
+        } catch {
+        }
+      }
       //@ts-ignore
       port1.onmessage = null;
       port1.close();

@@ -1,6 +1,6 @@
 {
   "name": "@vixeny/knitting",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "exports": "./knitting.ts",
   "license": "CC-BY-ND-4.0",
   "publish": {

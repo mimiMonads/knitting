@@ -135,10 +135,10 @@ const enqueueLock = () => {
       return wrote;
     },
     serviceBatchImmediate: () => {
-      let processed = 0;
+      let processed = 0 | 0;
 
 
-      while (toWork.size !== 0) {
+      while (toWork.size !== 0 && (processed & 3) === 0) {
         const slot = toWorkShift()!;
 
         try {
@@ -157,7 +157,7 @@ const enqueueLock = () => {
           settleNow(slot, true, err, false);
         }
 
-        processed++;
+        processed = (processed  + 1 ) | 0;
        
       }
 

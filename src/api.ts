@@ -270,7 +270,9 @@ export const createPool: CreatePoolFactory = ({
   );
 
   return {
-    shutdown: () => workers.forEach((worker) => worker.kills()),
+    shutdown: async () => {
+      await Promise.allSettled(workers.map((worker) => worker.kills()));
+    },
     call: Object.fromEntries(callEntries) as unknown as FunctionMapType<T>,
   } as Pool<T>;
 };

@@ -49,7 +49,7 @@ if (isMain) {
 
   const results = await Promise.all(jobs);
   console.log("Results:", results);
-  shutdown();
+  await shutdown();
 }
 ```
 
@@ -118,7 +118,7 @@ export const world = task({
 if (isMain) {
   const results = await Promise.all([world.call()]);
   console.log("Results:", results);
-  world.shutdown();
+  await world.shutdown();
 }
 ```
 
@@ -127,7 +127,7 @@ if (isMain) {
 Creates a worker pool and returns:
 
 - `call.<task>(args)` enqueue a task call.
-- `shutdown()` terminates workers.
+- `shutdown(): Promise<void>` terminates workers.
 
 Key options:
 
