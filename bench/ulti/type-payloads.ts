@@ -54,15 +54,12 @@ export const createSharedTypePayloadCases = () => {
     ["string", stringValue],
     ["json object", jsonObj],
     ["json array", jsonArr],
-    ["map", mapPayload],
-    ["set", setPayload],
     ["Uint8Array", u8],
     ["Int32Array", i32],
     ["Float64Array", f64],
     ["BigInt64Array", bi64],
     ["BigUint64Array", bu64],
     ["DataView", dv],
-    ["Error", err],
     ["Date", date],
   ];
 

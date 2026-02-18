@@ -1,5 +1,6 @@
 import { assertEquals } from "jsr:@std/assert";
 import { Buffer as NodeBuffer } from "node:buffer";
+import { serialize } from "node:v8";
 import { decodePayload, encodePayload } from "../src/memory/payloadCodec.ts";
 import {
   HEADER_U32_LENGTH,
@@ -142,30 +143,59 @@ Deno.test("dynamic error uses written bytes for next dynamic allocation", () => 
   const { encode } = makeCodec();
   const first = makeTask();
   const second = makeTask();
-  const firstMessage = "x".repeat(700);
-  const secondMessage = "y".repeat(700);
-  const firstPayload = JSON.stringify({
-    name: "Error",
-    message: firstMessage,
-    stack: "",
-  });
-
-  const firstError = new Error(firstMessage);
-  firstError.stack = "";
-  const secondError = new Error(secondMessage);
-  secondError.stack = "";
+  const firstError = new Error("x".repeat(2000));
+  const secondError = new Error("y".repeat(2000));
+  const firstPayload = serialize(firstError);
 
   first.value = firstError;
   second.value = secondError;
 
   assertEquals(encode(first, 0), true);
+  assertEquals(first[TaskIndex.Type], PayloadBuffer.Serializable);
   assertEquals(
     first[TaskIndex.PayloadLen],
-    textEncoder.encode(firstPayload).byteLength,
+    firstPayload.byteLength,
   );
 
   assertEquals(encode(second, 1), true);
+  assertEquals(second[TaskIndex.Type], PayloadBuffer.Serializable);
   assertEquals(second[TaskIndex.Start], align64(first[TaskIndex.PayloadLen]));
+});
+
+Deno.test("map payload uses serializable path", () => {
+  const { encode, decode } = makeCodec();
+  const task = makeTask();
+  const input = new Map([["x".repeat(700), 1]]);
+  task.value = input;
+
+  assertEquals(encode(task, 0), true);
+  assertEquals(
+    task[TaskIndex.Type] === PayloadBuffer.Serializable ||
+      task[TaskIndex.Type] === PayloadBuffer.StaticSerializable,
+    true,
+  );
+
+  decode(task, 0);
+  assertEquals(task.value instanceof Map, true);
+  assertEquals((task.value as Map<string, number>).get("x".repeat(700)), 1);
+});
+
+Deno.test("set payload uses serializable path", () => {
+  const { encode, decode } = makeCodec();
+  const task = makeTask();
+  const input = new Set(["x".repeat(700)]);
+  task.value = input;
+
+  assertEquals(encode(task, 0), true);
+  assertEquals(
+    task[TaskIndex.Type] === PayloadBuffer.Serializable ||
+      task[TaskIndex.Type] === PayloadBuffer.StaticSerializable,
+    true,
+  );
+
+  decode(task, 0);
+  assertEquals(task.value instanceof Set, true);
+  assertEquals((task.value as Set<string>).has("x".repeat(700)), true);
 });
 
 Deno.test("static ArrayBuffer payload round-trips with ArrayBuffer type", () => {

@@ -252,7 +252,10 @@ export const spawnWorkerContext = ({
     kills: async () => {
       rejectAll("Thread closed");
       channelHandler.close();
-      await Promise.resolve(worker.terminate()).then(() => {});
+      try {
+        void Promise.resolve(worker.terminate()).catch(() => {});
+      } catch {
+      }
     },
     lock,
   };

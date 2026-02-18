@@ -286,23 +286,6 @@ export const encodePayload = ({
           setSlotLength(task[TaskIndex.slotBuffer], written);
           return true
         }
-        case Map:
-        case Set: {
-          const binary = serialize(args) as Uint8Array
-          if (binary.byteLength <= staticMaxBytes) {
-            const written = writeStaticBinary(binary, slotIndex);
-            if (written !== -1) {
-              task[TaskIndex.Type] = PayloadBuffer.StaticSerializable;
-              task[TaskIndex.PayloadLen] = written;
-              return true;
-            }
-          }
-
-          task[TaskIndex.Type] = PayloadBuffer.Serializable
-          if (!reserveDynamic(task, binary.byteLength)) return false;
-          writeDynamicBinary(binary, task[TaskIndex.Start])
-          return true
-        }
         case NumericBuffer: {
           const float64 = (args as NumericBuffer).toFloat64()
           task[TaskIndex.Type] = PayloadBuffer.NumericBuffer
@@ -405,21 +388,6 @@ export const encodePayload = ({
           task[TaskIndex.Type] = PayloadBuffer.DataView;
           if (!reserveDynamic(task, bytes)) return false;
           writeDynamicBinary(new Uint8Array(view.buffer, view.byteOffset, view.byteLength), task[TaskIndex.Start]);
-          return true;
-        }
-        case Error: {
-          const err = args as Error;
-          const payload = stringifyJSON({
-            name: err.name,
-            message: err.message,
-            stack: err.stack ?? "",
-          });
-          const estimatedBytes = payload.length * 3;
-          task[TaskIndex.Type] = PayloadBuffer.Error;
-          if (!reserveDynamic(task, estimatedBytes)) return false;
-          const written = writeDynamicUtf8(payload, task[TaskIndex.Start]);
-          task[TaskIndex.PayloadLen] = written;
-          setSlotLength(task[TaskIndex.slotBuffer], written);
           return true;
         }
         case Date: {
@@ -534,6 +502,19 @@ export const decodePayload = ({
 
 
   const HOST_SIDE = host ?? false
+  const toExactArrayBuffer = (buffer: NodeBuffer): ArrayBuffer => {
+    if (
+      buffer.byteOffset === 0 &&
+      buffer.byteLength === buffer.buffer.byteLength
+    ) {
+      return buffer.buffer as ArrayBuffer;
+    }
+
+    return buffer.buffer.slice(
+      buffer.byteOffset,
+      buffer.byteOffset + buffer.byteLength,
+    ) as ArrayBuffer;
+  };
   
   // TODO: remove slotIndex and make that all their callers
   // store the slot in their Task, to just get it when it comes 
@@ -719,19 +700,6 @@ export const decodePayload = ({
       task.value = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
     return
     }
-    case PayloadBuffer.Error: {
-      const text = readDynamicUtf8(
-        task[TaskIndex.Start],
-        task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
-      )
-      const parsed = parseJSON(text) as { name?: string; message?: string; stack?: string }
-      const err = new Error(parsed.message ?? "")
-      if (parsed.name) err.name = parsed.name
-      if (parsed.stack) err.stack = parsed.stack
-      task.value = err
-      free(task[TaskIndex.slotBuffer])
-    return
-    }
     case PayloadBuffer.Date:
       Uint32View[0] = task[TaskIndex.Start]
       Uint32View[1] = task[TaskIndex.End]
@@ -755,18 +723,22 @@ export const decodePayload = ({
       task.value = readStaticBytesCopy(0, task[TaskIndex.PayloadLen], slotIndex)
     return
     case PayloadBuffer.ArrayBuffer:
-      task.value = readDynamicBytesCopy(
-        task[TaskIndex.Start],
-        task[TaskIndex.Start] + task[TaskIndex.PayloadLen],
-      ).buffer
+      task.value = toExactArrayBuffer(
+        readDynamicBufferCopy(
+          task[TaskIndex.Start],
+          task[TaskIndex.Start] + task[TaskIndex.PayloadLen],
+        ),
+      )
       free(task[TaskIndex.slotBuffer])
     return
     case PayloadBuffer.StaticArrayBuffer:
-      task.value = readStaticBytesCopy(
-        0,
-        task[TaskIndex.PayloadLen],
-        slotIndex,
-      ).buffer
+      task.value = toExactArrayBuffer(
+        readStaticBufferCopy(
+          0,
+          task[TaskIndex.PayloadLen],
+          slotIndex,
+        ),
+      )
     return
     case PayloadBuffer.Buffer:
       task.value = readDynamicBufferCopy(
