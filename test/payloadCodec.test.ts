@@ -1,4 +1,5 @@
 import { assertEquals } from "jsr:@std/assert";
+import { Buffer as NodeBuffer } from "node:buffer";
 import { decodePayload, encodePayload } from "../src/memory/payloadCodec.ts";
 import {
   HEADER_U32_LENGTH,
@@ -196,6 +197,40 @@ Deno.test("dynamic ArrayBuffer payload stores slotBuffer and frees slot 0", () =
 
   assertEquals(task.value instanceof ArrayBuffer, true);
   const out = new Uint8Array(task.value as ArrayBuffer);
+  assertEquals(out[0], 0);
+  assertEquals(out[699], 699 & 0xff);
+  assertEquals(registry.workerBits[0] & 1, 1);
+});
+
+Deno.test("static Buffer payload round-trips with Buffer type", () => {
+  const { encode, decode } = makeCodec();
+  const task = makeTask();
+  task.value = NodeBuffer.from([1, 2, 3, 4, 5]);
+
+  assertEquals(encode(task, 0), true);
+  assertEquals(task[TaskIndex.Type], PayloadBuffer.StaticBuffer);
+
+  decode(task, 0);
+
+  assertEquals(NodeBuffer.isBuffer(task.value), true);
+  assertEquals(Array.from(task.value as NodeBuffer), [1, 2, 3, 4, 5]);
+});
+
+Deno.test("dynamic Buffer payload stores slotBuffer and frees slot 0", () => {
+  const { encode, decode, registry } = makeCodec();
+  const task = makeTask();
+  const src = NodeBuffer.alloc(700);
+  for (let i = 0; i < src.length; i++) src[i] = i & 0xff;
+  task.value = src;
+
+  assertEquals(encode(task, 0), true);
+  assertEquals(task[TaskIndex.Type], PayloadBuffer.Buffer);
+  assertEquals(task[TaskIndex.slotBuffer], 0);
+
+  decode(task, 0);
+
+  assertEquals(NodeBuffer.isBuffer(task.value), true);
+  const out = task.value as NodeBuffer;
   assertEquals(out[0], 0);
   assertEquals(out[699], 699 & 0xff);
   assertEquals(registry.workerBits[0] & 1, 1);

@@ -10,6 +10,7 @@ import {
 import { register } from "./regionRegistry.ts"
 import { createSharedDynamicBufferIO, createSharedStaticBufferIO } from "./createSharedBufferIO.ts"
 import { deserialize, serialize } from "node:v8";
+import { Buffer as NodeBuffer } from "node:buffer";
 import { NumericBuffer } from "../ipc/protocol/parsers/NumericBuffer.ts";
 
 const memory = new ArrayBuffer(8);
@@ -217,6 +218,22 @@ export const encodePayload = ({
       }
 
       switch (args.constructor) {
+        case NodeBuffer: {
+          const bytes = (args as NodeBuffer).byteLength;
+          if (bytes <= staticMaxBytes) {
+            const written = writeStaticBinary(args as NodeBuffer, slotIndex);
+            if (written !== -1) {
+              task[TaskIndex.Type] = PayloadBuffer.StaticBuffer;
+              task[TaskIndex.PayloadLen] = written;
+              return true;
+            }
+          }
+
+          task[TaskIndex.Type] = PayloadBuffer.Buffer;
+          if (!reserveDynamic(task, bytes)) return false;
+          writeDynamicBinary(args as NodeBuffer, task[TaskIndex.Start]);
+          return true;
+        }
         case Uint8Array: {
           const bytes = (args as Uint8Array).byteLength;
           if (bytes <= staticMaxBytes) {
@@ -501,6 +518,7 @@ export const decodePayload = ({
     readUtf8: readDynamicUtf8,
     readBytesCopy: readDynamicBytesCopy,
     readBytesView: readDynamicBytesView,
+    readBytesBufferCopy: readDynamicBufferCopy,
     read8BytesFloatCopy: readDynamic8BytesFloatCopy,
     read8BytesFloatView: readDynamic8BytesFloatView,
   } = createSharedDynamicBufferIO({
@@ -510,6 +528,7 @@ export const decodePayload = ({
     readUtf8: readStaticUtf8,
     readBytesCopy: readStaticBytesCopy,
     readBytesView: readStaticBytesView,
+    readBytesBufferCopy: readStaticBufferCopy,
     read8BytesFloatCopy: readStatic8BytesFloatCopy,
   } = requireStaticIO(headersBuffer);
 
@@ -719,10 +738,17 @@ export const decodePayload = ({
       task.value = new Date(Float64View[0])
     return
     case PayloadBuffer.Binary:
-      task.value = readDynamicBytesCopy(
-        task[TaskIndex.Start],
-        task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
-      )
+      {
+        const buffer = readDynamicBufferCopy(
+          task[TaskIndex.Start],
+          task[TaskIndex.Start] + task[TaskIndex.PayloadLen],
+        )
+        task.value = new Uint8Array(
+          buffer.buffer,
+          buffer.byteOffset,
+          buffer.byteLength,
+        )
+      }
       free(task[TaskIndex.slotBuffer])
     return
     case PayloadBuffer.StaticBinary:
@@ -741,6 +767,16 @@ export const decodePayload = ({
         task[TaskIndex.PayloadLen],
         slotIndex,
       ).buffer
+    return
+    case PayloadBuffer.Buffer:
+      task.value = readDynamicBufferCopy(
+        task[TaskIndex.Start],
+        task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
+      )
+      free(task[TaskIndex.slotBuffer])
+    return
+    case PayloadBuffer.StaticBuffer:
+      task.value = readStaticBufferCopy(0, task[TaskIndex.PayloadLen], slotIndex)
     return
     case PayloadBuffer.Serializable:
       task.value = deserialize(

@@ -3,13 +3,11 @@ import { Buffer as NodeBuffer } from "node:buffer";
 import { LockBound, TaskIndex } from "./lock.ts";
 import {
   HAS_SAB_GROW,
-  IS_DENO,
   createSharedArrayBuffer,
 } from "../common/runtime.ts";
 const page = 1024 * 4;
 
 const textEncode = new TextEncoder();
-const textDecode = new TextDecoder();
 
 enum SignalEnumOptions {
   header = 64,
@@ -37,18 +35,14 @@ export const createSharedDynamicBufferIO = ({
       );
 
   let u8 = new Uint8Array(lockSAB, SignalEnumOptions.header);
-  const useNodeBuffer = !IS_DENO;
-  const makeBufferView = (buffer: SharedArrayBuffer) => {
-    
-    try {
-      const view = NodeBuffer.from(buffer, SignalEnumOptions.header);
-      if (view.buffer !== buffer) return undefined;
-      return view;
-    } catch {
-      return undefined;
+  const requireBufferView = (buffer: SharedArrayBuffer) => {
+    const view = NodeBuffer.from(buffer, SignalEnumOptions.header);
+    if (view.buffer !== buffer) {
+      throw new Error("Buffer view does not alias SharedArrayBuffer");
     }
+    return view;
   };
-  let buf = makeBufferView(lockSAB);
+  let buf = requireBufferView(lockSAB);
   let f64 = new Float64Array(lockSAB, SignalEnumOptions.header);
 
   const capacityBytes = () => lockSAB.byteLength - SignalEnumOptions.header;
@@ -72,7 +66,7 @@ export const createSharedDynamicBufferIO = ({
       SignalEnumOptions.header,
       lockSAB.byteLength - SignalEnumOptions.header,
     );
-    buf = makeBufferView(lockSAB);
+    buf = requireBufferView(lockSAB);
     f64 = new Float64Array(
       lockSAB,
       SignalEnumOptions.header,
@@ -105,6 +99,13 @@ export const createSharedDynamicBufferIO = ({
 
   const readBytesCopy = (start:number, end:number) => u8.slice(start,end);
   const readBytesView = (start:number, end:number) => u8.subarray(start,end);
+  const readBytesBufferCopy = (start: number, end: number) => {
+    const length = Math.max(0, (end - start) | 0);
+    const out = NodeBuffer.allocUnsafe(length);
+    if (length === 0) return out;
+    buf.copy(out, 0, start, end);
+    return out;
+  };
 
   const read8BytesFloatCopy = (start:number, end:number) =>
     f64.slice(start >>> 3, end >>> 3);
@@ -129,6 +130,7 @@ export const createSharedDynamicBufferIO = ({
     write8Binary,
     readBytesCopy,
     readBytesView,
+    readBytesBufferCopy,
     read8BytesFloatCopy,
     read8BytesFloatView,
     writeUtf8,
@@ -161,13 +163,10 @@ export const createSharedStaticBufferIO = ({
   },
   (_,i) => new Uint8Array(headersBuffer, slotStartBytes(i), writableBytes))
 
-  const useNodeBuffer = !IS_DENO;
-  const arrBuffSec = useNodeBuffer
-    ? Array.from(
-      { length: LockBound.slots },
-      (_, i) => NodeBuffer.from(headersBuffer, slotStartBytes(i), writableBytes),
-    )
-    : [];
+  const arrBuffSec = Array.from(
+    { length: LockBound.slots },
+    (_, i) => NodeBuffer.from(headersBuffer, slotStartBytes(i), writableBytes),
+  );
 
   const arrF64Sec = Array.from({
     length: LockBound.slots
@@ -184,15 +183,13 @@ export const createSharedStaticBufferIO = ({
 
 
   const writeUtf8 = (str: string, at:number) => {
-    if (useNodeBuffer) return arrBuffSec[at]!.write(str);
-    const { written, read } = textEncode.encodeInto(str, arrU8Sec[at]);
-    if (read < str.length) return -1;
-    return written;
+    const bytes = NodeBuffer.byteLength(str, "utf8");
+    if (bytes > writableBytes) return -1;
+    return arrBuffSec[at]!.write(str, 0, writableBytes, "utf8");
   };
 
   const readUtf8 = (start: number, end: number,at:number) => {
-    if (useNodeBuffer) return arrBuffSec[at]!.toString("utf8", start, end);
-    return textDecode.decode(arrU8Sec[at].subarray(start, end));
+    return arrBuffSec[at]!.toString("utf8", start, end);
   
   };
 
@@ -214,6 +211,13 @@ export const createSharedStaticBufferIO = ({
     arrU8Sec[at].slice(start,end);
   const readBytesView = (start:number, end:number, at:number) =>
     arrU8Sec[at].subarray(start,end);
+  const readBytesBufferCopy = (start: number, end: number, at: number) => {
+    const length = Math.max(0, (end - start) | 0);
+    const out = NodeBuffer.allocUnsafe(length);
+    if (length === 0) return out;
+    arrBuffSec[at]!.copy(out, 0, start, end);
+    return out;
+  };
 
   const read8BytesFloatCopy = (start:number, end:number, at:number) =>
     arrF64Sec[at].slice(start >>> 3, end >>> 3);
@@ -228,6 +232,7 @@ export const createSharedStaticBufferIO = ({
     write8Binary,
     readBytesCopy,
     readBytesView,
+    readBytesBufferCopy,
     read8BytesFloatCopy,
     read8BytesFloatView,
     maxBytes: writableBytes

@@ -1,4 +1,5 @@
 import { endpointSymbol } from "./common/task-symbol.ts";
+import type { Buffer as NodeBuffer } from "node:buffer";
 type WorkerCall = {
   fnNumber: number;
 };
@@ -61,6 +62,7 @@ type ValidInput =
   | Map<Serializable, Serializable>
   | Set<Serializable>
   | symbol
+  | NodeBuffer
   | ArrayBuffer
   | Uint8Array
   | Int32Array

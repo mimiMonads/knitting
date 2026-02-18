@@ -1,5 +1,7 @@
 import { assert, assertEquals } from "jsr:@std/assert";
 import { createPool } from "../knitting.ts";
+import { genTaskID } from "../src/common/others.ts";
+import { createInlineExecutor } from "../src/runtime/inline-executor.ts";
 import { hello, world } from "./fixtures/hello_world.ts";
 import { laneFlag } from "./fixtures/inliner_threshold.ts";
 
@@ -17,6 +19,60 @@ Deno.test("inliner awaits promise arguments before invoking task", async () => {
     assertEquals(result, "hello  world!");
   } finally {
     await shutdown();
+  }
+});
+
+Deno.test("inliner resolves first dispatch in microtasks", async () => {
+  const { call, shutdown } = createPool({
+    threads: 1,
+    inliner: { position: "first", batchSize: 1 },
+    balancer: "robinRound",
+  })({ hello });
+
+  try {
+    let settled = false;
+    const pending = call.hello().then(() => {
+      settled = true;
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assertEquals(settled, true);
+    await pending;
+  } finally {
+    await shutdown();
+  }
+});
+
+Deno.test("inliner over batch limit yields remaining work to macrotasks", async () => {
+  const inliner = createInlineExecutor({
+    tasks: { hello },
+    genTaskID,
+    batchSize: 1,
+  });
+  const invoke = inliner.call({ fnNumber: 0 });
+
+  try {
+    let firstSettled = false;
+    let secondSettled = false;
+
+    const first = invoke(undefined).then(() => {
+      firstSettled = true;
+    });
+    const second = invoke(undefined).then(() => {
+      secondSettled = true;
+    });
+
+    await Promise.resolve();
+    await Promise.resolve();
+
+    assertEquals(firstSettled, true);
+    assertEquals(secondSettled, false);
+
+    await Promise.all([first, second]);
+  } finally {
+    await inliner.kills();
   }
 });
 

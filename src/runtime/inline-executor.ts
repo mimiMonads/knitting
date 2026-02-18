@@ -128,6 +128,7 @@ export const createInlineExecutor = ({
 
   let working = 0;
   let isInMacro = false;
+  let isInMicro = false;
   const batchLimit = Number.isFinite(batchSize)
     ? Math.max(1, Math.floor(batchSize ?? 1))
     : Number.POSITIVE_INFINITY;
@@ -137,16 +138,25 @@ export const createInlineExecutor = ({
   const port2 = channel.port2;
   const post2 = port2.postMessage.bind(port2);
   const hasPending = () => pendingQueue.isEmpty === false;
+  const queueMicro = typeof queueMicrotask === "function"
+    ? queueMicrotask
+    : (callback: () => void) => Promise.resolve().then(callback);
 
-  const send = () => {
+  const scheduleMacro = () => {
     if (working === 0 || isInMacro) return;
     isInMacro = true;
     post2(null);
   };
 
+  const send = () => {
+    if (working === 0 || isInMacro || isInMicro) return;
+    isInMicro = true;
+    queueMicro(runMicroLoop);
+  };
+
   const enqueue = (index: number) => {
     pendingQueue.push(index);
-    if (!isInMacro) send();
+    send();
   };
 
   const enqueueIfCurrent = (index: number, taskID: number) => {
@@ -202,7 +212,7 @@ export const createInlineExecutor = ({
     return freeStack[--freeTop]!;
   }
 
-  function processLoop() {
+  function processLoop(fromMicro = false) {
     let processed = 0;
     while (processed < batchLimit) {
       const maybeIndex = pendingQueue.shiftNoClear();
@@ -232,11 +242,23 @@ export const createInlineExecutor = ({
     }
 
     if (hasPending()) {
-      post2(null);
+      if (fromMicro) {
+        scheduleMacro();
+      } else {
+        post2(null);
+      }
       return;
     }
 
-    isInMacro = false;
+    if (!fromMicro) {
+      isInMacro = false;
+    }
+  }
+
+  function runMicroLoop() {
+    if (!isInMicro) return;
+    processLoop(true);
+    isInMicro = false;
   }
 
   function cleanup(index: number) {
@@ -278,7 +300,7 @@ export const createInlineExecutor = ({
     return deferred.promise;
   };
   //@ts-ignore
-  port1.onmessage = processLoop;
+  port1.onmessage = () => processLoop(false);
 
   return {
     kills: async () => {
@@ -305,6 +327,7 @@ export const createInlineExecutor = ({
       stateByIndex.fill(SlotStateMacro.Free);
       working = 0;
       isInMacro = false;
+      isInMicro = false;
     },
     call,
     txIdle: () => working === 0,

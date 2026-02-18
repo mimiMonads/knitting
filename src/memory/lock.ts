@@ -51,6 +51,8 @@ export enum PayloadBuffer {
   StaticDataView = 35,
   ArrayBuffer = 36,
   StaticArrayBuffer = 37,
+  Buffer = 38,
+  StaticBuffer = 39,
 }
 
 
