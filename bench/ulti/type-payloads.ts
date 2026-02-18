@@ -15,9 +15,6 @@ export const createSharedTypePayloadCases = () => {
 
   const jsonArr = Array.from({ length: 11 }, (_, i) => ({ id: i, value: i * 2 }));
 
-  const mapPayload = new Map<unknown, unknown>(Object.entries(jsonArr));
-  const setPayload = new Set<unknown>(["x", "y", 1, 2, 3]);
-
   const u8 = new Uint8Array(1024);
   for (let i = 0; i < u8.length; i++) u8[i] = i & 0xff;
 
@@ -36,7 +33,6 @@ export const createSharedTypePayloadCases = () => {
   const dv = new DataView(new ArrayBuffer(1024));
   for (let i = 0; i < 128; i++) dv.setUint32(i * 4, i);
 
-  const err = new Error("bench error");
   const date = new Date(1_700_000_000_000);
   const symbolValue = Symbol.for("knitting.bench");
 
@@ -119,12 +115,6 @@ export const estimatePayloadBytes = (value: unknown): number => {
   if (value instanceof ArrayBuffer) return value.byteLength;
   if (ArrayBuffer.isView(value)) return value.byteLength;
   if (value instanceof Promise) return 0;
-  if (value instanceof Map) {
-    return Buffer.byteLength(JSON.stringify(Array.from(value.entries())), "utf-8");
-  }
-  if (value instanceof Set) {
-    return Buffer.byteLength(JSON.stringify(Array.from(value.values())), "utf-8");
-  }
   if (valueType === "object") {
     try {
       return Buffer.byteLength(JSON.stringify(value), "utf-8");
@@ -139,9 +129,9 @@ export const createPayloadSizeCases = (
   comparableCases: ReadonlyArray<BenchPayloadCase>,
   staticMaxBytes: number,
 ): BenchPayloadCase[] => {
-  const byName = new Map(comparableCases);
   const pick = (name: string) => {
-    const payload = byName.get(name);
+    const found = comparableCases.find(([candidate]) => candidate === name);
+    const payload = found?.[1];
     if (payload === undefined) throw new Error(`Missing payload case: ${name}`);
     return payload;
   };
@@ -149,7 +139,6 @@ export const createPayloadSizeCases = (
   return [
     ["jsonObj", pick("json object")],
     ["jsonArr", pick("json array")],
-    ["mapPayload", pick("map")],
     ["Uint8Array", pick("Uint8Array")],
     ["Int32Array", pick("Int32Array")],
     ["Float64Array", pick("Float64Array")],
