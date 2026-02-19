@@ -1,12 +1,9 @@
 // Generate unique task IDs.
 export const genTaskID = ((counter: number) => () => counter++)(0);
+import { toModuleUrl } from "./module-url.ts";
 
 // Get the current file's path.
 export const currentPath = () => new URL(import.meta.url);
-
-// Bun has a different Offset than Deno and Node
-//@ts-ignore
-const IS_BUN = typeof Bun == "object" && Bun !== null;
 
 const getCallerFilePathForBun = (offset: number) => {
   // @ts-ignore
@@ -24,11 +21,7 @@ const getCallerFilePathForBun = (offset: number) => {
     throw new Error("Unable to determine caller file.");
   }
 
-  try {
-    return new URL(caller).href;
-  } catch {
-    return pathToFileURL(caller).href;
-  }
+  return toModuleUrl(caller);
 };
 
 /**
@@ -54,7 +47,6 @@ export const beat = (): number => Number(hrtime.bigint()) / 1e4;
 
 import { createWriteStream, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 
 export const signalDebuggerV2 = ({
   thread,

@@ -1,5 +1,6 @@
 import type { ComposedWithKey, TaskTimeout } from "../types.ts";
 import { endpointSymbol } from "../common/task-symbol.ts";
+import { toModuleUrl } from "../common/module-url.ts";
 
 type GetFunctionParams = {
   list: string[];
@@ -99,13 +100,7 @@ export const getFunctions = async (
   { list, ids, at }: GetFunctionParams,
 ) => {
 
-  const modules = list.map((string) => {
-    const url = new URL(string).href;
-
-    if (url.includes("://")) return url;
-
-    return "file://" + new URL(string).href;
-  });
+  const modules = list.map((specifier) => toModuleUrl(specifier));
 
   const results = await Promise.all(
     modules.map(async (imports) => {

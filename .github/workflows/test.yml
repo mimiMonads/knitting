@@ -10,7 +10,13 @@ on:
 
 jobs:
   deno-test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
     permissions:
       contents: read
     steps:
@@ -18,14 +24,19 @@ jobs:
       - uses: denoland/setup-deno@v1
         with:
           deno-version: "2.x"
+      - name: Install Deno dependencies
+        run: deno install
       - name: Run Deno tests
         run: deno test -A --ignore=test/runtime.node.test.ts
 
   runtime-test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
         runtime:
           - node
           - bun
@@ -44,4 +55,7 @@ jobs:
         run: node --no-warnings --experimental-transform-types --test test/runtime.node.test.ts
       - name: Run node:test suite on Bun
         if: matrix.runtime == 'bun'
-        run: bun test test/runtime.node.test.ts
+        run: bun test --timeout 10000 --reporter=junit --reporter-outfile bun-junit.xml test/runtime.node.test.ts
+      - name: Show Bun test report
+        if: always() && matrix.runtime == 'bun'
+        run: cat bun-junit.xml

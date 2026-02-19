@@ -1,5 +1,6 @@
 import { getCallerFilePath } from "./common/others.ts";
 import { genTaskID } from "./common/others.ts";
+import { toModuleUrl } from "./common/module-url.ts";
 import { endpointSymbol } from "./common/task-symbol.ts";
 import { spawnWorkerContext } from "./runtime/pool.ts";
 import { isMainThread, workerData } from "node:worker_threads";
@@ -304,7 +305,9 @@ export const task: TaskFactory = <
 ): ReturnFixed<A, B> => {
   const [ href , at] = getCallerFilePath()
 
-  const importedFrom = I?.href ?? new URL(href).href;
+  const importedFrom = I?.href != null
+    ? toModuleUrl(I.href)
+    : new URL(href).href;
 
   const out = ({
     ...I,

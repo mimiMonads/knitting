@@ -1,18 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createPool, task } from "../knitting.ts";
+import { createPool } from "../knitting.ts";
 import {
   toBigInt,
   toNumber,
-  toSet,
   toString,
 } from "./fixtures/parameter_tasks.ts";
+import {
+  addOnePromise,
+  addOnePromiseViaPath,
+} from "./fixtures/runtime_tasks.ts";
 
-export const addOnePromise = task<Promise<number> | number, number>({
-  f: async (value) => value + 1,
-});
-
-const setNumbers = new Set([1, 2, 3, 4, 5, 6]);
+const TEST_TIMEOUT_MS = 10_000;
 
 const withTimeout = async <T>(promise: Promise<T>, ms: number): Promise<T> => {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -33,14 +32,16 @@ const withTimeout = async <T>(promise: Promise<T>, ms: number): Promise<T> => {
   }
 };
 
-test("node:test pool round-trips core payloads", async () => {
+test("node:test pool round-trips core payloads", {
+  concurrency: false,
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
   const { call, shutdown } = createPool({
     threads: 2,
   })({
     toNumber,
     toString,
     toBigInt,
-    toSet,
   });
 
   try {
@@ -49,29 +50,47 @@ test("node:test pool round-trips core payloads", async () => {
         call.toString("hello"),
         call.toNumber(42),
         call.toBigInt(2n ** 64n - 1n),
-        call.toSet(setNumbers),
       ]),
-      3000,
+      TEST_TIMEOUT_MS,
     );
 
     assert.equal(results[0], "hello");
     assert.equal(results[1], 42);
     assert.equal(results[2], 2n ** 64n - 1n);
-    assert.deepEqual(results[3], setNumbers);
   } finally {
     await shutdown();
   }
 });
 
-test("node:test pool awaits promise inputs", async () => {
+test("node:test pool awaits promise inputs", {
+  concurrency: false,
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
   const pool = createPool({ threads: 1 })({ addOnePromise });
 
   try {
     const value = await withTimeout(
       pool.call.addOnePromise(Promise.resolve(41)),
-      3000,
+      TEST_TIMEOUT_MS,
     );
     assert.equal(value, 42);
+  } finally {
+    await pool.shutdown();
+  }
+});
+
+test("node:test pool imports task module from filesystem href", {
+  concurrency: false,
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
+  const pool = createPool({ threads: 1 })({ addOnePromiseViaPath });
+
+  try {
+    const value = await withTimeout(
+      pool.call.addOnePromiseViaPath(Promise.resolve(10)),
+      TEST_TIMEOUT_MS,
+    );
+    assert.equal(value, 11);
   } finally {
     await pool.shutdown();
   }

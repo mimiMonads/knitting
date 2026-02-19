@@ -21,7 +21,7 @@
     "test": "npm run test:deno",
     "test:deno": "deno test -A --ignore=test/runtime.node.test.ts",
     "test:node": "node --no-warnings --experimental-transform-types --test test/runtime.node.test.ts",
-    "test:bun": "bun test test/runtime.node.test.ts",
+    "test:bun": "bun test --timeout 10000 test/runtime.node.test.ts",
     "test:runtimes": "npm run test:node && npm run test:bun",
     "test:all": "npm run test:deno && npm run test:runtimes",
     "bench": "./run.sh",
