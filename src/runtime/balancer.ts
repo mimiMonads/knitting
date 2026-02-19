@@ -30,7 +30,7 @@ const selectStrategy = (
       return firstIdleRandom(contexts)(handlers)(handlers.length);
   }
 
-  // Unreachable code, but just in case uwu
+  // Unreachable code, but guarded for safety.
   throw new Error(`Unknown balancer: ${strategy}`);
 };
 

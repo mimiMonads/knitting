@@ -1,0 +1,47 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  deno-test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v1
+        with:
+          deno-version: "2.x"
+      - name: Run Deno tests
+        run: deno test -A --ignore=test/runtime.node.test.ts
+
+  runtime-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime:
+          - node
+          - bun
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        if: matrix.runtime == 'node'
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@v2
+        if: matrix.runtime == 'bun'
+      - name: Run node:test suite on Node
+        if: matrix.runtime == 'node'
+        run: node --no-warnings --experimental-transform-types --test test/runtime.node.test.ts
+      - name: Run node:test suite on Bun
+        if: matrix.runtime == 'bun'
+        run: bun test test/runtime.node.test.ts

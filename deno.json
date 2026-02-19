@@ -2,7 +2,7 @@
   "name": "@vixeny/knitting",
   "version": "0.1.9",
   "exports": "./knitting.ts",
-  "license": "CC-BY-ND-4.0",
+  "license": "Apache-2.0",
   "publish": {
     "include": [
       "README.md",

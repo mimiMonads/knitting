@@ -316,11 +316,15 @@ const slotOffset = (at: number) =>
     if (free === 0) return 0;
 
   
-    if (!encodeTask(task, uwuIdx = 31 - clz32(free))) return 0;
+    if (!encodeTask(task, selectedSlotIndex = 31 - clz32(free))) return 0;
 
     
-    encodeAt(task, uwuIdx, uwuBit = 1 << uwuIdx);
-    return uwuBit;
+    encodeAt(
+      task,
+      selectedSlotIndex,
+      selectedSlotBit = 1 << selectedSlotIndex,
+    );
+    return selectedSlotBit;
   };
 
   const encodeManyFrom = (list: RingQueue<Task>): number => {
@@ -367,7 +371,7 @@ const slotOffset = (at: number) =>
     return toBeSent.isEmpty;
   };
 
-  let uwuIdx = 0 | 0, uwuBit = 0 >>> 0
+  let selectedSlotIndex = 0 | 0, selectedSlotBit = 0 >>> 0
 
   const storeHost = (bit: number) =>
     a_store(hostBits, 0, LastLocal = (LastLocal ^ bit) | 0);
@@ -381,10 +385,14 @@ const slotOffset = (at: number) =>
     if (free === 0) return false;
 
 
-    if (!encodeTask(task, uwuIdx = 31 - clz32(free))) return false;
+    if (!encodeTask(task, selectedSlotIndex = 31 - clz32(free))) return false;
 
    
-    return encodeAt(task, uwuIdx, uwuBit = 1 << uwuIdx);
+    return encodeAt(
+      task,
+      selectedSlotIndex,
+      selectedSlotBit = 1 << selectedSlotIndex,
+    );
 
   
   };
@@ -425,20 +433,20 @@ const slotOffset = (at: number) =>
     try {
       if (last === 32) {
         
-        decodeAt(uwuIdx = 31 - clz32(diff));
-        uwuBit = 1 << (last = uwuIdx);
-        diff ^= uwuBit;
-        consumedBits = (consumedBits ^ uwuBit) | 0;
+        decodeAt(selectedSlotIndex = 31 - clz32(diff));
+        selectedSlotBit = 1 << (last = selectedSlotIndex);
+        diff ^= selectedSlotBit;
+        consumedBits = (consumedBits ^ selectedSlotBit) | 0;
       }
   
       while (diff !== 0) {
         let pick = diff & ((1 << last) - 1) ;
         if (pick === 0) pick = diff;
        
-        decodeAt(uwuIdx = 31 - clz32(pick));
-        uwuBit = 1 << (last = uwuIdx);
-        diff ^= uwuBit;
-        consumedBits = (consumedBits ^ uwuBit) | 0;
+        decodeAt(selectedSlotIndex = 31 - clz32(pick));
+        selectedSlotBit = 1 << (last = selectedSlotIndex);
+        diff ^= selectedSlotBit;
+        consumedBits = (consumedBits ^ selectedSlotBit) | 0;
       }
     } finally {
       if (consumedBits !== 0) storeWorker(consumedBits);
@@ -479,18 +487,18 @@ const slotOffset = (at: number) =>
 
     if (last === 32) {
       const idx = 31 - clz32(diff);
-      const uwubit = 1 << idx;
+      const selectedBit = 1 << idx;
 
       const task = getTask(headersBuffer, idx);
       decodeTask(task, idx);
 
-      consumedBits = (consumedBits ^ uwubit) | 0;
+      consumedBits = (consumedBits ^ selectedBit) | 0;
       settleTask(task);
       if(HAS_RESOLVE){
         onResolved!(task)
       }
 
-      diff ^= uwubit;
+      diff ^= selectedBit;
       modified++;
       if ((modified & 7) === 0 && consumedBits !== 0) {
         LastWorker = (LastWorker ^ consumedBits) | 0;
@@ -505,18 +513,18 @@ const slotOffset = (at: number) =>
       let pick = diff & lowerMask;
       if (pick === 0) pick = diff;
       const idx = 31 - clz32(pick);
-      const uwubit = 1 << idx;
+      const selectedBit = 1 << idx;
 
       const task = getTask(headersBuffer, idx);
       decodeTask(task, idx);
 
-      consumedBits = (consumedBits ^ uwubit) | 0;
+      consumedBits = (consumedBits ^ selectedBit) | 0;
       settleTask(task);
       if(HAS_RESOLVE){
         onResolved!(task)
       }
 
-      diff ^= uwubit;
+      diff ^= selectedBit;
       modified++;
       if ((modified & 7) === 0 && consumedBits !== 0) {
         LastWorker = (LastWorker ^ consumedBits) | 0;

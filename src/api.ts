@@ -109,28 +109,31 @@ export const createPool: CreatePoolFactory = ({
         ),
       );
     }
-    const uwuError = () => {
+    const notMainThreadError = () => {
       throw new Error(
         "createPool can only be called in the main thread.",
       );
     };
 
-    const base = function () {
-      return uwuError();
+    const throwingProxyTarget = function () {
+      return notMainThreadError();
     };
 
-    const handler = {
+    const throwingProxyHandler = {
       get: function () {
-        return uwuError;
+        return notMainThreadError;
       },
     };
 
-    const uwu = new Proxy(base, handler);
+    const mainThreadOnlyProxy = new Proxy(
+      throwingProxyTarget,
+      throwingProxyHandler,
+    );
 
     //@ts-ignore
     return ({
-      shutdown: uwu,
-      call: uwu,
+      shutdown: mainThreadOnlyProxy,
+      call: mainThreadOnlyProxy,
     } as Pool<T>);
   }
 

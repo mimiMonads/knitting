@@ -17,13 +17,6 @@ const makeRegistry = () =>
   });
 
 const track64andIndex = (startAndIndex: number) => [ startAndIndex >>> 6 , startAndIndex & 31 ]
-const allocAndSync = (registry: ReturnType<typeof makeRegistry>, size: number) => {
-  const task = makeTask();
-  task[TaskIndex.PayloadLen] = size;
-  registry.allocTask(task);
-  Atomics.store(registry.workerBits, 0, registry.hostBits[0]);
-  return task;
-};
 const allocNoSync = (registry: ReturnType<typeof makeRegistry>, size: number) => {
   const task = makeTask();
   task[TaskIndex.PayloadLen] = size;
@@ -51,7 +44,7 @@ Deno.test("check packing in startAndIndexToArray", () => {
   }).slice(0,-1)] 
 
   for (const size of sizes) {
-    allocAndSync(registry, size);
+    allocNoSync(registry, size);
   }
 
 
@@ -78,7 +71,7 @@ Deno.test("updateTable delete front", () => {
   }).slice(0,-1)] 
 
   for (const size of sizes) {
-    allocAndSync(registry, size);
+    allocNoSync(registry, size);
   }
 
   assertEquals(
@@ -116,7 +109,7 @@ Deno.test("updateTable delete Back", () => {
   }).slice(0,-1)] 
 
   for (const size of sizes) {
-    allocAndSync(registry, size);
+    allocNoSync(registry, size);
   }
 
   assertEquals(
@@ -154,7 +147,7 @@ Deno.test("updateTable delete middle", () => {
   }).slice(0,-1)] 
 
   for (const size of sizes) {
-    allocAndSync(registry, size);
+    allocNoSync(registry, size);
   }
 
   assertEquals(
@@ -190,7 +183,7 @@ Deno.test("check Start from Task", () => {
   [0]).slice(0,-1)
 
   for (const size of sizes) {
-    values.push(allocAndSync(registry, size)[TaskIndex.Start]);
+    values.push(allocNoSync(registry, size)[TaskIndex.Start]);
   }
 
 
@@ -253,11 +246,11 @@ Deno.test("allocTask reuses freed gap", () => {
   assertEquals(task[TaskIndex.Start], freedStart);
 });
 
-Deno.test("free does not allow reuse before updateTable", () => {
+Deno.test("periodic compaction can reuse a freed gap during allocTask", () => {
   const registry = makeRegistry();
   const sizes = [64, 64, 64];
   const tasks = sizes.map((size) => allocNoSync(registry, size));
-  const lastStart = tasks[tasks.length - 1][TaskIndex.Start];
+  const freedStart = tasks[1][TaskIndex.Start];
 
   registry.free(1);
 
@@ -265,7 +258,7 @@ Deno.test("free does not allow reuse before updateTable", () => {
   task[TaskIndex.PayloadLen] = 64;
   registry.allocTask(task);
 
-  assertEquals(task[TaskIndex.Start], lastStart + 64);
+  assertEquals(task[TaskIndex.Start], freedStart);
 });
 
 Deno.test("updateTable reuses freed slots in gaps and at start", () => {

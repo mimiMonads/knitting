@@ -1,21 +1,43 @@
 {
-  "devDependencies": {
-    "@types/node": "latest",
-    "@types/bun": "latest",
-    "@types/deno": "latest"
-  },
-  "name": "knitting",
-  "module": "index.ts",
-  "license": "SEE LICENSE IN LICENSE",
+  "name": "@vixeny/knitting",
+  "version": "0.1.9",
+  "description": "Shared-memory worker pool for Node.js, Deno, and Bun.",
+  "license": "Apache-2.0",
   "type": "module",
+  "main": "./knitting.ts",
+  "module": "./knitting.ts",
+  "types": "./knitting.ts",
+  "exports": {
+    ".": "./knitting.ts"
+  },
+  "files": [
+    "README.md",
+    "src/**/*.ts",
+    "knitting.ts"
+  ],
   "scripts": {
-    "toNode": "bun build main.ts --outdir  dest   --target node"
+    "build": "bun run build.ts",
+    "build:node": "bun build knitting.ts --outdir dest --target node --format esm",
+    "test": "npm run test:deno",
+    "test:deno": "deno test -A --ignore=test/runtime.node.test.ts",
+    "test:node": "node --no-warnings --experimental-transform-types --test test/runtime.node.test.ts",
+    "test:bun": "bun test test/runtime.node.test.ts",
+    "test:runtimes": "npm run test:node && npm run test:bun",
+    "test:all": "npm run test:deno && npm run test:runtimes",
+    "bench": "./run.sh",
+    "bench:json": "./run.sh --json"
   },
   "engines": {
     "node": ">=22.0.0",
-    "deno": ">=2.0.0"
+    "deno": ">=2.0.0",
+    "bun": ">=1.0.0"
   },
   "peerDependencies": {
     "typescript": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/deno": "latest",
+    "@types/node": "latest"
   }
 }

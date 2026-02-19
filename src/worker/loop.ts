@@ -97,7 +97,7 @@ const pauseSpin = (() => {
     console.log(workerData.list);
     console.log(workerData.ids);
     console.log(listOfFunctions);
-    throw "no imports where found uwu";
+    throw "No imports were found.";
   }
 
   const {
