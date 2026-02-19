@@ -1,4 +1,5 @@
 # knitting
+[![Coverage](https://github.com/mimiMonads/knitting/actions/workflows/coverage.yml/badge.svg?branch=main)](https://github.com/mimiMonads/knitting/actions/workflows/coverage.yml)
 
 Shared-memory worker pool for Node.js, Deno, and Bun. Define tasks once, then
 call them from the main thread with a small, typed API.

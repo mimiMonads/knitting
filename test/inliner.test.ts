@@ -1,11 +1,16 @@
-import { assert, assertEquals } from "jsr:@std/assert";
+import assert from "node:assert/strict";
+import test from "node:test";
+const assertEquals: (actual: unknown, expected: unknown) => void =
+  (actual, expected) => {
+    assert.deepStrictEqual(actual, expected);
+  };
 import { createPool } from "../knitting.ts";
 import { genTaskID } from "../src/common/others.ts";
 import { createInlineExecutor } from "../src/runtime/inline-executor.ts";
 import { hello, world } from "./fixtures/hello_world.ts";
 import { laneFlag } from "./fixtures/inliner_threshold.ts";
 
-Deno.test("inliner awaits promise arguments before invoking task", async () => {
+test("inliner awaits promise arguments before invoking task", async () => {
   const { call, shutdown } = createPool({
     threads: 1,
     inliner: { position: "last" },
@@ -22,7 +27,7 @@ Deno.test("inliner awaits promise arguments before invoking task", async () => {
   }
 });
 
-Deno.test("inliner resolves first dispatch in microtasks", async () => {
+test("inliner resolves first dispatch in microtasks", async () => {
   const { call, shutdown } = createPool({
     threads: 1,
     inliner: { position: "first", batchSize: 1 },
@@ -45,7 +50,7 @@ Deno.test("inliner resolves first dispatch in microtasks", async () => {
   }
 });
 
-Deno.test("inliner over batch limit yields remaining work to macrotasks", async () => {
+test("inliner over batch limit yields remaining work to macrotasks", async () => {
   const inliner = createInlineExecutor({
     tasks: { hello },
     genTaskID,
@@ -76,7 +81,7 @@ Deno.test("inliner over batch limit yields remaining work to macrotasks", async 
   }
 });
 
-Deno.test("shutdown rejects pending inliner calls", async () => {
+test("shutdown rejects pending inliner calls", async () => {
   const { call, shutdown } = createPool({
     threads: 1,
     inliner: { position: "first" },
@@ -103,7 +108,7 @@ Deno.test("shutdown rejects pending inliner calls", async () => {
   assertEquals(status, "rejected");
 });
 
-Deno.test("inliner.dispatchThreshold keeps inline lane idle below threshold", async () => {
+test("inliner.dispatchThreshold keeps inline lane idle below threshold", async () => {
   const { call, shutdown } = createPool({
     threads: 1,
     balancer: "robinRound",
@@ -124,7 +129,7 @@ Deno.test("inliner.dispatchThreshold keeps inline lane idle below threshold", as
   }
 });
 
-Deno.test("inliner.dispatchThreshold allows inline lane once threshold is reached", async () => {
+test("inliner.dispatchThreshold allows inline lane once threshold is reached", async () => {
   const { call, shutdown } = createPool({
     threads: 1,
     balancer: "robinRound",

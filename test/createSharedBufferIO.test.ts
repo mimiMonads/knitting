@@ -1,4 +1,9 @@
-import { assertEquals } from "jsr:@std/assert";
+import assert from "node:assert/strict";
+import test from "node:test";
+const assertEquals: (actual: unknown, expected: unknown) => void =
+  (actual, expected) => {
+    assert.deepStrictEqual(actual, expected);
+  };
 import {
   createSharedDynamicBufferIO,
   createSharedStaticBufferIO,
@@ -18,7 +23,7 @@ const makeHeaders = () =>
       ((LockBound.slots * TaskIndex.TotalBuff)) * LockBound.slots,
   );
 
-Deno.test("writeBinary grows and reads back", () => {
+test("writeBinary grows and reads back", () => {
   const sab = makeSab(8);
   const io = createSharedDynamicBufferIO({ sab });
   const data = new Uint8Array(2048);
@@ -34,7 +39,7 @@ Deno.test("writeBinary grows and reads back", () => {
   assertEquals(Array.from(io.readBytesView(0, written)), Array.from(data));
 });
 
-Deno.test("writeUtf8 grows when buffer is too small", () => {
+test("writeUtf8 grows when buffer is too small", () => {
   const sab = makeSab(4);
   const io = createSharedDynamicBufferIO({ sab });
   const text = "hello-world-hello-world-hello-world";
@@ -47,7 +52,7 @@ Deno.test("writeUtf8 grows when buffer is too small", () => {
   assertEquals(sab.byteLength >= header + encoded.byteLength, true);
 });
 
-Deno.test("write8Binary writes Float64 values", () => {
+test("write8Binary writes Float64 values", () => {
   const sab = makeSab(8);
   const io = createSharedDynamicBufferIO({ sab });
   const values = new Float64Array([1.25, -2, 3.5]);
@@ -59,7 +64,7 @@ Deno.test("write8Binary writes Float64 values", () => {
   assertEquals(Array.from(readBack), Array.from(values));
 });
 
-Deno.test("writeBinary respects start offset and preserves earlier bytes", () => {
+test("writeBinary respects start offset and preserves earlier bytes", () => {
   const sab = makeSab(32);
   const io = createSharedDynamicBufferIO({ sab });
   const first = new Uint8Array([1, 2, 3, 4]);
@@ -72,7 +77,7 @@ Deno.test("writeBinary respects start offset and preserves earlier bytes", () =>
   assertEquals(Array.from(io.readBytesCopy(8, 10)), Array.from(second));
 });
 
-Deno.test("writeUtf8 does not grow when buffer is large enough", () => {
+test("writeUtf8 does not grow when buffer is large enough", () => {
   const sab = makeSab(64);
   const io = createSharedDynamicBufferIO({ sab });
   const text = "short-text";
@@ -86,7 +91,7 @@ Deno.test("writeUtf8 does not grow when buffer is large enough", () => {
   assertEquals(sab.byteLength, before);
 });
 
-Deno.test("readBytesCopy is isolated and readBytesView reflects writes", () => {
+test("readBytesCopy is isolated and readBytesView reflects writes", () => {
   const sab = makeSab(32);
   const io = createSharedDynamicBufferIO({ sab });
   const initial = new Uint8Array([7, 8, 9, 10]);
@@ -101,7 +106,7 @@ Deno.test("readBytesCopy is isolated and readBytesView reflects writes", () => {
   assertEquals(Array.from(view), [1, 2, 3, 4]);
 });
 
-Deno.test("read8BytesFloat copy and view have expected semantics", () => {
+test("read8BytesFloat copy and view have expected semantics", () => {
   const sab = makeSab(64);
   const io = createSharedDynamicBufferIO({ sab });
   const initial = new Float64Array([0.5, -1.5, 2.25]);
@@ -116,7 +121,7 @@ Deno.test("read8BytesFloat copy and view have expected semantics", () => {
   assertEquals(Array.from(view), [3.25, 4.5, -6]);
 });
 
-Deno.test("static writeUtf8 preserves task header and reads back", () => {
+test("static writeUtf8 preserves task header and reads back", () => {
   const headersBuffer = makeHeaders();
   const io = createSharedStaticBufferIO({ headersBuffer });
   const headersU32 = new Uint32Array(headersBuffer);
@@ -139,7 +144,7 @@ Deno.test("static writeUtf8 preserves task header and reads back", () => {
   assertEquals(io.readUtf8(0, written, slot), text);
 });
 
-Deno.test("static writeUtf8 returns -1 when it does not fit", () => {
+test("static writeUtf8 returns -1 when it does not fit", () => {
   const headersBuffer = makeHeaders();
   const io = createSharedStaticBufferIO({ headersBuffer });
   const writableBytes =
@@ -151,7 +156,7 @@ Deno.test("static writeUtf8 returns -1 when it does not fit", () => {
   assertEquals(written, -1);
 });
 
-Deno.test("static binary and float IO roundtrip", () => {
+test("static binary and float IO roundtrip", () => {
   const headersBuffer = makeHeaders();
   const io = createSharedStaticBufferIO({ headersBuffer });
   const slot = 0;

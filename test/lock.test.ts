@@ -1,4 +1,9 @@
-import { assert, assertEquals } from "jsr:@std/assert";
+import assert from "node:assert/strict";
+import test from "node:test";
+const assertEquals: (actual: unknown, expected: unknown) => void =
+  (actual, expected) => {
+    assert.deepStrictEqual(actual, expected);
+  };
 import RingQueue from "../src/ipc/tools/RingQueue.ts";
 import {
   HEADER_BYTE_LENGTH,
@@ -22,7 +27,7 @@ const makeValueTask = (value: unknown) => {
   return task;
 };
 
-Deno.test("encode/decode roundtrip values", () => {
+test("encode/decode roundtrip values", () => {
   const { lock } = makeLock();
   const values = [123, -45.5, true, false, 9n, Infinity, -Infinity, NaN, undefined];
 
@@ -45,7 +50,7 @@ Deno.test("encode/decode roundtrip values", () => {
   }
 });
 
-Deno.test("encode/decode roundtrip string", () => {
+test("encode/decode roundtrip string", () => {
   const { lock } = makeLock();
   const value = "hello from lock";
 
@@ -58,12 +63,12 @@ Deno.test("encode/decode roundtrip string", () => {
   assertEquals(decoded[0].value, value);
 });
 
-Deno.test("decode is no-op with no new slots", () => {
+test("decode is no-op with no new slots", () => {
   const { lock } = makeLock();
   assertEquals(lock.decode(), false);
 });
 
-Deno.test("encode stops when full", () => {
+test("encode stops when full", () => {
   const { lock } = makeLock();
 
   for (let i = 0; i < LockBound.slots; i++) {
@@ -74,7 +79,7 @@ Deno.test("encode stops when full", () => {
   assertEquals(lock.hostBits[0] >>> 0, 0xFFFFFFFF);
 });
 
-Deno.test("encodeAll leaves remaining task when full", () => {
+test("encodeAll leaves remaining task when full", () => {
   const { lock, toBeSent } = makeLock();
   const tasks = Array.from(
     { length: LockBound.slots + 1 },
@@ -88,7 +93,7 @@ Deno.test("encodeAll leaves remaining task when full", () => {
   assertEquals(toBeSent.peek(), tasks[tasks.length - 1]);
 });
 
-Deno.test("decode syncs worker bits", () => {
+test("decode syncs worker bits", () => {
   const { lock } = makeLock();
 
   lock.encode(makeValueTask(1));
@@ -99,7 +104,7 @@ Deno.test("decode syncs worker bits", () => {
   assertEquals(lock.decode(), false);
 });
 
-Deno.test("resolveHost decodes into queue and acks worker bits", () => {
+test("resolveHost decodes into queue and acks worker bits", () => {
   const lockSector = new SharedArrayBuffer(
     LOCK_SECTOR_BYTE_LENGTH,
   );

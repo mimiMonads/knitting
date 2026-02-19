@@ -1,0 +1,36 @@
+name: Coverage
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  node-coverage:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Run Node coverage (>= 90% lines)
+        run: npm run coverage:node:90 | tee coverage-node.txt
+      - name: Coverage summary
+        run: |
+          LINE=$(grep -E "all files[[:space:]]*\\|" coverage-node.txt | tail -1 || true)
+          echo "### Node Coverage (>=90% lines)" >> "$GITHUB_STEP_SUMMARY"
+          if [ -n "$LINE" ]; then
+            echo "\`$LINE\`" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Coverage line not found in output." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload coverage output
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-coverage-output
+          path: coverage-node.txt

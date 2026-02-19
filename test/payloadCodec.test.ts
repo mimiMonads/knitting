@@ -1,4 +1,9 @@
-import { assertEquals } from "jsr:@std/assert";
+import assert from "node:assert/strict";
+import test from "node:test";
+const assertEquals: (actual: unknown, expected: unknown) => void =
+  (actual, expected) => {
+    assert.deepStrictEqual(actual, expected);
+  };
 import { Buffer as NodeBuffer } from "node:buffer";
 import { serialize } from "node:v8";
 import { decodePayload, encodePayload } from "../src/memory/payloadCodec.ts";
@@ -30,7 +35,7 @@ const makeCodec = (onPromise?: PromisePayloadHandler) => {
   };
 };
 
-Deno.test("dynamic string payload stores slotBuffer and frees slot 0", () => {
+test("dynamic string payload stores slotBuffer and frees slot 0", () => {
   const { encode, decode, registry } = makeCodec();
   const task = makeTask();
   task.value = "x".repeat(700);
@@ -44,7 +49,7 @@ Deno.test("dynamic string payload stores slotBuffer and frees slot 0", () => {
   assertEquals(registry.workerBits[0] & 1, 1);
 });
 
-Deno.test("dynamic string payloads use distinct slotBuffer values", () => {
+test("dynamic string payloads use distinct slotBuffer values", () => {
   const { encode, decode, registry } = makeCodec();
   const first = makeTask();
   const second = makeTask();
@@ -64,7 +69,7 @@ Deno.test("dynamic string payloads use distinct slotBuffer values", () => {
   assertEquals(registry.workerBits[0] & 3, 3);
 });
 
-Deno.test("dynamic string uses written bytes for next dynamic allocation", () => {
+test("dynamic string uses written bytes for next dynamic allocation", () => {
   const { encode } = makeCodec();
   const first = makeTask();
   const second = makeTask();
@@ -80,7 +85,7 @@ Deno.test("dynamic string uses written bytes for next dynamic allocation", () =>
   assertEquals(second[TaskIndex.Start], align64(700));
 });
 
-Deno.test("dynamic object JSON uses written bytes for next dynamic allocation", () => {
+test("dynamic object JSON uses written bytes for next dynamic allocation", () => {
   const { encode } = makeCodec();
   const first = makeTask();
   const second = makeTask();
@@ -101,7 +106,7 @@ Deno.test("dynamic object JSON uses written bytes for next dynamic allocation", 
   assertEquals(second[TaskIndex.Start], align64(first[TaskIndex.PayloadLen]));
 });
 
-Deno.test("dynamic array JSON uses written bytes for next dynamic allocation", () => {
+test("dynamic array JSON uses written bytes for next dynamic allocation", () => {
   const { encode } = makeCodec();
   const first = makeTask();
   const second = makeTask();
@@ -122,7 +127,7 @@ Deno.test("dynamic array JSON uses written bytes for next dynamic allocation", (
   assertEquals(second[TaskIndex.Start], align64(first[TaskIndex.PayloadLen]));
 });
 
-Deno.test("dynamic symbol uses written bytes for next dynamic allocation", () => {
+test("dynamic symbol uses written bytes for next dynamic allocation", () => {
   const { encode } = makeCodec();
   const first = makeTask();
   const second = makeTask();
@@ -139,7 +144,7 @@ Deno.test("dynamic symbol uses written bytes for next dynamic allocation", () =>
   assertEquals(second[TaskIndex.Start], align64(first[TaskIndex.PayloadLen]));
 });
 
-Deno.test("dynamic error uses written bytes for next dynamic allocation", () => {
+test("dynamic error uses written bytes for next dynamic allocation", () => {
   const { encode } = makeCodec();
   const first = makeTask();
   const second = makeTask();
@@ -162,7 +167,7 @@ Deno.test("dynamic error uses written bytes for next dynamic allocation", () => 
   assertEquals(second[TaskIndex.Start], align64(first[TaskIndex.PayloadLen]));
 });
 
-Deno.test("map payload uses serializable path", () => {
+test("map payload uses serializable path", () => {
   const { encode, decode } = makeCodec();
   const task = makeTask();
   const input = new Map([["x".repeat(700), 1]]);
@@ -180,7 +185,7 @@ Deno.test("map payload uses serializable path", () => {
   assertEquals((task.value as Map<string, number>).get("x".repeat(700)), 1);
 });
 
-Deno.test("set payload uses serializable path", () => {
+test("set payload uses serializable path", () => {
   const { encode, decode } = makeCodec();
   const task = makeTask();
   const input = new Set(["x".repeat(700)]);
@@ -198,7 +203,7 @@ Deno.test("set payload uses serializable path", () => {
   assertEquals((task.value as Set<string>).has("x".repeat(700)), true);
 });
 
-Deno.test("static ArrayBuffer payload round-trips with ArrayBuffer type", () => {
+test("static ArrayBuffer payload round-trips with ArrayBuffer type", () => {
   const { encode, decode } = makeCodec();
   const task = makeTask();
   task.value = new Uint8Array([1, 2, 3, 4, 5]).buffer;
@@ -212,7 +217,7 @@ Deno.test("static ArrayBuffer payload round-trips with ArrayBuffer type", () => 
   assertEquals(Array.from(new Uint8Array(task.value as ArrayBuffer)), [1, 2, 3, 4, 5]);
 });
 
-Deno.test("dynamic ArrayBuffer payload stores slotBuffer and frees slot 0", () => {
+test("dynamic ArrayBuffer payload stores slotBuffer and frees slot 0", () => {
   const { encode, decode, registry } = makeCodec();
   const task = makeTask();
   const src = new Uint8Array(700);
@@ -232,7 +237,7 @@ Deno.test("dynamic ArrayBuffer payload stores slotBuffer and frees slot 0", () =
   assertEquals(registry.workerBits[0] & 1, 1);
 });
 
-Deno.test("static Buffer payload round-trips with Buffer type", () => {
+test("static Buffer payload round-trips with Buffer type", () => {
   const { encode, decode } = makeCodec();
   const task = makeTask();
   task.value = NodeBuffer.from([1, 2, 3, 4, 5]);
@@ -246,7 +251,7 @@ Deno.test("static Buffer payload round-trips with Buffer type", () => {
   assertEquals(Array.from(task.value as NodeBuffer), [1, 2, 3, 4, 5]);
 });
 
-Deno.test("dynamic Buffer payload stores slotBuffer and frees slot 0", () => {
+test("dynamic Buffer payload stores slotBuffer and frees slot 0", () => {
   const { encode, decode, registry } = makeCodec();
   const task = makeTask();
   const src = NodeBuffer.alloc(700);
@@ -266,7 +271,7 @@ Deno.test("dynamic Buffer payload stores slotBuffer and frees slot 0", () => {
   assertEquals(registry.workerBits[0] & 1, 1);
 });
 
-Deno.test("non-buffer payloads do not modify slotBuffer", () => {
+test("non-buffer payloads do not modify slotBuffer", () => {
   const { encode } = makeCodec();
   const task = makeTask();
 
@@ -277,7 +282,7 @@ Deno.test("non-buffer payloads do not modify slotBuffer", () => {
   assertEquals(task[TaskIndex.slotBuffer], 7);
 });
 
-Deno.test("promise payload resolves before encoding", async () => {
+test("promise payload resolves before encoding", async () => {
   let result: Parameters<PromisePayloadHandler>[1] | undefined;
   const { encode } = makeCodec((_, payload) => {
     result = payload;
@@ -298,7 +303,7 @@ Deno.test("promise payload resolves before encoding", async () => {
   assertEquals(task.value, 42);
 });
 
-Deno.test("promise payload rejects before encoding", async () => {
+test("promise payload rejects before encoding", async () => {
   let result: Parameters<PromisePayloadHandler>[1] | undefined;
   const { encode } = makeCodec((_, payload) => {
     result = payload;

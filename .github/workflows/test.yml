@@ -52,10 +52,10 @@ jobs:
         if: matrix.runtime == 'bun'
       - name: Run node:test suite on Node
         if: matrix.runtime == 'node'
-        run: node --no-warnings --experimental-transform-types --test test/runtime.node.test.ts
+        run: node --no-warnings --experimental-transform-types --test test/*.test.ts
       - name: Run node:test suite on Bun
         if: matrix.runtime == 'bun'
-        run: bun test --timeout 10000 --reporter=junit --reporter-outfile bun-junit.xml test/runtime.node.test.ts
+        run: bun test --timeout 10000 --reporter=junit --reporter-outfile bun-junit.xml test/*.test.ts
       - name: Show Bun test report
         if: always() && matrix.runtime == 'bun'
         run: cat bun-junit.xml

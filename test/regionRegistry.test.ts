@@ -1,4 +1,9 @@
-import { assertEquals } from "jsr:@std/assert";
+import assert from "node:assert/strict";
+import test from "node:test";
+const assertEquals: (actual: unknown, expected: unknown) => void =
+  (actual, expected) => {
+    assert.deepStrictEqual(actual, expected);
+  };
 import { register } from "../src/memory/regionRegistry.ts";
 import {
   LOCK_SECTOR_BYTE_LENGTH,
@@ -7,8 +12,6 @@ import {
 } from "../src/memory/lock.ts";
 
 
-
-// AI Written needs review
 const align64 = (n: number) => (n + 63) & ~63;
 
 const makeRegistry = () =>
@@ -32,7 +35,7 @@ const expectedStartAndIndex = (sizes: number[]) =>
 
 
 
-Deno.test("check packing in startAndIndexToArray", () => {
+test("check packing in startAndIndexToArray", () => {
   const registry = makeRegistry();
   const sizes = [634, 43 , 152 , 54];
 
@@ -58,7 +61,7 @@ Deno.test("check packing in startAndIndexToArray", () => {
  
 });
 
-Deno.test("updateTable delete front", () => {
+test("updateTable delete front", () => {
   const registry = makeRegistry();
   const sizes = [634, 64 , 64 , 64, 64 , 64];
   const toBeDeletedFront = 2
@@ -96,7 +99,7 @@ Deno.test("updateTable delete front", () => {
 });
 
 
-Deno.test("updateTable delete Back", () => {
+test("updateTable delete Back", () => {
   const registry = makeRegistry();
   const sizes = [64, 64 , 64 , 64, 64 , 64];
   const toBeDeletedBack = 2
@@ -134,7 +137,7 @@ Deno.test("updateTable delete Back", () => {
 });
 
 
-Deno.test("updateTable delete middle", () => {
+test("updateTable delete middle", () => {
   const registry = makeRegistry();
   const sizes = [64, 64 , 64 , 64, 64 , 64];
   const toBeDeletedBack = 2
@@ -171,7 +174,7 @@ Deno.test("updateTable delete middle", () => {
       );
 });
 
-Deno.test("check Start from Task", () => {
+test("check Start from Task", () => {
   const registry = makeRegistry();
   const sizes = [64, 453 , 64 , 64];
   const values = []
@@ -192,7 +195,7 @@ Deno.test("check Start from Task", () => {
  
 });
 
-Deno.test("packing boundary at payload size 63", () => {
+test("packing boundary at payload size 63", () => {
   const registry = makeRegistry();
   const sizes = [63, 1];
 
@@ -208,7 +211,7 @@ Deno.test("packing boundary at payload size 63", () => {
       );
 });
 
-Deno.test("updateTable clears freed index >= 5", () => {
+test("updateTable clears freed index >= 5", () => {
   const registry = makeRegistry();
   const sizes = Array.from({ length: 7 }, () => 64);
 
@@ -230,7 +233,7 @@ Deno.test("updateTable clears freed index >= 5", () => {
       );
 });
 
-Deno.test("allocTask reuses freed gap", () => {
+test("allocTask reuses freed gap", () => {
   const registry = makeRegistry();
   const sizes = [64, 64, 64];
   const tasks = sizes.map((size) => allocNoSync(registry, size));
@@ -246,7 +249,7 @@ Deno.test("allocTask reuses freed gap", () => {
   assertEquals(task[TaskIndex.Start], freedStart);
 });
 
-Deno.test("periodic compaction can reuse a freed gap during allocTask", () => {
+test("periodic compaction can reuse a freed gap during allocTask", () => {
   const registry = makeRegistry();
   const sizes = [64, 64, 64];
   const tasks = sizes.map((size) => allocNoSync(registry, size));
@@ -261,7 +264,7 @@ Deno.test("periodic compaction can reuse a freed gap during allocTask", () => {
   assertEquals(task[TaskIndex.Start], freedStart);
 });
 
-Deno.test("updateTable reuses freed slots in gaps and at start", () => {
+test("updateTable reuses freed slots in gaps and at start", () => {
   const registry = makeRegistry();
   const tasks = [64, 64, 64, 64].map((size) => allocNoSync(registry, size));
 
@@ -281,7 +284,7 @@ Deno.test("updateTable reuses freed slots in gaps and at start", () => {
   assertEquals(second[TaskIndex.Start], tasks[1][TaskIndex.Start] + 64);
 });
 
-Deno.test("updateTable resets usedBits when all slots freed", () => {
+test("updateTable resets usedBits when all slots freed", () => {
   const registry = makeRegistry();
   allocNoSync(registry, 64);
   allocNoSync(registry, 64);
@@ -297,7 +300,7 @@ Deno.test("updateTable resets usedBits when all slots freed", () => {
   assertEquals(task[TaskIndex.Start], 0);
 });
 
-Deno.test("setSlotLength shrinks slot and exposes gap for next allocation", () => {
+test("setSlotLength shrinks slot and exposes gap for next allocation", () => {
   const registry = makeRegistry();
 
   const first = allocNoSync(registry, 700 * 3);
@@ -313,7 +316,7 @@ Deno.test("setSlotLength shrinks slot and exposes gap for next allocation", () =
   assertEquals(third[TaskIndex.Start], align64(700));
 });
 
-Deno.test("setSlotLength rejects growing a slot", () => {
+test("setSlotLength rejects growing a slot", () => {
   const registry = makeRegistry();
   const task = allocNoSync(registry, 64);
 

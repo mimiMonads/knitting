@@ -1,4 +1,9 @@
-import { assertEquals } from "jsr:@std/assert";
+import assert from "node:assert/strict";
+import test from "node:test";
+const assertEquals: (actual: unknown, expected: unknown) => void =
+  (actual, expected) => {
+    assert.deepStrictEqual(actual, expected);
+  };
 import { createPool } from "../knitting.ts";
 import { addOne, delayedEcho } from "./fixtures/loop_tasks.ts";
 
@@ -21,7 +26,7 @@ const withTimeout = async <T>(promise: Promise<T>, ms: number) => {
   }
 };
 
-Deno.test("worker loop progresses across async work and idle periods", async () => {
+test("worker loop progresses across async work and idle periods", async () => {
   const { call, shutdown } = createPool({
     threads: 1,
     worker: {

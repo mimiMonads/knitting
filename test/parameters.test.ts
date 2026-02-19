@@ -1,4 +1,9 @@
-import { assertEquals } from "jsr:@std/assert";
+import assert from "node:assert/strict";
+import test from "node:test";
+const assertEquals: (actual: unknown, expected: unknown) => void =
+  (actual, expected) => {
+    assert.deepStrictEqual(actual, expected);
+  };
 import { createPool } from "../knitting.ts";
 import {
   toBigInt,
@@ -13,7 +18,7 @@ import {
 
 const setNumb = new Set([1, 2, 3, 4, 5, 6]);
 
-Deno.test("Using one thread calling with multiple arguments", async () => {
+test("Using one thread calling with multiple arguments", async () => {
   const { call, shutdown } = createPool({})({
     toNumber,
     toString,
@@ -80,7 +85,7 @@ Deno.test("Using one thread calling with multiple arguments", async () => {
   await shutdown();
 });
 
-Deno.test("Using all thread calling with multiple arguments", async () => {
+test("Using all thread calling with multiple arguments", async () => {
   const { call, shutdown } = createPool({
     threads: 2,
   })({
