@@ -22,26 +22,6 @@ const BIGINT64_MAX = (1n << 63n) - 1n;
 const { parse: parseJSON, stringify: stringifyJSON } = JSON;
 const { for: symbolFor, keyFor: symbolKeyFor } = Symbol;
 
-const encodeBigIntBinary = (value: bigint) => {
-  let sign = 0;
-  let abs = value;
-  if (value < 0n) {
-    sign = 1;
-    abs = -value;
-  }
-
-  const bytes: number[] = [];
-  while (abs > 0n) {
-    bytes.push(Number(abs & 0xffn));
-    abs >>= 8n;
-  }
-
-  const out = new Uint8Array(1 + bytes.length);
-  out[0] = sign;
-  for (let i = 0; i < bytes.length; i++) out[i + 1] = bytes[i];
-  return out;
-};
-
 const decodeBigIntBinary = (bytes: Uint8Array) => {
   const sign = bytes[0];
   let value = 0n;
@@ -116,24 +96,57 @@ export const encodePayload = ({
     return true;
   };
 
+  let bigintScratch = new Uint8Array(16);
+  const encodeBigIntIntoScratch = (value: bigint) => {
+    let sign = 0;
+    let abs = value;
+    if (value < 0n) {
+      sign = 1;
+      abs = -value;
+    }
+
+    let at = 1;
+    while (abs > 0n) {
+      if (at >= bigintScratch.byteLength) {
+        const next = new Uint8Array(bigintScratch.byteLength << 1);
+        next.set(bigintScratch, 0);
+        bigintScratch = next;
+      }
+      bigintScratch[at++] = Number(abs & 0xffn);
+      abs >>= 8n;
+    }
+
+    bigintScratch[0] = sign;
+    return at;
+  };
+  const clearBigIntScratch = (used: number) => {
+    bigintScratch.fill(0, 0, used);
+  };
+
   return (task: Task, slotIndex: number) => {
   const args = task.value
   switch (typeof args) {
     case "bigint":
       if (args < BIGINT64_MIN || args > BIGINT64_MAX) {
-        const binary = encodeBigIntBinary(args);
-        if (binary.byteLength <= staticMaxBytes) {
+        const binaryBytes = encodeBigIntIntoScratch(args);
+        const binary = bigintScratch.subarray(0, binaryBytes);
+        if (binaryBytes <= staticMaxBytes) {
           const written = writeStaticBinary(binary, slotIndex);
           if (written !== -1) {
             task[TaskIndex.Type] = PayloadBuffer.StaticBigInt;
             task[TaskIndex.PayloadLen] = written;
+            clearBigIntScratch(binaryBytes);
             return true;
           }
         }
 
         task[TaskIndex.Type] = PayloadBuffer.BigInt;
-        if (!reserveDynamic(task, binary.byteLength)) return false;
+        if (!reserveDynamic(task, binaryBytes)) {
+          clearBigIntScratch(binaryBytes);
+          return false;
+        }
         writeDynamicBinary(binary, task[TaskIndex.Start])
+        clearBigIntScratch(binaryBytes);
         return true
       }
       BigInt64View[0] = args;
@@ -489,6 +502,7 @@ export const decodePayload = ({
     readBytesCopy: readDynamicBytesCopy,
     readBytesView: readDynamicBytesView,
     readBytesBufferCopy: readDynamicBufferCopy,
+    readBytesArrayBufferCopy: readDynamicArrayBufferCopy,
     read8BytesFloatCopy: readDynamic8BytesFloatCopy,
     read8BytesFloatView: readDynamic8BytesFloatView,
   } = createSharedDynamicBufferIO({
@@ -499,24 +513,9 @@ export const decodePayload = ({
     readBytesCopy: readStaticBytesCopy,
     readBytesView: readStaticBytesView,
     readBytesBufferCopy: readStaticBufferCopy,
+    readBytesArrayBufferCopy: readStaticArrayBufferCopy,
     read8BytesFloatCopy: readStatic8BytesFloatCopy,
   } = requireStaticIO(headersBuffer);
-
-
-  const HOST_SIDE = host ?? false
-  const toExactArrayBuffer = (buffer: NodeBuffer): ArrayBuffer => {
-    if (
-      buffer.byteOffset === 0 &&
-      buffer.byteLength === buffer.buffer.byteLength
-    ) {
-      return buffer.buffer as ArrayBuffer;
-    }
-
-    return buffer.buffer.slice(
-      buffer.byteOffset,
-      buffer.byteOffset + buffer.byteLength,
-    ) as ArrayBuffer;
-  };
   
   // TODO: remove slotIndex and make that all their callers
   // store the slot in their Task, to just get it when it comes 
@@ -725,21 +724,17 @@ export const decodePayload = ({
       task.value = readStaticBytesCopy(0, task[TaskIndex.PayloadLen], slotIndex)
     return
     case PayloadBuffer.ArrayBuffer:
-      task.value = toExactArrayBuffer(
-        readDynamicBufferCopy(
-          task[TaskIndex.Start],
-          task[TaskIndex.Start] + task[TaskIndex.PayloadLen],
-        ),
+      task.value = readDynamicArrayBufferCopy(
+        task[TaskIndex.Start],
+        task[TaskIndex.Start] + task[TaskIndex.PayloadLen],
       )
       free(task[TaskIndex.slotBuffer])
     return
     case PayloadBuffer.StaticArrayBuffer:
-      task.value = toExactArrayBuffer(
-        readStaticBufferCopy(
-          0,
-          task[TaskIndex.PayloadLen],
-          slotIndex,
-        ),
+      task.value = readStaticArrayBufferCopy(
+        0,
+        task[TaskIndex.PayloadLen],
+        slotIndex,
       )
     return
     case PayloadBuffer.Buffer:

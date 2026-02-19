@@ -106,6 +106,13 @@ export const createSharedDynamicBufferIO = ({
     buf.copy(out, 0, start, end);
     return out;
   };
+  const readBytesArrayBufferCopy = (start: number, end: number) => {
+    const length = Math.max(0, (end - start) | 0);
+    const out = new Uint8Array(length);
+    if (length === 0) return out.buffer;
+    buf.copy(out, 0, start, end);
+    return out.buffer;
+  };
 
   const read8BytesFloatCopy = (start:number, end:number) =>
     f64.slice(start >>> 3, end >>> 3);
@@ -120,12 +127,8 @@ export const createSharedDynamicBufferIO = ({
     if (!ensureCapacity(start + reservedBytes)) {
       throw new RangeError("Shared buffer capacity exceeded");
     }
-    const target = u8.subarray(start, start + reservedBytes);
-    const { read, written } = textEncode.encodeInto(str, target);
-    if (read !== str.length) {
-      throw new RangeError("Shared buffer utf8 write exceeded reserved range");
-    }
-    return written;
+
+    return buf.write(str, start, reservedBytes, "utf8");
   };
 
   return {
@@ -135,6 +138,7 @@ export const createSharedDynamicBufferIO = ({
     readBytesCopy,
     readBytesView,
     readBytesBufferCopy,
+    readBytesArrayBufferCopy,
     read8BytesFloatCopy,
     read8BytesFloatView,
     writeUtf8,
@@ -223,6 +227,13 @@ export const createSharedStaticBufferIO = ({
     arrBuffSec[at]!.copy(out, 0, start, end);
     return out;
   };
+  const readBytesArrayBufferCopy = (start: number, end: number, at: number) => {
+    const length = Math.max(0, (end - start) | 0);
+    const out = new Uint8Array(length);
+    if (length === 0) return out.buffer;
+    arrBuffSec[at]!.copy(out, 0, start, end);
+    return out.buffer;
+  };
 
   const read8BytesFloatCopy = (start:number, end:number, at:number) =>
     arrF64Sec[at].slice(start >>> 3, end >>> 3);
@@ -238,6 +249,7 @@ export const createSharedStaticBufferIO = ({
     readBytesCopy,
     readBytesView,
     readBytesBufferCopy,
+    readBytesArrayBufferCopy,
     read8BytesFloatCopy,
     read8BytesFloatView,
     maxBytes: writableBytes

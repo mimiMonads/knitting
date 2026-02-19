@@ -120,7 +120,19 @@ export const hostDispatcherLoop = ({
    
   };
 
-  return check;
+  const fastCheck = () => {
+    txStatus[Comment.thisIsAHint] = 0
+    completeFrame() 
+    flushToWorker()
+    fastCheck.isRunning = false;
+  };
+
+  fastCheck.isRunning = false;
+
+  return {
+    check,
+    fastCheck,
+  };
 };
 
 export class ChannelHandler {

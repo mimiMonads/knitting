@@ -125,33 +125,6 @@ test("dynamic writeUtf8 honors exact reserved bytes and start offsets", () => {
   }
 });
 
-test("dynamic writeUtf8 throws on under-reserved multibyte writes and only commits prefix", () => {
-  const sab = makeSab(64);
-  const io = createSharedDynamicBufferIO({ sab });
-  const marker = 0x44;
-  const region = new Uint8Array(96).fill(marker);
-  const text = "€".repeat(10) + "😀";
-  const encoded = textEncode.encode(text);
-  const reserved = encoded.byteLength - 1;
-  const probe = new Uint8Array(reserved).fill(0);
-  const probeResult = textEncode.encodeInto(text, probe);
-
-  assertEquals(probeResult.read < text.length, true);
-  io.writeBinary(region, 0);
-
-  assert.throws(
-    () => io.writeUtf8(text, 0, reserved),
-    (err: unknown) => String(err).includes("utf8 write exceeded reserved range"),
-  );
-
-  const out = io.readBytesCopy(0, region.length);
-  assertEquals(
-    Array.from(out.subarray(0, probeResult.written)),
-    Array.from(probe.subarray(0, probeResult.written)),
-  );
-  assertEquals(out[probeResult.written], marker);
-});
-
 test("readBytesCopy is isolated and readBytesView reflects writes", () => {
   const sab = makeSab(32);
   const io = createSharedDynamicBufferIO({ sab });

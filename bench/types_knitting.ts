@@ -34,8 +34,10 @@ if (isMain) {
   if (!isJsonOutput) {
     console.log("payload sizes (approx bytes):");
     for (const [name, payload] of payloadSizeCases) {
+      if (name === "smallU8" || name === "largeU8") continue;
       console.log(`  ${name}: ${estimatePayloadBytes(payload)} bytes`);
     }
+    console.log("");
   }
 
   for (const n of sizes) {

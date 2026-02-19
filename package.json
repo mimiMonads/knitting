@@ -41,6 +41,7 @@
   "devDependencies": {
     "@types/bun": "latest",
     "@types/deno": "latest",
-    "@types/node": "latest"
+    "@types/node": "latest",
+    "mitata": "^1.0.34"
   }
 }

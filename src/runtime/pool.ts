@@ -137,7 +137,7 @@ export const spawnWorkerContext = ({
   } = queue;
   const channelHandler = new ChannelHandler();
 
-  const check = hostDispatcherLoop({
+  const { check, fastCheck } = hostDispatcherLoop({
     signalBox,
     queue,
     channelHandler,
@@ -197,23 +197,23 @@ export const spawnWorkerContext = ({
 
   const thisSignal = signalBox.opView;
   const a_add = Atomics.add;
-  const a_notify = Atomics.notify;
   const a_load = Atomics.load;
-  const scheduleCheck = queueMicrotask
+  const a_notify = Atomics.notify;
+  const scheduleFastCheck = queueMicrotask;
 
   const send = () => {
     if (check.isRunning === true) return;
 
-    // Prevent worker from sleeping before the dispatcher loop starts.
-    // Best-effort hint only; non-atomic by design.
-    signalBox.txStatus[Comment.thisIsAHint] = 1;
-    // Use opView as a wake counter in lock2 mode to avoid lost wakeups.
-    
-    a_add(thisSignal, 0, 1);
-    a_notify(thisSignal, 0, 1);
-    check.isRunning = true
+    check.isRunning = true;
 
-    scheduleCheck(check);
+    // Use opView as a wake counter in lock2 mode to avoid lost wakeups.
+    if (a_load(signalBox.rxStatus, 0) === 0) {
+      a_add(thisSignal, 0, 1);
+      a_notify(thisSignal, 0, 1);
+    }
+
+    // Macro lane: dispatcher check is driven by the channel callback.
+    channelHandler.notify();
   };
 
   lock.setPromiseHandler((task: Task, result: PromisePayloadResult) => {
@@ -224,25 +224,18 @@ export const spawnWorkerContext = ({
   const call = ({ fnNumber }: WorkerCall) => {
     const enqueues = enqueue(fnNumber);
     return (args: Uint8Array) => {
+      const pending = enqueues(args);
 
-      
-      if (check.isRunning === false) {
-        check.isRunning = true;
+      if (fastCheck.isRunning === false) {
         // Prevent worker from sleeping before the dispatcher loop starts.
         // Best-effort hint only; non-atomic by design.
         signalBox.txStatus[Comment.thisIsAHint] = 1;
-        // Use opView as a wake counter in lock2 mode to avoid lost wakeups.
-        //Atomics.add(thisSignal, 0, 1);
-        if (a_load(signalBox.rxStatus, 0) === 0) {
-          a_add(thisSignal, 0, 1);
-          a_notify(thisSignal, 0, 1);
-        }
-       
-        scheduleCheck(check);
-        
+        fastCheck.isRunning = true;
+        scheduleFastCheck(fastCheck);
+        send();
       }
 
-      return enqueues(args);
+      return pending;
     };
   };
 

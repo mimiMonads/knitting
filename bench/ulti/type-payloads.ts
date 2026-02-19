@@ -1,3 +1,5 @@
+import { Buffer as NodeBuffer } from "node:buffer";
+
 export type BenchPayloadCase = readonly [name: string, payload: unknown];
 
 export const createSharedTypePayloadCases = () => {
@@ -17,6 +19,9 @@ export const createSharedTypePayloadCases = () => {
 
   const u8 = new Uint8Array(1024);
   for (let i = 0; i < u8.length; i++) u8[i] = i & 0xff;
+  const stringHuge = "x".repeat(u8.byteLength);
+  const arrayBufferValue = u8.buffer.slice(0);
+  const bufferValue = NodeBuffer.from(u8);
 
   const i32 = new Int32Array(256);
   for (let i = 0; i < i32.length; i++) i32[i] = i;
@@ -48,9 +53,12 @@ export const createSharedTypePayloadCases = () => {
     ["undefined", undefined],
     ["null", null],
     ["string", stringValue],
+    ["string huge", stringHuge],
     ["json object", jsonObj],
     ["json array", jsonArr],
     ["Uint8Array", u8],
+    ["ArrayBuffer", arrayBufferValue],
+    ["Buffer", bufferValue],
     ["Int32Array", i32],
     ["Float64Array", f64],
     ["BigInt64Array", bi64],
@@ -139,6 +147,7 @@ export const createPayloadSizeCases = (
   return [
     ["jsonObj", pick("json object")],
     ["jsonArr", pick("json array")],
+    ["stringHuge", pick("string huge")],
     ["Uint8Array", pick("Uint8Array")],
     ["Int32Array", pick("Int32Array")],
     ["Float64Array", pick("Float64Array")],
