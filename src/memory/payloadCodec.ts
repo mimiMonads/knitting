@@ -1,7 +1,7 @@
 import {
   LockBound,
   PayloadBuffer,
-  PayloadSingal,
+  PayloadSignal,
   PromisePayloadMarker,
   type PromisePayloadHandler,
   type Task,
@@ -143,13 +143,13 @@ export const encodePayload = ({
         return true
       }
       BigInt64View[0] = args;
-      task[TaskIndex.Type] = PayloadSingal.BigInt;
+      task[TaskIndex.Type] = PayloadSignal.BigInt;
       task[TaskIndex.Start] = Uint32View[0];
       task[TaskIndex.End] = Uint32View[1];
       return true;
     case "boolean":
       task[TaskIndex.Type] =
-        task.value === true ? PayloadSingal.True : PayloadSingal.False;
+        task.value === true ? PayloadSignal.True : PayloadSignal.False;
       return true;
     case "function":
       if (isThenable(args)) {
@@ -175,26 +175,26 @@ export const encodePayload = ({
     case "number":
 
       if (args !== args) {
-        task[TaskIndex.Type] = PayloadSingal.NaN;
+        task[TaskIndex.Type] = PayloadSignal.NaN;
         return true;
       }
       switch (args) {
       case Infinity:
-        task[TaskIndex.Type]  = PayloadSingal.Infinity;
+        task[TaskIndex.Type]  = PayloadSignal.Infinity;
         return true;
       case -Infinity:
-        task[TaskIndex.Type]  = PayloadSingal.NegativeInfinity;
+        task[TaskIndex.Type]  = PayloadSignal.NegativeInfinity;
         return true;
       }
 
       Float64View[0] = args;
-      task[TaskIndex.Type] = PayloadSingal.Float64;
+      task[TaskIndex.Type] = PayloadSignal.Float64;
       task[TaskIndex.Start] = Uint32View[0];
       task[TaskIndex.End] = Uint32View[1];
       return true
     case "object" : 
       if (args === null) {
-        task[TaskIndex.Type] = PayloadSingal.Null
+        task[TaskIndex.Type] = PayloadSignal.Null
         return true
       }
       if (isThenable(args)) {
@@ -461,7 +461,7 @@ export const encodePayload = ({
         return true;
       }
     case "undefined":
-      task[TaskIndex.Type]  = PayloadSingal.Undefined
+      task[TaskIndex.Type]  = PayloadSignal.Undefined
       return true
   }
 }
@@ -524,35 +524,35 @@ export const decodePayload = ({
 
 
   switch (task[TaskIndex.Type]) {
-    case PayloadSingal.BigInt:
+    case PayloadSignal.BigInt:
       Uint32View[0] = task[TaskIndex.Start];
       Uint32View[1] = task[TaskIndex.End];
       task.value = BigInt64View[0];
       return;
-    case PayloadSingal.True:
+    case PayloadSignal.True:
       task.value = true;
       return;
-    case PayloadSingal.False:
+    case PayloadSignal.False:
       task.value = false;
       return;
-    case PayloadSingal.Float64:
+    case PayloadSignal.Float64:
       Uint32View[0] = task[TaskIndex.Start];
       Uint32View[1] = task[TaskIndex.End];
       task.value = Float64View[0];
       return
-    case PayloadSingal.Infinity:
+    case PayloadSignal.Infinity:
       task.value = Infinity
       return
-    case PayloadSingal.NaN:
+    case PayloadSignal.NaN:
       task.value = NaN
       return
-    case PayloadSingal.NegativeInfinity:
+    case PayloadSignal.NegativeInfinity:
       task.value = -Infinity
       return
-    case PayloadSingal.Null :
+    case PayloadSignal.Null :
       task.value = null
       return
-    case PayloadSingal.Undefined:
+    case PayloadSignal.Undefined:
       task.value = undefined
       return
     case PayloadBuffer.String:
@@ -773,7 +773,7 @@ export const decodePayload = ({
       )
       free(task[TaskIndex.slotBuffer])
     return
-    case PayloadSingal.UNREACHABLE:
+    case PayloadSignal.UNREACHABLE:
       throw "UREACHABLE AT RECOVER"
   }
 } 

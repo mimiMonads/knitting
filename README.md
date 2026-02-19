@@ -141,8 +141,8 @@ Key options:
 - `threads?: number` number of worker threads (default `1`).
 - `inliner?: { position?: "first" | "last"; batchSize?: number; dispatchThreshold?: number }`
   run tasks on the main thread as an extra lane.
-- `balancer?: "robinRound" | "firstIdle" | "randomLane" | "firstIdleOrRandom"`
-  or `{ strategy?: "robinRound" | "firstIdle" | "randomLane" | "firstIdleOrRandom" }`
+- `balancer?: "roundRobin" | "firstIdle" | "randomLane" | "firstIdleOrRandom"`
+  or `{ strategy?: "roundRobin" | "firstIdle" | "randomLane" | "firstIdleOrRandom" }`
   task routing strategy.
 - `worker?: { resolveAfterFinishingAll?: true; timers?: WorkerTimers }`
 - `payloadInitialBytes?: number` initial payload SAB size per worker direction (bytes).
@@ -238,13 +238,13 @@ export const search = task<
 
 You can control how calls are routed:
 
-- `"robinRound"` default round-robin
+- `"roundRobin"` default round-robin
 - `"firstIdle"` prefer idle workers
 - `"randomLane"` choose a random worker
 - `"firstIdleOrRandom"` idle first, then random
 
 You can also pass `{}` or `{ strategy: "..." }` if you prefer an object form.
-When omitted, strategy defaults to `"robinRound"`.
+When omitted, strategy defaults to `"roundRobin"`.
 
 ## Best Practices
 
@@ -283,4 +283,4 @@ bun run build.ts
 
 ## License
 
-CC-BY-ND-4.0
+Apache 2.0

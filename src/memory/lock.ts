@@ -9,7 +9,7 @@ import { HAS_SAB_GROW, createSharedArrayBuffer } from "../common/runtime.ts";
  * 
  */
 
- export enum PayloadSingal {
+ export enum PayloadSignal {
   UNREACHABLE = 0,
   BigInt = 2,
   True = 3,
@@ -66,7 +66,7 @@ export enum LockBound {
 export type Task = [
   number,
   number,
-  PayloadSingal | PayloadBuffer,
+  PayloadSignal | PayloadBuffer,
   number,
   number,
   number, 
@@ -95,10 +95,10 @@ export enum TaskIndex {
    */
   FlagsToHost = 0,
   /**
-   * IMPORTANT: FuntionID is only use for worker to host
+   * IMPORTANT: FunctionID is only use for worker to host
    * reserved for special flags from host to worker
    */
-  FuntionID = 0,
+  FunctionID = 0,
   ID = 1,
   Type = 2,
   Start = 3,
@@ -129,7 +129,7 @@ export const HEADER_BYTE_LENGTH = HEADER_U32_LENGTH * Uint32Array.BYTES_PER_ELEM
 
 
 let INDEX_ID = 0;
-const INIT_VAL = PayloadSingal.UNREACHABLE;
+const INIT_VAL = PayloadSignal.UNREACHABLE;
 const def = (_?: unknown) => {};
 
 const createTaskShell = () => {

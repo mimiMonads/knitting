@@ -80,7 +80,7 @@ def extract_series(obj):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", "-i", default="./results", help="Folder with *_withload.json files")
-    ap.add_argument("--out", "-o", default="./charts", help="Output folder for PNGs")
+    ap.add_argument("--out", "-o", default="./charts", help="Output folder for PNG files")
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
@@ -113,12 +113,12 @@ def main():
             print(f"[warn] {runtime}: no 'main' baseline found (threads=1); skipping")
             continue
         t1 = tmap[1]
-        thr = sorted(tmap.keys())
-        spd = [t1 / tmap[n] if (n in tmap and tmap[n] > 0) else math.nan for n in thr]
-        eff = [ (t1 / tmap[n]) / n if (n in tmap and tmap[n] > 0) else math.nan for n in thr]
-        speedup[runtime] = (thr, spd)
-        efficiency[runtime] = (thr, eff)
-        all_threads.update(thr)
+        threads = sorted(tmap.keys())
+        spd = [t1 / tmap[n] if (n in tmap and tmap[n] > 0) else math.nan for n in threads]
+        eff = [ (t1 / tmap[n]) / n if (n in tmap and tmap[n] > 0) else math.nan for n in threads]
+        speedup[runtime] = (threads, spd)
+        efficiency[runtime] = (threads, eff)
+        all_threads.update(threads)
 
     if not speedup:
         print("[warn] no speedup data to plot")
@@ -126,11 +126,11 @@ def main():
 
     # Plot SPEEDUP
     fig1, ax1 = plt.subplots(figsize=(8, 6))
-    for runtime, (thr, spd) in speedup.items():
-        ax1.plot(thr, spd, marker="o", linestyle="-", label=runtime)
+    for runtime, (threads, spd) in speedup.items():
+        ax1.plot(threads, spd, marker="o", linestyle="-", label=runtime)
     # Ideal linear speedup reference
-    ideal_thr = sorted(all_threads)
-    ax1.plot(ideal_thr, ideal_thr, linestyle="--", label="Ideal linear", alpha=0.7)
+    ideal_threads = sorted(all_threads)
+    ax1.plot(ideal_threads, ideal_threads, linestyle="--", label="Ideal linear", alpha=0.7)
     ax1.set_xlabel("Total threads (main + extra)")
     ax1.set_ylabel("Speedup vs 1 thread (×)")
     ax1.set_title("With Load: Speedup vs Threads (primes benchmark)")
@@ -144,8 +144,8 @@ def main():
 
     # Plot EFFICIENCY
     fig2, ax2 = plt.subplots(figsize=(8, 6))
-    for runtime, (thr, eff) in efficiency.items():
-        ax2.plot(thr, [e * 100 for e in eff], marker="o", linestyle="-", label=runtime)
+    for runtime, (threads, eff) in efficiency.items():
+        ax2.plot(threads, [e * 100 for e in eff], marker="o", linestyle="-", label=runtime)
     ax2.axhline(100, linestyle="--", alpha=0.7)
     ax2.set_ylim(0, max(110, ax2.get_ylim()[1]))
     ax2.set_xlabel("Total threads (main + extra)")

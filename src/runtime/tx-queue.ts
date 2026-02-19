@@ -34,7 +34,7 @@ export function createHostTxQueue({
   const newSlot = (id: number) => {
     const task = makeTask() as QueueTask;
     task[TaskIndex.ID] = id;
-    task[TaskIndex.FuntionID] = 0;
+    task[TaskIndex.FunctionID] = 0;
     task.value = undefined;
     task.resolve = PLACE_HOLDER;
     task.reject = PLACE_HOLDER;
@@ -153,7 +153,7 @@ export function createHostTxQueue({
 
       // Set info
       slot.value = rawArgs;
-      slot[TaskIndex.FuntionID] = functionID;
+      slot[TaskIndex.FunctionID] = functionID;
       slot[TaskIndex.ID] = index;
       slot.resolve = deferred.resolve;
       slot.reject = deferred.reject;

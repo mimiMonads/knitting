@@ -14,7 +14,7 @@ test("inliner awaits promise arguments before invoking task", async () => {
   const { call, shutdown } = createPool({
     threads: 1,
     inliner: { position: "last" },
-    balancer: "robinRound",
+    balancer: "roundRobin",
   })({ hello, world });
 
   try {
@@ -31,7 +31,7 @@ test("inliner resolves first dispatch in microtasks", async () => {
   const { call, shutdown } = createPool({
     threads: 1,
     inliner: { position: "first", batchSize: 1 },
-    balancer: "robinRound",
+    balancer: "roundRobin",
   })({ hello });
 
   try {
@@ -85,7 +85,7 @@ test("shutdown rejects pending inliner calls", async () => {
   const { call, shutdown } = createPool({
     threads: 1,
     inliner: { position: "first" },
-    balancer: "robinRound",
+    balancer: "roundRobin",
   })({ world });
 
   const never = new Promise<string>(() => {});
@@ -111,7 +111,7 @@ test("shutdown rejects pending inliner calls", async () => {
 test("inliner.dispatchThreshold keeps inline lane idle below threshold", async () => {
   const { call, shutdown } = createPool({
     threads: 1,
-    balancer: "robinRound",
+    balancer: "roundRobin",
     inliner: {
       position: "last",
       dispatchThreshold: 32,
@@ -132,7 +132,7 @@ test("inliner.dispatchThreshold keeps inline lane idle below threshold", async (
 test("inliner.dispatchThreshold allows inline lane once threshold is reached", async () => {
   const { call, shutdown } = createPool({
     threads: 1,
-    balancer: "robinRound",
+    balancer: "roundRobin",
     inliner: {
       position: "last",
       dispatchThreshold: 2,

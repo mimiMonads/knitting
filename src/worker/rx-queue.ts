@@ -143,7 +143,7 @@ const enqueueLock = () => {
 
         try {
        
-          const result = jobs[slot[TaskIndex.FuntionID]](slot.value);
+          const result = jobs[slot[TaskIndex.FunctionID]](slot.value);
           if (!isThenable(result)) {
             settleNow(slot, false, result, false);
           } else {

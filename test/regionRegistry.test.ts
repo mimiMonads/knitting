@@ -41,7 +41,7 @@ test("check packing in startAndIndexToArray", () => {
 
   const result = [[0,0] , ...sizes.map( (_,i,a) => {
 
-    // add them together and index [postion + padding , index]
+    // add them together and index [position + padding , index]
     const  val = a.slice(0,i + 1).reduce((acc,c) => acc+ (align64(c) >>> 6), 0) 
     return [val, ++i]
   }).slice(0,-1)] 
@@ -68,7 +68,7 @@ test("updateTable delete front", () => {
 
   const result = [[0,0] , ...sizes.map( (_,i,a) => {
 
-    // add them together and index [postion + padding , index]
+    // add them together and index [position + padding , index]
     const  val = a.slice(0,i + 1).reduce((acc,c) => acc+ (align64(c) >>> 6), 0) 
     return [val, ++i]
   }).slice(0,-1)] 
@@ -106,7 +106,7 @@ test("updateTable delete Back", () => {
 
   const result = [[0,0] , ...sizes.map( (_,i,a) => {
 
-    // add them together and index [postion + padding , index]
+    // add them together and index [position + padding , index]
     const  val = a.slice(0,i + 1).reduce((acc,c) => acc+ (align64(c) >>> 6), 0) 
     return [val, ++i]
   }).slice(0,-1)] 
@@ -144,7 +144,7 @@ test("updateTable delete middle", () => {
 
   const result = [[0,0] , ...sizes.map( (_,i,a) => {
 
-    // add them together and index [postion + padding , index]
+    // add them together and index [position + padding , index]
     const  val = a.slice(0,i + 1).reduce((acc,c) => acc+ (align64(c) >>> 6), 0) 
     return [val, ++i]
   }).slice(0,-1)] 

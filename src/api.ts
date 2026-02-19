@@ -50,9 +50,9 @@ export { endpointSymbol as endpointSymbol };
 /**
  *  With this information we can recreate the logical order of
  *  relevant exported functions from a file, also it helps to 
- *  track a task before naming, ` export ` elements have to be decalere
- *  at top level and without branching, we take avantage of this to 
- *  correctlly map them. 
+ *  track a task before naming, ` export ` elements have to be declared
+ *  at top level and without branching, we take advantage of this to 
+ *  correctly map them. 
  * 
  */
 export const toListAndIds: ToListAndIdsFn = (

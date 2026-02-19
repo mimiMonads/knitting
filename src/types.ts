@@ -188,6 +188,7 @@ type Inliner = {
 };
 
 type BalancerStrategy =
+  | "roundRobin"
   | "robinRound"
   | "firstIdle"
   | "randomLane"
@@ -197,7 +198,7 @@ type Balancer =
   | BalancerStrategy
   | {
     /**
-     * Optional. Defaults to "robinRound".
+     * Optional. Defaults to "roundRobin".
      */
     strategy?: BalancerStrategy;
   };
@@ -321,7 +322,7 @@ export type { Task as Task } from "./memory/lock.ts";
 export {
   LockBound as LockBound,
   PayloadBuffer as PayloadBuffer,
-  PayloadSingal as PayloadSingal,
+  PayloadSignal as PayloadSignal,
   TaskIndex as TaskIndex,
 } from "./memory/lock.ts";
 export type { RegisterMalloc as RegisterMalloc } from "./memory/regionRegistry.ts";

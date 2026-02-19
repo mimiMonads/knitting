@@ -1,6 +1,6 @@
 {
   "name": "@vixeny/knitting",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "Shared-memory worker pool for Node.js, Deno, and Bun.",
   "license": "Apache-2.0",
   "type": "module",
@@ -12,6 +12,7 @@
   },
   "files": [
     "README.md",
+    "LICENSE",
     "src/**/*.ts",
     "knitting.ts"
   ],

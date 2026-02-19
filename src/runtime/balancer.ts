@@ -19,8 +19,9 @@ const selectStrategy = (
   handlers: LaneHandler[],
   strategy: manager["balancer"],
 ): LaneInvoker => {
-  switch (strategy ?? "robinRound") {
-    case "robinRound":
+  switch (strategy ?? "roundRobin") {
+    case "roundRobin":
+    case "robinRound": // legacy alias
       return roundRobin(contexts)(handlers)(handlers.length);
     case "firstIdle":
       return firstIdle(contexts)(handlers)(handlers.length);
