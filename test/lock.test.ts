@@ -7,10 +7,12 @@ const assertEquals: (actual: unknown, expected: unknown) => void =
 import RingQueue from "../src/ipc/tools/RingQueue.ts";
 import {
   HEADER_BYTE_LENGTH,
+  HEADER_SLOT_STRIDE_U32,
   LOCK_SECTOR_BYTE_LENGTH,
   LockBound,
   lock2,
   makeTask,
+  PayloadSignal,
   TaskIndex,
 } from "../src/memory/lock.ts";
 import { decodePayload } from "../src/memory/payloadCodec.ts";
@@ -25,6 +27,29 @@ const makeValueTask = (value: unknown) => {
   const task = makeTask();
   task.value = value;
   return task;
+};
+
+const isSingleBit = (value: number) =>
+  value !== 0 && (value & (value - 1)) === 0;
+
+const popcount32 = (value: number) => {
+  let x = value >>> 0;
+  let count = 0;
+  while (x !== 0) {
+    x &= x - 1;
+    count++;
+  }
+  return count;
+};
+
+const makeRng = (seed: number) => {
+  let state = seed >>> 0;
+  return () => {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    return state >>> 0;
+  };
 };
 
 test("encode/decode roundtrip values", () => {
@@ -148,4 +173,154 @@ test("resolveHost decodes into queue and acks worker bits", () => {
   assertEquals(results, responses);
   assertEquals(lock.workerBits[0], lock.hostBits[0]);
   assertEquals(resolveHost(), 0);
+});
+
+test("xor bit protocol random stress keeps slot toggles consistent", () => {
+  const { lock } = makeLock();
+  const nextRandom = makeRng(0x1badf00d);
+  const decoded = new Set<number>();
+  let nextValue = 1;
+  let inFlight = 0;
+
+  const drainResolved = () => {
+    let count = 0;
+    while (true) {
+      const task = lock.resolved.shift();
+      if (!task) break;
+      assertEquals(typeof task.value, "number");
+      const value = task.value as number;
+      assertEquals(decoded.has(value), false);
+      decoded.add(value);
+      count++;
+    }
+    return count;
+  };
+
+  for (let step = 0; step < 5000; step++) {
+    const shouldEncode = inFlight === 0 ||
+      ((nextRandom() & 3) !== 0 && inFlight < LockBound.slots);
+
+    if (shouldEncode) {
+      const task = makeValueTask(nextValue++);
+      const hostBefore = lock.hostBits[0] | 0;
+      const workerBefore = lock.workerBits[0] | 0;
+      const pendingBefore = (hostBefore ^ workerBefore) >>> 0;
+
+      const encoded = lock.encode(task);
+      if (!encoded) {
+        assertEquals(pendingBefore, 0xFFFFFFFF);
+        continue;
+      }
+
+      const hostAfter = lock.hostBits[0] | 0;
+      const toggled = (hostBefore ^ hostAfter) >>> 0;
+      assertEquals(isSingleBit(toggled), true);
+      assertEquals((pendingBefore & toggled) === 0, true);
+      inFlight++;
+      continue;
+    }
+
+    const pendingBefore = (lock.hostBits[0] ^ lock.workerBits[0]) >>> 0;
+    const changed = lock.decode();
+    if (pendingBefore === 0) {
+      assertEquals(changed, false);
+      continue;
+    }
+
+    assertEquals(changed, true);
+    assertEquals(lock.workerBits[0], lock.hostBits[0]);
+    const drained = drainResolved();
+    assertEquals(drained, popcount32(pendingBefore));
+    inFlight -= drained;
+  }
+
+  while (lock.decode()) {
+    inFlight -= drainResolved();
+  }
+  assertEquals(drainResolved(), 0);
+  assertEquals(inFlight, 0);
+  assertEquals(lock.workerBits[0], lock.hostBits[0]);
+});
+
+test("xor decode finally path preserves consistency on mid-stream errors", () => {
+  const nextRandom = makeRng(0x0ddc0ffe);
+  const decoded = new Set<number>();
+  let nextValue = 1;
+
+  const slotOffset = (at: number) =>
+    (at * HEADER_SLOT_STRIDE_U32) + LockBound.header;
+
+  for (let round = 0; round < 128; round++) {
+    const lockSector = new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH);
+    const headers = new SharedArrayBuffer(HEADER_BYTE_LENGTH);
+    const payload = new SharedArrayBuffer(4096);
+    const headersBuffer = new Uint32Array(headers);
+    const lock = lock2({
+      headers,
+      LockBoundSector: lockSector,
+      payload,
+    });
+
+    const drainResolved = () => {
+      let count = 0;
+      while (true) {
+        const task = lock.resolved.shift();
+        if (!task) break;
+        assertEquals(typeof task.value, "number");
+        const value = task.value as number;
+        assertEquals(decoded.has(value), false);
+        decoded.add(value);
+        count++;
+      }
+      return count;
+    };
+
+    const batch = 3 + (nextRandom() % 8);
+    const slots: number[] = [];
+
+    for (let i = 0; i < batch; i++) {
+      const hostBefore = lock.hostBits[0] | 0;
+      const workerBefore = lock.workerBits[0] | 0;
+      const pendingBefore = (hostBefore ^ workerBefore) >>> 0;
+      const task = makeValueTask(nextValue++);
+      assertEquals(lock.encode(task), true);
+
+      const hostAfter = lock.hostBits[0] | 0;
+      const toggled = (hostBefore ^ hostAfter) >>> 0;
+      assertEquals(isSingleBit(toggled), true);
+      assertEquals((pendingBefore & toggled) === 0, true);
+      slots.push(31 - Math.clz32(toggled));
+    }
+
+    slots.sort((a, b) => b - a);
+    const failAt = 1 + (nextRandom() % (slots.length - 1));
+    const failSlot = slots[failAt];
+    const off = slotOffset(failSlot);
+    const originalType = headersBuffer[off + TaskIndex.Type];
+    headersBuffer[off + TaskIndex.Type] = PayloadSignal.UNREACHABLE;
+
+    const workerBeforeThrow = lock.workerBits[0] | 0;
+    assert.throws(
+      () => lock.decode(),
+      (err: unknown) => String(err).includes("UREACHABLE"),
+    );
+
+    let expectedAckDelta = 0;
+    for (let i = 0; i < failAt; i++) {
+      expectedAckDelta |= 1 << slots[i];
+    }
+    const ackDelta = (workerBeforeThrow ^ (lock.workerBits[0] | 0)) >>> 0;
+    assertEquals(ackDelta, expectedAckDelta >>> 0);
+    assertEquals(drainResolved(), failAt);
+
+    headersBuffer[off + TaskIndex.Type] = originalType;
+    assertEquals(lock.decode(), true);
+    assertEquals(drainResolved(), batch - failAt);
+    assertEquals(lock.workerBits[0], lock.hostBits[0]);
+
+    while (lock.decode()) {
+      drainResolved();
+    }
+    assertEquals(lock.workerBits[0], lock.hostBits[0]);
+  }
 });

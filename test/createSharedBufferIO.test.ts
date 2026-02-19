@@ -11,6 +11,19 @@ import {
 import { LockBound, TaskIndex } from "../src/memory/lock.ts";
 
 const header = 64;
+const staticWritableBytes =
+  (TaskIndex.TotalBuff - TaskIndex.Size) * Uint32Array.BYTES_PER_ELEMENT;
+const textEncode = new TextEncoder();
+
+const makeRng = (seed: number) => {
+  let state = seed >>> 0;
+  return () => {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    return state >>> 0;
+  };
+};
 
 const makeSab = (payloadBytes: number) =>
   new SharedArrayBuffer(
@@ -81,7 +94,7 @@ test("writeUtf8 does not grow when buffer is large enough", () => {
   const sab = makeSab(64);
   const io = createSharedDynamicBufferIO({ sab });
   const text = "short-text";
-  const encoded = new TextEncoder().encode(text);
+  const encoded = textEncode.encode(text);
   const before = sab.byteLength;
 
   const written = io.writeUtf8(text, 0);
@@ -89,6 +102,54 @@ test("writeUtf8 does not grow when buffer is large enough", () => {
   assertEquals(written, encoded.byteLength);
   assertEquals(io.readUtf8(0, written), text);
   assertEquals(sab.byteLength, before);
+});
+
+test("dynamic writeUtf8 honors exact reserved bytes and start offsets", () => {
+  const sab = makeSab(64);
+  const io = createSharedDynamicBufferIO({ sab });
+  const cases = [
+    "abcXYZ",
+    "é".repeat(11),
+    "€€€-edge",
+    "😀𐍈हЖmix",
+    "",
+  ];
+
+  let cursor = 7;
+  for (const text of cases) {
+    const encoded = textEncode.encode(text);
+    const written = io.writeUtf8(text, cursor, encoded.byteLength);
+    assertEquals(written, encoded.byteLength);
+    assertEquals(io.readUtf8(cursor, cursor + written), text);
+    cursor += written + 5;
+  }
+});
+
+test("dynamic writeUtf8 throws on under-reserved multibyte writes and only commits prefix", () => {
+  const sab = makeSab(64);
+  const io = createSharedDynamicBufferIO({ sab });
+  const marker = 0x44;
+  const region = new Uint8Array(96).fill(marker);
+  const text = "€".repeat(10) + "😀";
+  const encoded = textEncode.encode(text);
+  const reserved = encoded.byteLength - 1;
+  const probe = new Uint8Array(reserved).fill(0);
+  const probeResult = textEncode.encodeInto(text, probe);
+
+  assertEquals(probeResult.read < text.length, true);
+  io.writeBinary(region, 0);
+
+  assert.throws(
+    () => io.writeUtf8(text, 0, reserved),
+    (err: unknown) => String(err).includes("utf8 write exceeded reserved range"),
+  );
+
+  const out = io.readBytesCopy(0, region.length);
+  assertEquals(
+    Array.from(out.subarray(0, probeResult.written)),
+    Array.from(probe.subarray(0, probeResult.written)),
+  );
+  assertEquals(out[probeResult.written], marker);
 });
 
 test("readBytesCopy is isolated and readBytesView reflects writes", () => {
@@ -147,13 +208,148 @@ test("static writeUtf8 preserves task header and reads back", () => {
 test("static writeUtf8 returns -1 when it does not fit", () => {
   const headersBuffer = makeHeaders();
   const io = createSharedStaticBufferIO({ headersBuffer });
-  const writableBytes =
-    (TaskIndex.TotalBuff - TaskIndex.Size) * Uint32Array.BYTES_PER_ELEMENT;
-  const tooLong = "a".repeat(writableBytes + 1);
+  const tooLong = "a".repeat(staticWritableBytes + 1);
 
   const written = io.writeUtf8(tooLong, 0);
 
   assertEquals(written, -1);
+});
+
+test("static writeUtf8 accepts exact utf8 byte boundary with multibyte chars", () => {
+  const headersBuffer = makeHeaders();
+  const io = createSharedStaticBufferIO({ headersBuffer });
+  const text = "😀".repeat(staticWritableBytes >>> 2);
+
+  const written = io.writeUtf8(text, 0);
+
+  assertEquals(written, staticWritableBytes);
+  assertEquals(io.readUtf8(0, written, 0), text);
+});
+
+test("static writeUtf8 can partially mutate slot on multibyte overflow (full boundary fill)", () => {
+  const headersBuffer = makeHeaders();
+  const io = createSharedStaticBufferIO({ headersBuffer });
+  const slot = 0;
+  const marker = 0x5a;
+  const initial = new Uint8Array(staticWritableBytes).fill(marker);
+  const text = "😀".repeat((staticWritableBytes >>> 2) + 1);
+  const encoded = new TextEncoder().encode(text);
+  const encodedBytes = encoded.byteLength;
+
+  assertEquals(text.length <= staticWritableBytes, true);
+  assertEquals(encodedBytes > staticWritableBytes, true);
+
+  io.writeBinary(initial, slot, 0);
+  const written = io.writeUtf8(text, slot);
+  const out = io.readBytesCopy(0, staticWritableBytes, slot);
+
+  assertEquals(written, -1);
+  assertEquals(Array.from(out), Array.from(encoded.subarray(0, staticWritableBytes)));
+});
+
+test("static writeUtf8 can partially mutate slot on multibyte overflow (below boundary fill)", () => {
+  const headersBuffer = makeHeaders();
+  const io = createSharedStaticBufferIO({ headersBuffer });
+  const slot = 1;
+  const marker = 0x33;
+  const initial = new Uint8Array(staticWritableBytes).fill(marker);
+  const text =
+    "€".repeat(Math.floor((staticWritableBytes - 1) / 3)) +
+    "é".repeat(2);
+  const encoded = new TextEncoder().encode(text);
+  const encodedBytes = encoded.byteLength;
+  const partialPrefixBytes = staticWritableBytes - 1;
+
+  assertEquals(text.length <= staticWritableBytes, true);
+  assertEquals(encodedBytes, staticWritableBytes + 1);
+
+  io.writeBinary(initial, slot, 0);
+  const written = io.writeUtf8(text, slot);
+  const out = io.readBytesCopy(0, staticWritableBytes, slot);
+
+  assertEquals(written, -1);
+  assertEquals(
+    Array.from(out.subarray(0, partialPrefixBytes)),
+    Array.from(encoded.subarray(0, partialPrefixBytes)),
+  );
+  assertEquals(out[partialPrefixBytes], marker);
+});
+
+test("static writeUtf8 can partially mutate slot on ASCII overflow", () => {
+  const headersBuffer = makeHeaders();
+  const io = createSharedStaticBufferIO({ headersBuffer });
+  const slot = 2;
+  const marker = 0x19;
+  const initial = new Uint8Array(staticWritableBytes).fill(marker);
+  const text = "q".repeat(staticWritableBytes + 9);
+
+  io.writeBinary(initial, slot, 0);
+  const written = io.writeUtf8(text, slot);
+  const out = io.readBytesCopy(0, staticWritableBytes, slot);
+
+  assertEquals(written, -1);
+  assertEquals(Array.from(out), Array.from(textEncode.encode("q".repeat(staticWritableBytes))));
+});
+
+test("static writeUtf8 recovers after overflow by accepting subsequent fitting writes", () => {
+  const headersBuffer = makeHeaders();
+  const io = createSharedStaticBufferIO({ headersBuffer });
+  const slot = 3;
+
+  assertEquals(io.writeUtf8("😀".repeat((staticWritableBytes >>> 2) + 1), slot), -1);
+
+  const next = "ok-😀-post-overflow";
+  const expected = textEncode.encode(next);
+  const written = io.writeUtf8(next, slot);
+
+  assertEquals(written, expected.byteLength);
+  assertEquals(io.readUtf8(0, written, slot), next);
+});
+
+test("static writeUtf8 writes are isolated per slot", () => {
+  const headersBuffer = makeHeaders();
+  const io = createSharedStaticBufferIO({ headersBuffer });
+  const marker = 0x7f;
+  const untouched = new Uint8Array(staticWritableBytes).fill(marker);
+  io.writeBinary(untouched, 0, 0);
+
+  const text = "slot-one-😀";
+  const written = io.writeUtf8(text, 1);
+
+  assertEquals(io.readUtf8(0, written, 1), text);
+  assertEquals(Array.from(io.readBytesCopy(0, staticWritableBytes, 0)), Array.from(untouched));
+});
+
+test("static writeUtf8 randomized boundary behavior matches encodeInto contract", () => {
+  const headersBuffer = makeHeaders();
+  const io = createSharedStaticBufferIO({ headersBuffer });
+  const nextRandom = makeRng(0x51a71c0d);
+  const alphabet = ["a", "b", "é", "€", "Ж", "ह", "😀", "𐍈"];
+
+  for (let i = 0; i < 400; i++) {
+    let text = "";
+    const targetLen = staticWritableBytes - 24 + (nextRandom() % 64);
+    for (let at = 0; at < targetLen; at++) {
+      text += alphabet[nextRandom() % alphabet.length]!;
+    }
+
+    const slot = i % LockBound.slots;
+    const probe = new Uint8Array(staticWritableBytes);
+    const probeResult = textEncode.encodeInto(text, probe);
+    const written = io.writeUtf8(text, slot);
+
+    if (probeResult.read === text.length) {
+      assertEquals(written, probeResult.written);
+      assertEquals(io.readUtf8(0, written, slot), text);
+      continue;
+    }
+
+    assertEquals(written, -1);
+    assertEquals(
+      Array.from(io.readBytesCopy(0, probeResult.written, slot)),
+      Array.from(probe.subarray(0, probeResult.written)),
+    );
+  }
 });
 
 test("static binary and float IO roundtrip", () => {

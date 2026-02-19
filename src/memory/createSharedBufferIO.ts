@@ -6,8 +6,8 @@ import {
   createSharedArrayBuffer,
 } from "../common/runtime.ts";
 const page = 1024 * 4;
-
 const textEncode = new TextEncoder();
+
 
 enum SignalEnumOptions {
   header = 64,
@@ -112,16 +112,20 @@ export const createSharedDynamicBufferIO = ({
   const read8BytesFloatView = (start:number, end:number) =>
     f64.subarray(start >>> 3, end >>> 3);
 
-  const writeUtf8 = (str: string, start: number) => {
-
-    const written = buf!.write(str, start)
-   
-
-    if (written < str.length) {
-      return writeBinary(textEncode.encode(str), start);
+  const writeUtf8 = (
+    str: string,
+    start: number,
+    reservedBytes = str.length * 3,
+  ) => {
+    if (!ensureCapacity(start + reservedBytes)) {
+      throw new RangeError("Shared buffer capacity exceeded");
     }
-    return written
-
+    const target = u8.subarray(start, start + reservedBytes);
+    const { read, written } = textEncode.encodeInto(str, target);
+    if (read !== str.length) {
+      throw new RangeError("Shared buffer utf8 write exceeded reserved range");
+    }
+    return written;
   };
 
   return {
@@ -183,9 +187,10 @@ export const createSharedStaticBufferIO = ({
 
 
   const writeUtf8 = (str: string, at:number) => {
-    const bytes = NodeBuffer.byteLength(str, "utf8");
-    if (bytes > writableBytes) return -1;
-    return arrBuffSec[at]!.write(str, 0, writableBytes, "utf8");
+    const { read, written } = textEncode.encodeInto(str, arrU8Sec[at]);
+    if (read !== str.length) return -1;
+   
+    return written;
   };
 
   const readUtf8 = (start: number, end: number,at:number) => {

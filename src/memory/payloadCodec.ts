@@ -22,12 +22,6 @@ const BIGINT64_MAX = (1n << 63n) - 1n;
 const { parse: parseJSON, stringify: stringifyJSON } = JSON;
 const { for: symbolFor, keyFor: symbolKeyFor } = Symbol;
 
-const isThenable = (
-  value: object | ((...args: unknown[]) => unknown),
-): value is PromiseLike<unknown> =>
-  typeof (value as { then?: unknown })?.then === "function";
-
-
 const encodeBigIntBinary = (value: bigint) => {
   let sign = 0;
   let abs = value;
@@ -152,25 +146,6 @@ export const encodePayload = ({
         task.value === true ? PayloadSignal.True : PayloadSignal.False;
       return true;
     case "function":
-      if (isThenable(args)) {
-        const markedTask = task as Task & { [PromisePayloadMarker]?: true };
-        if (markedTask[PromisePayloadMarker] !== true) {
-          markedTask[PromisePayloadMarker] = true;
-          args.then(
-            (value) => {
-              delete markedTask[PromisePayloadMarker];
-              task.value = value;
-              onPromise?.(task, { status: "fulfilled", value });
-            },
-            (reason) => {
-              delete markedTask[PromisePayloadMarker];
-              task.value = reason;
-              onPromise?.(task, { status: "rejected", reason });
-            },
-          );
-        }
-        return false;
-      }
       throw "you cant pass a function ";
     case "number":
 
@@ -197,25 +172,6 @@ export const encodePayload = ({
         task[TaskIndex.Type] = PayloadSignal.Null
         return true
       }
-      if (isThenable(args)) {
-        const markedTask = task as Task & { [PromisePayloadMarker]?: true };
-        if (markedTask[PromisePayloadMarker] !== true) {
-          markedTask[PromisePayloadMarker] = true;
-          (args as PromiseLike<unknown>).then(
-            (value) => {
-              delete markedTask[PromisePayloadMarker];
-              task.value = value;
-              onPromise?.(task, { status: "fulfilled", value });
-            },
-            (reason) => {
-              delete markedTask[PromisePayloadMarker];
-              task.value = reason;
-              onPromise?.(task, { status: "rejected", reason });
-            },
-          );
-        }
-        return false;
-      }
 
       switch (args.constructor) {
         case NodeBuffer: {
@@ -225,6 +181,7 @@ export const encodePayload = ({
             if (written !== -1) {
               task[TaskIndex.Type] = PayloadBuffer.StaticBuffer;
               task[TaskIndex.PayloadLen] = written;
+              task.value = null;
               return true;
             }
           }
@@ -232,6 +189,7 @@ export const encodePayload = ({
           task[TaskIndex.Type] = PayloadBuffer.Buffer;
           if (!reserveDynamic(task, bytes)) return false;
           writeDynamicBinary(args as NodeBuffer, task[TaskIndex.Start]);
+          task.value = null;
           return true;
         }
         case Uint8Array: {
@@ -241,6 +199,7 @@ export const encodePayload = ({
             if (written !== -1) {
               task[TaskIndex.Type] = PayloadBuffer.StaticBinary;
               task[TaskIndex.PayloadLen] = written;
+              task.value = null;
               return true;
             }
           }
@@ -248,6 +207,7 @@ export const encodePayload = ({
           task[TaskIndex.Type] = PayloadBuffer.Binary;
           if (!reserveDynamic(task, bytes)) return false;
           writeDynamicBinary(args as Uint8Array, task[TaskIndex.Start]);
+          task.value = null;
           return true;
         }
         case ArrayBuffer: {
@@ -258,6 +218,7 @@ export const encodePayload = ({
             if (written !== -1) {
               task[TaskIndex.Type] = PayloadBuffer.StaticArrayBuffer;
               task[TaskIndex.PayloadLen] = written;
+              task.value = null;
               return true;
             }
           }
@@ -265,6 +226,7 @@ export const encodePayload = ({
           task[TaskIndex.Type] = PayloadBuffer.ArrayBuffer;
           if (!reserveDynamic(task, bytes)) return false;
           writeDynamicBinary(view, task[TaskIndex.Start]);
+          task.value = null;
           return true;
         }
         case Object:
@@ -275,6 +237,7 @@ export const encodePayload = ({
             if (written !== -1) {
               task[TaskIndex.Type] = PayloadBuffer.StaticJson;
               task[TaskIndex.PayloadLen] = written;
+              task.value = null;
               return true;
             }
           }
@@ -284,6 +247,7 @@ export const encodePayload = ({
           const written = writeDynamicUtf8(text, task[TaskIndex.Start]);
           task[TaskIndex.PayloadLen] = written;
           setSlotLength(task[TaskIndex.slotBuffer], written);
+          task.value = null
           return true
         }
         case NumericBuffer: {
@@ -291,6 +255,7 @@ export const encodePayload = ({
           task[TaskIndex.Type] = PayloadBuffer.NumericBuffer
           if (!reserveDynamic(task, float64.byteLength)) return false;
           writeDynamic8Binary(float64, task[TaskIndex.Start])
+          task.value = null
           return true
         }
         case Int32Array: {
@@ -304,6 +269,7 @@ export const encodePayload = ({
             if (written !== -1) {
               task[TaskIndex.Type] = PayloadBuffer.StaticInt32Array;
               task[TaskIndex.PayloadLen] = written;
+              task.value = null;
               return true;
             }
           }
@@ -311,6 +277,7 @@ export const encodePayload = ({
           task[TaskIndex.Type] = PayloadBuffer.Int32Array;
           if (!reserveDynamic(task, bytes)) return false;
           writeDynamicBinary(new Uint8Array(view.buffer, view.byteOffset, view.byteLength), task[TaskIndex.Start]);
+          task.value = null;
           return true;
         }
         case Float64Array: {
@@ -321,6 +288,7 @@ export const encodePayload = ({
             if (written !== -1) {
               task[TaskIndex.Type] = PayloadBuffer.StaticFloat64Array;
               task[TaskIndex.PayloadLen] = written;
+              task.value = null;
               return true;
             }
           }
@@ -328,6 +296,7 @@ export const encodePayload = ({
           task[TaskIndex.Type] = PayloadBuffer.Float64Array;
           if (!reserveDynamic(task, bytes)) return false;
           writeDynamic8Binary(view, task[TaskIndex.Start]);
+          task.value = null;
           return true;
         }
         case BigInt64Array: {
@@ -341,6 +310,7 @@ export const encodePayload = ({
             if (written !== -1) {
               task[TaskIndex.Type] = PayloadBuffer.StaticBigInt64Array;
               task[TaskIndex.PayloadLen] = written;
+              task.value = null;
               return true;
             }
           }
@@ -348,6 +318,7 @@ export const encodePayload = ({
           task[TaskIndex.Type] = PayloadBuffer.BigInt64Array;
           if (!reserveDynamic(task, bytes)) return false;
           writeDynamicBinary(new Uint8Array(view.buffer, view.byteOffset, view.byteLength), task[TaskIndex.Start]);
+          task.value = null;
           return true;
         }
         case BigUint64Array: {
@@ -361,6 +332,7 @@ export const encodePayload = ({
             if (written !== -1) {
               task[TaskIndex.Type] = PayloadBuffer.StaticBigUint64Array;
               task[TaskIndex.PayloadLen] = written;
+              task.value = null;
               return true;
             }
           }
@@ -368,6 +340,7 @@ export const encodePayload = ({
           task[TaskIndex.Type] = PayloadBuffer.BigUint64Array;
           if (!reserveDynamic(task, bytes)) return false;
           writeDynamicBinary(new Uint8Array(view.buffer, view.byteOffset, view.byteLength), task[TaskIndex.Start]);
+          task.value = null;
           return true;
         }
         case DataView: {
@@ -381,6 +354,7 @@ export const encodePayload = ({
             if (written !== -1) {
               task[TaskIndex.Type] = PayloadBuffer.StaticDataView;
               task[TaskIndex.PayloadLen] = written;
+              task.value = null;
               return true;
             }
           }
@@ -388,6 +362,7 @@ export const encodePayload = ({
           task[TaskIndex.Type] = PayloadBuffer.DataView;
           if (!reserveDynamic(task, bytes)) return false;
           writeDynamicBinary(new Uint8Array(view.buffer, view.byteOffset, view.byteLength), task[TaskIndex.Start]);
+          task.value = null;
           return true;
         }
         case Date: {
@@ -396,7 +371,27 @@ export const encodePayload = ({
           task[TaskIndex.Type] = PayloadBuffer.Date;
           task[TaskIndex.Start] = Uint32View[0];
           task[TaskIndex.End] = Uint32View[1];
+          task.value = null;
           return true;
+        }
+                case Promise : {
+           const markedTask = task as Task & { [PromisePayloadMarker]?: true };
+        if (markedTask[PromisePayloadMarker] !== true) {
+          markedTask[PromisePayloadMarker] = true;
+          (args as Promise<unknown>).then(
+            (value) => {
+              delete markedTask[PromisePayloadMarker];
+              task.value = value;
+              onPromise?.(task, { status: "fulfilled", value });
+            },
+            (reason) => {
+              delete markedTask[PromisePayloadMarker];
+              task.value = reason;
+              onPromise?.(task, { status: "rejected", reason });
+            },
+          );
+        }
+        return false;
         }
       }
 
@@ -407,6 +402,7 @@ export const encodePayload = ({
           if (written !== -1) {
             task[TaskIndex.Type] = PayloadBuffer.StaticSerializable;
             task[TaskIndex.PayloadLen] = written;
+            task.value = null;
             return true;
           }
         }
@@ -414,25 +410,31 @@ export const encodePayload = ({
         task[TaskIndex.Type] = PayloadBuffer.Serializable
         if (!reserveDynamic(task, binary.byteLength)) return false;
         writeDynamicBinary(binary, task[TaskIndex.Start])
+        task.value = null
         return true
       }
     case "string":
       {
         const text = args as string;
-        const estimatedBytes = text.length ;
-        if (estimatedBytes <= staticMaxBytes) {
+        const estimatedBytes = text.length * 3;
+        if (text.length <= staticMaxBytes) {
           const written = writeStaticUtf8(text, slotIndex);
           if (written !== -1) {
             task[TaskIndex.Type] = PayloadBuffer.StaticString;
             task[TaskIndex.PayloadLen] = written;
             return true;
+            
           }
         }
 
         task[TaskIndex.Type] = PayloadBuffer.String;
         if (!reserveDynamic(task, estimatedBytes)) return false;
 
-        const written = writeDynamicUtf8(text, task[TaskIndex.Start]);
+        const written = writeDynamicUtf8(
+          text,
+          task[TaskIndex.Start],
+          estimatedBytes,
+        );
         task[TaskIndex.PayloadLen] = written;
         setSlotLength(task[TaskIndex.slotBuffer], written);
         return true

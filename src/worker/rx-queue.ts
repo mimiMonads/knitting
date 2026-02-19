@@ -29,13 +29,6 @@ export const createWorkerRxQueue = (
   let hasAnythingFinished = 0;
   let awaiting = 0;
 
-  const isThenable = (value: unknown): value is PromiseLike<unknown> => {
-    if (value == null) return false;
-    const type = typeof value;
-    if (type !== "object" && type !== "function") return false;
-    return typeof (value as { then?: unknown }).then === "function";
-  };
-
   const jobs = listOfFunctions.reduce((acc, fixed) => (
     acc.push(fixed.run), acc
   ), [] as Array<(args: unknown) => unknown>);
@@ -144,7 +137,7 @@ const enqueueLock = () => {
         try {
        
           const result = jobs[slot[TaskIndex.FunctionID]](slot.value);
-          if (!isThenable(result)) {
+          if (!(result instanceof Promise)) {
             settleNow(slot, false, result, false);
           } else {
             awaiting++;

@@ -6,6 +6,7 @@ const assertEquals: (actual: unknown, expected: unknown) => void =
   };
 import { register } from "../src/memory/regionRegistry.ts";
 import {
+  LockBound,
   LOCK_SECTOR_BYTE_LENGTH,
   makeTask,
   TaskIndex,
@@ -13,6 +14,7 @@ import {
 
 
 const align64 = (n: number) => (n + 63) & ~63;
+const START_MASK = (~31) >>> 0;
 
 const makeRegistry = () =>
   register({
@@ -32,6 +34,76 @@ const expectedStartAndIndex = (sizes: number[]) =>
     const  val = a.slice(0,i + 1).reduce((acc,c) => acc+ (align64(c) >>> 6), 0)
     return [val, ++i]
   }).slice(0,-1)]
+
+const isSingleBit = (value: number) =>
+  value !== 0 && (value & (value - 1)) === 0;
+
+const popcount32 = (value: number) => {
+  let x = value >>> 0;
+  let count = 0;
+  while (x !== 0) {
+    x &= x - 1;
+    count++;
+  }
+  return count;
+};
+
+const makeRng = (seed: number) => {
+  let state = seed >>> 0;
+  return () => {
+    state ^= state << 13;
+    state ^= state >>> 17;
+    state ^= state << 5;
+    return state >>> 0;
+  };
+};
+
+type LiveAllocation = {
+  start: number;
+  size: number;
+};
+
+const assertNoOverlap = (live: Map<number, LiveAllocation>) => {
+  const values = Array.from(live.values());
+  for (let i = 0; i < values.length; i++) {
+    const a = values[i]!;
+    const aEnd = a.start + a.size;
+    for (let j = i + 1; j < values.length; j++) {
+      const b = values[j]!;
+      const bEnd = b.start + b.size;
+      const overlap = a.start < bEnd && b.start < aEnd;
+      assertEquals(overlap, false);
+    }
+  }
+};
+
+const assertAllocatorInvariants = (
+  registry: ReturnType<typeof makeRegistry>,
+  live: Map<number, LiveAllocation>,
+) => {
+  const stateBits = (registry.hostBits[0] ^ registry.workerBits[0]) >>> 0;
+  assertEquals(popcount32(stateBits), live.size);
+  assertEquals(live.size <= LockBound.slots, true);
+
+  const table = live.size === 0 ? [] : registry.startAndIndexToArray(live.size);
+  let tableBits = 0;
+  const seenSlots = new Set<number>();
+
+  for (const packed of table) {
+    const slot = packed & 31;
+    assertEquals(seenSlots.has(slot), false);
+    seenSlots.add(slot);
+    tableBits |= 1 << slot;
+
+    const expected = live.get(slot);
+    assertEquals(typeof expected !== "undefined", true);
+    assertEquals((packed & START_MASK) >>> 0, expected!.start >>> 0);
+  }
+
+  assertEquals(table.length, live.size);
+  assertEquals(tableBits >>> 0, stateBits >>> 0);
+  assertNoOverlap(live);
+};
 
 
 
@@ -321,4 +393,93 @@ test("setSlotLength rejects growing a slot", () => {
   const task = allocNoSync(registry, 64);
 
   assertEquals(registry.setSlotLength(task[TaskIndex.slotBuffer], 256), false);
+});
+
+test("allocator random overlap stress keeps allocator consistent", () => {
+  const registry = makeRegistry();
+  const nextRandom = makeRng(0xc0ffee12);
+  const live = new Map<number, LiveAllocation>();
+
+  for (let step = 0; step < 6000; step++) {
+    const shouldAllocate = live.size === 0 ||
+      (live.size < LockBound.slots && (nextRandom() & 1) === 0);
+
+    if (shouldAllocate) {
+      registry.updateTable();
+
+      const payloadLen = 1 + (nextRandom() % 8192);
+      const task = makeTask();
+      task[TaskIndex.PayloadLen] = payloadLen;
+
+      const hostBefore = registry.hostBits[0] | 0;
+      const workerBefore = registry.workerBits[0] | 0;
+      const pendingBefore = (hostBefore ^ workerBefore) >>> 0;
+
+      const allocated = registry.allocTask(task);
+      assertEquals(allocated === -1, false);
+
+      const hostAfter = registry.hostBits[0] | 0;
+      const toggled = (hostBefore ^ hostAfter) >>> 0;
+      assertEquals(isSingleBit(toggled), true);
+      assertEquals((pendingBefore & toggled) === 0, true);
+
+      const slot = task[TaskIndex.slotBuffer];
+      assertEquals(31 - Math.clz32(toggled), slot);
+      assertEquals(live.has(slot), false);
+
+      live.set(slot, {
+        start: task[TaskIndex.Start],
+        size: align64(payloadLen),
+      });
+    } else {
+      const slots = Array.from(live.keys());
+      const slot = slots[nextRandom() % slots.length]!;
+      registry.free(slot);
+      live.delete(slot);
+      registry.updateTable();
+    }
+
+    assertAllocatorInvariants(registry, live);
+  }
+
+  while (live.size > 0) {
+    const slot = live.keys().next().value as number;
+    registry.free(slot);
+    live.delete(slot);
+    registry.updateTable();
+    assertAllocatorInvariants(registry, live);
+  }
+
+  const refilled: ReturnType<typeof makeTask>[] = [];
+  for (let i = 0; i < LockBound.slots; i++) {
+    const task = makeTask();
+    task[TaskIndex.PayloadLen] = 64;
+    assertEquals(registry.allocTask(task) === -1, false);
+    refilled.push(task);
+    live.set(task[TaskIndex.slotBuffer], {
+      start: task[TaskIndex.Start],
+      size: align64(task[TaskIndex.PayloadLen]),
+    });
+  }
+  assertAllocatorInvariants(registry, live);
+
+  const overflow = makeTask();
+  overflow[TaskIndex.PayloadLen] = 64;
+  assertEquals(registry.allocTask(overflow), -1);
+
+  for (const task of refilled) {
+    registry.free(task[TaskIndex.slotBuffer]);
+    live.delete(task[TaskIndex.slotBuffer]);
+  }
+  registry.updateTable();
+  assertAllocatorInvariants(registry, live);
+  assertEquals((registry.hostBits[0] ^ registry.workerBits[0]) >>> 0, 0);
+
+  const probe = makeTask();
+  probe[TaskIndex.PayloadLen] = 512;
+  assertEquals(registry.allocTask(probe) === -1, false);
+  assertEquals(probe[TaskIndex.Start], 0);
+  registry.free(probe[TaskIndex.slotBuffer]);
+  registry.updateTable();
+  assertAllocatorInvariants(registry, live);
 });

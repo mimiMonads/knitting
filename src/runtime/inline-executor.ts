@@ -49,7 +49,7 @@ const normalizeTimeout = (timeout?: TaskTimeout): TimeoutSpec | undefined => {
 };
 
 const raceTimeout = (
-  promise: PromiseLike<unknown>,
+  promise: Promise<unknown>,
   spec: TimeoutSpec,
 ): Promise<unknown> =>
   new Promise((resolve, reject) => {
@@ -80,13 +80,6 @@ const raceTimeout = (
     );
   });
 
-const isThenable = (value: unknown): value is PromiseLike<unknown> => {
-  if (value == null) return false;
-  const type = typeof value;
-  if (type !== "object" && type !== "function") return false;
-  return typeof (value as { then?: unknown }).then === "function";
-};
-
 const composeInlineCallable = (
   fn: WorkerCallable,
   timeout?: TaskTimeout,
@@ -95,7 +88,7 @@ const composeInlineCallable = (
   if (!normalized) return fn;
   return (args: unknown) => {
     const result = fn(args);
-    return isThenable(result) ? raceTimeout(result, normalized) : result;
+    return result instanceof Promise ? raceTimeout(result, normalized) : result;
   };
 };
 
@@ -225,7 +218,7 @@ export const createInlineExecutor = ({
         const args = argsByIndex[index];
         const fnId = fnByIndex[index];
         const res = runners[fnId]!(args);
-        if (!isThenable(res)) {
+        if (!(res instanceof Promise)) {
           settleIfCurrent(index, taskID, false, res);
           processed++;
           continue;
@@ -284,8 +277,8 @@ export const createInlineExecutor = ({
     stateByIndex[index] = SlotStateMacro.Pending;
     working++;
 
-    if (isThenable(args)) {
-      Promise.resolve(args).then(
+    if (args instanceof Promise) {
+      args.then(
         (value) => {
           if (taskIdByIndex[index] !== taskID) return;
           argsByIndex[index] = value;

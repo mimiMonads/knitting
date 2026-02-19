@@ -80,6 +80,7 @@ export const sleepUntilChanged = (
   ) => {
     const until = p_now() + (spinMicroseconds / 1000);
 
+    maybeGc();
     let spinChecks = 0;
     while (true) {
       if (
@@ -93,7 +94,7 @@ export const sleepUntilChanged = (
       if ((spinChecks++ & 63) === 0 && p_now() >= until) break;
     }
 
-    //maybeGc();
+
     if (tryProgress()) return;
 
     a_store(rxStatus, 0, 0);

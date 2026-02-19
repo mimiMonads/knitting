@@ -4,7 +4,7 @@ const assertEquals: (actual: unknown, expected: unknown) => void =
   (actual, expected) => {
     assert.deepStrictEqual(actual, expected);
   };
-import { createPool } from "../knitting.ts";
+import { createPool, task } from "../knitting.ts";
 import { genTaskID } from "../src/common/others.ts";
 import { createInlineExecutor } from "../src/runtime/inline-executor.ts";
 import { hello, world } from "./fixtures/hello_world.ts";
@@ -47,6 +47,53 @@ test("inliner resolves first dispatch in microtasks", async () => {
     await pending;
   } finally {
     await shutdown();
+  }
+});
+
+test("inliner does not await thenable arguments", async () => {
+  const inliner = createInlineExecutor({
+    tasks: { world },
+    genTaskID,
+  });
+  const invoke = inliner.call({ fnNumber: 0 });
+  const thenableArg = {
+    then: (resolve: (value: string) => void) => resolve("hello "),
+    toString: () => "thenable",
+  };
+
+  try {
+    const result = await invoke(thenableArg);
+    assertEquals(result, "thenable world!");
+  } finally {
+    await inliner.kills();
+  }
+});
+
+test("inliner timeout does not treat thenable return as promise", async () => {
+  const returnsThenable = task({
+    timeout: { time: 5, default: "timeout" },
+    f: () => ({
+      then: (resolve: (value: string) => void) => {
+        setTimeout(() => resolve("slow"), 25);
+      },
+    }),
+  });
+  const inliner = createInlineExecutor({
+    tasks: { returnsThenable },
+    genTaskID,
+  });
+  const invoke = inliner.call({ fnNumber: 0 });
+
+  try {
+    const pending = invoke(undefined);
+    const early = await Promise.race([
+      pending.then((value) => `value:${String(value)}`),
+      new Promise<string>((resolve) => setTimeout(() => resolve("timer"), 12)),
+    ]);
+    assertEquals(early, "timer");
+    assertEquals(await pending, "slow");
+  } finally {
+    await inliner.kills();
   }
 });
 
