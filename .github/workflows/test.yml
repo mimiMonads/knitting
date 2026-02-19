@@ -34,12 +34,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-latest
-          - windows-latest
-        runtime:
-          - node
-          - bun
+        include:
+          - os: ubuntu-latest
+            runtime: node
+          - os: windows-latest
+            runtime: node
+          - os: ubuntu-latest
+            runtime: bun
     permissions:
       contents: read
     steps:
