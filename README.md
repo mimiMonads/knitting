@@ -1,5 +1,11 @@
 # knitting
-[![Coverage](https://github.com/mimiMonads/knitting/actions/workflows/coverage.yml/badge.svg?branch=main)](https://github.com/mimiMonads/knitting/actions/workflows/coverage.yml)
+[![Tests](https://github.com/mimiMonads/knitting/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/mimiMonads/knitting/actions/workflows/test.yml)
+[![Coverage Workflow](https://github.com/mimiMonads/knitting/actions/workflows/coverage.yml/badge.svg?branch=main)](https://github.com/mimiMonads/knitting/actions/workflows/coverage.yml)
+[![Coverage (node lines)](https://img.shields.io/badge/coverage%20(node%20lines)-92.10%25-brightgreen)](https://github.com/mimiMonads/knitting/actions/workflows/coverage.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
+[![Node >=22](https://img.shields.io/badge/node-%3E%3D22-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![Deno >=2](https://img.shields.io/badge/deno-%3E%3D2-111111?logo=deno&logoColor=white)](https://deno.com/)
+[![Bun recent](https://img.shields.io/badge/bun-recent-f5f5dc?logo=bun&logoColor=black)](https://bun.sh/)
 
 Shared-memory worker pool for Node.js, Deno, and Bun. Define tasks once, then
 call them from the main thread with a small, typed API.
