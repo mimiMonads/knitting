@@ -128,7 +128,11 @@ export const createSharedDynamicBufferIO = ({
       throw new RangeError("Shared buffer capacity exceeded");
     }
 
-    return buf.write(str, start, reservedBytes, "utf8");
+    const { read, written } = textEncode.encodeInto(str, 
+      u8.subarray(start, start + reservedBytes)
+    );
+    if (read !== str.length) throw new RangeError("Shared buffer capacity exceeded");
+    return written;
   };
 
   return {

@@ -13,6 +13,7 @@ export const echoBytes = task<Uint8Array, Uint8Array>({
 const MIN_SIZE = Number(process.env.CALL_GROWTH_MIN ?? "32");
 const MAX_SIZE = Number(process.env.CALL_GROWTH_MAX ?? String(1024 * 1024));
 const THREADS = Number(process.env.CALL_GROWTH_THREADS ?? "1");
+const BATCH_SIZE = Number(process.env.CALL_GROWTH_BATCH_SIZE ?? "64");
 
 const makeSizes = (min: number, max: number) => {
   const sizes: number[] = [];
@@ -21,7 +22,8 @@ const makeSizes = (min: number, max: number) => {
   return sizes;
 };
 
-const ASCII_SOURCE = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_";
+const ASCII_SOURCE =
+  "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_";
 
 const makeAscii = (size: number) => {
   let out = "";
@@ -37,7 +39,7 @@ const makeBytes = (size: number) => {
 
 const pool = createPool({
   threads: THREADS,
-  payloadInitialBytes: 64 * 1028 *1028
+  payloadInitialBytes: 64 * 1028 * 1028,
 })({ echoString, echoBytes });
 
 let sink = 0;
@@ -46,8 +48,12 @@ if (isMain) {
   if (!Number.isFinite(MIN_SIZE) || !Number.isFinite(MAX_SIZE)) {
     throw new Error("CALL_GROWTH_MIN/MAX must be finite numbers");
   }
+  if (!Number.isFinite(BATCH_SIZE)) {
+    throw new Error("CALL_GROWTH_BATCH_SIZE must be finite");
+  }
   if (MIN_SIZE < 1) throw new Error("CALL_GROWTH_MIN must be >= 1");
   if (MAX_SIZE < MIN_SIZE) throw new Error("Size bounds are invalid");
+  if (BATCH_SIZE < 1) throw new Error("CALL_GROWTH_BATCH_SIZE must be >= 1");
 
   const sizes = makeSizes(MIN_SIZE, MAX_SIZE);
   const stringPayloads = new Map<number, string>();
@@ -58,25 +64,39 @@ if (isMain) {
     uint8Payloads.set(size, makeBytes(size));
   }
 
-  group(`call growth string (ascii ${MIN_SIZE}..${MAX_SIZE} x4)`, () => {
-    for (const size of sizes) {
-      const payload = stringPayloads.get(size) as string;
-      bench(`${size} B`, async () => {
-        const value = await pool.call.echoString(payload);
-        sink ^= value.length;
-      });
-    }
-  });
+  group(
+    `call growth batch string (ascii ${MIN_SIZE}..${MAX_SIZE} x4, batch=${BATCH_SIZE})`,
+    () => {
+      for (const size of sizes) {
+        const payload = stringPayloads.get(size) as string;
+        bench(`${size} B`, async () => {
+          const jobs = Array.from(
+            { length: BATCH_SIZE },
+            () => pool.call.echoString(payload),
+          );
+          const values = await Promise.all(jobs);
+          for (const value of values) sink ^= value.length;
+        });
+      }
+    },
+  );
 
-  group(`call growth uint8array (${MIN_SIZE}..${MAX_SIZE} x4)`, () => {
-    for (const size of sizes) {
-      const payload = uint8Payloads.get(size) as Uint8Array;
-      bench(`${size} B`, async () => {
-        const value = await pool.call.echoBytes(payload);
-        sink ^= value.byteLength;
-      });
-    }
-  });
+  group(
+    `call growth batch uint8array (${MIN_SIZE}..${MAX_SIZE} x4, batch=${BATCH_SIZE})`,
+    () => {
+      for (const size of sizes) {
+        const payload = uint8Payloads.get(size) as Uint8Array;
+        bench(`${size} B`, async () => {
+          const jobs = Array.from(
+            { length: BATCH_SIZE },
+            () => pool.call.echoBytes(payload),
+          );
+          const values = await Promise.all(jobs);
+          for (const value of values) sink ^= value.byteLength;
+        });
+      }
+    },
+  );
 
   await mitataRun({
     format,
