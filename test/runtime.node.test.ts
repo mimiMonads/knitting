@@ -10,6 +10,11 @@ import {
   addOnePromise,
   addOnePromiseViaPath,
 } from "./fixtures/runtime_tasks.ts";
+import {
+  returnFunction,
+  returnLocalSymbol,
+  returnWeakMap,
+} from "./fixtures/error_tasks.ts";
 
 const TEST_TIMEOUT_MS = 10_000;
 
@@ -91,6 +96,36 @@ test("node:test pool imports task module from filesystem href", {
       TEST_TIMEOUT_MS,
     );
     assert.equal(value, 11);
+  } finally {
+    await pool.shutdown();
+  }
+});
+
+test("node:test pool rejects when worker cannot encode returned payload", {
+  concurrency: false,
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
+  const pool = createPool({ threads: 1 })({
+    returnLocalSymbol,
+    returnFunction,
+    returnWeakMap,
+  });
+
+  try {
+    await assert.rejects(
+      withTimeout(pool.call.returnLocalSymbol(), TEST_TIMEOUT_MS),
+      (error: unknown) => String(error).includes("KNT_ERROR_1"),
+    );
+
+    await assert.rejects(
+      withTimeout(pool.call.returnFunction(), TEST_TIMEOUT_MS),
+      (error: unknown) => String(error).includes("KNT_ERROR_0"),
+    );
+
+    await assert.rejects(
+      withTimeout(pool.call.returnWeakMap(), TEST_TIMEOUT_MS),
+      (error: unknown) => String(error).includes("KNT_ERROR_3"),
+    );
   } finally {
     await pool.shutdown();
   }

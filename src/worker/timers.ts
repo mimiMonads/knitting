@@ -7,8 +7,35 @@ enum Comment {
 }
 
 const maybeGc = (() => {
-  const gc = (globalThis as { gc?: () => void }).gc;
-  return typeof gc === "function" ? gc.bind(globalThis) as () => void : () => {};
+  type GcHost = {
+    gc?: (() => void) | undefined;
+    global?: {
+      gc?: (() => void) | undefined;
+    } | undefined;
+  };
+
+  const host = globalThis as GcHost;
+  const gc = typeof host.gc === "function"
+    ? host.gc.bind(globalThis) as () => void
+    : undefined;
+
+  if (gc) {
+    try {
+      delete host.gc;
+    } catch {
+      host.gc = undefined;
+    }
+
+    if (host.global) {
+      try {
+        delete host.global.gc;
+      } catch {
+        host.global.gc = undefined;
+      }
+    }
+  }
+
+  return gc ?? (() => {});
 })();
 
 const DEFAULT_PAUSE_TIME = 250;

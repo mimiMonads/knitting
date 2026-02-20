@@ -12,6 +12,7 @@ import { createSharedDynamicBufferIO, createSharedStaticBufferIO } from "./creat
 import { deserialize, serialize } from "node:v8";
 import { Buffer as NodeBuffer } from "node:buffer";
 import { NumericBuffer } from "../ipc/protocol/parsers/NumericBuffer.ts";
+import { ErrorKnitting, encoderError } from "../error.ts";
 
 const memory = new ArrayBuffer(8);
 const Float64View = new Float64Array(memory);
@@ -159,7 +160,11 @@ export const encodePayload = ({
         task.value === true ? PayloadSignal.True : PayloadSignal.False;
       return true;
     case "function":
-      throw "you cant pass a function ";
+      return encoderError({
+        task,
+        type: ErrorKnitting.Function,
+        onPromise,
+      });
     case "number":
 
       if (args !== args) {
@@ -244,7 +249,18 @@ export const encodePayload = ({
         }
         case Object:
         case Array: {
-          const text = stringifyJSON(args)
+          let text: string;
+          try {
+            text = stringifyJSON(args);
+          } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error);
+            return encoderError({
+              task,
+              type: ErrorKnitting.Json,
+              onPromise,
+              detail,
+            });
+          }
           if (text.length <= staticMaxBytes) {
             const written = writeStaticUtf8(text, slotIndex);
             if (written !== -1) {
@@ -387,29 +403,42 @@ export const encodePayload = ({
           task.value = null;
           return true;
         }
-                case Promise : {
-           const markedTask = task as Task & { [PromisePayloadMarker]?: true };
-        if (markedTask[PromisePayloadMarker] !== true) {
-          markedTask[PromisePayloadMarker] = true;
-          (args as Promise<unknown>).then(
-            (value) => {
-              delete markedTask[PromisePayloadMarker];
-              task.value = value;
-              onPromise?.(task, { status: "fulfilled", value });
-            },
-            (reason) => {
-              delete markedTask[PromisePayloadMarker];
-              task.value = reason;
-              onPromise?.(task, { status: "rejected", reason });
-            },
-          );
-        }
-        return false;
+        case Promise: {
+          const markedTask = task as Task & {
+            [PromisePayloadMarker]?: boolean;
+          };
+          if (markedTask[PromisePayloadMarker] !== true) {
+            markedTask[PromisePayloadMarker] = true;
+            (args as Promise<unknown>).then(
+              (value) => {
+                markedTask[PromisePayloadMarker] = false;
+                task.value = value;
+                onPromise?.(task, { status: "fulfilled", value });
+              },
+              (reason) => {
+                markedTask[PromisePayloadMarker] = false;
+                task.value = reason;
+                onPromise?.(task, { status: "rejected", reason });
+              },
+            );
+          }
+          return false;
         }
       }
 
       {
-        const binary = serialize(args) as Uint8Array
+        let binary: Uint8Array;
+        try {
+          binary = serialize(args) as Uint8Array;
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          return encoderError({
+            task,
+            type: ErrorKnitting.Serializable,
+            onPromise,
+            detail,
+          });
+        }
         if (binary.byteLength <= staticMaxBytes) {
           const written = writeStaticBinary(binary, slotIndex);
           if (written !== -1) {
@@ -456,7 +485,11 @@ export const encodePayload = ({
       {
         const key = symbolKeyFor(args);
         if (key === undefined) {
-          throw "only Symbol.for(...) keys are supported";
+          return encoderError({
+            task,
+            type: ErrorKnitting.Symbol,
+            onPromise,
+          });
         }
         const estimatedBytes = key.length * 3;
         if (estimatedBytes <= staticMaxBytes) {
@@ -770,8 +803,6 @@ export const decodePayload = ({
       )
       free(task[TaskIndex.slotBuffer])
     return
-    case PayloadSignal.UNREACHABLE:
-      throw "UREACHABLE AT RECOVER"
   }
 } 
 }

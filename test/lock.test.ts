@@ -242,7 +242,7 @@ test("xor bit protocol random stress keeps slot toggles consistent", () => {
   assertEquals(lock.workerBits[0], lock.hostBits[0]);
 });
 
-test("xor decode finally path preserves consistency on mid-stream errors", () => {
+test("xor decode keeps bit protocol consistent on unknown payload signal", () => {
   const nextRandom = makeRng(0x0ddc0ffe);
   const decoded = new Set<number>();
   let nextValue = 1;
@@ -266,10 +266,11 @@ test("xor decode finally path preserves consistency on mid-stream errors", () =>
       while (true) {
         const task = lock.resolved.shift();
         if (!task) break;
-        assertEquals(typeof task.value, "number");
-        const value = task.value as number;
-        assertEquals(decoded.has(value), false);
-        decoded.add(value);
+        if (typeof task.value === "number") {
+          const value = task.value as number;
+          assertEquals(decoded.has(value), false);
+          decoded.add(value);
+        }
         count++;
       }
       return count;
@@ -296,26 +297,14 @@ test("xor decode finally path preserves consistency on mid-stream errors", () =>
     const failAt = 1 + (nextRandom() % (slots.length - 1));
     const failSlot = slots[failAt];
     const off = slotOffset(failSlot);
-    const originalType = headersBuffer[off + TaskIndex.Type];
     headersBuffer[off + TaskIndex.Type] = PayloadSignal.UNREACHABLE;
 
-    const workerBeforeThrow = lock.workerBits[0] | 0;
-    assert.throws(
-      () => lock.decode(),
-      (err: unknown) => String(err).includes("UREACHABLE"),
-    );
-
-    let expectedAckDelta = 0;
-    for (let i = 0; i < failAt; i++) {
-      expectedAckDelta |= 1 << slots[i];
-    }
-    const ackDelta = (workerBeforeThrow ^ (lock.workerBits[0] | 0)) >>> 0;
-    assertEquals(ackDelta, expectedAckDelta >>> 0);
-    assertEquals(drainResolved(), failAt);
-
-    headersBuffer[off + TaskIndex.Type] = originalType;
+    const pendingBefore = (lock.hostBits[0] ^ lock.workerBits[0]) >>> 0;
+    const workerBeforeDecode = lock.workerBits[0] | 0;
     assertEquals(lock.decode(), true);
-    assertEquals(drainResolved(), batch - failAt);
+    const ackDelta = (workerBeforeDecode ^ (lock.workerBits[0] | 0)) >>> 0;
+    assertEquals(ackDelta, pendingBefore);
+    assertEquals(drainResolved(), batch);
     assertEquals(lock.workerBits[0], lock.hostBits[0]);
 
     while (lock.decode()) {

@@ -34,18 +34,17 @@ export const createWorkerRxQueue = (
   ), [] as Array<(args: unknown) => unknown>);
 
   const toWork = new RingQueue<Task>();
-  const completedFrames = new RingQueue<Task>();
-  const errorFrames = new RingQueue<Task>();
+  const pendingFrames = new RingQueue<Task>();
 
   const toWorkPush = (slot: Task) => toWork.push(slot);
   const toWorkShift = () => toWork.shiftNoClear();
-  const completedShift = () => completedFrames.shiftNoClear();
-  const completedUnshift = (slot: Task) => completedFrames.unshift(slot);
-  const completedPush = (slot: Task) => completedFrames.push(slot);
-  const errorShift = () => errorFrames.shiftNoClear();
-  const errorUnshift = (slot: Task) => errorFrames.unshift(slot);
-  const errorPush = (slot: Task) => errorFrames.push(slot);
+  const pendingShift = () => pendingFrames.shiftNoClear();
+  const pendingUnshift = (slot: Task) => pendingFrames.unshift(slot);
+  const pendingPush = (slot: Task) => pendingFrames.push(slot);
   const recyclePush = (slot: Task) => lock.recyclecList.push(slot);
+  const IDX_FLAGS = TaskIndex.FlagsToHost;
+  const IDX_FN = TaskIndex.FunctionID;
+  const FLAG_REJECT = TaskFlag.Reject;
 
   const hasCompleted = workerOptions?.resolveAfterFinishingAll === true
     ? () => hasAnythingFinished !== 0 && toWork.size === 0
@@ -68,9 +67,16 @@ const enqueueLock = () => {
   return true;
 };
 
-  const sendReturn = (slot: Task, isError: boolean) => {
-    slot[TaskIndex.FlagsToHost] = isError ? TaskFlag.Reject : 0;
-    if (!returnLock.encode(slot)) return false;
+  const encodeReturnSafe = (slot: Task) => {
+  
+      if (!returnLock.encode(slot)) return false;
+
+    return true;
+  };
+
+  const sendReturn = (slot: Task, shouldReject: boolean) => {
+    slot[IDX_FLAGS] = shouldReject ? FLAG_REJECT : 0;
+    if (!encodeReturnSafe(slot)) return false;
     hasAnythingFinished--;
     recyclePush(slot);
     return true;
@@ -84,36 +90,20 @@ const enqueueLock = () => {
   ) => {
     slot.value = value;
     hasAnythingFinished++;
-    if (wasAwaited) awaiting--;
-    if (!sendReturn(slot, isError)) {
-      if (isError) {
-        errorPush(slot);
-      } else {
-        completedPush(slot);
-      }
-    }
+    if (wasAwaited && awaiting > 0) awaiting--;
+    const shouldReject = isError ||
+      slot[IDX_FLAGS] === FLAG_REJECT;
+    if (!sendReturn(slot, shouldReject)) pendingPush(slot);
   };
 
   const writeOne = () => {
-    if (errorFrames.size > 0) {
-      const slot = errorShift()!;
-      if (!sendReturn(slot, true)) {
-        errorUnshift(slot);
-        return false;
-      }
-      return true;
+    const slot = pendingShift();
+    if (!slot) return false;
+    if (!sendReturn(slot, slot[IDX_FLAGS] === FLAG_REJECT)) {
+      pendingUnshift(slot);
+      return false;
     }
-
-    if (completedFrames.size > 0) {
-      const slot = completedShift()!;
-      if (!sendReturn(slot, false)) {
-        completedUnshift(slot);
-        return false;
-      }
-      return true;
-    }
-
-    return false;
+    return true;
   };
 
   return {
@@ -128,23 +118,28 @@ const enqueueLock = () => {
       return wrote;
     },
     serviceBatchImmediate: () => {
-      let processed = 0 | 0;
+      let processed = 0;
 
-
-      while (toWork.size !== 0 && processed < 3) {
-        const slot = toWorkShift()!;
+      while (processed < 3) {
+        const slot = toWorkShift();
+        if (!slot) break;
 
         try {
-       
-          const result = jobs[slot[TaskIndex.FunctionID]](slot.value);
-          if (!(result instanceof Promise)) {
-            settleNow(slot, false, result, false);
-          } else {
+          const result = jobs[slot[IDX_FN]](slot.value);
+          // Slot 0 is reused for response flags; clear request FunctionID value.
+          slot[IDX_FLAGS] = 0;
+          if (result instanceof Promise) {
             awaiting++;
-            result.then(
-              (value) => settleNow(slot, false, value, true),
-              (err) => settleNow(slot, true, err, true),
-            );
+            try {
+              result.then(
+                (value) => settleNow(slot, false, value, true),
+                (err) => settleNow(slot, true, err, true),
+              );
+            } catch (err) {
+              settleNow(slot, true, err, true);
+            }
+          } else {
+            settleNow(slot, false, result, false);
           }
         } catch (err) {
           settleNow(slot, true, err, false);

@@ -141,6 +141,10 @@ const createTaskShell = () => {
   task.value = null;
   task.resolve = def;
   task.reject = def;
+  // Keep Promise marker shape stable across task lifecycle.
+  (task as Task & { [PromisePayloadMarker]?: boolean })[
+    PromisePayloadMarker
+  ] = false;
   return task;
 };
 

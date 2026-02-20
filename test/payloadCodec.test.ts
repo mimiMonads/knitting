@@ -391,6 +391,135 @@ test("promise payload rejects before encoding", async () => {
   assertEquals(task.value, err);
 });
 
+test("function payload is rejected through promise handler", async () => {
+  let result: Parameters<PromisePayloadHandler>[1] | undefined;
+  const { encode } = makeCodec((_, payload) => {
+    result = payload;
+  });
+  const task = makeTask();
+
+  task.value = function badArg() {};
+  assertEquals(encode(task, 0), false);
+
+  await Promise.resolve();
+
+  assertEquals(result?.status, "rejected");
+  if (result?.status === "rejected") {
+    const reason = String(result.reason);
+    assert.ok(reason.includes("KNT_ERROR_0"));
+    assert.ok(reason.includes("badArg"));
+    assertEquals(task.value, result.reason);
+  }
+});
+
+test("function payload throws when promise handler is missing", () => {
+  const { encode } = makeCodec();
+  const task = makeTask();
+
+  task.value = function noHandler() {};
+  assert.throws(() => {
+    encode(task, 0);
+  }, TypeError);
+});
+
+test("non-global symbol payload is rejected through promise handler", async () => {
+  let result: Parameters<PromisePayloadHandler>[1] | undefined;
+  const { encode } = makeCodec((_, payload) => {
+    result = payload;
+  });
+  const task = makeTask();
+
+  task.value = Symbol("local");
+  assertEquals(encode(task, 0), false);
+
+  await Promise.resolve();
+
+  assertEquals(result?.status, "rejected");
+  if (result?.status === "rejected") {
+    const reason = String(result.reason);
+    assert.ok(reason.includes("KNT_ERROR_1"));
+    assertEquals(task.value, result.reason);
+  }
+});
+
+test("non-global symbol payload throws when promise handler is missing", () => {
+  const { encode } = makeCodec();
+  const task = makeTask();
+
+  task.value = Symbol("local");
+  assert.throws(() => {
+    encode(task, 0);
+  }, TypeError);
+});
+
+test("json payload with bigint is rejected through promise handler", async () => {
+  let result: Parameters<PromisePayloadHandler>[1] | undefined;
+  const { encode } = makeCodec((_, payload) => {
+    result = payload;
+  });
+  const task = makeTask();
+
+  task.value = { n: 1n };
+  assertEquals(encode(task, 0), false);
+
+  await Promise.resolve();
+
+  assertEquals(result?.status, "rejected");
+  if (result?.status === "rejected") {
+    const reason = String(result.reason);
+    assert.ok(reason.includes("KNT_ERROR_2"));
+    assert.ok(reason.toLowerCase().includes("bigint"));
+    assertEquals(task.value, result.reason);
+  }
+});
+
+test("json payload with bigint throws when promise handler is missing", () => {
+  const { encode } = makeCodec();
+  const task = makeTask();
+  task.value = { n: 1n };
+  assert.throws(() => {
+    encode(task, 0);
+  }, (error: unknown) => {
+    assert.ok(error instanceof TypeError);
+    assert.ok(error.message.includes("KNT_ERROR_2"));
+    assert.ok(error.message.toLowerCase().includes("bigint"));
+    return true;
+  });
+});
+
+test("non-serializable payload is rejected through promise handler", async () => {
+  let result: Parameters<PromisePayloadHandler>[1] | undefined;
+  const { encode } = makeCodec((_, payload) => {
+    result = payload;
+  });
+  const task = makeTask();
+
+  task.value = new WeakMap();
+  assertEquals(encode(task, 0), false);
+
+  await Promise.resolve();
+
+  assertEquals(result?.status, "rejected");
+  if (result?.status === "rejected") {
+    const reason = String(result.reason);
+    assert.ok(reason.includes("KNT_ERROR_3"));
+    assertEquals(task.value, result.reason);
+  }
+});
+
+test("non-serializable payload throws when promise handler is missing", () => {
+  const { encode } = makeCodec();
+  const task = makeTask();
+  task.value = new WeakMap();
+  assert.throws(() => {
+    encode(task, 0);
+  }, (error: unknown) => {
+    assert.ok(error instanceof TypeError);
+    assert.ok(error.message.includes("KNT_ERROR_3"));
+    return true;
+  });
+});
+
 test("string static/dynamic boundary is safe for ASCII and Unicode payloads", () => {
   const cases = [
     {

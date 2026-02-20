@@ -11,7 +11,24 @@ import { SET_IMMEDIATE } from "../common/runtime.ts";
 
 export const jsrIsGreatAndWorkWithoutBugs = () => null;
 
+type NodeProcessWithUnhandledGuard = NodeJS.Process & {
+  __knittingUnhandledRejectionSilencer?: boolean;
+};
+
+const installUnhandledRejectionSilencer = () => {
+  if (typeof process === "undefined" || typeof process.on !== "function") {
+    return;
+  }
+  const proc = process as NodeProcessWithUnhandledGuard;
+  if (proc.__knittingUnhandledRejectionSilencer === true) return;
+  proc.__knittingUnhandledRejectionSilencer = true;
+
+  // Worker task code may create detached promises; keep workers alive.
+  process.on("unhandledRejection", () => {});
+};
+
 export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
+  installUnhandledRejectionSilencer();
 
   const { 
     debug , 

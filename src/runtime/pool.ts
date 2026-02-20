@@ -203,7 +203,8 @@ export const spawnWorkerContext = ({
 
   const send = () => {
     if (check.isRunning === true) return;
-
+    // Macro lane: dispatcher check is driven by the channel callback.
+    channelHandler.notify();
     check.isRunning = true;
 
     // Use opView as a wake counter in lock2 mode to avoid lost wakeups.
@@ -211,9 +212,6 @@ export const spawnWorkerContext = ({
       a_add(thisSignal, 0, 1);
       a_notify(thisSignal, 0, 1);
     }
-
-    // Macro lane: dispatcher check is driven by the channel callback.
-    channelHandler.notify();
   };
 
   lock.setPromiseHandler((task: Task, result: PromisePayloadResult) => {
@@ -223,6 +221,7 @@ export const spawnWorkerContext = ({
 
   const call = ({ fnNumber }: WorkerCall) => {
     const enqueues = enqueue(fnNumber);
+
     return (args: Uint8Array) => {
       const pending = enqueues(args);
 
