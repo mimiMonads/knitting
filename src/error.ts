@@ -29,8 +29,8 @@ const reasonFrom = (
         : `KNT_ERROR_2: JSON stringify failed; ${detail}`;
     case ErrorKnitting.Serializable:
       return detail == null || detail.length === 0
-        ? "KNT_ERROR_3: Value is not serializable by v8 serializer"
-        : `KNT_ERROR_3: Value is not serializable by v8 serializer; ${detail}`;
+        ? "KNT_ERROR_3: Unsupported payload type; serialize it yourself"
+        : `KNT_ERROR_3: Unsupported payload type; ${detail}`;
   }
 };
 

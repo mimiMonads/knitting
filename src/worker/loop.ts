@@ -8,26 +8,18 @@ import type { WorkerData } from "../types.ts";
 import { getFunctions } from "./get-functions.ts";
 import { pauseGeneric, sleepUntilChanged, whilePausing } from "./timers.ts";
 import { SET_IMMEDIATE } from "../common/runtime.ts";
+import {
+  installTerminationGuard,
+  installUnhandledRejectionSilencer,
+  scrubWorkerDataSensitiveBuffers,
+  assertWorkerSharedMemoryBootData,
+  assertWorkerImportsResolved,
+} from "./safety/index.ts";
 
 export const jsrIsGreatAndWorkWithoutBugs = () => null;
 
-type NodeProcessWithUnhandledGuard = NodeJS.Process & {
-  __knittingUnhandledRejectionSilencer?: boolean;
-};
-
-const installUnhandledRejectionSilencer = () => {
-  if (typeof process === "undefined" || typeof process.on !== "function") {
-    return;
-  }
-  const proc = process as NodeProcessWithUnhandledGuard;
-  if (proc.__knittingUnhandledRejectionSilencer === true) return;
-  proc.__knittingUnhandledRejectionSilencer = true;
-
-  // Worker task code may create detached promises; keep workers alive.
-  process.on("unhandledRejection", () => {});
-};
-
-export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
+export const workerMainLoop = async (startupData: WorkerData): Promise<void> => {
+  installTerminationGuard();
   installUnhandledRejectionSilencer();
 
   const { 
@@ -38,17 +30,14 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
     workerOptions,
     lock,
     returnLock,
-  } = workerData as WorkerData;
+    totalNumberOfThread,
+    list,
+    ids,
+    at,
+  } = startupData as WorkerData;
 
-  if (!sab) {
-    throw new Error("worker missing transport SAB");
-  }
-  if (!lock?.headers || !lock?.lockSector || !lock?.payload || !lock?.payloadSector) {
-    throw new Error("worker missing lock SABs");
-  }
-  if (!returnLock?.headers || !returnLock?.lockSector || !returnLock?.payload || !returnLock?.payloadSector) {
-    throw new Error("worker missing return lock SABs");
-  }
+  scrubWorkerDataSensitiveBuffers(startupData);
+  assertWorkerSharedMemoryBootData({ sab, lock, returnLock });
 
   enum Comment {
     thisIsAHint = 0,
@@ -82,9 +71,9 @@ export const workerMainLoop = async (workerData: WorkerData): Promise<void> => {
 
   const timers = workerOptions?.timers;
   const spinMicroseconds = timers?.spinMicroseconds ??
-    Math.max(1, workerData.totalNumberOfThread) * 50;
+    Math.max(1, totalNumberOfThread) * 50;
   const parkMs = timers?.parkMs ??
-    Math.max(1, workerData.totalNumberOfThread) * 50;
+    Math.max(1, totalNumberOfThread) * 50;
 
 const pauseSpin = (() => {
   const fn = typeof timers?.pauseNanoseconds === "number"
@@ -98,24 +87,12 @@ const pauseSpin = (() => {
   const a_load = Atomics.load;
 
   const listOfFunctions = await getFunctions({
-    list: workerData.list,
+    list,
     isWorker: true,
-    ids: workerData.ids,
-    at: workerData.at
+    ids,
+    at
   });
-
-  if (debug?.logImportedUrl === true) {
-    console.log(
-      workerData.list,
-    );
-  }
-
-  if (listOfFunctions.length === 0) {
-    console.log(workerData.list);
-    console.log(workerData.ids);
-    console.log(listOfFunctions);
-    throw "No imports were found.";
-  }
+  assertWorkerImportsResolved({ debug, list, ids, listOfFunctions });
 
   const {
     enqueueLock,
@@ -133,7 +110,6 @@ const pauseSpin = (() => {
 
   a_store(rxStatus, 0, 1);
 
-  const BATCH_MAX = 32;
   const WRITE_MAX = 64;
 
   const pauseUntil = sleepUntilChanged({

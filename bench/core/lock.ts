@@ -70,9 +70,13 @@ const singleLargeObject = makeTask();
 singleLargeObject.value = largeObject;
 const singleArray = makeTask();
 singleArray.value = smallArray;
+const batch32ObjectValues = Array.from(
+  { length: 32 },
+  (_, i) => ({ a: i, b: "x" }),
+);
 const batch32Objects = Array.from(
   { length: 32 },
-  (_, i) => makeObjectTask({ a: i, b: "x" }),
+  (_, i) => makeObjectTask(batch32ObjectValues[i]!),
 );
 const batch16Strings = Array.from(
   { length: 16 },
@@ -170,6 +174,7 @@ group("lock", () => {
 
   bench("roundtrip object (1)", () => {
     ackAll(lock);
+    singleObject.value = smallObject;
     lock.encode(singleObject);
     lock.decode();
     lock.resolved.clear();
@@ -177,6 +182,9 @@ group("lock", () => {
 
   bench("roundtrip object (32)", () => {
     ackAll(lock);
+    for (let i = 0; i < batch32Objects.length; i++) {
+      batch32Objects[i]!.value = batch32ObjectValues[i]!;
+    }
     encodeBatch(lock, batch32Objects);
     lock.decode();
     lock.resolved.clear();
@@ -184,6 +192,7 @@ group("lock", () => {
 
   bench("roundtrip large object (1)", () => {
     ackAll(lock);
+    singleLargeObject.value = largeObject;
     lock.encode(singleLargeObject);
     lock.decode();
     lock.resolved.clear();
@@ -191,6 +200,7 @@ group("lock", () => {
 
   bench("roundtrip array (1)", () => {
     ackAll(lock);
+    singleArray.value = smallArray;
     lock.encode(singleArray);
     lock.decode();
     lock.resolved.clear();

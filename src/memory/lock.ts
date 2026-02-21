@@ -22,11 +22,12 @@ import { HAS_SAB_GROW, createSharedArrayBuffer } from "../common/runtime.ts";
   Null = 10,
 }
 
+
+
 export enum PayloadBuffer {
   BORDER_SIGNAL_BUFFER = 11,
   String = 11,
   Json = 12,
-  Serializable = 13,
   NumericBuffer = 14,
   StaticString = 15,
   StaticJson = 16,
@@ -43,7 +44,6 @@ export enum PayloadBuffer {
   StaticSymbol = 27,
   BigInt = 28,
   StaticBigInt = 29,
-  StaticSerializable = 30,
   StaticInt32Array = 31,
   StaticFloat64Array = 32,
   StaticBigInt64Array = 33,

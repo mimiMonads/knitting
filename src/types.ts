@@ -59,8 +59,6 @@ type ValidInput =
   | bigint
   | void
   | JSONValue
-  | Map<Serializable, Serializable>
-  | Set<Serializable>
   | symbol
   | NodeBuffer
   | ArrayBuffer

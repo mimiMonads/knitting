@@ -4,7 +4,7 @@ import RingQueue from "../src/ipc/tools/RingQueue.ts";
 import { TaskIndex, makeTask, type Task } from "../src/memory/lock.ts";
 import { createWorkerRxQueue } from "../src/worker/rx-queue.ts";
 
-test("worker queue async settle does not leak unhandledRejection when encode throws", async () => {
+test("worker queue async settle handles encode backpressure without unhandledRejection", async () => {
   const resolved = new RingQueue<Task>();
   const recyclecList = new RingQueue<Task>();
   const lock = {
@@ -21,7 +21,7 @@ test("worker queue async settle does not leak unhandledRejection when encode thr
   const returnLock = {
     encode: () => {
       encodeCalls++;
-      throw new Error("encode failed");
+      return encodeCalls > 1;
     },
   } as unknown as {
     encode: (task: Task) => boolean;
@@ -54,7 +54,10 @@ test("worker queue async settle does not leak unhandledRejection when encode thr
     process.off("unhandledRejection", onUnhandled);
   }
 
-  assert.equal(encodeCalls > 0, true);
+  assert.equal(encodeCalls, 1);
+  assert.equal(queue.writeBatch(1), 1);
+  assert.equal(encodeCalls, 2);
+  assert.equal(recyclecList.size, 1);
   assert.equal(queue.getAwaiting(), 0);
   assert.equal(unhandled.length, 0);
 });

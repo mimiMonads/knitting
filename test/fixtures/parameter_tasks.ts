@@ -27,7 +27,3 @@ export const toVoid = task({
 export const toObject = task({
   f: async (a: object | null) => a,
 });
-
-export const toSet = task({
-  f: async (a: Set<number>) => a,
-});

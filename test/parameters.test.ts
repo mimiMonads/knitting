@@ -11,12 +11,9 @@ import {
   toHelloWorld,
   toNumber,
   toObject,
-  toSet,
   toString,
   toVoid,
 } from "./fixtures/parameter_tasks.ts";
-
-const setNumb = new Set([1, 2, 3, 4, 5, 6]);
 
 test("Using one thread calling with multiple arguments", async () => {
   const { call, shutdown } = createPool({})({
@@ -27,7 +24,6 @@ test("Using one thread calling with multiple arguments", async () => {
     toBoolean,
     toVoid,
     toObject,
-    toSet,
   });
 
   const promises = [
@@ -48,7 +44,6 @@ test("Using one thread calling with multiple arguments", async () => {
     call.toNumber(0),
     call.toNumber(2.2250738585072014e-308),
     call.toObject(null),
-    call.toSet(setNumb),
   ];
 
   const results = await Promise.all(promises);
@@ -71,7 +66,6 @@ test("Using one thread calling with multiple arguments", async () => {
     0,
     2.2250738585072014e-308,
     null,
-    setNumb,
   ];
 
   results.forEach((value, index) => {

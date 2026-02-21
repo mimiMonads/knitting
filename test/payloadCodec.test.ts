@@ -5,7 +5,6 @@ const assertEquals: (actual: unknown, expected: unknown) => void =
     assert.deepStrictEqual(actual, expected);
   };
 import { Buffer as NodeBuffer } from "node:buffer";
-import { serialize } from "node:v8";
 import { decodePayload, encodePayload } from "../src/memory/payloadCodec.ts";
 import {
   HEADER_U32_LENGTH,
@@ -191,63 +190,71 @@ test("dynamic symbol uses written bytes for next dynamic allocation", () => {
   assertEquals(second[TaskIndex.Start], align64(first[TaskIndex.PayloadLen]));
 });
 
-test("dynamic error uses written bytes for next dynamic allocation", () => {
-  const { encode } = makeCodec();
+test("dynamic error uses dedicated error path and preserves allocation", () => {
+  const { encode, decode } = makeCodec();
   const first = makeTask();
   const second = makeTask();
-  const firstError = new Error("x".repeat(2000));
+  const firstError = new TypeError("x".repeat(2000));
+  (firstError as Error & { cause?: unknown }).cause = { code: 7 };
   const secondError = new Error("y".repeat(2000));
-  const firstPayload = serialize(firstError);
 
   first.value = firstError;
   second.value = secondError;
 
   assertEquals(encode(first, 0), true);
-  assertEquals(first[TaskIndex.Type], PayloadBuffer.Serializable);
-  assertEquals(
-    first[TaskIndex.PayloadLen],
-    firstPayload.byteLength,
-  );
+  assertEquals(first[TaskIndex.Type], PayloadBuffer.Error);
+  assertEquals(first[TaskIndex.PayloadLen] > 0, true);
 
   assertEquals(encode(second, 1), true);
-  assertEquals(second[TaskIndex.Type], PayloadBuffer.Serializable);
-  assertEquals(second[TaskIndex.Start], align64(first[TaskIndex.PayloadLen]));
+  assertEquals(second[TaskIndex.Type], PayloadBuffer.Error);
+  assertEquals(second[TaskIndex.Start] >= align64(first[TaskIndex.PayloadLen]), true);
+
+  decode(first, 0);
+  decode(second, 1);
+
+  const out = first.value as Error & { cause?: unknown };
+  assertEquals(out instanceof Error, true);
+  assertEquals(out.name, "TypeError");
+  assertEquals(out.message, "x".repeat(2000));
+  assertEquals(out.cause, { code: 7 });
 });
 
-test("map payload uses serializable path", () => {
-  const { encode, decode } = makeCodec();
+test("map payload is rejected by strict object policy", async () => {
+  let result: Parameters<PromisePayloadHandler>[1] | undefined;
+  const { encode } = makeCodec((_, payload) => {
+    result = payload;
+  });
   const task = makeTask();
-  const input = new Map([["x".repeat(700), 1]]);
-  task.value = input;
+  task.value = new Map([["x".repeat(700), 1]]);
 
-  assertEquals(encode(task, 0), true);
-  assertEquals(
-    task[TaskIndex.Type] === PayloadBuffer.Serializable ||
-      task[TaskIndex.Type] === PayloadBuffer.StaticSerializable,
-    true,
-  );
+  assertEquals(encode(task, 0), false);
+  await Promise.resolve();
 
-  decode(task, 0);
-  assertEquals(task.value instanceof Map, true);
-  assertEquals((task.value as Map<string, number>).get("x".repeat(700)), 1);
+  assertEquals(result?.status, "rejected");
+  if (result?.status === "rejected") {
+    const reason = String(result.reason);
+    assert.ok(reason.includes("KNT_ERROR_3"));
+    assert.ok(reason.includes("Unsupported object type"));
+  }
 });
 
-test("set payload uses serializable path", () => {
-  const { encode, decode } = makeCodec();
+test("set payload is rejected by strict object policy", async () => {
+  let result: Parameters<PromisePayloadHandler>[1] | undefined;
+  const { encode } = makeCodec((_, payload) => {
+    result = payload;
+  });
   const task = makeTask();
-  const input = new Set(["x".repeat(700)]);
-  task.value = input;
+  task.value = new Set(["x".repeat(700)]);
 
-  assertEquals(encode(task, 0), true);
-  assertEquals(
-    task[TaskIndex.Type] === PayloadBuffer.Serializable ||
-      task[TaskIndex.Type] === PayloadBuffer.StaticSerializable,
-    true,
-  );
+  assertEquals(encode(task, 0), false);
+  await Promise.resolve();
 
-  decode(task, 0);
-  assertEquals(task.value instanceof Set, true);
-  assertEquals((task.value as Set<string>).has("x".repeat(700)), true);
+  assertEquals(result?.status, "rejected");
+  if (result?.status === "rejected") {
+    const reason = String(result.reason);
+    assert.ok(reason.includes("KNT_ERROR_3"));
+    assert.ok(reason.includes("Unsupported object type"));
+  }
 });
 
 test("static ArrayBuffer payload round-trips with ArrayBuffer type", () => {
@@ -327,6 +334,52 @@ test("non-buffer payloads do not modify slotBuffer", () => {
 
   assertEquals(encode(task, 0), true);
   assertEquals(task[TaskIndex.slotBuffer], 7);
+});
+
+test("poisoned constructor getter does not break plain object JSON path", () => {
+  const { encode, decode } = makeCodec();
+  const task = makeTask();
+  const payload: Record<string, unknown> = { safe: true };
+  Object.defineProperty(payload, "constructor", {
+    configurable: true,
+    enumerable: false,
+    get: () => {
+      throw new Error("poisoned constructor getter");
+    },
+  });
+
+  task.value = payload;
+  assertEquals(encode(task, 0), true);
+  assertEquals(
+    task[TaskIndex.Type] === PayloadBuffer.Json ||
+      task[TaskIndex.Type] === PayloadBuffer.StaticJson,
+    true,
+  );
+
+  decode(task, 0);
+  assertEquals(task.value, { safe: true });
+});
+
+test("custom class payload is rejected by strict object policy", async () => {
+  let result: Parameters<PromisePayloadHandler>[1] | undefined;
+  const { encode } = makeCodec((_, payload) => {
+    result = payload;
+  });
+  class SerializableCarrier {
+    safe = 1;
+  }
+  const task = makeTask();
+  task.value = new SerializableCarrier();
+
+  assertEquals(encode(task, 0), false);
+  await Promise.resolve();
+
+  assertEquals(result?.status, "rejected");
+  if (result?.status === "rejected") {
+    const reason = String(result.reason);
+    assert.ok(reason.includes("KNT_ERROR_3"));
+    assert.ok(reason.includes("Unsupported object type"));
+  }
 });
 
 test("thenable object is encoded as a normal object payload", () => {
