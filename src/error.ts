@@ -1,4 +1,4 @@
-import { isMainThread } from "worker_threads";
+import { isMainThread } from "node:worker_threads";
 import { TaskFlag, TaskIndex, type PromisePayloadHandler, type Task } from "./memory/lock.ts";
 const promisePayloadMarker = Symbol.for("knitting.promise.payload");
 
