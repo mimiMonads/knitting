@@ -2,6 +2,7 @@ import { endpointSymbol } from "./common/task-symbol.ts";
 import type { Buffer as NodeBuffer } from "node:buffer";
 type WorkerCall = {
   fnNumber: number;
+  timeout?: TaskTimeout;
 };
 
 type WorkerInvoke = (args: Uint8Array) => Promise<unknown>;
@@ -78,7 +79,8 @@ type MaybePromise<T> = T | Promise<T>;
 // Blob payloads are intentionally not supported by the transport.
 type NoBlob<T> = T extends Blob ? never : T;
 
-type TaskInput = NoBlob<Args> | PromiseLike<NoBlob<Args>>;
+// Native Promise only. Thenables/PromiseLike values are treated as regular inputs.
+type TaskInput = NoBlob<Args> | Promise<NoBlob<Args>>;
 
 type TaskTimeout =
   | number

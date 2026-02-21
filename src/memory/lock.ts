@@ -104,10 +104,42 @@ export enum TaskIndex {
   Start = 3,
   End = 4,
   PayloadLen = 5,
+  /**
+   * Low 5 bits: region slot index (0..31).
+   * High 27 bits: reserved for caller metadata (e.g. enqueue timing).
+   */
   slotBuffer = 6,
   Size = 8,
   TotalBuff = 128
 }
+
+export const TASK_SLOT_INDEX_BITS = 5;
+export const TASK_SLOT_INDEX_MASK = (1 << TASK_SLOT_INDEX_BITS) - 1;
+export const TASK_SLOT_META_BITS = 32 - TASK_SLOT_INDEX_BITS;
+export const TASK_SLOT_META_VALUE_MASK = 0xFFFFFFFF >>> TASK_SLOT_INDEX_BITS;
+const TASK_SLOT_META_PACKED_MASK = (~TASK_SLOT_INDEX_MASK) >>> 0;
+
+export const getTaskSlotIndex = (task: ArrayLike<number>): number =>
+  task[TaskIndex.slotBuffer] & TASK_SLOT_INDEX_MASK;
+
+export const setTaskSlotIndex = (task: Task, slotIndex: number): void => {
+  task[TaskIndex.slotBuffer] =
+    (
+      (task[TaskIndex.slotBuffer] & TASK_SLOT_META_PACKED_MASK) |
+      (slotIndex & TASK_SLOT_INDEX_MASK)
+    ) >>> 0;
+};
+
+export const getTaskSlotMeta = (task: ArrayLike<number>): number =>
+  (task[TaskIndex.slotBuffer] >>> TASK_SLOT_INDEX_BITS) &
+  TASK_SLOT_META_VALUE_MASK;
+
+export const setTaskSlotMeta = (task: Task, value: number): void => {
+  const encodedMeta =
+    ((value & TASK_SLOT_META_VALUE_MASK) << TASK_SLOT_INDEX_BITS) >>> 0;
+  task[TaskIndex.slotBuffer] =
+    ((task[TaskIndex.slotBuffer] & TASK_SLOT_INDEX_MASK) | encodedMeta) >>> 0;
+};
 
 export enum TaskFlag {
   Reject = 1 << 0,

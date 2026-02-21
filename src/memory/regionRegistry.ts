@@ -3,6 +3,8 @@ import {
   LOCK_HOST_BITS_OFFSET_BYTES,
   LOCK_SECTOR_BYTE_LENGTH,
   LOCK_WORKER_BITS_OFFSET_BYTES,
+  setTaskSlotIndex,
+  TASK_SLOT_INDEX_MASK,
   TaskIndex,
 } from "./lock.ts";
 import type { Task } from "./lock.ts";
@@ -30,7 +32,7 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
   const clz32 = Math.clz32;
 
   const EMPTY = 0xFFFFFFFF >>> 0;
-  const SLOT_MASK = 31;
+  const SLOT_MASK = TASK_SLOT_INDEX_MASK;
   const START_MASK = (~SLOT_MASK) >>> 0;
 
   startAndIndex.fill(EMPTY);
@@ -140,7 +142,7 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
       sz[slotIndex] = size;
 
       task[TaskIndex.Start] = 0;
-      task[TaskIndex.slotBuffer] = slotIndex;
+      setTaskSlotIndex(task, slotIndex);
 
       tableLength = 1;
       usedBits |= freeBit;
@@ -159,7 +161,7 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
       sz[slotIndex] = size;
 
       task[TaskIndex.Start] = 0;
-      task[TaskIndex.slotBuffer] = slotIndex;
+      setTaskSlotIndex(task, slotIndex);
 
       tableLength = tl + 1;
       usedBits |= freeBit;
@@ -187,7 +189,7 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
       sz[slotIndex] = size;
 
       task[TaskIndex.Start] = curEnd;
-      task[TaskIndex.slotBuffer] = slotIndex;
+      setTaskSlotIndex(task, slotIndex);
 
       tableLength = tl + 1;
       usedBits |= freeBit;
@@ -207,7 +209,7 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
       sz[slotIndex] = size;
 
       task[TaskIndex.Start] = newStart;
-      task[TaskIndex.slotBuffer] = slotIndex;
+      setTaskSlotIndex(task, slotIndex);
 
       tableLength = tl + 1;
       usedBits |= freeBit;
@@ -220,7 +222,7 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
   };
 
   const setSlotLength = (slotIndex: number, payloadLen: number) => {
-    if ((slotIndex | 0) < 0 || slotIndex >= LockBound.slots) return false;
+    slotIndex = slotIndex & TASK_SLOT_INDEX_MASK;
 
     const bit = 1 << slotIndex;
     if ((usedBits & bit) === 0) return false;
@@ -235,6 +237,7 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
   };
 
   const free = (index: number) => {
+    index = index & TASK_SLOT_INDEX_MASK;
     workerLast ^= 1 << index;
     a_store(workerBits, 0, workerLast);
   };

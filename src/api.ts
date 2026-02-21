@@ -233,6 +233,7 @@ export const createPool: CreatePoolFactory = ({
   const indexedFunctions = listOfFunctions.map((fn, index) => ({
     name: fn.name,
     index,
+    timeout: fn.timeout,
   }));
 
   const callHandlers = new Map<string, WorkerInvoke[]>();
@@ -242,10 +243,11 @@ export const createPool: CreatePoolFactory = ({
   }
 
   for (const worker of workers) {
-    for (const { name, index } of indexedFunctions) {
+    for (const { name, index, timeout } of indexedFunctions) {
       callHandlers.get(name)!.push(
         worker.call({
           fnNumber: index,
+          timeout,
         }),
       );
     }
@@ -297,6 +299,12 @@ const createSingleTaskPool = <A extends TaskInput, B extends Args>(
   };
 };
 
+/**
+ * Define a worker task.
+ *
+ * Input may be a direct value or a native Promise of that value.
+ * Thenables/PromiseLike values are treated as plain values.
+ */
 export const task: TaskFactory = <
   A extends TaskInput = void,
   B extends Args = void,

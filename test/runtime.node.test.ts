@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createPool } from "../knitting.ts";
@@ -20,6 +20,19 @@ import {
 
 const TEST_TIMEOUT_MS = 10_000;
 const NODE_BIN = process.versions.bun ? "node" : process.execPath;
+const NODE_CHILD_ARGS = (() => {
+  const probe = spawnSync(
+    NODE_BIN,
+    ["--experimental-transform-types", "--eval", "void 0"],
+    { stdio: "ignore" },
+  );
+
+  if (probe.status === 0) {
+    return ["--no-warnings", "--experimental-transform-types"];
+  }
+
+  return ["--no-warnings"];
+})();
 const faultConstructorProbePath = fileURLToPath(
   new URL("./fixtures/probes/fault_constructor_probe.ts", import.meta.url),
 );
@@ -61,7 +74,7 @@ const runProbe = (scriptPath: string, timeoutMs = 4_000): Promise<ChildResult> =
   new Promise((resolve, reject) => {
     const child = spawn(
       NODE_BIN,
-      ["--no-warnings", "--experimental-transform-types", scriptPath],
+      [...NODE_CHILD_ARGS, scriptPath],
       {
         cwd: process.cwd(),
         stdio: ["ignore", "pipe", "pipe"],

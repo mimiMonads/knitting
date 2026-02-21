@@ -1,5 +1,12 @@
 import RingQueue from "../ipc/tools/RingQueue.ts";
-import { TaskFlag, TaskIndex, type Task, type Lock2 } from "../memory/lock.ts";
+import {
+  TaskFlag,
+  TaskIndex,
+  TASK_SLOT_META_VALUE_MASK,
+  getTaskSlotMeta,
+  type Task,
+  type Lock2,
+} from "../memory/lock.ts";
 import type { WorkerComposedWithKey } from "./get-functions.ts";
 import type {
   WorkerSettings,
@@ -45,6 +52,91 @@ export const createWorkerRxQueue = (
   const IDX_FLAGS = TaskIndex.FlagsToHost;
   const IDX_FN = TaskIndex.FunctionID;
   const FLAG_REJECT = TaskFlag.Reject;
+  const TIMEOUT_KIND_RESOLVE = 1;
+
+  const raceTimeout = (
+    promise: Promise<unknown>,
+    ms: number,
+    resolveOnTimeout: boolean,
+    timeoutValue: unknown,
+  ): Promise<unknown> =>
+    new Promise((resolve, reject) => {
+      let done = false;
+      const timer = setTimeout(() => {
+        if (done) return;
+        done = true;
+        if (resolveOnTimeout) resolve(timeoutValue);
+        else reject(timeoutValue);
+      }, ms);
+
+      promise.then(
+        (value) => {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (err) => {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          reject(err);
+        },
+      );
+    });
+
+  const nowStamp = () =>
+    (Math.floor(performance.now()) & TASK_SLOT_META_VALUE_MASK) >>> 0;
+
+  const applyTimeoutBudget = (
+    promise: Promise<unknown>,
+    slot: Task,
+    spec: NonNullable<WorkerComposedWithKey["timeout"]>,
+  ): Promise<unknown> => {
+    const elapsed = (nowStamp() - getTaskSlotMeta(slot)) & TASK_SLOT_META_VALUE_MASK;
+    const remaining = spec.ms - elapsed;
+
+    if (!(remaining > 0)) {
+      // Prevent late unhandled rejections from the original promise.
+      promise.then(() => {}, () => {});
+      return spec.kind === TIMEOUT_KIND_RESOLVE
+        ? Promise.resolve(spec.value)
+        : Promise.reject(spec.value);
+    }
+
+    // Keep timer strictly positive after subtracting queue wait.
+    const timeoutMs = Math.max(1, Math.floor(remaining));
+    return raceTimeout(
+      promise,
+      timeoutMs,
+      spec.kind === TIMEOUT_KIND_RESOLVE,
+      spec.value,
+    );
+  };
+
+  const composePlainRunner = (job: (args: unknown) => unknown) =>
+    (slot: Task) => job(slot.value);
+
+  const composeTimedRunner = (
+    job: (args: unknown) => unknown,
+    spec: NonNullable<WorkerComposedWithKey["timeout"]>,
+  ) => {
+    return (slot: Task) => {
+      const result = job(slot.value);
+      if (!(result instanceof Promise)) return result;
+      return applyTimeoutBudget(result, slot, spec);
+    };
+  };
+
+  const runByIndex = listOfFunctions.reduce((acc, fixed, idx) => {
+    const job = jobs[idx]!;
+    acc.push(
+      fixed.timeout
+        ? composeTimedRunner(job, fixed.timeout)
+        : composePlainRunner(job),
+    );
+    return acc;
+  }, [] as Array<(slot: Task) => unknown>);
 
   const hasCompleted = workerOptions?.resolveAfterFinishingAll === true
     ? () => hasAnythingFinished !== 0 && toWork.size === 0
@@ -125,19 +217,16 @@ const enqueueLock = () => {
         if (!slot) break;
 
         try {
-          const result = jobs[slot[IDX_FN]](slot.value);
+          const result = runByIndex[slot[IDX_FN]]!(slot);
           // Slot 0 is reused for response flags; clear request FunctionID value.
           slot[IDX_FLAGS] = 0;
           if (result instanceof Promise) {
             awaiting++;
-            try {
-              result.then(
-                (value) => settleNow(slot, false, value, true),
-                (err) => settleNow(slot, true, err, true),
-              );
-            } catch (err) {
-              settleNow(slot, true, err, true);
-            }
+
+            result.then(
+              (value) => settleNow(slot, false, value, true),
+              (err) => settleNow(slot, true, err, true),
+            );
           } else {
             settleNow(slot, false, result, false);
           }

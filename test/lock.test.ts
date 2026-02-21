@@ -6,6 +6,8 @@ const assertEquals: (actual: unknown, expected: unknown) => void =
   };
 import RingQueue from "../src/ipc/tools/RingQueue.ts";
 import {
+  getTaskSlotIndex,
+  getTaskSlotMeta,
   HEADER_BYTE_LENGTH,
   HEADER_SLOT_STRIDE_U32,
   LOCK_SECTOR_BYTE_LENGTH,
@@ -13,6 +15,10 @@ import {
   lock2,
   makeTask,
   PayloadSignal,
+  setTaskSlotIndex,
+  setTaskSlotMeta,
+  TASK_SLOT_INDEX_MASK,
+  TASK_SLOT_META_VALUE_MASK,
   TaskIndex,
 } from "../src/memory/lock.ts";
 import { decodePayload } from "../src/memory/payloadCodec.ts";
@@ -91,6 +97,34 @@ test("encode/decode roundtrip string", () => {
 test("decode is no-op with no new slots", () => {
   const { lock } = makeLock();
   assertEquals(lock.decode(), false);
+});
+
+test("slotBuffer helpers only mutate low 5 bits", () => {
+  const task = makeTask();
+  task[TaskIndex.slotBuffer] = 0xabcdefe0;
+
+  setTaskSlotIndex(task, 17);
+
+  assertEquals(getTaskSlotIndex(task), 17);
+  assertEquals(
+    task[TaskIndex.slotBuffer] >>> 5,
+    (0xabcdefe0 >>> 5),
+  );
+  assertEquals(task[TaskIndex.slotBuffer] & TASK_SLOT_INDEX_MASK, 17);
+});
+
+test("slotBuffer helpers only mutate upper 27 bits for metadata", () => {
+  const task = makeTask();
+  task[TaskIndex.slotBuffer] = 0x0000001f;
+
+  setTaskSlotMeta(task, 12345);
+
+  assertEquals(getTaskSlotIndex(task), 31);
+  assertEquals(getTaskSlotMeta(task), 12345);
+
+  setTaskSlotMeta(task, TASK_SLOT_META_VALUE_MASK + 77);
+  assertEquals(getTaskSlotMeta(task), 76);
+  assertEquals(getTaskSlotIndex(task), 31);
 });
 
 test("encode stops when full", () => {

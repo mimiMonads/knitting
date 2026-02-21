@@ -219,8 +219,8 @@ export const spawnWorkerContext = ({
     send();
   });
 
-  const call = ({ fnNumber }: WorkerCall) => {
-    const enqueues = enqueue(fnNumber);
+  const call = ({ fnNumber, timeout }: WorkerCall) => {
+    const enqueues = enqueue(fnNumber, timeout);
 
     return (args: Uint8Array) => {
       const pending = enqueues(args);

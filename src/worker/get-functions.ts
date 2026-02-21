@@ -11,12 +11,12 @@ type GetFunctionParams = {
 
 type WorkerCallable = (args: unknown) => unknown;
 
-const enum TimeoutKind {
+export const enum TimeoutKind {
   Reject = 0,
   Resolve = 1,
 }
 
-type TimeoutSpec = {
+export type TimeoutSpec = {
   ms: number;
   kind: TimeoutKind;
   value: unknown;
@@ -25,11 +25,12 @@ type TimeoutSpec = {
 const normalizeTimeout = (timeout?: TaskTimeout): TimeoutSpec | undefined => {
   if (timeout == null) return undefined;
   if (typeof timeout === "number") {
-    return timeout >= 0
-      ? { ms: timeout, kind: TimeoutKind.Reject, value: new Error("Task timeout") }
+    const ms = Math.floor(timeout);
+    return ms >= 0
+      ? { ms, kind: TimeoutKind.Reject, value: new Error("Task timeout") }
       : undefined;
   }
-  const ms = timeout.time;
+  const ms = Math.floor(timeout.time);
   if (!(ms >= 0)) return undefined;
   if ("default" in timeout) {
     return { ms, kind: TimeoutKind.Resolve, value: timeout.default };
@@ -43,57 +44,15 @@ const normalizeTimeout = (timeout?: TaskTimeout): TimeoutSpec | undefined => {
   return { ms, kind: TimeoutKind.Reject, value: new Error("Task timeout") };
 };
 
-const raceTimeout = (
-  promise: PromiseLike<unknown>,
-  spec: TimeoutSpec,
-): Promise<unknown> =>
-  new Promise((resolve, reject) => {
-    let done = false;
-    const timer = setTimeout(() => {
-      if (done) return;
-      done = true;
-      if (spec.kind === TimeoutKind.Resolve) {
-        resolve(spec.value);
-      } else {
-        reject(spec.value);
-      }
-    }, spec.ms);
-
-    promise.then(
-      (value) => {
-        if (done) return;
-        done = true;
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (err) => {
-        if (done) return;
-        done = true;
-        clearTimeout(timer);
-        reject(err);
-      },
-    );
-  });
-
-const isThenable = (value: unknown): value is PromiseLike<unknown> => {
-  if (value == null) return false;
-  const type = typeof value;
-  if (type !== "object" && type !== "function") return false;
-  return typeof (value as { then?: unknown }).then === "function";
-};
 
 const composeWorkerCallable = (fixed: ComposedWithKey): WorkerCallable => {
   const fn = fixed.f as (args: unknown) => unknown;
-  const timeout = normalizeTimeout(fixed.timeout);
-  if (!timeout) return fn;
-  return (args: unknown) => {
-    const result = fn(args);
-    return isThenable(result) ? raceTimeout(result, timeout) : result;
-  };
+  return fn;
 };
 
 export type WorkerComposedWithKey = ComposedWithKey & {
   run: WorkerCallable;
+  timeout?: TimeoutSpec;
 };
 
 export const getFunctions = async (
@@ -137,6 +96,7 @@ export const getFunctions = async (
   return flattenedResults.map((fixed) => ({
     ...fixed,
     run: composeWorkerCallable(fixed),
+    timeout: normalizeTimeout(fixed.timeout),
   })) as WorkerComposedWithKey[];
 };
 

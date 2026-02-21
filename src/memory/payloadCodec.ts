@@ -1,4 +1,5 @@
 import {
+  getTaskSlotIndex,
   LockBound,
   PayloadBuffer,
   PayloadSignal,
@@ -214,6 +215,7 @@ export const encodePayload = ({
     write8Binary: writeStatic8Binary,
     writeUtf8: writeStaticUtf8,
   } = requireStaticIO(headersBuffer);
+  const slotOf = (task: Task) => getTaskSlotIndex(task);
 
   const reserveDynamic = (task: Task, bytes: number) => {
     task[TaskIndex.PayloadLen] = bytes;
@@ -224,7 +226,7 @@ export const encodePayload = ({
   const reserveDynamicObject = (task: Task, bytes: number) => {
     task[TaskIndex.PayloadLen] = bytes;
     if (allocTask(task) === -1) return false;
-    objectDynamicSlot = task[TaskIndex.slotBuffer];
+    objectDynamicSlot = slotOf(task);
     return true;
   };
   const rollbackObjectDynamic = () => {
@@ -283,7 +285,7 @@ export const encodePayload = ({
     if (!reserveDynamicObject(task, estimatedBytes)) return false;
     const written = writeDynamicUtf8(text, task[TaskIndex.Start]);
     task[TaskIndex.PayloadLen] = written;
-    setSlotLength(task[TaskIndex.slotBuffer], written);
+    setSlotLength(slotOf(task), written);
     task.value = null;
     return true;
   };
@@ -436,7 +438,7 @@ export const encodePayload = ({
         if (!reserveDynamicObject(task, text.length * 3)) return false;
         const written = writeDynamicUtf8(text, task[TaskIndex.Start]);
         task[TaskIndex.PayloadLen] = written;
-        setSlotLength(task[TaskIndex.slotBuffer], written);
+        setSlotLength(slotOf(task), written);
         task.value = null;
         return true;
       }
@@ -597,7 +599,7 @@ export const encodePayload = ({
           estimatedBytes,
         );
         task[TaskIndex.PayloadLen] = written;
-        setSlotLength(task[TaskIndex.slotBuffer], written);
+        setSlotLength(slotOf(task), written);
         return true
       }
     case "symbol":
@@ -624,7 +626,7 @@ export const encodePayload = ({
         if (!reserveDynamic(task, estimatedBytes)) return false;
         const written = writeDynamicUtf8(key, task[TaskIndex.Start]);
         task[TaskIndex.PayloadLen] = written;
-        setSlotLength(task[TaskIndex.slotBuffer], written);
+        setSlotLength(slotOf(task), written);
         return true;
       }
     case "undefined":
@@ -649,6 +651,7 @@ export const decodePayload = ({
   const { free } = register({
     lockSector,
   });
+  const freeTaskSlot = (task: Task) => free(getTaskSlotIndex(task));
   const {
     readUtf8: readDynamicUtf8,
     readBytesCopy: readDynamicBytesCopy,
@@ -711,7 +714,7 @@ export const decodePayload = ({
         task[TaskIndex.Start],
         task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
       )
-      free(task[TaskIndex.slotBuffer])
+      freeTaskSlot(task)
     return
     case PayloadBuffer.StaticString:
   
@@ -724,7 +727,7 @@ export const decodePayload = ({
           task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
         )
       )
-      free(task[TaskIndex.slotBuffer])
+      freeTaskSlot(task)
     return
     case PayloadBuffer.StaticJson:
 
@@ -739,7 +742,7 @@ export const decodePayload = ({
           task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
         )
       )
-      free(task[TaskIndex.slotBuffer])
+      freeTaskSlot(task)
     return
     case PayloadBuffer.StaticBigInt:
       task.value = decodeBigIntBinary(
@@ -753,7 +756,7 @@ export const decodePayload = ({
           task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
         )
       )
-      free(task[TaskIndex.slotBuffer])
+      freeTaskSlot(task)
     return
     case PayloadBuffer.StaticSymbol:
       task.value = symbolFor(
@@ -770,7 +773,7 @@ export const decodePayload = ({
         bytes.byteOffset,
         bytes.byteLength >>> 2
       )
-      free(task[TaskIndex.slotBuffer])
+      freeTaskSlot(task)
     return
     }
     case PayloadBuffer.StaticInt32Array: {
@@ -787,7 +790,7 @@ export const decodePayload = ({
         task[TaskIndex.Start],
         task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
       )
-      free(task[TaskIndex.slotBuffer])
+      freeTaskSlot(task)
     return
     }
     case PayloadBuffer.StaticFloat64Array:
@@ -803,7 +806,7 @@ export const decodePayload = ({
         bytes.byteOffset,
         bytes.byteLength >>> 3
       )
-      free(task[TaskIndex.slotBuffer])
+      freeTaskSlot(task)
     return
     }
     case PayloadBuffer.StaticBigInt64Array: {
@@ -825,7 +828,7 @@ export const decodePayload = ({
         bytes.byteOffset,
         bytes.byteLength >>> 3
       )
-      free(task[TaskIndex.slotBuffer])
+      freeTaskSlot(task)
     return
     }
     case PayloadBuffer.StaticBigUint64Array: {
@@ -843,7 +846,7 @@ export const decodePayload = ({
         task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
       )
       task.value = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-      free(task[TaskIndex.slotBuffer])
+      freeTaskSlot(task)
     return
     }
     case PayloadBuffer.StaticDataView: {
@@ -863,7 +866,7 @@ export const decodePayload = ({
           task[TaskIndex.Start] + task[TaskIndex.PayloadLen],
         ),
       );
-      free(task[TaskIndex.slotBuffer]);
+      freeTaskSlot(task);
     return
     case PayloadBuffer.Binary:
       {
@@ -877,7 +880,7 @@ export const decodePayload = ({
           buffer.byteLength,
         )
       }
-      free(task[TaskIndex.slotBuffer])
+      freeTaskSlot(task)
     return
     case PayloadBuffer.StaticBinary:
       task.value = readStaticBytesCopy(0, task[TaskIndex.PayloadLen], slotIndex)
@@ -887,7 +890,7 @@ export const decodePayload = ({
         task[TaskIndex.Start],
         task[TaskIndex.Start] + task[TaskIndex.PayloadLen],
       )
-      free(task[TaskIndex.slotBuffer])
+      freeTaskSlot(task)
     return
     case PayloadBuffer.StaticArrayBuffer:
       task.value = readStaticArrayBufferCopy(
@@ -901,7 +904,7 @@ export const decodePayload = ({
         task[TaskIndex.Start],
         task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
       )
-      free(task[TaskIndex.slotBuffer])
+      freeTaskSlot(task)
     return
     case PayloadBuffer.StaticBuffer:
       task.value = readStaticBufferCopy(0, task[TaskIndex.PayloadLen], slotIndex)
@@ -913,7 +916,7 @@ export const decodePayload = ({
           task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
         )
       )
-      free(task[TaskIndex.slotBuffer])
+      freeTaskSlot(task)
     return
   }
 } 

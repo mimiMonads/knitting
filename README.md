@@ -75,8 +75,10 @@ const results = await Promise.all(jobs);
 ### `task({ f, href?, timeout? })`
 
 Wraps a function (sync or async) so it can be registered and executed in
-workers. `call.*()` always returns a promise. Inputs can also be promises,
-they’ll be awaited before dispatch.
+workers. `call.*()` always returns a promise. Inputs can also be native
+promises, they’ll be awaited before dispatch.
+Only native `Promise` values are awaited; thenables are treated as regular
+values.
 
 #### `href` override behavior (unsafe / experimental)
 
@@ -217,8 +219,10 @@ The transport supports common structured data:
 - `Map` and `Set`
 - `Buffer` (Node.js), `ArrayBuffer`, `Uint8Array`, `Int32Array`, `Float64Array`, `BigInt64Array`,
   `BigUint64Array`, and `DataView`
-- `Promise<supported>` (resolved on the host before dispatch; rejections
+- native `Promise<supported>` (resolved on the host before dispatch; rejections
   propagate to the caller)
+
+Thenables are not awaited by the transport.
 
 If you need to pass several values, prefer a single object or tuple:
 

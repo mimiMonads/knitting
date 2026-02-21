@@ -8,6 +8,7 @@ import {
   type Lock2,
 } from "../memory/lock.ts";
 import { withResolvers } from "../common/with-resolvers.ts";
+import type { TaskTimeout } from "../types.ts";
 
 type RawArguments = unknown;
 type WorkerResponse = unknown;
@@ -15,6 +16,10 @@ type FunctionID = number;
 type QueueTask = Task;
 
 export type MultiQueue = ReturnType<typeof createHostTxQueue>;
+const SLOT_INDEX_MASK = 31;
+const SLOT_META_MASK = 0x07ffffff;
+const SLOT_META_SHIFT = 5;
+
 
 type CreateHostTxQueueArgs = {
   max?: number;
@@ -134,10 +139,15 @@ export function createHostTxQueue({
     hasPendingFrames,
     txIdle,
     completeFrame: resolveReturn,
-    enqueue: (functionID: FunctionID) => (rawArgs: RawArguments) => {
+    enqueue: (functionID: FunctionID, timeout?: TaskTimeout) => {
+      const id = functionID
+      const HAS_TIMER = timeout !== undefined
+
+
+      return (rawArgs: RawArguments) => {
       // Expanding size if needed
       if (inUsed === queue.length) {
-        const newSize = inUsed + 10;
+        const newSize = inUsed + 32;
         let current = queue.length;
 
         while (newSize > current) {
@@ -153,10 +163,18 @@ export function createHostTxQueue({
 
       // Set info
       slot.value = rawArgs;
-      slot[TaskIndex.FunctionID] = functionID;
+      slot[TaskIndex.FunctionID] = id;
       slot[TaskIndex.ID] = index;
       slot.resolve = deferred.resolve;
       slot.reject = deferred.reject;
+      if(HAS_TIMER){
+        slot[TaskIndex.slotBuffer] =
+          (
+            (slot[TaskIndex.slotBuffer] & SLOT_INDEX_MASK) |
+            ((((performance.now() >>> 0) & SLOT_META_MASK) << SLOT_META_SHIFT) >>> 0)
+          ) >>> 0;
+      }
+ 
 
       if (!encode(slot)) {
         handleEncodeFailure(slot);
@@ -165,6 +183,7 @@ export function createHostTxQueue({
       inUsed = (inUsed + 1) | 0;
 
       return deferred.promise;
+    }
     },
     flushToWorker,
     enqueueKnown,
