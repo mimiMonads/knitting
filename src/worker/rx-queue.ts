@@ -49,8 +49,8 @@ export const createWorkerRxQueue = (
   const pendingUnshift = (slot: Task) => pendingFrames.unshift(slot);
   const pendingPush = (slot: Task) => pendingFrames.push(slot);
   const recyclePush = (slot: Task) => lock.recyclecList.push(slot);
+  const FUNCTION_ID_MASK = 0xFFFF;
   const IDX_FLAGS = TaskIndex.FlagsToHost;
-  const IDX_FN = TaskIndex.FunctionID;
   const FLAG_REJECT = TaskFlag.Reject;
   const TIMEOUT_KIND_RESOLVE = 1;
 
@@ -217,7 +217,8 @@ const enqueueLock = () => {
         if (!slot) break;
 
         try {
-          const result = runByIndex[slot[IDX_FN]]!(slot);
+          const fnIndex = slot[TaskIndex.FunctionID] & FUNCTION_ID_MASK;
+          const result = runByIndex[fnIndex]!(slot);
           // Slot 0 is reused for response flags; clear request FunctionID value.
           slot[IDX_FLAGS] = 0;
           if (result instanceof Promise) {

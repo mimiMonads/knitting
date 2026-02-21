@@ -91,12 +91,13 @@ export type PromisePayloadHandler = (
 
 export enum TaskIndex {
   /**
-   * Flags for host
+   * Worker -> host response flags word.
    */
   FlagsToHost = 0,
   /**
-   * IMPORTANT: FunctionID is only use for worker to host
-   * reserved for special flags from host to worker
+   * Host -> worker request function id (low 16 bits).
+   * High 16 bits are reserved for caller metadata on request path.
+   * NOTE: shares the same storage word as `FlagsToHost`.
    */
   FunctionID = 0,
   ID = 1,
@@ -118,6 +119,35 @@ export const TASK_SLOT_INDEX_MASK = (1 << TASK_SLOT_INDEX_BITS) - 1;
 export const TASK_SLOT_META_BITS = 32 - TASK_SLOT_INDEX_BITS;
 export const TASK_SLOT_META_VALUE_MASK = 0xFFFFFFFF >>> TASK_SLOT_INDEX_BITS;
 const TASK_SLOT_META_PACKED_MASK = (~TASK_SLOT_INDEX_MASK) >>> 0;
+
+export const TASK_FUNCTION_ID_BITS = 16;
+export const TASK_FUNCTION_ID_MASK = (1 << TASK_FUNCTION_ID_BITS) - 1;
+export const TASK_FUNCTION_META_BITS = 32 - TASK_FUNCTION_ID_BITS;
+export const TASK_FUNCTION_META_VALUE_MASK =
+  0xFFFFFFFF >>> TASK_FUNCTION_ID_BITS;
+const TASK_FUNCTION_META_PACKED_MASK = (~TASK_FUNCTION_ID_MASK) >>> 0;
+
+export const getTaskFunctionID = (task: ArrayLike<number>): number =>
+  task[TaskIndex.FunctionID] & TASK_FUNCTION_ID_MASK;
+
+export const setTaskFunctionID = (task: Task, functionID: number): void => {
+  task[TaskIndex.FunctionID] =
+    (
+      (task[TaskIndex.FunctionID] & TASK_FUNCTION_META_PACKED_MASK) |
+      (functionID & TASK_FUNCTION_ID_MASK)
+    ) >>> 0;
+};
+
+export const getTaskFunctionMeta = (task: ArrayLike<number>): number =>
+  (task[TaskIndex.FunctionID] >>> TASK_FUNCTION_ID_BITS) &
+  TASK_FUNCTION_META_VALUE_MASK;
+
+export const setTaskFunctionMeta = (task: Task, value: number): void => {
+  const encodedMeta =
+    ((value & TASK_FUNCTION_META_VALUE_MASK) << TASK_FUNCTION_ID_BITS) >>> 0;
+  task[TaskIndex.FunctionID] =
+    ((task[TaskIndex.FunctionID] & TASK_FUNCTION_ID_MASK) | encodedMeta) >>> 0;
+};
 
 export const getTaskSlotIndex = (task: ArrayLike<number>): number =>
   task[TaskIndex.slotBuffer] & TASK_SLOT_INDEX_MASK;

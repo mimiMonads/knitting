@@ -163,7 +163,7 @@ export function createHostTxQueue({
 
       // Set info
       slot.value = rawArgs;
-      slot[TaskIndex.FunctionID] = id;
+      slot[TaskIndex.FunctionID] = id
       slot[TaskIndex.ID] = index;
       slot.resolve = deferred.resolve;
       slot.reject = deferred.reject;

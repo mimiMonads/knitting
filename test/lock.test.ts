@@ -6,6 +6,8 @@ const assertEquals: (actual: unknown, expected: unknown) => void =
   };
 import RingQueue from "../src/ipc/tools/RingQueue.ts";
 import {
+  getTaskFunctionID,
+  getTaskFunctionMeta,
   getTaskSlotIndex,
   getTaskSlotMeta,
   HEADER_BYTE_LENGTH,
@@ -15,8 +17,12 @@ import {
   lock2,
   makeTask,
   PayloadSignal,
+  setTaskFunctionID,
+  setTaskFunctionMeta,
   setTaskSlotIndex,
   setTaskSlotMeta,
+  TASK_FUNCTION_ID_MASK,
+  TASK_FUNCTION_META_VALUE_MASK,
   TASK_SLOT_INDEX_MASK,
   TASK_SLOT_META_VALUE_MASK,
   TaskIndex,
@@ -125,6 +131,32 @@ test("slotBuffer helpers only mutate upper 27 bits for metadata", () => {
   setTaskSlotMeta(task, TASK_SLOT_META_VALUE_MASK + 77);
   assertEquals(getTaskSlotMeta(task), 76);
   assertEquals(getTaskSlotIndex(task), 31);
+});
+
+test("FunctionID helpers only mutate low 16 bits for id", () => {
+  const task = makeTask();
+  task[TaskIndex.FunctionID] = 0xabcd0000;
+
+  setTaskFunctionID(task, 0x12345);
+
+  assertEquals(getTaskFunctionID(task), 0x2345);
+  assertEquals(task[TaskIndex.FunctionID] >>> 16, 0xabcd);
+  assertEquals(task[TaskIndex.FunctionID] & TASK_FUNCTION_ID_MASK, 0x2345);
+});
+
+test("FunctionID helpers only mutate upper 16 bits for metadata", () => {
+  const task = makeTask();
+  task[TaskIndex.FunctionID] = 0x00005678;
+
+  setTaskFunctionMeta(task, 0x12345);
+
+  assertEquals(getTaskFunctionID(task), 0x5678);
+  assertEquals(getTaskFunctionMeta(task), 0x2345);
+  assertEquals(task[TaskIndex.FunctionID] & TASK_FUNCTION_ID_MASK, 0x5678);
+  assertEquals(
+    getTaskFunctionMeta(task),
+    TASK_FUNCTION_META_VALUE_MASK & 0x12345,
+  );
 });
 
 test("encode stops when full", () => {

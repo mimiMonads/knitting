@@ -43,6 +43,9 @@ type TaskFactory = <
   I: FixPoint<A, B>,
 ) => ReturnFixed<A, B>;
 
+const MAX_FUNCTION_ID = 0xFFFF;
+const MAX_FUNCTION_COUNT = MAX_FUNCTION_ID + 1;
+
 export const isMain: boolean = isMainThread;
 export { endpointSymbol as endpointSymbol };
 
@@ -144,6 +147,13 @@ export const createPool: CreatePoolFactory = ({
       name: k,
     }))
       .sort((a, b) => a.name.localeCompare(b.name)) as ComposedWithKey[];
+
+  if (listOfFunctions.length > MAX_FUNCTION_COUNT) {
+    throw new RangeError(
+      `Too many tasks: received ${listOfFunctions.length}. ` +
+      `Maximum is ${MAX_FUNCTION_COUNT} (Uint16 function IDs: 0..${MAX_FUNCTION_ID}).`,
+    );
+  }
 
   const usingInliner = typeof inliner === "object" && inliner != null;
   const totalNumberOfThread = (threads ?? 1) +
