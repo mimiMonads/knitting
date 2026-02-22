@@ -1,5 +1,13 @@
+import { withResolvers } from "../common/with-resolvers.ts";
+
 const SLOT_BITS = 32;
 const SLOT_MASK = SLOT_BITS - 1;
+export const AbortSignalPoolExhausted = Symbol.for(
+  "knitting.abortSignal.poolExhausted",
+);
+export const EnqueuedAbortSignal = Symbol.for(
+  "knitting.abortSignal.enqueuedSignal",
+);
 
 export type SignalAbortStore = ReturnType<typeof signalAbortFactory>;
 export type SetSignalResult = -1 | 0 | 1;
@@ -94,3 +102,28 @@ export const signalAbortFactory = ({
     inUseCount: () => current,
   };
 };
+
+
+export class OneShotDeferred<T> {  
+
+  #triggered = false;
+
+  constructor(
+    deferred: ReturnType<typeof withResolvers<T>>,
+    onSettle: () => void,
+  ) {
+
+    const settleOnce = <A extends unknown[]>(
+      fn: (...args: A) => void,
+    ) =>
+    (...args: A) => {
+      if (this.#triggered) return;
+      this.#triggered = true;
+      onSettle();
+      fn(...args);
+    };
+
+    deferred.resolve = settleOnce(deferred.resolve);
+    deferred.reject = settleOnce(deferred.reject.bind(deferred.promise));
+  }
+}

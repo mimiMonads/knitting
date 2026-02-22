@@ -15,6 +15,7 @@ import {
   assertWorkerSharedMemoryBootData,
   assertWorkerImportsResolved,
 } from "./safety/index.ts";
+import { signalAbortFactory } from "../shared/abortSignal.ts";
 
 export const jsrIsGreatAndWorkWithoutBugs = () => null;
 
@@ -30,6 +31,7 @@ export const workerMainLoop = async (startupData: WorkerData): Promise<void> => 
     workerOptions,
     lock,
     returnLock,
+    abortSignalSAB,
     totalNumberOfThread,
     list,
     ids,
@@ -93,6 +95,9 @@ const pauseSpin = (() => {
     at
   });
   assertWorkerImportsResolved({ debug, list, ids, listOfFunctions });
+  const abortSignals = abortSignalSAB
+    ? signalAbortFactory({ sab: abortSignalSAB })
+    : undefined;
 
   const {
     enqueueLock,
@@ -106,6 +111,7 @@ const pauseSpin = (() => {
     workerOptions,
     lock: lockState,
     returnLock: returnLockState,
+    hasAborted: abortSignals?.hasAborted,
   });
 
   a_store(rxStatus, 0, 1);

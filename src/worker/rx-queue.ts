@@ -2,12 +2,11 @@ import RingQueue from "../ipc/tools/RingQueue.ts";
 import {
   TaskFlag,
   TaskIndex,
-  TASK_SLOT_META_VALUE_MASK,
-  getTaskSlotMeta,
   type Task,
   type Lock2,
 } from "../memory/lock.ts";
 import type { WorkerComposedWithKey } from "./get-functions.ts";
+import { composeWorkerRunner } from "./composable-runners.ts";
 import type {
   WorkerSettings,
 } from "../types.ts";
@@ -17,6 +16,7 @@ type ArgumentsForCreateWorkerQueue = {
   workerOptions?: WorkerSettings;
   lock: Lock2;
   returnLock: Lock2;
+  hasAborted?: (signal: number) => boolean;
 };
 
 export type CreateWorkerRxQueue = ReturnType<typeof createWorkerRxQueue>;
@@ -27,6 +27,7 @@ export const createWorkerRxQueue = (
     workerOptions,
     lock,
     returnLock,
+    hasAborted,
   }: ArgumentsForCreateWorkerQueue,
 ) => {
   const PLACE_HOLDER = (_?: unknown) => {
@@ -52,89 +53,14 @@ export const createWorkerRxQueue = (
   const FUNCTION_ID_MASK = 0xFFFF;
   const IDX_FLAGS = TaskIndex.FlagsToHost;
   const FLAG_REJECT = TaskFlag.Reject;
-  const TIMEOUT_KIND_RESOLVE = 1;
-
-  const raceTimeout = (
-    promise: Promise<unknown>,
-    ms: number,
-    resolveOnTimeout: boolean,
-    timeoutValue: unknown,
-  ): Promise<unknown> =>
-    new Promise((resolve, reject) => {
-      let done = false;
-      const timer = setTimeout(() => {
-        if (done) return;
-        done = true;
-        if (resolveOnTimeout) resolve(timeoutValue);
-        else reject(timeoutValue);
-      }, ms);
-
-      promise.then(
-        (value) => {
-          if (done) return;
-          done = true;
-          clearTimeout(timer);
-          resolve(value);
-        },
-        (err) => {
-          if (done) return;
-          done = true;
-          clearTimeout(timer);
-          reject(err);
-        },
-      );
-    });
-
-  const nowStamp = () =>
-    (Math.floor(performance.now()) & TASK_SLOT_META_VALUE_MASK) >>> 0;
-
-  const applyTimeoutBudget = (
-    promise: Promise<unknown>,
-    slot: Task,
-    spec: NonNullable<WorkerComposedWithKey["timeout"]>,
-  ): Promise<unknown> => {
-    const elapsed = (nowStamp() - getTaskSlotMeta(slot)) & TASK_SLOT_META_VALUE_MASK;
-    const remaining = spec.ms - elapsed;
-
-    if (!(remaining > 0)) {
-      // Prevent late unhandled rejections from the original promise.
-      promise.then(() => {}, () => {});
-      return spec.kind === TIMEOUT_KIND_RESOLVE
-        ? Promise.resolve(spec.value)
-        : Promise.reject(spec.value);
-    }
-
-    // Keep timer strictly positive after subtracting queue wait.
-    const timeoutMs = Math.max(1, Math.floor(remaining));
-    return raceTimeout(
-      promise,
-      timeoutMs,
-      spec.kind === TIMEOUT_KIND_RESOLVE,
-      spec.value,
-    );
-  };
-
-  const composePlainRunner = (job: (args: unknown) => unknown) =>
-    (slot: Task) => job(slot.value);
-
-  const composeTimedRunner = (
-    job: (args: unknown) => unknown,
-    spec: NonNullable<WorkerComposedWithKey["timeout"]>,
-  ) => {
-    return (slot: Task) => {
-      const result = job(slot.value);
-      if (!(result instanceof Promise)) return result;
-      return applyTimeoutBudget(result, slot, spec);
-    };
-  };
 
   const runByIndex = listOfFunctions.reduce((acc, fixed, idx) => {
     const job = jobs[idx]!;
-    acc.push(
-      fixed.timeout
-        ? composeTimedRunner(job, fixed.timeout)
-        : composePlainRunner(job),
-    );
+    acc.push(composeWorkerRunner({
+      job,
+      timeout: fixed.timeout,
+      hasAborted,
+    }));
     return acc;
   }, [] as Array<(slot: Task) => unknown>);
 

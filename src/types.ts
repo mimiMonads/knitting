@@ -3,6 +3,7 @@ import type { Buffer as NodeBuffer } from "node:buffer";
 type WorkerCall = {
   fnNumber: number;
   timeout?: TaskTimeout;
+  abortSignal?: true;
 };
 
 type WorkerInvoke = (args: Uint8Array) => Promise<unknown>;
@@ -17,6 +18,7 @@ type CreateContext = WorkerContext;
 
 type WorkerData = {
   sab: SharedArrayBuffer;
+  abortSignalSAB?: SharedArrayBuffer;
   list: string[];
   ids: number[];
   thread: number;
@@ -133,6 +135,7 @@ interface FixPoint<A extends TaskInput, B extends Args> {
   readonly href?: string;
   readonly f: TaskFn<A, B>;
   readonly timeout?: TaskTimeout;
+  readonly abortSignal?: true;
 }
 
 type SecondPart = {

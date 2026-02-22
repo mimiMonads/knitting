@@ -220,7 +220,7 @@ export const createSharedStaticBufferIO = ({
     return bytes;
   };
 
-  const readBytesCopy = (start:number, end:number, at:number) =>
+  const readBytesCopy = (start:number, end:number, at:number) => 
     arrU8Sec[at].slice(start,end);
   const readBytesView = (start:number, end:number, at:number) =>
     arrU8Sec[at].subarray(start,end);

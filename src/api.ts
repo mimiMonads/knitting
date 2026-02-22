@@ -193,6 +193,7 @@ export const createPool: CreatePoolFactory = ({
 
   const hostDispatcher: DispatcherSettings | undefined = host ??
     (isDispatcherOptions(dispatcher) ? dispatcher.host : dispatcher);
+  const usesAbortSignal = listOfFunctions.some((fn) => fn.abortSignal === true);
 
   let workers = Array.from({
     length: threads ?? 1,
@@ -210,6 +211,7 @@ export const createPool: CreatePoolFactory = ({
       host: hostDispatcher,
       payloadInitialBytes,
       payloadMaxBytes,
+      usesAbortSignal,
     })
   );
 
@@ -244,6 +246,7 @@ export const createPool: CreatePoolFactory = ({
     name: fn.name,
     index,
     timeout: fn.timeout,
+    abortSignal: fn.abortSignal,
   }));
 
   const callHandlers = new Map<string, WorkerInvoke[]>();
@@ -253,11 +256,12 @@ export const createPool: CreatePoolFactory = ({
   }
 
   for (const worker of workers) {
-    for (const { name, index, timeout } of indexedFunctions) {
+    for (const { name, index, timeout, abortSignal } of indexedFunctions) {
       callHandlers.get(name)!.push(
         worker.call({
           fnNumber: index,
           timeout,
+          abortSignal,
         }),
       );
     }

@@ -72,13 +72,52 @@ const results = await Promise.all(jobs);
 
 ## API Overview
 
-### `task({ f, href?, timeout? })`
+### `task({ f, href?, timeout?, abortSignal? })`
 
 Wraps a function (sync or async) so it can be registered and executed in
 workers. `call.*()` always returns a promise. Inputs can also be native
 promises, they’ll be awaited before dispatch.
 Only native `Promise` values are awaited; thenables are treated as regular
 values.
+
+`abortSignal?: true` marks the task as abort-aware and forwards that flag into
+the host tx queue metadata path.
+
+Usage:
+
+```ts
+import { createPool, task } from "@vixeny/knitting";
+
+export const slowTask = task({
+  abortSignal: true,
+  f: async (value: string) => {
+    // Your worker code
+    return value.toUpperCase();
+  },
+});
+
+const { call, shutdown } = createPool({ threads: 1 })({
+  slowTask,
+});
+
+const pending = call.slowTask("hello");
+// today there is no public per-call cancel API yet
+// shutdown() rejects pending calls with "Thread closed"
+await shutdown();
+await pending;
+```
+
+Current behavior:
+
+- Host allocates a signal id and encodes it into task metadata.
+- Worker checks signal state before invoking the task function.
+- If already aborted, the call rejects with `Error("Task aborted")`.
+- Signal cleanup is guarded to run once on settle (resolve or reject).
+
+Current limitation:
+
+- There is no public per-call cancel API yet; `shutdown()` still rejects
+  pending calls with `"Thread closed"`.
 
 #### `href` override behavior (unsafe / experimental)
 

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { signalAbortFactory } from "../src/shared/abortSignal.ts";
+import { withResolvers } from "../src/common/with-resolvers.ts";
+import { OneShotDeferred, signalAbortFactory } from "../src/shared/abortSignal.ts";
 
 test("abort signal set/check/reset lifecycle", () => {
   const sab = new SharedArrayBuffer(Uint32Array.BYTES_PER_ELEMENT);
@@ -39,4 +40,19 @@ test("closeNow sentinel when pool is exhausted", () => {
   assert.equal(store.hasAborted(store.closeNow), true);
   assert.equal(store.setSignal(store.closeNow), 0);
   assert.equal(store.resetSignal(store.closeNow), false);
+});
+
+test("OneShotDeferred reject wrapper is single-fire", async () => {
+  const deferred = withResolvers<unknown>();
+  let settles = 0;
+  new OneShotDeferred(deferred, () => {
+    settles++;
+  });
+
+  deferred.reject("first");
+  deferred.reject("second");
+  deferred.resolve("late");
+
+  await assert.rejects(deferred.promise, (reason) => reason === "first");
+  assert.equal(settles, 1);
 });

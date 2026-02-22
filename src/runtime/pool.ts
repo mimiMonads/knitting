@@ -25,6 +25,7 @@ import type {
 } from "../types.ts";
 import { jsrIsGreatAndWorkWithoutBugs } from "../worker/loop.ts";
 import { HAS_SAB_GROW, createSharedArrayBuffer } from "../common/runtime.ts";
+import { signalAbortFactory } from "../shared/abortSignal.ts";
 import { Worker } from "node:worker_threads";
 
 enum Comment {
@@ -49,6 +50,7 @@ export const spawnWorkerContext = ({
   host,
   payloadInitialBytes,
   payloadMaxBytes,
+  usesAbortSignal,
 }: {
   list: string[];
   ids: number[];
@@ -64,6 +66,7 @@ export const spawnWorkerContext = ({
   host?: DispatcherSettings;
   payloadInitialBytes?: number;
   payloadMaxBytes?: number;
+  usesAbortSignal?: boolean;
 }) => {
   const tsFileUrl = new URL(import.meta.url);
 
@@ -116,6 +119,12 @@ export const spawnWorkerContext = ({
     payload: returnLockBuffers.payload,
     payloadSector: returnLockBuffers.payloadSector,
   });
+  const abortSignalSAB = usesAbortSignal === true
+    ? new SharedArrayBuffer(Uint32Array.BYTES_PER_ELEMENT * 1024)
+    : undefined;
+  const abortSignals = abortSignalSAB
+    ? signalAbortFactory({ sab: abortSignalSAB })
+    : undefined;
 
   const signals = createSharedMemoryTransport({
     sabObject: sab,
@@ -128,6 +137,7 @@ export const spawnWorkerContext = ({
   const queue = createHostTxQueue({
     lock,
     returnLock,
+    abortSignals,
   });
 
   const {
@@ -161,6 +171,7 @@ export const spawnWorkerContext = ({
   );
   const workerDataPayload = {
     sab: signals.sab,
+    abortSignalSAB,
     list,
     ids,
     at,
@@ -219,8 +230,8 @@ export const spawnWorkerContext = ({
     send();
   });
 
-  const call = ({ fnNumber, timeout }: WorkerCall) => {
-    const enqueues = enqueue(fnNumber, timeout);
+  const call = ({ fnNumber, timeout, abortSignal }: WorkerCall) => {
+    const enqueues = enqueue(fnNumber, timeout, abortSignal);
 
     return (args: Uint8Array) => {
       const pending = enqueues(args);

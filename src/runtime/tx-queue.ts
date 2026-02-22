@@ -9,6 +9,11 @@ import {
 } from "../memory/lock.ts";
 import { withResolvers } from "../common/with-resolvers.ts";
 import type { TaskTimeout } from "../types.ts";
+import {
+  AbortSignalPoolExhausted,
+  OneShotDeferred,
+  type SignalAbortStore,
+} from "../shared/abortSignal.ts";
 
 type RawArguments = unknown;
 type WorkerResponse = unknown;
@@ -19,18 +24,25 @@ export type MultiQueue = ReturnType<typeof createHostTxQueue>;
 const SLOT_INDEX_MASK = 31;
 const SLOT_META_MASK = 0x07ffffff;
 const SLOT_META_SHIFT = 5;
+const FUNCTION_ID_MASK = 0xffff;
+const FUNCTION_META_MASK = 0xffff;
+const FUNCTION_META_SHIFT = 16;
+const ABORT_SIGNAL_META_OFFSET = 1;
+const NO_ABORT_SIGNAL = -1;
 
 
 type CreateHostTxQueueArgs = {
   max?: number;
   lock: Lock2;
   returnLock: Lock2;
+  abortSignals?: Pick<SignalAbortStore, "getSignal" | "resetSignal" | "closeNow">;
 };
 
 export function createHostTxQueue({
   max,
   lock,
   returnLock,
+  abortSignals,
 }: CreateHostTxQueueArgs) {
   const PLACE_HOLDER = (_?: unknown) => {
     throw ("UNREACHABLE FROM PLACE HOLDER (main)");
@@ -46,15 +58,17 @@ export function createHostTxQueue({
     return task;
   };
 
+  const initialSize = max ?? 10;
   const queue = Array.from(
-    { length: max ?? 10 },
+    { length: initialSize },
     (_, index) => newSlot(index),
   );
 
   const freeSockets = Array.from(
-    { length: max ?? 10 },
+    { length: initialSize },
     (_, i) => i,
   );
+
 
   // Local count
   const toBeSent = new RingQueue<QueueTask>();
@@ -63,10 +77,12 @@ export function createHostTxQueue({
   const freePush = (id: number) => freeSockets.push(id);
   const freePop = () => freeSockets.pop();
   const queuePush = (task: QueueTask) => queue.push(task);
-  const { encode , encodeManyFrom} = lock
+  const { encode, encodeManyFrom } = lock;
   let toBeSentCount = 0 | 0;
   let inUsed = 0 | 0;
   let pendingPromises = 0 | 0;
+  const resetSignal = abortSignals?.resetSignal;
+
 
   const isPromisePending = (task: QueueTask) =>
     (task as QueueTask & { [PromisePayloadMarker]?: true })[
@@ -107,7 +123,7 @@ export function createHostTxQueue({
         slot.reject = PLACE_HOLDER;
 
         queue[index] = newSlot(index);
-      }
+      } 
     }
 
     while (toBeSent.size > 0) {
@@ -139,51 +155,76 @@ export function createHostTxQueue({
     hasPendingFrames,
     txIdle,
     completeFrame: resolveReturn,
-    enqueue: (functionID: FunctionID, timeout?: TaskTimeout) => {
-      const id = functionID
-      const HAS_TIMER = timeout !== undefined
-
+    enqueue: (
+      functionID: FunctionID,
+      timeout?: TaskTimeout,
+      abortSignal?: true,
+    ) => {
+      const HAS_TIMER = timeout !== undefined;
+      const functionIDMasked = functionID & FUNCTION_ID_MASK;
+      const USE_SIGNAL = abortSignal === true && abortSignals !== undefined;
+    
 
       return (rawArgs: RawArguments) => {
-      // Expanding size if needed
-      if (inUsed === queue.length) {
-        const newSize = inUsed + 32;
-        let current = queue.length;
+        // Expanding size if needed
+        if (inUsed === queue.length) {
+          const newSize = inUsed + 32;
+          let current = queue.length;
 
-        while (newSize > current) {
-          queuePush(newSlot(current));
-          freePush(current);
-          current++;
+          while (newSize > current) {
+            queuePush(newSlot(current));
+            freePush(current);
+            current++;
+          }
         }
-      }
 
-      const index = freePop()!;
-      const slot = queue[index];
-      const deferred = withResolvers<WorkerResponse>();
 
-      // Set info
-      slot.value = rawArgs;
-      slot[TaskIndex.FunctionID] = id
-      slot[TaskIndex.ID] = index;
-      slot.resolve = deferred.resolve;
-      slot.reject = deferred.reject;
-      if(HAS_TIMER){
-        slot[TaskIndex.slotBuffer] =
-          (
-            (slot[TaskIndex.slotBuffer] & SLOT_INDEX_MASK) |
-            ((((performance.now() >>> 0) & SLOT_META_MASK) << SLOT_META_SHIFT) >>> 0)
-          ) >>> 0;
-      }
+
+        const index = freePop()!;
+        const slot = queue[index];
+        const deferred = withResolvers<WorkerResponse>();
+      
+        slot[TaskIndex.FunctionID] = functionIDMasked;
+        if (USE_SIGNAL) {
+          const maybeSignal = abortSignals.getSignal();
+          if (maybeSignal === abortSignals.closeNow) {
+            return Promise.reject(AbortSignalPoolExhausted);
+          }
+
+          new OneShotDeferred(deferred, () => resetSignal?.(maybeSignal));
+          const encodedSignalMeta =
+            ((maybeSignal + ABORT_SIGNAL_META_OFFSET) & FUNCTION_META_MASK) >>> 0;
+          slot[TaskIndex.FunctionID] =
+            ((encodedSignalMeta << FUNCTION_META_SHIFT) | functionIDMasked) >>> 0;
+        } 
+
+
+        // Set info
+        slot.value = rawArgs;
  
+        slot[TaskIndex.ID] = index;
+        slot.resolve = deferred.resolve;
+        slot.reject = deferred.reject;
 
-      if (!encode(slot)) {
-        handleEncodeFailure(slot);
-      }
+        if (HAS_TIMER) {
+          slot[TaskIndex.slotBuffer] =
+            (
+              (slot[TaskIndex.slotBuffer] & SLOT_INDEX_MASK) |
+              ((((performance.now() >>> 0) & SLOT_META_MASK) << SLOT_META_SHIFT) >>> 0)
+            ) >>> 0;
+        }
 
-      inUsed = (inUsed + 1) | 0;
+        if (!encode(slot)) {
+          handleEncodeFailure(slot);
+        }
 
-      return deferred.promise;
-    }
+        inUsed = (inUsed + 1) | 0;
+
+  
+    
+
+        return deferred.promise;
+      };
     },
     flushToWorker,
     enqueueKnown,
