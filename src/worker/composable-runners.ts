@@ -16,6 +16,7 @@ type WorkerAbortToolkit = {
 
 const ABORT_SIGNAL_META_OFFSET = 1;
 const TIMEOUT_KIND_RESOLVE = 1;
+const p_now = performance.now.bind(performance);
 
 const raceTimeout = (
   promise: Promise<unknown>,
@@ -48,15 +49,16 @@ const raceTimeout = (
     );
   });
 
-const nowStamp = () =>
-  (Math.floor(performance.now()) & TASK_SLOT_META_VALUE_MASK) >>> 0;
+const nowStamp = (now: () => number) =>
+  (Math.floor(now()) & TASK_SLOT_META_VALUE_MASK) >>> 0;
 
 const applyTimeoutBudget = (
   promise: Promise<unknown>,
   slot: Task,
   spec: TimeoutSpec,
+  now: () => number,
 ): Promise<unknown> => {
-  const elapsed = (nowStamp() - getTaskSlotMeta(slot)) & TASK_SLOT_META_VALUE_MASK;
+  const elapsed = (nowStamp(now) - getTaskSlotMeta(slot)) & TASK_SLOT_META_VALUE_MASK;
   const remaining = spec.ms - elapsed;
 
   if (!(remaining > 0)) {
@@ -113,11 +115,15 @@ export const composeWorkerRunner = ({
   job,
   timeout,
   hasAborted,
+  now,
 }: {
   job: WorkerJob;
   timeout?: TimeoutSpec;
   hasAborted?: HasAborted;
+  now?: () => number;
 }): SlotRunner => {
+  const nowTime = now ?? p_now;
+
   if (!hasAborted) {
     if (!timeout) {
       return (slot: Task) => job(slot.value);
@@ -126,7 +132,7 @@ export const composeWorkerRunner = ({
     return (slot: Task) => {
       const result = job(slot.value);
       if (!(result instanceof Promise)) return result;
-      return applyTimeoutBudget(result, slot, timeout);
+      return applyTimeoutBudget(result, slot, timeout, nowTime);
     };
   }
 
@@ -148,6 +154,6 @@ export const composeWorkerRunner = ({
       ? job(slot.value)
       : job(slot.value, getToolkit(signal));
     if (!(result instanceof Promise)) return result;
-    return applyTimeoutBudget(result, slot, timeout);
+    return applyTimeoutBudget(result, slot, timeout, nowTime);
   };
 };

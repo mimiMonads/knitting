@@ -65,6 +65,26 @@ test("closeNow sentinel when pool is exhausted", () => {
   assert.equal(store.resetSignal(store.closeNow), false);
 });
 
+test("maxSignals caps allocation below SAB physical capacity", () => {
+  const sab = new SharedArrayBuffer(Uint32Array.BYTES_PER_ELEMENT * 2);
+  const store = signalAbortFactory({
+    sab,
+    maxSignals: 33,
+  });
+
+  const allocated = Array.from({ length: 33 }, () => store.getSignal());
+  assert.equal(allocated[0], 0);
+  assert.equal(store.max, 33);
+  assert.equal(store.inUseCount(), 33);
+  assert.equal(allocated.includes(32), true);
+  assert.equal(
+    allocated.every((signal) => signal >= 0 && signal < 33),
+    true,
+  );
+  assert.equal(store.getSignal(), store.closeNow);
+  assert.equal(store.hasAborted(63), false);
+});
+
 test("OneShotDeferred reject wrapper is single-fire", async () => {
   const deferred = withResolvers<unknown>();
   let settles = 0;

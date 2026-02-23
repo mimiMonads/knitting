@@ -14,24 +14,39 @@ export type SetSignalResult = -1 | 0 | 1;
 
 export const signalAbortFactory = ({
   sab,
+  maxSignals,
 }: {
   sab: SharedArrayBuffer;
+  maxSignals?: number;
 }) => {
   const atomicView = new Uint32Array(sab);
   const size = atomicView.length;
   const inUse = new Uint32Array(size);
-  const max = size * SLOT_BITS;
+  const physicalMax = size * SLOT_BITS;
+  const max = (() => {
+    if (!Number.isFinite(maxSignals)) return physicalMax;
+    const parsed = Math.floor(maxSignals as number);
+    if (parsed <= 0) return physicalMax;
+    return Math.min(parsed, physicalMax);
+  })();
   const closeNow = max + 1;
 
   let current = 0;
   let cursor = 0;
 
   const getSignal = () => {
-    if (current >= max ) return closeNow;
+    if (current >= max) return closeNow;
 
     for (let step = 0; step < size; step++) {
       const word = (cursor + step) % size;
-      const freeBits = (~inUse[word]) >>> 0;
+      const wordBase = word << 5;
+      const remaining = max - wordBase;
+      if (remaining <= 0) continue;
+
+      const allowedMask = remaining >= SLOT_BITS
+        ? 0xFFFFFFFF
+        : ((1 << remaining) - 1) >>> 0;
+      const freeBits = ((~inUse[word]) & allowedMask) >>> 0;
       if (freeBits === 0) continue;
 
       const bit = (freeBits & -freeBits) >>> 0;

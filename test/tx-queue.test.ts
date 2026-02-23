@@ -5,6 +5,7 @@ import { createHostTxQueue } from "../src/runtime/tx-queue.ts";
 
 const makeQueue = () => {
   const seen: number[] = [];
+  let nowValue = 0;
   const lock = {
     encode: (task: Task) => {
       seen.push(getTaskSlotMeta(task));
@@ -19,30 +20,30 @@ const makeQueue = () => {
 
   return {
     seen,
-    tx: createHostTxQueue({ lock, returnLock, max: 1 }),
+    setNow: (value: number) => {
+      nowValue = value;
+    },
+    tx: createHostTxQueue({
+      lock,
+      returnLock,
+      max: 1,
+      now: () => nowValue,
+    }),
   };
 };
 
 test("tx enqueue encodes timeout into slotBuffer upper bits", () => {
-  const { seen, tx } = makeQueue();
-  const originalNow = performance.now;
-  let nowValue = 0;
-  performance.now = () => nowValue;
+  const { seen, setNow, tx } = makeQueue();
+  const callWithoutTimeout = tx.enqueue(0);
+  void callWithoutTimeout("a");
 
-  try {
-    const callWithoutTimeout = tx.enqueue(0);
-    void callWithoutTimeout("a");
+  setNow(128);
+  const callWithZeroTimeout = tx.enqueue(0, 0);
+  void callWithZeroTimeout("b");
 
-    nowValue = 128;
-    const callWithZeroTimeout = tx.enqueue(0, 0);
-    void callWithZeroTimeout("b");
-
-    nowValue = 96_001;
-    const callWithObject = tx.enqueue(0, { time: 5, maybe: true });
-    void callWithObject("c");
-  } finally {
-    performance.now = originalNow;
-  }
+  setNow(96_001);
+  const callWithObject = tx.enqueue(0, { time: 5, maybe: true });
+  void callWithObject("c");
 
   assert.equal(seen[0], 0);
   assert.equal(seen[1], 128 & TASK_SLOT_META_VALUE_MASK);

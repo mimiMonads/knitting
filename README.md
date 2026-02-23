@@ -21,7 +21,7 @@ call them from the main thread with a small, typed API.
 This package is published on JSR:
 
 ```bash
-deno add --npm jsr:@vixeny/knitting
+deno add jsr:@vixeny/knitting
 ```
 
 
@@ -80,8 +80,11 @@ promises, they’ll be awaited before dispatch.
 Only native `Promise` values are awaited; thenables are treated as regular
 values.
 
-`abortSignal?: true` marks the task as abort-aware and forwards that flag into
-the host tx queue metadata path.
+`abortSignal` enables abort-aware metadata for that task.
+Accepted values:
+
+- `true`
+- `{ hasAborted: true }`
 
 Usage:
 
@@ -104,7 +107,7 @@ const pending = call.slowTask("hello");
 // today there is no public per-call cancel API yet
 // shutdown() rejects pending calls with "Thread closed"
 await shutdown();
-await pending;
+await pending.catch(() => {});
 ```
 
 Current behavior:
@@ -113,6 +116,8 @@ Current behavior:
 - Worker checks signal state before invoking the task function.
 - If already aborted, the call rejects with `Error("Task aborted")`.
 - Signal cleanup is guarded to run once on settle (resolve or reject).
+- Abort-aware pool capacity defaults to `258` signals (when at least one task
+  uses `abortSignal`) and can be tuned with `createPool({ abortSignalCapacity })`.
 
 Current limitation:
 
@@ -182,13 +187,32 @@ Key options:
 - `threads?: number` number of worker threads (default `1`).
 - `inliner?: { position?: "first" | "last"; batchSize?: number; dispatchThreshold?: number }`
   run tasks on the main thread as an extra lane.
-- `balancer?: "roundRobin" | "firstIdle" | "randomLane" | "firstIdleOrRandom"`
-  or `{ strategy?: "roundRobin" | "firstIdle" | "randomLane" | "firstIdleOrRandom" }`
+- `balancer?: "roundRobin" | "robinRound" | "firstIdle" | "randomLane" | "firstIdleOrRandom"`
+  or `{ strategy?: "roundRobin" | "robinRound" | "firstIdle" | "randomLane" | "firstIdleOrRandom" }`
   task routing strategy.
 - `worker?: { resolveAfterFinishingAll?: true; timers?: WorkerTimers }`
 - `payloadInitialBytes?: number` initial payload SAB size per worker direction (bytes).
 - `payloadMaxBytes?: number` max payload SAB size per worker direction (bytes).
+- `abortSignalCapacity?: number` max abort-aware in-flight signals (default `258`).
+  This applies only when at least one task declares `abortSignal`.
 - `host?: DispatcherSettings`
+- `workerExecArgv?: string[]` extra worker `execArgv` flags.
+- `permission?: "strict" | "unsafe" | "off" | PermisonProtocol`
+  (and `permison` alias) for runtime access policy:
+  - `"strict"` (default when passing an object): hardened mode with deny lists.
+  - `"unsafe"`: disables permission hardening (no fs deny guards, console enabled,
+    strips Node permission flags inherited from parent/worker options).
+  - `"off"`: disable permission protocol entirely.
+  Strict defaults include read/write rooted at current `cwd`, deny-write for
+  `node_modules`, deny read/write for sensitive paths (`.env`, `.git`,
+  `.npmrc`, `.docker`, `.secrets`, `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.azure`,
+  `~/.config/gcloud`, `~/.kube`, plus POSIX system paths `/proc`,
+  `/proc/self`, `/proc/self/environ`, `/proc/self/mem`, `/sys`, `/dev`, `/etc`),
+  read support for `deno.lock` and `bun.lock*`,
+  and Node `--permission` worker flags (Node runtime).
+  `console?: boolean` can be set in object mode (`false` by default in strict,
+  `true` by default in unsafe).
+- `dispatcher?: DispatcherOptions | DispatcherSettings` deprecated alias of `host`.
 - `debug?: { extras?: boolean; logMain?: boolean; logHref?: boolean;
   logImportedUrl?: boolean }`
 - `source?: string` override the worker entry module.
@@ -202,6 +226,37 @@ const pool = createPool({
 })({ add });
 ```
 
+Permission examples:
+
+```ts
+// Hardened defaults
+createPool({ permission: {} })({ add });
+
+// Shorthand full-access mode
+createPool({ permission: "unsafe" })({ add });
+
+// Explicit strict mode + console enabled
+createPool({ permission: { mode: "strict", console: true } })({ add });
+```
+
+Timing note:
+
+- Worker timing paths capture a high-resolution `performance.now()` reference at
+  module load/startup time. This keeps scheduling/timeout precision stable without
+  freezing global `performance`.
+
+#### Safety hardening defaults
+
+- Startup-only guard layer: safety hooks are installed once before the worker
+  loop starts (no extra checks inside the hot task-processing loop).
+- Process termination APIs from task code are blocked (`process.exit`,
+  `process.kill`, `process.abort`, plus `Deno.exit`/`Bun.exit` when present).
+- Worker timing uses captured high-resolution clock references to avoid
+  precision regressions from later task-level monkey-patching.
+- In strict permission mode, Node FS/Deno/Bun file APIs are wrapped with deny
+  checks for sensitive paths. Node workers also receive permission CLI flags in
+  strict mode.
+
 #### Runtime tuning options
 
 You can tune idle behavior and backoff:
@@ -212,6 +267,8 @@ You can tune idle behavior and backoff:
   `0` to disable pause calls.
 - `payloadInitialBytes?: number` initial payload buffer size in bytes.
 - `payloadMaxBytes?: number` max payload buffer size in bytes.
+- `abortSignalCapacity?: number` max concurrent abort-aware in-flight calls
+  (default `258`).
 - `host.stallFreeLoops?: number` notify loops before backoff starts.
 - `host.maxBackoffMs?: number` max backoff delay (ms).
 - `inliner.dispatchThreshold?: number` minimum in-flight calls before routing can use the
@@ -247,21 +304,29 @@ Boolean flag to guard main-thread-only code.
 
 ## Supported Payloads
 
-The transport supports common structured data:
+The transport supports these payloads:
 
 - `number` including `NaN`, `Infinity`, and `-Infinity`
 - `string`
 - `boolean`
 - `bigint`
 - `undefined` and `null`
-- `Object` and `Array`
-- `Map` and `Set`
+- plain JSON-like `Object` and `Array`
 - `Buffer` (Node.js), `ArrayBuffer`, `Uint8Array`, `Int32Array`, `Float64Array`, `BigInt64Array`,
   `BigUint64Array`, and `DataView`
+- global `symbol` values (`Symbol.for(...)`)
+- `Error` and `Date`
 - native `Promise<supported>` (resolved on the host before dispatch; rejections
   propagate to the caller)
 
 Thenables are not awaited by the transport.
+
+Not supported directly:
+
+- `Map`, `Set`, `WeakMap`, custom class instances
+- non-global symbols
+- `Blob`
+- functions
 
 If you need to pass several values, prefer a single object or tuple:
 
@@ -282,6 +347,7 @@ export const search = task<
 You can control how calls are routed:
 
 - `"roundRobin"` default round-robin
+- `"robinRound"` legacy alias of `"roundRobin"`
 - `"firstIdle"` prefer idle workers
 - `"randomLane"` choose a random worker
 - `"firstIdleOrRandom"` idle first, then random
@@ -319,7 +385,8 @@ To emit JSON (useful for plotting scripts under `graphs/`):
 Common local commands:
 
 ```bash
-deno test
+deno test -A --ignore=test/runtime.node.test.ts
+node --no-warnings --experimental-transform-types --test "./test/*.test.ts"
 ./run.sh
 bun run build.ts
 ```

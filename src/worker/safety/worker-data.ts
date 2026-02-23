@@ -6,6 +6,7 @@ export const scrubWorkerDataSensitiveBuffers = (value: WorkerData): void => {
     data.sab = undefined;
     data.lock = undefined;
     data.returnLock = undefined;
+    data.permission = undefined;
   } catch {
   }
   try {
@@ -18,6 +19,10 @@ export const scrubWorkerDataSensitiveBuffers = (value: WorkerData): void => {
   }
   try {
     delete data.returnLock;
+  } catch {
+  }
+  try {
+    delete data.permission;
   } catch {
   }
   try {

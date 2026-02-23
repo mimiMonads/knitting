@@ -47,9 +47,11 @@ export const spawnWorkerContext = ({
   at,
   workerOptions,
   workerExecArgv,
+  permission,
   host,
   payloadInitialBytes,
   payloadMaxBytes,
+  abortSignalCapacity,
   usesAbortSignal,
 }: {
   list: string[];
@@ -63,9 +65,11 @@ export const spawnWorkerContext = ({
   source?: string;
   workerOptions?: WorkerSettings;
   workerExecArgv?: string[];
+  permission?: WorkerData["permission"];
   host?: DispatcherSettings;
   payloadInitialBytes?: number;
   payloadMaxBytes?: number;
+  abortSignalCapacity?: number;
   usesAbortSignal?: boolean;
 }) => {
   const tsFileUrl = new URL(import.meta.url);
@@ -87,6 +91,10 @@ export const spawnWorkerContext = ({
   const initialBytes = HAS_SAB_GROW
     ? Math.min(requestedInitial ?? (4 * 1024 * 1024), maxBytes)
     : maxBytes;
+  const defaultAbortSignalCapacity = 258;
+  const requestedAbortSignalCapacity = sanitizeBytes(abortSignalCapacity);
+  const resolvedAbortSignalCapacity =
+    requestedAbortSignalCapacity ?? defaultAbortSignalCapacity;
 
   const lockBuffers: LockBuffers = {
     lockSector: new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH),
@@ -119,11 +127,18 @@ export const spawnWorkerContext = ({
     payload: returnLockBuffers.payload,
     payloadSector: returnLockBuffers.payloadSector,
   });
+  const abortSignalWords = Math.max(
+    1,
+    Math.ceil(resolvedAbortSignalCapacity / 32),
+  );
   const abortSignalSAB = usesAbortSignal === true
-    ? new SharedArrayBuffer(Uint32Array.BYTES_PER_ELEMENT * 1024)
+    ? new SharedArrayBuffer(Uint32Array.BYTES_PER_ELEMENT * abortSignalWords)
     : undefined;
   const abortSignals = abortSignalSAB
-    ? signalAbortFactory({ sab: abortSignalSAB })
+    ? signalAbortFactory({
+      sab: abortSignalSAB,
+      maxSignals: resolvedAbortSignalCapacity,
+    })
     : undefined;
 
   const signals = createSharedMemoryTransport({
@@ -172,6 +187,7 @@ export const spawnWorkerContext = ({
   const workerDataPayload = {
     sab: signals.sab,
     abortSignalSAB,
+    abortSignalMax: usesAbortSignal === true ? resolvedAbortSignalCapacity : undefined,
     list,
     ids,
     at,
@@ -182,6 +198,7 @@ export const spawnWorkerContext = ({
     startAt: signalBox.startAt,
     lock: lockBuffers,
     returnLock: returnLockBuffers,
+    permission,
   } as WorkerData;
   const baseWorkerOptions = {
     //@ts-ignore Reason

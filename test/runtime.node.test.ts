@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import { existsSync, unlinkSync } from "node:fs";
+import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { createPool } from "../knitting.ts";
@@ -12,6 +14,13 @@ import {
   addOnePromise,
   addOnePromiseViaPath,
 } from "./fixtures/runtime_tasks.ts";
+import {
+  readGitDirectory,
+  readReadme,
+  tamperPerformanceNow,
+  writeIntoCwd,
+  writeIntoNodeModules,
+} from "./fixtures/permission_tasks.ts";
 import {
   returnFunction,
   returnLocalSymbol,
@@ -272,4 +281,129 @@ test("node:test workerData lock buffers are hidden from task code", {
     0,
     `shared-memory mitigation probe failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
   );
+});
+
+test("node:test permission protocol keeps node_modules read-only", {
+  concurrency: false,
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
+  if (process.versions.bun) {
+    return;
+  }
+
+  const nodeModulesOutput = path.resolve(
+    process.cwd(),
+    "node_modules",
+    ".knitting-permission-probe.tmp",
+  );
+  const cwdOutput = path.resolve(
+    process.cwd(),
+    ".knitting-permission-allowed.tmp",
+  );
+  const pool = createPool({
+    threads: 1,
+    permission: {},
+  })({
+    writeIntoNodeModules,
+    writeIntoCwd,
+    readGitDirectory,
+    readReadme,
+  });
+
+  try {
+    if (existsSync(nodeModulesOutput)) {
+      unlinkSync(nodeModulesOutput);
+    }
+
+    await assert.rejects(
+      withTimeout(pool.call.writeIntoNodeModules(), TEST_TIMEOUT_MS),
+      (error: unknown) =>
+        String(error).includes("KNT_ERROR_PERMISSION_DENIED") ||
+        String(error).includes("ERR_ACCESS_DENIED"),
+    );
+
+    const out = await withTimeout(pool.call.writeIntoCwd(), TEST_TIMEOUT_MS);
+    assert.equal(out, cwdOutput);
+    assert.equal(existsSync(cwdOutput), true);
+    assert.equal(existsSync(nodeModulesOutput), false);
+
+    await assert.rejects(
+      withTimeout(pool.call.readGitDirectory(), TEST_TIMEOUT_MS),
+      (error: unknown) =>
+        String(error).includes("KNT_ERROR_PERMISSION_DENIED") ||
+        String(error).includes("ERR_ACCESS_DENIED"),
+    );
+
+    const readme = await withTimeout(pool.call.readReadme(), TEST_TIMEOUT_MS);
+    assert.equal(typeof readme, "string");
+    assert.equal(readme.includes("knitting"), true);
+  } finally {
+    await pool.shutdown();
+    if (existsSync(cwdOutput)) {
+      unlinkSync(cwdOutput);
+    }
+    if (existsSync(nodeModulesOutput)) {
+      unlinkSync(nodeModulesOutput);
+    }
+  }
+});
+
+test("node:test permission unsafe mode allows unrestricted file access", {
+  concurrency: false,
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
+  if (process.versions.bun) {
+    return;
+  }
+
+  const nodeModulesOutput = path.resolve(
+    process.cwd(),
+    "node_modules",
+    ".knitting-permission-probe.tmp",
+  );
+  const pool = createPool({
+    threads: 1,
+    permission: "unsafe",
+  })({
+    writeIntoNodeModules,
+    readGitDirectory,
+  });
+
+  try {
+    if (existsSync(nodeModulesOutput)) {
+      unlinkSync(nodeModulesOutput);
+    }
+
+    const out = await withTimeout(pool.call.writeIntoNodeModules(), TEST_TIMEOUT_MS);
+    assert.equal(out, nodeModulesOutput);
+    assert.equal(existsSync(nodeModulesOutput), true);
+
+    const gitEntries = await withTimeout(pool.call.readGitDirectory(), TEST_TIMEOUT_MS);
+    assert.equal(gitEntries > 0, true);
+  } finally {
+    await pool.shutdown();
+    if (existsSync(nodeModulesOutput)) {
+      unlinkSync(nodeModulesOutput);
+    }
+  }
+});
+
+test("node:test worker keeps performance.now precise and tamper-resistant", {
+  concurrency: false,
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
+  const pool = createPool({
+    threads: 1,
+  })({
+    tamperPerformanceNow,
+  });
+
+  try {
+    const result = await withTimeout(pool.call.tamperPerformanceNow(), TEST_TIMEOUT_MS);
+    assert.equal(typeof result.changedToZero, "boolean");
+    assert.equal(typeof result.replacedObject, "boolean");
+    assert.equal(result.stableSample > 0, true);
+  } finally {
+    await pool.shutdown();
+  }
 });

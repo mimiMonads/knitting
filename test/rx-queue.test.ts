@@ -84,6 +84,7 @@ test("worker timeout subtracts queue wait using enqueue timestamp", async () => 
   } as unknown as {
     encode: (task: Task) => boolean;
   };
+  let nowValue = 1000;
 
   const queue = createWorkerRxQueue({
     listOfFunctions: [{
@@ -96,24 +97,17 @@ test("worker timeout subtracts queue wait using enqueue timestamp", async () => 
     }] as unknown as Array<{ run: (args: unknown) => unknown }>,
     lock: lock as any,
     returnLock: returnLock as any,
+    now: () => nowValue,
   } as any);
+  const slot = makeTask();
+  slot[TaskIndex.FunctionID] = 0;
+  slot.value = 123;
+  setTaskSlotMeta(slot, (950 & TASK_SLOT_META_VALUE_MASK) >>> 0);
+  resolved.push(slot);
 
-  const originalNow = performance.now;
-  let nowValue = 1000;
-  performance.now = () => nowValue;
-  try {
-    const slot = makeTask();
-    slot[TaskIndex.FunctionID] = 0;
-    slot.value = 123;
-    setTaskSlotMeta(slot, (950 & TASK_SLOT_META_VALUE_MASK) >>> 0);
-    resolved.push(slot);
-
-    assert.equal(queue.enqueueLock(), true);
-    assert.equal(queue.serviceBatchImmediate(), 1);
-    await Promise.resolve();
-  } finally {
-    performance.now = originalNow;
-  }
+  assert.equal(queue.enqueueLock(), true);
+  assert.equal(queue.serviceBatchImmediate(), 1);
+  await Promise.resolve();
 
   assert.ok(sent);
   assert.equal(sent![TaskIndex.FlagsToHost], TaskFlag.Reject);

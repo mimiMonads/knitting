@@ -4,6 +4,10 @@ import { toModuleUrl } from "./common/module-url.ts";
 import { endpointSymbol } from "./common/task-symbol.ts";
 import { spawnWorkerContext } from "./runtime/pool.ts";
 import { isMainThread, workerData } from "node:worker_threads";
+import {
+  resolvePermisonProtocol,
+  toRuntimePermissionFlags,
+} from "./permison/index.ts";
 
 import { managerMethod } from "./runtime/balancer.ts";
 import { createInlineExecutor } from "./runtime/inline-executor.ts";
@@ -89,9 +93,12 @@ export const createPool: CreatePoolFactory = ({
   balancer,
   payloadInitialBytes,
   payloadMaxBytes,
+  abortSignalCapacity,
   source,
   worker,
   workerExecArgv,
+  permission,
+  permison,
   dispatcher,
   host,
 }: CreatePool) =>
@@ -153,11 +160,40 @@ export const createPool: CreatePoolFactory = ({
   const usingInliner = typeof inliner === "object" && inliner != null;
   const totalNumberOfThread = (threads ?? 1) +
     (usingInliner ? 1 : 0);
+  const permissionProtocol = resolvePermisonProtocol({
+    permission,
+    permison,
+    modules: list,
+  });
+  const permissionExecArgv = toRuntimePermissionFlags(permissionProtocol);
 
   const allowedFlags = typeof process !== "undefined" &&
       process.allowedNodeEnvironmentFlags
     ? process.allowedNodeEnvironmentFlags
     : null;
+  const isNodePermissionFlag = (flag: string): boolean => {
+    const key = flag.split("=", 1)[0];
+    return key === "--permission" ||
+      key === "--experimental-permission" ||
+      key === "--allow-fs-read" ||
+      key === "--allow-fs-write" ||
+      key === "--allow-worker" ||
+      key === "--allow-child-process" ||
+      key === "--allow-addons" ||
+      key === "--allow-wasi";
+  };
+  const stripNodePermissionFlags = (flags?: string[]) =>
+    flags?.filter((flag) => !isNodePermissionFlag(flag));
+  const dedupeFlags = (flags: string[]) => {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const flag of flags) {
+      if (seen.has(flag)) continue;
+      seen.add(flag);
+      out.push(flag);
+    }
+    return out;
+  };
   const sanitizeExecArgv = (flags?: string[]) => {
     if (!flags || flags.length === 0) return undefined;
     if (!allowedFlags) return flags;
@@ -167,7 +203,7 @@ export const createPool: CreatePoolFactory = ({
     });
     return filtered.length > 0 ? filtered : undefined;
   };
-  const defaultExecArgv = workerExecArgv ??
+  const defaultExecArgvCandidate = workerExecArgv ??
     (typeof process !== "undefined" && Array.isArray(process.execArgv)
       ? (
         allowedFlags?.has("--expose-gc") === true
@@ -179,7 +215,16 @@ export const createPool: CreatePoolFactory = ({
           : process.execArgv
       )
       : undefined);
-  const execArgv = sanitizeExecArgv(defaultExecArgv);
+  const defaultExecArgv = permissionProtocol?.unsafe === true
+    ? stripNodePermissionFlags(defaultExecArgvCandidate)
+    : defaultExecArgvCandidate;
+  const combinedExecArgv = dedupeFlags([
+    ...permissionExecArgv,
+    ...(defaultExecArgv ?? []),
+  ]);
+  const execArgv = sanitizeExecArgv(
+    combinedExecArgv.length > 0 ? combinedExecArgv : undefined,
+  );
 
   const isDispatcherOptions = (
     value: DispatcherOptions | DispatcherSettings | undefined,
@@ -206,7 +251,9 @@ export const createPool: CreatePoolFactory = ({
       host: hostDispatcher,
       payloadInitialBytes,
       payloadMaxBytes,
+      abortSignalCapacity,
       usesAbortSignal,
+      permission: permissionProtocol,
     })
   );
 

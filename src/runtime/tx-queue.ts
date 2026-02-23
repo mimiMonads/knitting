@@ -36,13 +36,17 @@ type CreateHostTxQueueArgs = {
   lock: Lock2;
   returnLock: Lock2;
   abortSignals?: Pick<SignalAbortStore, "getSignal" | "resetSignal" | "closeNow">;
+  now?: () => number;
 };
+
+const p_now = performance.now.bind(performance);
 
 export function createHostTxQueue({
   max,
   lock,
   returnLock,
   abortSignals,
+  now,
 }: CreateHostTxQueueArgs) {
   const PLACE_HOLDER = (_?: unknown) => {
     throw ("UNREACHABLE FROM PLACE HOLDER (main)");
@@ -82,6 +86,7 @@ export function createHostTxQueue({
   let inUsed = 0 | 0;
   let pendingPromises = 0 | 0;
   const resetSignal = abortSignals?.resetSignal;
+  const nowTime = now ?? p_now;
 
 
   const isPromisePending = (task: QueueTask) =>
@@ -210,7 +215,7 @@ export function createHostTxQueue({
           slot[TaskIndex.slotBuffer] =
             (
               (slot[TaskIndex.slotBuffer] & SLOT_INDEX_MASK) |
-              ((((performance.now() >>> 0) & SLOT_META_MASK) << SLOT_META_SHIFT) >>> 0)
+              ((((nowTime() >>> 0) & SLOT_META_MASK) << SLOT_META_SHIFT) >>> 0)
             ) >>> 0;
         }
 

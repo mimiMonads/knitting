@@ -1,5 +1,10 @@
 import { endpointSymbol } from "./common/task-symbol.ts";
 import type { Buffer as NodeBuffer } from "node:buffer";
+import type {
+  PermisonProtocol,
+  PermisonProtocolInput,
+  ResolvedPermisonProtocol,
+} from "./permison/protocol.ts";
 type WorkerCall = {
   fnNumber: number;
   timeout?: TaskTimeout;
@@ -19,6 +24,7 @@ type CreateContext = WorkerContext;
 type WorkerData = {
   sab: SharedArrayBuffer;
   abortSignalSAB?: SharedArrayBuffer;
+  abortSignalMax?: number;
   list: string[];
   ids: number[];
   thread: number;
@@ -29,6 +35,7 @@ type WorkerData = {
   at: number[];
   lock: LockBuffers;
   returnLock: LockBuffers;
+  permission?: ResolvedPermisonProtocol;
 };
 
 type LockBuffers = {
@@ -366,6 +373,11 @@ type CreatePool = {
    */
   payloadMaxBytes?: number;
   /**
+   * Abort-aware signal pool capacity.
+   * Defaults to `258`.
+   */
+  abortSignalCapacity?: number;
+  /**
    * Host dispatcher backoff and scheduling options.
    */
   host?: DispatcherSettings;
@@ -374,6 +386,16 @@ type CreatePool = {
    * Defaults to process.execArgv plus "--expose-gc" when allowed.
    */
   workerExecArgv?: string[];
+  /**
+   * Runtime permission protocol.
+   * Use `"strict"` (default for object mode), `"unsafe"`, or `"off"`.
+   * Accepts object form for fine-grained read/write deny lists.
+   */
+  permission?: PermisonProtocolInput;
+  /**
+   * Alias of `permission` kept for compatibility.
+   */
+  permison?: PermisonProtocolInput;
   /**
    * @deprecated Use `host` instead.
    */
@@ -420,6 +442,9 @@ export type {
   DispatcherSettings as DispatcherSettings,
   DispatcherOptions as DispatcherOptions,
   CreatePool as CreatePool,
+  PermisonProtocol as PermisonProtocol,
+  PermisonProtocolInput as PermisonProtocolInput,
+  ResolvedPermisonProtocol as ResolvedPermisonProtocol,
 };
 export type { Task as Task } from "./memory/lock.ts";
 export {

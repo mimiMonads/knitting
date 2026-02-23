@@ -11,6 +11,8 @@ import { SET_IMMEDIATE } from "../common/runtime.ts";
 import {
   installTerminationGuard,
   installUnhandledRejectionSilencer,
+  installPerformanceNowGuard,
+  installWritePermissionGuard,
   scrubWorkerDataSensitiveBuffers,
   assertWorkerSharedMemoryBootData,
   assertWorkerImportsResolved,
@@ -20,8 +22,10 @@ import { signalAbortFactory } from "../shared/abortSignal.ts";
 export const jsrIsGreatAndWorkWithoutBugs = () => null;
 
 export const workerMainLoop = async (startupData: WorkerData): Promise<void> => {
+  // Startup-only safety layer: no per-iteration checks in the hot loop.
   installTerminationGuard();
   installUnhandledRejectionSilencer();
+  installPerformanceNowGuard();
 
   const { 
     debug , 
@@ -32,6 +36,8 @@ export const workerMainLoop = async (startupData: WorkerData): Promise<void> => 
     lock,
     returnLock,
     abortSignalSAB,
+    abortSignalMax,
+    permission,
     totalNumberOfThread,
     list,
     ids,
@@ -39,6 +45,7 @@ export const workerMainLoop = async (startupData: WorkerData): Promise<void> => 
   } = startupData as WorkerData;
 
   scrubWorkerDataSensitiveBuffers(startupData);
+  installWritePermissionGuard(permission);
   assertWorkerSharedMemoryBootData({ sab, lock, returnLock });
 
   enum Comment {
@@ -96,7 +103,10 @@ const pauseSpin = (() => {
   });
   assertWorkerImportsResolved({ debug, list, ids, listOfFunctions });
   const abortSignals = abortSignalSAB
-    ? signalAbortFactory({ sab: abortSignalSAB })
+    ? signalAbortFactory({
+      sab: abortSignalSAB,
+      maxSignals: abortSignalMax,
+    })
     : undefined;
 
   const {

@@ -17,6 +17,7 @@ type ArgumentsForCreateWorkerQueue = {
   lock: Lock2;
   returnLock: Lock2;
   hasAborted?: (signal: number) => boolean;
+  now?: () => number;
 };
 
 export type CreateWorkerRxQueue = ReturnType<typeof createWorkerRxQueue>;
@@ -28,6 +29,7 @@ export const createWorkerRxQueue = (
     lock,
     returnLock,
     hasAborted,
+    now,
   }: ArgumentsForCreateWorkerQueue,
 ) => {
   const PLACE_HOLDER = (_?: unknown) => {
@@ -60,6 +62,7 @@ export const createWorkerRxQueue = (
       job,
       timeout: fixed.timeout,
       hasAborted,
+      now,
     }));
     return acc;
   }, [] as Array<(slot: Task) => unknown>);
