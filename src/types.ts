@@ -3,7 +3,7 @@ import type { Buffer as NodeBuffer } from "node:buffer";
 type WorkerCall = {
   fnNumber: number;
   timeout?: TaskTimeout;
-  abortSignal?: true;
+  abortSignal?: AbortSignalOption;
 };
 
 type WorkerInvoke = (args: Uint8Array) => Promise<unknown>;
@@ -97,24 +97,67 @@ type BivariantCallback<Args extends unknown[], R> = {
   bivarianceHack(...args: Args): R;
 }["bivarianceHack"];
 
-type TaskFn<A extends TaskInput, B extends Args> = BivariantCallback<
-  [NoBlob<Awaited<A>>],
+type AbortSignalConfig =
+  {
+    readonly hasAborted: true;
+  };
+
+type AbortSignalOption = true | AbortSignalConfig | undefined;
+
+type AbortSignalMethods<AS extends AbortSignalOption> =
+  AS extends undefined
+    ? never
+    : {
+      hasAborted: () => boolean;
+    };
+
+type AbortSignalToolkit<AS extends AbortSignalOption> = AbortSignalMethods<AS>;
+
+type TaskFn<
+  A extends TaskInput,
+  B extends Args,
+  AS extends AbortSignalOption = undefined,
+> = BivariantCallback<
+  AS extends undefined
+    ? [NoBlob<Awaited<A>>]
+    : [NoBlob<Awaited<A>>, AbortSignalToolkit<AS>],
   MaybePromise<NoBlob<B>>
 >;
 
-type TaskLike = { readonly f: (...args: any[]) => any };
+type PromiseWithMaybeReject<T> = Promise<T> & {
+  reject?: (reason?: unknown) => void;
+};
 
-type Composed<A extends TaskInput = Args, B extends Args = Args> =
-  & FixPoint<A, B>
+type TaskLike<AS extends AbortSignalOption = AbortSignalOption> = {
+  readonly f: (...args: any[]) => any;
+} & (
+  AS extends undefined
+    ? { readonly abortSignal?: undefined }
+    : { readonly abortSignal: AS }
+);
+
+type Composed<
+  A extends TaskInput = Args,
+  B extends Args = Args,
+  AS extends AbortSignalOption = undefined,
+> =
+  & FixPoint<A, B, AS>
   & SecondPart;
 
-type tasks = Record<string, Composed<any, any>>;
+type tasks = Record<string, Composed<any, any, AbortSignalOption>>;
 
-type ComposedWithKey = Composed<any, any> & { name: string };
+type ComposedWithKey = Composed<any, any, AbortSignalOption> & { name: string };
 
-type PromiseWrapped<F extends (...args: any[]) => any> = (
-  ...args: PromisifyArgs<Parameters<F>>
-) => Promise<Awaited<ReturnType<F>>>;
+type PromiseWrapped<
+  F extends (...args: any[]) => any,
+  AS extends AbortSignalOption = undefined,
+> = (
+  ...args: PromisifyCallArgs<F, AS>
+) => (
+  AS extends undefined
+    ? Promise<Awaited<ReturnType<F>>>
+    : PromiseWithMaybeReject<Awaited<ReturnType<F>>>
+);
 
 type PromiseInput<T> = T | Promise<T>;
 
@@ -122,21 +165,72 @@ type PromisifyArgs<T extends unknown[]> = {
   [K in keyof T]: PromiseInput<T[K]>;
 };
 
-type FunctionMapType<T extends Record<string, TaskLike>> = {
-  [K in keyof T]: PromiseWrapped<T[K]["f"]>;
+type NormalizeUndefinedSingleArg<T extends unknown[]> =
+  T extends [undefined]
+    ? [] | [undefined]
+    : T;
+
+type AbortAwareCallArgs<T extends unknown[]> =
+  T extends [...infer Head, AbortSignalToolkit<any>]
+    ? NormalizeUndefinedSingleArg<Head>
+    : NormalizeUndefinedSingleArg<T>;
+
+type HostCallArgs<
+  F extends (...args: any[]) => any,
+  AS extends AbortSignalOption,
+> =
+  AS extends undefined
+    ? Parameters<F>
+    : AbortAwareCallArgs<Parameters<F>>;
+
+type PromisifyCallArgs<
+  F extends (...args: any[]) => any,
+  AS extends AbortSignalOption,
+> =
+  HostCallArgs<F, AS> extends infer T
+    ? T extends unknown[]
+      ? PromisifyArgs<T>
+      : never
+    : never;
+
+type AbortSignalOfTask<T extends TaskLike<any>> =
+  T extends { readonly abortSignal: infer AS }
+    ? Extract<AS, AbortSignalOption>
+    : undefined;
+
+type FunctionMapType<T extends Record<string, TaskLike<any>>> = {
+  [K in keyof T]: PromiseWrapped<
+    T[K]["f"],
+    AbortSignalOfTask<T[K]>
+  >;
 };
 
-interface FixPoint<A extends TaskInput, B extends Args> {
+interface FixPointBase<
+  A extends TaskInput,
+  B extends Args,
+  AS extends AbortSignalOption = undefined,
+> {
   /**
    * Optional module URL override for worker discovery.
    * Unsafe/experimental: prefer default caller resolution.
    * May be removed in a future major release.
    */
   readonly href?: string;
-  readonly f: TaskFn<A, B>;
+  readonly f: TaskFn<A, B, AS>;
   readonly timeout?: TaskTimeout;
-  readonly abortSignal?: true;
 }
+
+type FixPoint<
+  A extends TaskInput,
+  B extends Args,
+  AS extends AbortSignalOption = undefined,
+> =
+  & FixPointBase<A, B, AS>
+  & (
+    AS extends undefined
+      ? { readonly abortSignal?: undefined }
+      : { readonly abortSignal: AS }
+  );
 
 type SecondPart = {
   readonly [endpointSymbol]: true;
@@ -154,12 +248,13 @@ type SecondPart = {
 type SingleTaskPool<
   A extends TaskInput = Args,
   B extends Args = Args,
+  AS extends AbortSignalOption = undefined,
 > = {
-  call: PromiseWrapped<TaskFn<A, B>>;
+  call: PromiseWrapped<TaskFn<A, B, AS>, AS>;
   shutdown: () => Promise<void>;
 };
 
-type Pool<T extends Record<string, TaskLike>> = {
+type Pool<T extends Record<string, TaskLike<any>>> = {
   shutdown: () => Promise<void>;
   call: FunctionMapType<T>;
 };
@@ -167,11 +262,12 @@ type Pool<T extends Record<string, TaskLike>> = {
 type ReturnFixed<
   A extends TaskInput = undefined,
   B extends Args = undefined,
+  AS extends AbortSignalOption = undefined,
 > =
-  & FixPoint<A, B>
+  & FixPoint<A, B, AS>
   & SecondPart
   & {
-    createPool: (options?: CreatePool) => SingleTaskPool<A, B>;
+    createPool: (options?: CreatePool) => SingleTaskPool<A, B, AS>;
   };
 
 type External = unknown;
@@ -301,6 +397,10 @@ export type {
   TaskInput as TaskInput,
   TaskTimeout as TaskTimeout,
   TaskFn as TaskFn,
+  AbortSignalConfig as AbortSignalConfig,
+  AbortSignalOption as AbortSignalOption,
+  AbortSignalMethods as AbortSignalMethods,
+  AbortSignalToolkit as AbortSignalToolkit,
   Composed as Composed,
   tasks as tasks,
   ComposedWithKey as ComposedWithKey,

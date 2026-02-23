@@ -63,6 +63,13 @@ export const signalAbortFactory = ({
     return 1;
   };
 
+  const abortAll = () => {
+    for (let word = 0; word < size; word++) {
+      Atomics.store(atomicView, word, inUse[word]);
+    }
+    return current;
+  };
+
   const hasAborted = (signal: number) => {
     if (signal === closeNow) return true;
     if (!Number.isInteger(signal)) return false;
@@ -97,6 +104,7 @@ export const signalAbortFactory = ({
     closeNow,
     getSignal,
     setSignal,
+    abortAll,
     hasAborted,
     resetSignal,
     inUseCount: () => current,
@@ -124,6 +132,7 @@ export class OneShotDeferred<T> {
     };
 
     deferred.resolve = settleOnce(deferred.resolve);
-    deferred.reject = settleOnce(deferred.reject.bind(deferred.promise));
+    deferred.reject = settleOnce(deferred.reject);
+    deferred.promise.reject = deferred.reject
   }
 }

@@ -9,7 +9,7 @@ type GetFunctionParams = {
   isWorker: boolean;
 };
 
-type WorkerCallable = (args: unknown) => unknown;
+type WorkerCallable = (args: unknown, abortToolkit?: unknown) => unknown;
 
 export const enum TimeoutKind {
   Reject = 0,
@@ -46,7 +46,7 @@ const normalizeTimeout = (timeout?: TaskTimeout): TimeoutSpec | undefined => {
 
 
 const composeWorkerCallable = (fixed: ComposedWithKey): WorkerCallable => {
-  const fn = fixed.f as (args: unknown) => unknown;
+  const fn = fixed.f as (args: unknown, abortToolkit?: unknown) => unknown;
   return fn;
 };
 

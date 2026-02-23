@@ -39,7 +39,7 @@ export const createWorkerRxQueue = (
 
   const jobs = listOfFunctions.reduce((acc, fixed) => (
     acc.push(fixed.run), acc
-  ), [] as Array<(args: unknown) => unknown>);
+  ), [] as Array<(args: unknown, abortToolkit?: unknown) => unknown>);
 
   const toWork = new RingQueue<Task>();
   const pendingFrames = new RingQueue<Task>();

@@ -27,6 +27,29 @@ test("abort signal set/check/reset lifecycle", () => {
   assert.equal(store.setSignal(-1), -1);
 });
 
+test("abortAll mirrors in-use slots into shared aborted view", () => {
+  const sab = new SharedArrayBuffer(Uint32Array.BYTES_PER_ELEMENT * 2);
+  const store = signalAbortFactory({ sab });
+
+  const allocated = Array.from({ length: 33 }, () => store.getSignal());
+  assert.equal(store.inUseCount(), 33);
+  assert.equal(store.abortAll(), 33);
+
+  assert.equal(store.hasAborted(allocated[0]!), true);
+  assert.equal(store.hasAborted(allocated[31]!), true);
+  assert.equal(store.hasAborted(allocated[32]!), true);
+  const untouched = Array.from(
+    { length: store.max },
+    (_, signal) => signal,
+  ).find((signal) => !allocated.includes(signal));
+  assert.equal(store.hasAborted(untouched!), false);
+
+  assert.equal(store.resetSignal(allocated[31]!), true);
+  const recycled = store.getSignal();
+  assert.equal(recycled, allocated[31]);
+  assert.equal(store.hasAborted(recycled), false);
+});
+
 test("closeNow sentinel when pool is exhausted", () => {
   const sab = new SharedArrayBuffer(Uint32Array.BYTES_PER_ELEMENT);
   const store = signalAbortFactory({ sab });

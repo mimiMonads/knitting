@@ -9,6 +9,8 @@ import { managerMethod } from "./runtime/balancer.ts";
 import { createInlineExecutor } from "./runtime/inline-executor.ts";
 import type {
   Args,
+  AbortSignalConfig,
+  AbortSignalOption,
   ComposedWithKey,
   CreatePool,
   DispatcherOptions,
@@ -35,13 +37,6 @@ type ToListAndIdsFn = (args: tasks) => ToListAndIds;
 type CreatePoolFactory = (
   options: CreatePool,
 ) => <T extends tasks>(tasks: T) => Pool<T>;
-
-type TaskFactory = <
-  A extends TaskInput = void,
-  B extends Args = void,
->(
-  I: FixPoint<A, B>,
-) => ReturnFixed<A, B>;
 
 const MAX_FUNCTION_ID = 0xFFFF;
 const MAX_FUNCTION_COUNT = MAX_FUNCTION_ID + 1;
@@ -193,7 +188,7 @@ export const createPool: CreatePoolFactory = ({
 
   const hostDispatcher: DispatcherSettings | undefined = host ??
     (isDispatcherOptions(dispatcher) ? dispatcher.host : dispatcher);
-  const usesAbortSignal = listOfFunctions.some((fn) => fn.abortSignal === true);
+  const usesAbortSignal = listOfFunctions.some((fn) => fn.abortSignal !== undefined);
 
   let workers = Array.from({
     length: threads ?? 1,
@@ -299,16 +294,20 @@ export const createPool: CreatePoolFactory = ({
 
 const SINGLE_TASK_KEY = "__task__";
 
-const createSingleTaskPool = <A extends TaskInput, B extends Args>(
-  single: ReturnFixed<A, B>,
+const createSingleTaskPool = <
+  A extends TaskInput,
+  B extends Args,
+  AS extends AbortSignalOption,
+>(
+  single: ReturnFixed<A, B, AS>,
   options?: CreatePool,
-): SingleTaskPool<A, B> => {
+): SingleTaskPool<A, B, AS> => {
   const pool = createPool(options ?? {})({
     [SINGLE_TASK_KEY]: single,
   } as tasks);
 
   return {
-    call: pool.call[SINGLE_TASK_KEY] as SingleTaskPool<A, B>["call"],
+    call: pool.call[SINGLE_TASK_KEY] as SingleTaskPool<A, B, AS>["call"],
     shutdown: pool.shutdown,
   };
 };
@@ -319,12 +318,26 @@ const createSingleTaskPool = <A extends TaskInput, B extends Args>(
  * Input may be a direct value or a native Promise of that value.
  * Thenables/PromiseLike values are treated as plain values.
  */
-export const task: TaskFactory = <
+export function task<A extends TaskInput = void, B extends Args = void>(
+  I: FixPoint<A, B, true>,
+): ReturnFixed<A, B, true>;
+export function task<
   A extends TaskInput = void,
   B extends Args = void,
+  AS extends AbortSignalConfig = AbortSignalConfig,
 >(
-  I: FixPoint<A, B>,
-): ReturnFixed<A, B> => {
+  I: FixPoint<A, B, AS>,
+): ReturnFixed<A, B, AS>;
+export function task<A extends TaskInput = void, B extends Args = void>(
+  I: FixPoint<A, B, undefined>,
+): ReturnFixed<A, B, undefined>;
+export function task<
+  A extends TaskInput = void,
+  B extends Args = void,
+  AS extends AbortSignalOption = undefined,
+>(
+  I: FixPoint<A, B, AS>,
+): ReturnFixed<A, B, AS> {
   const [ href , at] = getCallerFilePath()
 
   const importedFrom = I?.href != null
@@ -337,14 +350,14 @@ export const task: TaskFactory = <
     importedFrom,
     at,
     [endpointSymbol]: true,
-  }) as ReturnFixed<A, B>;
+  }) as ReturnFixed<A, B, AS>;
 
   out.createPool = (options?: CreatePool) => {
     if (isMainThread === false) {
-      return out as unknown as SingleTaskPool<A, B>;
+      return out as unknown as SingleTaskPool<A, B, AS>;
     }
     return createSingleTaskPool(out, options);
   };
 
   return out;
-};
+}

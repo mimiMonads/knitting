@@ -3,7 +3,7 @@ import { MessageChannel } from "node:worker_threads";
 import { withResolvers } from "../common/with-resolvers.ts";
 import RingQueue from "../ipc/tools/RingQueue.ts";
 
-type WorkerCallable = (args: unknown) => unknown;
+type WorkerCallable = (args: unknown, abortToolkit?: unknown) => unknown;
 
 interface Deferred {
   promise: Promise<unknown>;
@@ -80,14 +80,26 @@ const raceTimeout = (
     );
   });
 
+const INLINE_ABORT_TOOLKIT = (() => {
+  const hasAborted = () => false;
+  return {
+    hasAborted,
+  };
+})();
+
 const composeInlineCallable = (
   fn: WorkerCallable,
   timeout?: TaskTimeout,
+  useAbortToolkit = false,
 ): WorkerCallable => {
   const normalized = normalizeTimeout(timeout);
-  if (!normalized) return fn;
+  const run = useAbortToolkit
+    ? (args: unknown) => fn(args, INLINE_ABORT_TOOLKIT)
+    : fn;
+
+  if (!normalized) return run;
   return (args: unknown) => {
-    const result = fn(args);
+    const result = run(args);
     return result instanceof Promise ? raceTimeout(result, normalized) : result;
   };
 };
@@ -104,7 +116,11 @@ export const createInlineExecutor = ({
   const entries = Object.values(tasks)
     .sort((a, b) => a.id - b.id);
   const runners = entries.map((entry) =>
-    composeInlineCallable(entry.f as WorkerCallable, entry.timeout)
+    composeInlineCallable(
+      entry.f as WorkerCallable,
+      entry.timeout,
+      entry.abortSignal !== undefined,
+    )
   );
 
   const initCap = 16;

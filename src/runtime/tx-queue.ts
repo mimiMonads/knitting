@@ -8,7 +8,7 @@ import {
   type Lock2,
 } from "../memory/lock.ts";
 import { withResolvers } from "../common/with-resolvers.ts";
-import type { TaskTimeout } from "../types.ts";
+import type { AbortSignalOption, TaskTimeout } from "../types.ts";
 import {
   AbortSignalPoolExhausted,
   OneShotDeferred,
@@ -158,11 +158,11 @@ export function createHostTxQueue({
     enqueue: (
       functionID: FunctionID,
       timeout?: TaskTimeout,
-      abortSignal?: true,
+      abortSignal?: AbortSignalOption,
     ) => {
       const HAS_TIMER = timeout !== undefined;
       const functionIDMasked = functionID & FUNCTION_ID_MASK;
-      const USE_SIGNAL = abortSignal === true && abortSignals !== undefined;
+      const USE_SIGNAL = abortSignal !== undefined && abortSignals !== undefined;
     
 
       return (rawArgs: RawArguments) => {

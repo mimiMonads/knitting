@@ -6,9 +6,13 @@ import {
 } from "../memory/lock.ts";
 import type { TimeoutSpec } from "./get-functions.ts";
 
-type WorkerJob = (args: unknown) => unknown;
+type WorkerJob = (args: unknown, abortToolkit?: unknown) => unknown;
 type SlotRunner = (slot: Task) => unknown;
 type HasAborted = (signal: number) => boolean;
+type HasAbortedMethod = () => boolean;
+type WorkerAbortToolkit = {
+  hasAborted: HasAbortedMethod;
+};
 
 const ABORT_SIGNAL_META_OFFSET = 1;
 const TIMEOUT_KIND_RESOLVE = 1;
@@ -72,20 +76,37 @@ const applyTimeoutBudget = (
   );
 };
 
-const throwIfAborted = (
-  slot: Task,
-  hasAborted?: HasAborted,
-) => {
-  if (!hasAborted) return;
+const NO_ABORT_SIGNAL = -1;
+
+const readSignal = (slot: Task): number => {
   const encodedSignal = getTaskFunctionMeta(slot);
-  if (encodedSignal === 0) return;
-
+  if (encodedSignal === 0) return NO_ABORT_SIGNAL;
   const signal = (encodedSignal - ABORT_SIGNAL_META_OFFSET) | 0;
-  if (signal < 0) return;
+  return signal >= 0 ? signal : NO_ABORT_SIGNAL;
+};
 
-  if (hasAborted(signal)) {
-    throw new Error("Task aborted");
-  }
+const throwIfAborted = (
+  signal: number,
+  hasAborted: HasAborted,
+) => {
+  if (signal === NO_ABORT_SIGNAL) return;
+  if (hasAborted(signal)) throw new Error("Task aborted");
+};
+
+const makeToolkitCache = (hasAborted: HasAborted) => {
+  const bySignal: Array<WorkerAbortToolkit | undefined> = [];
+
+  return (signal: number): WorkerAbortToolkit => {
+    let toolkit = bySignal[signal];
+    if (toolkit) return toolkit;
+
+    const hasAbortedMethod = () => hasAborted(signal);
+    toolkit = {
+      hasAborted: hasAbortedMethod,
+    };
+    bySignal[signal] = toolkit;
+    return toolkit;
+  };
 };
 
 export const composeWorkerRunner = ({
@@ -97,16 +118,35 @@ export const composeWorkerRunner = ({
   timeout?: TimeoutSpec;
   hasAborted?: HasAborted;
 }): SlotRunner => {
+  if (!hasAborted) {
+    if (!timeout) {
+      return (slot: Task) => job(slot.value);
+    }
+
+    return (slot: Task) => {
+      const result = job(slot.value);
+      if (!(result instanceof Promise)) return result;
+      return applyTimeoutBudget(result, slot, timeout);
+    };
+  }
+
+  const getToolkit = makeToolkitCache(hasAborted);
+
   if (!timeout) {
     return (slot: Task) => {
-      throwIfAborted(slot, hasAborted);
-      return job(slot.value);
+      const signal = readSignal(slot);
+      throwIfAborted(signal, hasAborted);
+      if (signal === NO_ABORT_SIGNAL) return job(slot.value);
+      return job(slot.value, getToolkit(signal));
     };
   }
 
   return (slot: Task) => {
-    throwIfAborted(slot, hasAborted);
-    const result = job(slot.value);
+    const signal = readSignal(slot);
+    throwIfAborted(signal, hasAborted);
+    const result = signal === NO_ABORT_SIGNAL
+      ? job(slot.value)
+      : job(slot.value, getToolkit(signal));
     if (!(result instanceof Promise)) return result;
     return applyTimeoutBudget(result, slot, timeout);
   };
