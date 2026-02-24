@@ -381,7 +381,7 @@ export function task<A extends TaskInput = void, B extends Args = void>(
 export function task<
   A extends TaskInput = void,
   B extends Args = void,
-  AS extends AbortSignalOption = undefined,
+  AS extends true | AbortSignalConfig | undefined = undefined,
 >(
   I: FixPoint<A, B, AS>,
 ): ReturnFixed<A, B, AS> {

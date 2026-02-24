@@ -25,11 +25,11 @@ type PermissionEnvironment = {
   files?: PermissionPath | PermissionPath[];
 };
 
-type PermisonMode = "strict" | "off" | "unsafe";
+type PermisonMode = "strict" | "unsafe";
 
 type PermisonProtocol = {
   /**
-   * `strict` = hardened defaults, `unsafe` = full access, `off` = disabled.
+   * `strict` = hardened defaults, `unsafe` = full access.
    */
   mode?: PermisonMode;
   /**
@@ -68,7 +68,7 @@ type PermisonProtocolInput = PermisonMode | PermisonProtocol;
 
 type ResolvedPermisonProtocol = {
   enabled: boolean;
-  mode: Exclude<PermisonMode, "off">;
+  mode: PermisonMode;
   unsafe: boolean;
   allowConsole: boolean;
   cwd: string;
@@ -431,8 +431,11 @@ export const resolvePermisonProtocol = ({
   modules?: string[];
 }): ResolvedPermisonProtocol | undefined => {
   const input = normalizeProtocolInput(permission ?? permison);
-  if (!input || input.mode === "off") return undefined;
-  const mode = input.mode === "unsafe" ? "unsafe" : "strict";
+  if (!input) return undefined;
+  const rawMode = (input as { mode?: unknown }).mode;
+  const mode = (rawMode === "unsafe" || rawMode === "off")
+    ? "unsafe"
+    : "strict";
   const unsafe = mode === "unsafe";
   const allowConsole = input.console ?? unsafe;
 

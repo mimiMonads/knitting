@@ -197,12 +197,12 @@ Key options:
   This applies only when at least one task declares `abortSignal`.
 - `host?: DispatcherSettings`
 - `workerExecArgv?: string[]` extra worker `execArgv` flags.
-- `permission?: "strict" | "unsafe" | "off" | PermisonProtocol`
+- `permission?: "strict" | "unsafe" | PermisonProtocol`
   (and `permison` alias) for runtime access policy:
   - `"strict"` (default when passing an object): hardened mode with deny lists.
   - `"unsafe"`: disables permission hardening (no fs deny guards, console enabled,
     strips Node permission flags inherited from parent/worker options).
-  - `"off"`: disable permission protocol entirely.
+  - disable permission protocol entirely by omitting `permission`.
   Strict defaults include read/write rooted at current `cwd`, deny-write for
   `node_modules`, deny read/write for sensitive paths (`.env`, `.git`,
   `.npmrc`, `.docker`, `.secrets`, `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.azure`,

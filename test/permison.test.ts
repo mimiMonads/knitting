@@ -5,10 +5,17 @@ import { pathToFileURL } from "node:url";
 import { resolvePermisonProtocol } from "../src/permison/index.ts";
 
 test("resolvePermisonProtocol returns undefined when disabled", () => {
-  assert.equal(
-    resolvePermisonProtocol({ permission: { mode: "off" } }),
-    undefined,
-  );
+  assert.equal(resolvePermisonProtocol({}), undefined);
+});
+
+test("resolvePermisonProtocol treats legacy off mode as unsafe", () => {
+  const resolved = resolvePermisonProtocol({
+    permission: "off" as unknown as "unsafe",
+  });
+
+  assert.ok(resolved);
+  assert.equal(resolved.mode, "unsafe");
+  assert.equal(resolved.unsafe, true);
 });
 
 test("resolvePermisonProtocol applies strict defaults from cwd", () => {

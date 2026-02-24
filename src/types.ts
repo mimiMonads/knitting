@@ -388,7 +388,7 @@ type CreatePool = {
   workerExecArgv?: string[];
   /**
    * Runtime permission protocol.
-   * Use `"strict"` (default for object mode), `"unsafe"`, or `"off"`.
+   * Use `"strict"` (default for object mode) or `"unsafe"`.
    * Accepts object form for fine-grained read/write deny lists.
    */
   permission?: PermisonProtocolInput;
