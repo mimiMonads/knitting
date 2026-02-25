@@ -208,11 +208,27 @@ Key options:
   `.npmrc`, `.docker`, `.secrets`, `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.azure`,
   `~/.config/gcloud`, `~/.kube`, plus POSIX system paths `/proc`,
   `/proc/self`, `/proc/self/environ`, `/proc/self/mem`, `/sys`, `/dev`, `/etc`),
+  block process execution APIs (`node:child_process`, `Deno.Command`, `Deno.run`,
+  `Bun.spawn*`) unless explicitly enabled,
+  block worker-spawn APIs (`node:worker_threads.Worker`, global `Worker`) in strict mode,
+  block Node internals that can spawn (`process.binding`, `process._linkedBinding`,
+  `process.dlopen`) in strict mode,
   read support for `deno.lock` and `bun.lock*`,
   and Node `--permission` worker flags (Node runtime).
   `console?: boolean` can be set in object mode (`false` by default in strict,
   `true` by default in unsafe).
-- `dispatcher?: DispatcherOptions | DispatcherSettings` deprecated alias of `host`.
+  Process execution overrides:
+  `node.allowChildProcess?: boolean`, `deno.allowRun?: boolean`,
+  `bun.allowRun?: boolean` (all default to `false` in strict mode).
+  Bun caveat: `bun:ffi` is a native interface and can bypass in-process JS guards.
+  Bun strict mode runs a preflight source scan and rejects task modules that
+  reference `bun:ffi`, `node:worker_threads`, `node:fs`, `node:module`,
+  `process.binding`, `process._linkedBinding`, `process.dlopen`,
+  `Bun.dlopen`/`Bun.linkSymbols`, dynamic `import(...)`, `require(...)`,
+  `createRequire(...)`, or `eval`/`Function` constructors.
+  Do not treat Bun strict mode as a full sandbox for untrusted code; use an
+  OS/container boundary for hard isolation.
+- `dispatcher?: DispatcherSettings` deprecated alias of `host`.
 - `debug?: { extras?: boolean; logMain?: boolean; logHref?: boolean;
   logImportedUrl?: boolean }`
 - `source?: string` override the worker entry module.

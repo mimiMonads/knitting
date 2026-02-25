@@ -349,13 +349,6 @@ type DispatcherSettings = {
   maxBackoffMs?: number;
 };
 
-/**
- * @deprecated Use `host` in CreatePool instead.
- */
-type DispatcherOptions = {
-  host?: DispatcherSettings;
-};
-
 type CreatePool = {
   threads?: number;
   inliner?: Inliner;
@@ -399,7 +392,7 @@ type CreatePool = {
   /**
    * @deprecated Use `host` instead.
    */
-  dispatcher?: DispatcherOptions | DispatcherSettings;
+  dispatcher?: DispatcherSettings;
   debug?: DebugOptions;
   source?: string;
 };
@@ -440,7 +433,6 @@ export type {
   WorkerSettings as WorkerSettings,
   WorkerTimers as WorkerTimers,
   DispatcherSettings as DispatcherSettings,
-  DispatcherOptions as DispatcherOptions,
   CreatePool as CreatePool,
   PermisonProtocol as PermisonProtocol,
   PermisonProtocolInput as PermisonProtocolInput,

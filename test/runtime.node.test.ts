@@ -15,8 +15,12 @@ import {
   addOnePromiseViaPath,
 } from "./fixtures/runtime_tasks.ts";
 import {
+  readDeniedViaSymlink,
   readGitDirectory,
   readReadme,
+  spawnChildProcess,
+  spawnViaProcessBinding,
+  spawnViaWorkerThread,
   tamperPerformanceNow,
   writeIntoCwd,
   writeIntoNodeModules,
@@ -308,6 +312,10 @@ test("node:test permission protocol keeps node_modules read-only", {
     writeIntoCwd,
     readGitDirectory,
     readReadme,
+    spawnChildProcess,
+    spawnViaWorkerThread,
+    spawnViaProcessBinding,
+    readDeniedViaSymlink,
   });
 
   try {
@@ -337,6 +345,36 @@ test("node:test permission protocol keeps node_modules read-only", {
     const readme = await withTimeout(pool.call.readReadme(), TEST_TIMEOUT_MS);
     assert.equal(typeof readme, "string");
     assert.equal(readme.includes("knitting"), true);
+
+    await assert.rejects(
+      withTimeout(pool.call.spawnChildProcess(), TEST_TIMEOUT_MS),
+      (error: unknown) =>
+        String(error).includes("KNT_ERROR_PERMISSION_DENIED") ||
+        String(error).includes("ERR_ACCESS_DENIED"),
+    );
+
+    await assert.rejects(
+      withTimeout(pool.call.spawnViaWorkerThread(), TEST_TIMEOUT_MS),
+      (error: unknown) =>
+        String(error).includes("KNT_ERROR_PERMISSION_DENIED") ||
+        String(error).includes("ERR_ACCESS_DENIED"),
+    );
+
+    await assert.rejects(
+      withTimeout(pool.call.spawnViaProcessBinding(), TEST_TIMEOUT_MS),
+      (error: unknown) =>
+        String(error).includes("KNT_ERROR_PERMISSION_DENIED") ||
+        String(error).includes("ERR_ACCESS_DENIED"),
+    );
+
+    if (process.platform !== "win32") {
+      await assert.rejects(
+        withTimeout(pool.call.readDeniedViaSymlink(), TEST_TIMEOUT_MS),
+        (error: unknown) =>
+          String(error).includes("KNT_ERROR_PERMISSION_DENIED") ||
+          String(error).includes("ERR_ACCESS_DENIED"),
+      );
+    }
   } finally {
     await pool.shutdown();
     if (existsSync(cwdOutput)) {
@@ -367,6 +405,10 @@ test("node:test permission unsafe mode allows unrestricted file access", {
   })({
     writeIntoNodeModules,
     readGitDirectory,
+    spawnChildProcess,
+    spawnViaWorkerThread,
+    spawnViaProcessBinding,
+    readDeniedViaSymlink,
   });
 
   try {
@@ -380,6 +422,57 @@ test("node:test permission unsafe mode allows unrestricted file access", {
 
     const gitEntries = await withTimeout(pool.call.readGitDirectory(), TEST_TIMEOUT_MS);
     assert.equal(gitEntries > 0, true);
+
+    const spawnResult = await withTimeout(
+      pool.call.spawnChildProcess().then(
+        (value) => ({ ok: true as const, value }),
+        (error) => ({ ok: false as const, error }),
+      ),
+      TEST_TIMEOUT_MS,
+    );
+    if (spawnResult.ok) {
+      assert.equal(spawnResult.value, "spawn-ok");
+    } else {
+      const text = String(spawnResult.error);
+      assert.equal(text.includes("KNT_ERROR_PERMISSION_DENIED"), false);
+      assert.equal(text.includes("ERR_ACCESS_DENIED"), false);
+    }
+
+    const workerResult = await withTimeout(
+      pool.call.spawnViaWorkerThread().then(
+        (value) => ({ ok: true as const, value }),
+        (error) => ({ ok: false as const, error }),
+      ),
+      TEST_TIMEOUT_MS,
+    );
+    if (workerResult.ok) {
+      assert.equal(typeof workerResult.value, "string");
+    } else {
+      const text = String(workerResult.error);
+      assert.equal(text.includes("KNT_ERROR_PERMISSION_DENIED"), false);
+      assert.equal(text.includes("ERR_ACCESS_DENIED"), false);
+    }
+
+    const bindingResult = await withTimeout(
+      pool.call.spawnViaProcessBinding().then(
+        (value) => ({ ok: true as const, value }),
+        (error) => ({ ok: false as const, error }),
+      ),
+      TEST_TIMEOUT_MS,
+    );
+    if (bindingResult.ok) {
+      assert.equal(typeof bindingResult.value, "string");
+    } else {
+      const text = String(bindingResult.error);
+      assert.equal(text.includes("KNT_ERROR_PERMISSION_DENIED"), false);
+      assert.equal(text.includes("ERR_ACCESS_DENIED"), false);
+    }
+
+    if (process.platform !== "win32") {
+      const hosts = await withTimeout(pool.call.readDeniedViaSymlink(), TEST_TIMEOUT_MS);
+      assert.equal(typeof hosts, "string");
+      assert.equal(hosts.length > 0, true);
+    }
   } finally {
     await pool.shutdown();
     if (existsSync(nodeModulesOutput)) {

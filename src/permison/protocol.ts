@@ -15,10 +15,12 @@ type NodePermissionSettings = {
 type DenoPermissionSettings = {
   lock?: boolean | PermissionPath;
   frozen?: boolean;
+  allowRun?: boolean;
 };
 
 type BunPermissionSettings = {
   lock?: boolean | PermissionPath;
+  allowRun?: boolean;
 };
 
 type PermissionEnvironment = {
@@ -83,7 +85,7 @@ type ResolvedPermisonProtocol = {
   };
   node: Required<NodePermissionSettings> & { flags: string[] };
   deno: Required<Omit<DenoPermissionSettings, "lock">> & { flags: string[] };
-  bun: { flags: string[] };
+  bun: Required<Omit<BunPermissionSettings, "lock">> & { flags: string[] };
 };
 
 const DEFAULT_ENV_FILE = ".env";
@@ -195,6 +197,9 @@ const toAbsolutePath = (
   }
 
   const expanded = expandHomePath(value, home);
+  if (path.isAbsolute(expanded)) {
+    return path.resolve(expanded);
+  }
   try {
     const parsed = new URL(expanded);
     if (parsed.protocol !== "file:") return undefined;
@@ -293,6 +298,7 @@ const toDenoFlags = ({
   envFiles,
   denoLock,
   frozen,
+  allowRun,
 }: {
   read: string[];
   write: string[];
@@ -301,6 +307,7 @@ const toDenoFlags = ({
   envFiles: string[];
   denoLock?: string;
   frozen: boolean;
+  allowRun: boolean;
 }): string[] => {
   const flags = [
     `--allow-read=${read.join(",")}`,
@@ -318,15 +325,26 @@ const toDenoFlags = ({
     flags.push(`--lock=${denoLock}`);
     if (frozen) flags.push("--frozen=true");
   }
+  if (allowRun === false) {
+    flags.push("--deny-run");
+  }
 
   return flags;
 };
 
 const toBunFlags = ({
   envFiles,
+  allowRun,
 }: {
   envFiles: string[];
-}): string[] => envFiles.map((file) => `--env-file=${file}`);
+  allowRun: boolean;
+}): string[] => {
+  const flags = envFiles.map((file) => `--env-file=${file}`);
+  if (allowRun === false) {
+    flags.push("--deny-run");
+  }
+  return flags;
+};
 
 const isPathWithin = (base: string, candidate: string): boolean => {
   const relative = path.relative(base, candidate);
@@ -463,9 +481,11 @@ export const resolvePermisonProtocol = ({
       },
       deno: {
         frozen: false,
+        allowRun: true,
         flags: [],
       },
       bun: {
+        allowRun: true,
         flags: [],
       },
     };
@@ -503,6 +523,10 @@ export const resolvePermisonProtocol = ({
   };
   const denoSettings: Required<Omit<DenoPermissionSettings, "lock">> = {
     frozen: input.deno?.frozen !== false,
+    allowRun: input.deno?.allowRun === true,
+  };
+  const bunSettings: Required<Omit<BunPermissionSettings, "lock">> = {
+    allowRun: input.bun?.allowRun === true,
   };
 
   const resolvedRead = collectReadPaths({
@@ -549,10 +573,15 @@ export const resolvePermisonProtocol = ({
         envFiles,
         denoLock,
         frozen: denoSettings.frozen,
+        allowRun: denoSettings.allowRun,
       }),
     },
     bun: {
-      flags: toBunFlags({ envFiles }),
+      ...bunSettings,
+      flags: toBunFlags({
+        envFiles,
+        allowRun: bunSettings.allowRun,
+      }),
     },
   };
 };

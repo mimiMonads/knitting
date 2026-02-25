@@ -4,10 +4,14 @@ import { toModuleUrl } from "./common/module-url.ts";
 import { endpointSymbol } from "./common/task-symbol.ts";
 import { spawnWorkerContext } from "./runtime/pool.ts";
 import { isMainThread, workerData } from "node:worker_threads";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   resolvePermisonProtocol,
   toRuntimePermissionFlags,
 } from "./permison/index.ts";
+import { RUNTIME } from "./common/runtime.ts";
 
 import { managerMethod } from "./runtime/balancer.ts";
 import { createInlineExecutor } from "./runtime/inline-executor.ts";
@@ -17,7 +21,6 @@ import type {
   AbortSignalOption,
   ComposedWithKey,
   CreatePool,
-  DispatcherOptions,
   DispatcherSettings,
   FixPoint,
   FunctionMapType,
@@ -44,6 +47,102 @@ type CreatePoolFactory = (
 
 const MAX_FUNCTION_ID = 0xFFFF;
 const MAX_FUNCTION_COUNT = MAX_FUNCTION_ID + 1;
+
+const resolveLocalModulePath = (value: string): string | undefined => {
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== "file:") return undefined;
+    return path.resolve(fileURLToPath(parsed));
+  } catch {
+    if (!path.isAbsolute(value)) return undefined;
+    return path.resolve(value);
+  }
+};
+
+const assertBunStrictModuleSafety = ({
+  protocol,
+  modules,
+}: {
+  protocol?: ReturnType<typeof resolvePermisonProtocol>;
+  modules: string[];
+}): void => {
+  if (!protocol || protocol.unsafe === true || RUNTIME !== "bun") return;
+
+  const forbiddenPatterns = [
+    {
+      label: "bun:ffi",
+      pattern:
+        /(from\s*["']bun:ffi["'])|(import\s*\(\s*["']bun:ffi["']\s*\))|(require\s*\(\s*["']bun:ffi["']\s*\))/,
+    },
+    {
+      label: "node:worker_threads",
+      pattern:
+        /(from\s*["']node:worker_threads["'])|(import\s*\(\s*["']node:worker_threads["']\s*\))|(require\s*\(\s*["']node:worker_threads["']\s*\))/,
+    },
+    {
+      label: "node:fs",
+      pattern:
+        /(from\s*["']node:fs(?:\/promises)?["'])|(import\s*\(\s*["']node:fs(?:\/promises)?["']\s*\))|(require\s*\(\s*["']node:fs(?:\/promises)?["']\s*\))/,
+    },
+    {
+      label: "node:module",
+      pattern:
+        /(from\s*["']node:module["'])|(import\s*\(\s*["']node:module["']\s*\))|(require\s*\(\s*["']node:module["']\s*\))/,
+    },
+    {
+      label: "process.binding",
+      pattern: /process\s*\.\s*binding\s*\(/,
+    },
+    {
+      label: "process._linkedBinding",
+      pattern: /process\s*\.\s*_linkedBinding\s*\(/,
+    },
+    {
+      label: "process.dlopen",
+      pattern: /process\s*\.\s*dlopen\s*\(/,
+    },
+    {
+      label: "dynamic import expression",
+      pattern: /\bimport\s*\(/,
+    },
+    {
+      label: "require()",
+      pattern: /\brequire\s*\(/,
+    },
+    {
+      label: "createRequire()",
+      pattern: /\bcreateRequire\s*\(/,
+    },
+    {
+      label: "eval/Function constructor",
+      pattern: /\beval\s*\(|\bnew\s+Function\s*\(|\bFunction\s*\(/,
+    },
+    {
+      label: "Bun.dlopen/Bun.linkSymbols",
+      pattern: /Bun\s*\.\s*(dlopen|linkSymbols)\s*\(/,
+    },
+  ] as const;
+
+  for (const moduleRef of modules) {
+    const modulePath = resolveLocalModulePath(moduleRef);
+    if (!modulePath) continue;
+
+    let source: string;
+    try {
+      source = readFileSync(modulePath, "utf8");
+    } catch {
+      continue;
+    }
+
+    for (const entry of forbiddenPatterns) {
+      if (entry.pattern.test(source)) {
+        throw new Error(
+          `KNT_ERROR_PERMISSION_DENIED: bun strict preflight blocked ${entry.label} in ${modulePath}`,
+        );
+      }
+    }
+  }
+};
 
 export const isMain: boolean = isMainThread;
 export { endpointSymbol as endpointSymbol };
@@ -165,6 +264,10 @@ export const createPool: CreatePoolFactory = ({
     permison,
     modules: list,
   });
+  assertBunStrictModuleSafety({
+    protocol: permissionProtocol,
+    modules: list,
+  });
   const permissionExecArgv = toRuntimePermissionFlags(permissionProtocol);
 
   const allowedFlags = typeof process !== "undefined" &&
@@ -226,13 +329,7 @@ export const createPool: CreatePoolFactory = ({
     combinedExecArgv.length > 0 ? combinedExecArgv : undefined,
   );
 
-  const isDispatcherOptions = (
-    value: DispatcherOptions | DispatcherSettings | undefined,
-  ): value is DispatcherOptions =>
-    typeof value === "object" && value !== null && "host" in value;
-
-  const hostDispatcher: DispatcherSettings | undefined = host ??
-    (isDispatcherOptions(dispatcher) ? dispatcher.host : dispatcher);
+  const hostDispatcher: DispatcherSettings | undefined = host ?? dispatcher;
   const usesAbortSignal = listOfFunctions.some((fn) => fn.abortSignal !== undefined);
 
   let workers = Array.from({

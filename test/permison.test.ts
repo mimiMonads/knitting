@@ -129,6 +129,9 @@ test("resolvePermisonProtocol applies strict defaults from cwd", () => {
     resolved.node.flags.includes("--permission"),
     true,
   );
+  assert.equal(resolved.node.allowChildProcess, false);
+  assert.equal(resolved.deno.allowRun, false);
+  assert.equal(resolved.bun.allowRun, false);
 });
 
 test("resolvePermisonProtocol includes module read paths and custom env files", () => {
@@ -179,6 +182,33 @@ test("resolvePermisonProtocol includes module read paths and custom env files", 
   );
 });
 
+test("resolvePermisonProtocol keeps absolute Windows paths", () => {
+  if (process.platform !== "win32") return;
+
+  const cwd = process.cwd();
+  const absoluteRead = path.resolve(cwd, "README.md");
+  const absoluteWrite = path.resolve(cwd, "tmp-write");
+  const absoluteDenyRead = path.resolve(cwd, "blocked-read");
+  const absoluteDenyWrite = path.resolve(cwd, "blocked-write");
+  const absoluteEnv = path.resolve(cwd, ".env.test");
+  const resolved = resolvePermisonProtocol({
+    permission: {
+      read: [absoluteRead],
+      write: [absoluteWrite],
+      denyRead: [absoluteDenyRead],
+      denyWrite: [absoluteDenyWrite],
+      env: { files: [absoluteEnv] },
+    },
+  });
+
+  assert.ok(resolved);
+  assert.equal(resolved.read.includes(absoluteRead), true);
+  assert.equal(resolved.write.includes(absoluteWrite), true);
+  assert.equal(resolved.denyRead.includes(absoluteDenyRead), true);
+  assert.equal(resolved.denyWrite.includes(absoluteDenyWrite), true);
+  assert.equal(resolved.envFiles.includes(absoluteEnv), true);
+});
+
 test("resolvePermisonProtocol supports unsafe mode shorthand", () => {
   const resolved = resolvePermisonProtocol({
     permission: "unsafe",
@@ -191,6 +221,9 @@ test("resolvePermisonProtocol supports unsafe mode shorthand", () => {
   assert.equal(resolved.denyRead.length, 0);
   assert.equal(resolved.denyWrite.length, 0);
   assert.equal(resolved.node.flags.length, 0);
+  assert.equal(resolved.node.allowChildProcess, true);
+  assert.equal(resolved.deno.allowRun, true);
+  assert.equal(resolved.bun.allowRun, true);
 });
 
 test("resolvePermisonProtocol allows explicit console in strict mode", () => {
@@ -201,4 +234,21 @@ test("resolvePermisonProtocol allows explicit console in strict mode", () => {
   assert.ok(resolved);
   assert.equal(resolved.mode, "strict");
   assert.equal(resolved.allowConsole, true);
+});
+
+test("resolvePermisonProtocol allows explicit process execution in strict mode", () => {
+  const resolved = resolvePermisonProtocol({
+    permission: {
+      mode: "strict",
+      node: { allowChildProcess: true },
+      deno: { allowRun: true },
+      bun: { allowRun: true },
+    },
+  });
+
+  assert.ok(resolved);
+  assert.equal(resolved.mode, "strict");
+  assert.equal(resolved.node.allowChildProcess, true);
+  assert.equal(resolved.deno.allowRun, true);
+  assert.equal(resolved.bun.allowRun, true);
 });
