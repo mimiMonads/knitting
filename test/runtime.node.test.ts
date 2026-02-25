@@ -30,6 +30,18 @@ import {
   returnLocalSymbol,
   returnWeakMap,
 } from "./fixtures/error_tasks.ts";
+import {
+  inspectStrictMembraneGlobals,
+  readStrictModuleBinding,
+  readStrictModuleTopLevelProcessType,
+  readStrictRequireBinding,
+} from "./fixtures/strict_tasks.ts";
+import {
+  probeStrictEvalDynamicImport,
+  probeStrictEvalObfuscatedDynamicImport,
+  probeStrictFunctionCtorDynamicImport,
+  probeStrictSandboxRequireModuleTypes,
+} from "./fixtures/strict_import_tasks.ts";
 
 const TEST_TIMEOUT_MS = 10_000;
 const NODE_BIN = process.versions.bun ? "node" : process.execPath;
@@ -512,6 +524,128 @@ test("node:test worker keeps performance.now precise and tamper-resistant", {
     assert.equal(typeof result.changedToZero, "boolean");
     assert.equal(typeof result.replacedObject, "boolean");
     assert.equal(result.stableSample > 0, true);
+  } finally {
+    await pool.shutdown();
+  }
+});
+
+test("node:test strict mode injects blocked require/module bindings during task calls", {
+  concurrency: false,
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
+  const pool = createPool({
+    threads: 1,
+    permission: {
+      mode: "strict",
+      strict: {
+        recursiveScan: true,
+      },
+    },
+  })({
+    readStrictRequireBinding,
+    readStrictModuleBinding,
+  });
+
+  try {
+    const [requireState, moduleState] = await withTimeout(
+      Promise.all([
+        pool.call.readStrictRequireBinding(),
+        pool.call.readStrictModuleBinding(),
+      ]),
+      TEST_TIMEOUT_MS,
+    );
+
+    assert.equal(requireState.includes("require is blocked"), true);
+    assert.equal(moduleState.includes("module is blocked"), true);
+  } finally {
+    await pool.shutdown();
+  }
+});
+
+test("node:test strict mode executes tasks against membrane globals in section 18 path", {
+  concurrency: false,
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
+  if (process.versions.bun) {
+    return;
+  }
+
+  const pool = createPool({
+    threads: 1,
+    permission: {
+      mode: "strict",
+      strict: {
+        recursiveScan: true,
+        sandbox: true,
+      },
+    },
+  })({
+    inspectStrictMembraneGlobals,
+    readStrictModuleTopLevelProcessType,
+  });
+
+  try {
+    const result = await withTimeout(
+      pool.call.inspectStrictMembraneGlobals(),
+      TEST_TIMEOUT_MS,
+    );
+    const topLevelProcessType = await withTimeout(
+      pool.call.readStrictModuleTopLevelProcessType(),
+      TEST_TIMEOUT_MS,
+    );
+    assert.equal(topLevelProcessType, "undefined");
+    assert.equal(result.processType, "undefined");
+    assert.equal(result.bunType, "undefined");
+    assert.equal(result.webAssemblyType, "undefined");
+    assert.equal(result.fetchType, "undefined");
+    assert.equal(typeof result.globalThisIsSelf, "boolean");
+    assert.equal(typeof result.globalProtoIsNull, "boolean");
+    assert.equal(result.constructorEscape.includes("object"), false);
+  } finally {
+    await pool.shutdown();
+  }
+});
+
+test("node:test strict mode blocks dynamic import vectors in section 19 path", {
+  concurrency: false,
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
+  if (process.versions.bun) {
+    return;
+  }
+
+  const pool = createPool({
+    threads: 1,
+    permission: {
+      mode: "strict",
+      strict: {
+        recursiveScan: true,
+        sandbox: true,
+      },
+    },
+  })({
+    probeStrictEvalDynamicImport,
+    probeStrictEvalObfuscatedDynamicImport,
+    probeStrictFunctionCtorDynamicImport,
+    probeStrictSandboxRequireModuleTypes,
+  });
+
+  try {
+    const [evalDirect, evalObfuscated, ctorImport, bindings] = await withTimeout(
+      Promise.all([
+        pool.call.probeStrictEvalDynamicImport(),
+        pool.call.probeStrictEvalObfuscatedDynamicImport(),
+        pool.call.probeStrictFunctionCtorDynamicImport(),
+        pool.call.probeStrictSandboxRequireModuleTypes(),
+      ]),
+      TEST_TIMEOUT_MS,
+    );
+
+    assert.equal(evalDirect.includes("KNT_ERROR_PERMISSION_DENIED"), true);
+    assert.equal(evalObfuscated.includes("KNT_ERROR_PERMISSION_DENIED"), true);
+    assert.equal(ctorImport.includes("KNT_ERROR_PERMISSION_DENIED"), true);
+    assert.equal(bindings.requireType, "undefined");
+    assert.equal(bindings.moduleType, "undefined");
   } finally {
     await pool.shutdown();
   }

@@ -4,6 +4,7 @@ import type {
   PermisonProtocol,
   PermisonProtocolInput,
   ResolvedPermisonProtocol,
+  StrictPermissionSettings,
 } from "./permison/protocol.ts";
 type WorkerCall = {
   fnNumber: number;
@@ -437,6 +438,7 @@ export type {
   PermisonProtocol as PermisonProtocol,
   PermisonProtocolInput as PermisonProtocolInput,
   ResolvedPermisonProtocol as ResolvedPermisonProtocol,
+  StrictPermissionSettings as StrictPermissionSettings,
 };
 export type { Task as Task } from "./memory/lock.ts";
 export {

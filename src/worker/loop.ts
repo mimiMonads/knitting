@@ -4,7 +4,7 @@ import {
   createSharedMemoryTransport,
 } from "../ipc/transport/shared-memory.ts";
 import { lock2 } from "../memory/lock.ts";
-import type { WorkerData } from "../types.ts";
+import type { LockBuffers, WorkerData } from "../types.ts";
 import { getFunctions } from "./get-functions.ts";
 import { pauseGeneric, sleepUntilChanged, whilePausing } from "./timers.ts";
 import { SET_IMMEDIATE } from "../common/runtime.ts";
@@ -13,6 +13,7 @@ import {
   installUnhandledRejectionSilencer,
   installPerformanceNowGuard,
   installWritePermissionGuard,
+  installStrictModeRuntimeGuard,
   scrubWorkerDataSensitiveBuffers,
   assertWorkerSharedMemoryBootData,
   assertWorkerImportsResolved,
@@ -46,6 +47,7 @@ export const workerMainLoop = async (startupData: WorkerData): Promise<void> => 
 
   scrubWorkerDataSensitiveBuffers(startupData);
   installWritePermissionGuard(permission);
+  installStrictModeRuntimeGuard(permission);
   assertWorkerSharedMemoryBootData({ sab, lock, returnLock });
 
   enum Comment {
@@ -99,7 +101,8 @@ const pauseSpin = (() => {
     list,
     isWorker: true,
     ids,
-    at
+    at,
+    permission,
   });
   assertWorkerImportsResolved({ debug, list, ids, listOfFunctions });
   const abortSignals = abortSignalSAB
@@ -238,7 +241,84 @@ const _pauseUntil = pauseUntil;
   scheduleMacro();
 }
 
+const isWebWorkerScope = (): boolean => {
+  const scopeCtor = (globalThis as { WorkerGlobalScope?: unknown }).WorkerGlobalScope;
+  if (typeof scopeCtor !== "function") return false;
+  try {
+    return globalThis instanceof (scopeCtor as new (...args: unknown[]) => object);
+  } catch {
+    return false;
+  }
+};
 
-if (isMainThread === false) {
-  workerMainLoop(workerData as WorkerData);
+const isLockBuffers = (value: unknown): value is LockBuffers => {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<LockBuffers>;
+  return candidate.headers instanceof SharedArrayBuffer &&
+    candidate.lockSector instanceof SharedArrayBuffer &&
+    candidate.payload instanceof SharedArrayBuffer &&
+    candidate.payloadSector instanceof SharedArrayBuffer;
+};
+
+const isWorkerBootPayload = (value: unknown): value is WorkerData => {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<WorkerData>;
+  return candidate.sab instanceof SharedArrayBuffer &&
+    Array.isArray(candidate.list) &&
+    Array.isArray(candidate.ids) &&
+    Array.isArray(candidate.at) &&
+    typeof candidate.thread === "number" &&
+    typeof candidate.totalNumberOfThread === "number" &&
+    typeof candidate.startAt === "number" &&
+    isLockBuffers(candidate.lock) &&
+    isLockBuffers(candidate.returnLock);
+};
+
+const installWebWorkerBootstrap = (): void => {
+  const g = globalThis as typeof globalThis & {
+    addEventListener?: (
+      type: string,
+      listener: (event: { data?: unknown }) => void,
+    ) => void;
+    removeEventListener?: (
+      type: string,
+      listener: (event: { data?: unknown }) => void,
+    ) => void;
+    onmessage?: ((event: { data?: unknown }) => void) | null;
+  };
+  const start = (data: unknown) => {
+    if (!isWorkerBootPayload(data)) return;
+    void workerMainLoop(data);
+  };
+
+  if (
+    typeof g.addEventListener === "function" &&
+    typeof g.removeEventListener === "function"
+  ) {
+    const onMessage = (event: { data?: unknown }) => {
+      const data = event?.data;
+      if (!isWorkerBootPayload(data)) return;
+      try {
+        g.removeEventListener?.("message", onMessage);
+      } catch {
+      }
+      start(data);
+    };
+    g.addEventListener("message", onMessage);
+    return;
+  }
+
+  g.onmessage = (event: { data?: unknown }) => {
+    const data = event?.data;
+    if (!isWorkerBootPayload(data)) return;
+    g.onmessage = null;
+    start(data);
+  };
+};
+
+
+if (isMainThread === false && isWorkerBootPayload(workerData)) {
+  workerMainLoop(workerData);
+} else if (isWebWorkerScope()) {
+  installWebWorkerBootstrap();
 }

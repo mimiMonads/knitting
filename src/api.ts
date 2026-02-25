@@ -11,6 +11,10 @@ import {
   resolvePermisonProtocol,
   toRuntimePermissionFlags,
 } from "./permison/index.ts";
+import {
+  scanCode,
+  StrictModeViolationError,
+} from "./permison/strict-scan.ts";
 import { RUNTIME } from "./common/runtime.ts";
 
 import { managerMethod } from "./runtime/balancer.ts";
@@ -68,60 +72,7 @@ const assertBunStrictModuleSafety = ({
 }): void => {
   if (!protocol || protocol.unsafe === true || RUNTIME !== "bun") return;
 
-  const forbiddenPatterns = [
-    {
-      label: "bun:ffi",
-      pattern:
-        /(from\s*["']bun:ffi["'])|(import\s*\(\s*["']bun:ffi["']\s*\))|(require\s*\(\s*["']bun:ffi["']\s*\))/,
-    },
-    {
-      label: "node:worker_threads",
-      pattern:
-        /(from\s*["']node:worker_threads["'])|(import\s*\(\s*["']node:worker_threads["']\s*\))|(require\s*\(\s*["']node:worker_threads["']\s*\))/,
-    },
-    {
-      label: "node:fs",
-      pattern:
-        /(from\s*["']node:fs(?:\/promises)?["'])|(import\s*\(\s*["']node:fs(?:\/promises)?["']\s*\))|(require\s*\(\s*["']node:fs(?:\/promises)?["']\s*\))/,
-    },
-    {
-      label: "node:module",
-      pattern:
-        /(from\s*["']node:module["'])|(import\s*\(\s*["']node:module["']\s*\))|(require\s*\(\s*["']node:module["']\s*\))/,
-    },
-    {
-      label: "process.binding",
-      pattern: /process\s*\.\s*binding\s*\(/,
-    },
-    {
-      label: "process._linkedBinding",
-      pattern: /process\s*\.\s*_linkedBinding\s*\(/,
-    },
-    {
-      label: "process.dlopen",
-      pattern: /process\s*\.\s*dlopen\s*\(/,
-    },
-    {
-      label: "dynamic import expression",
-      pattern: /\bimport\s*\(/,
-    },
-    {
-      label: "require()",
-      pattern: /\brequire\s*\(/,
-    },
-    {
-      label: "createRequire()",
-      pattern: /\bcreateRequire\s*\(/,
-    },
-    {
-      label: "eval/Function constructor",
-      pattern: /\beval\s*\(|\bnew\s+Function\s*\(|\bFunction\s*\(/,
-    },
-    {
-      label: "Bun.dlopen/Bun.linkSymbols",
-      pattern: /Bun\s*\.\s*(dlopen|linkSymbols)\s*\(/,
-    },
-  ] as const;
+  const strictScanOptions = protocol.strict;
 
   for (const moduleRef of modules) {
     const modulePath = resolveLocalModulePath(moduleRef);
@@ -134,12 +85,19 @@ const assertBunStrictModuleSafety = ({
       continue;
     }
 
-    for (const entry of forbiddenPatterns) {
-      if (entry.pattern.test(source)) {
-        throw new Error(
-          `KNT_ERROR_PERMISSION_DENIED: bun strict preflight blocked ${entry.label} in ${modulePath}`,
-        );
-      }
+    const result = scanCode(source, {
+      depth: 0,
+      origin: "preflight",
+      source: modulePath,
+    }, strictScanOptions);
+    if (result.passed !== true) {
+      throw new StrictModeViolationError({
+        origin: "preflight",
+        depth: 0,
+        source: modulePath,
+        violations: result.violations,
+        scannedCode: source,
+      });
     }
   }
 };
@@ -321,7 +279,13 @@ export const createPool: CreatePoolFactory = ({
   const defaultExecArgv = permissionProtocol?.unsafe === true
     ? stripNodePermissionFlags(defaultExecArgvCandidate)
     : defaultExecArgvCandidate;
+  const needsVmModuleFlag = RUNTIME === "node" &&
+    permissionProtocol?.enabled === true &&
+    permissionProtocol.unsafe !== true &&
+    permissionProtocol.mode === "strict" &&
+    permissionProtocol.strict.sandbox === true;
   const combinedExecArgv = dedupeFlags([
+    ...(needsVmModuleFlag ? ["--experimental-vm-modules"] : []),
     ...permissionExecArgv,
     ...(defaultExecArgv ?? []),
   ]);

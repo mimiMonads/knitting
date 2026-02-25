@@ -1,12 +1,20 @@
 import type { ComposedWithKey, TaskTimeout } from "../types.ts";
 import { endpointSymbol } from "../common/task-symbol.ts";
 import { toModuleUrl } from "../common/module-url.ts";
+import type { ResolvedPermisonProtocol } from "../permison/protocol.ts";
+import { createInjectedStrictCallable } from "./safety/strict-import.ts";
+import {
+  ensureStrictSandboxRuntime,
+  loadModuleInSandbox,
+  loadInSandbox,
+} from "./safety/strict-sandbox.ts";
 
 type GetFunctionParams = {
   list: string[];
   ids: number[];
   at: number[];
   isWorker: boolean;
+  permission?: ResolvedPermisonProtocol;
 };
 
 type WorkerCallable = (args: unknown, abortToolkit?: unknown) => unknown;
@@ -44,10 +52,88 @@ const normalizeTimeout = (timeout?: TaskTimeout): TimeoutSpec | undefined => {
   return { ms, kind: TimeoutKind.Reject, value: new Error("Task timeout") };
 };
 
+const toValueTag = Object.prototype.toString;
 
-const composeWorkerCallable = (fixed: ComposedWithKey): WorkerCallable => {
-  const fn = fixed.f as (args: unknown, abortToolkit?: unknown) => unknown;
-  return fn;
+const isPromiseAcrossRealms = (value: unknown): value is Promise<unknown> =>
+  value instanceof Promise ||
+  (
+    typeof value === "object" &&
+    value !== null &&
+    toValueTag.call(value) === "[object Promise]"
+  );
+
+const cloneToHostRealm = <T>(value: T): T => {
+  const clone = (globalThis as typeof globalThis & {
+    structuredClone?: <U>(input: U) => U;
+  }).structuredClone;
+  if (typeof clone !== "function") return value;
+  try {
+    return clone(value);
+  } catch {
+    return value;
+  }
+};
+
+const wrapSandboxLoadedCallable = (fn: WorkerCallable): WorkerCallable => {
+  const wrapped: WorkerCallable = (args: unknown, abortToolkit?: unknown) => {
+    const out = fn(args, abortToolkit);
+    if (!isPromiseAcrossRealms(out)) {
+      return cloneToHostRealm(out);
+    }
+    return Promise.resolve(out).then(
+      (value) => cloneToHostRealm(value),
+      (error) => Promise.reject(cloneToHostRealm(error)),
+    );
+  };
+
+  try {
+    Object.defineProperty(wrapped, "name", {
+      value: fn.name || "strictSandboxLoadedCallable",
+      configurable: true,
+    });
+  } catch {
+  }
+  try {
+    Object.defineProperty(wrapped, "length", {
+      value: fn.length,
+      configurable: true,
+    });
+  } catch {
+  }
+  try {
+    Object.defineProperty(wrapped, "toString", {
+      value: () => Function.prototype.toString.call(fn),
+      configurable: true,
+    });
+  } catch {
+  }
+
+  return wrapped;
+};
+
+const composeWorkerCallable = (
+  fixed: ComposedWithKey,
+  permission?: ResolvedPermisonProtocol,
+  loadedInSandbox?: boolean,
+): WorkerCallable => {
+  const fn = fixed.f as WorkerCallable;
+  if (loadedInSandbox === true) {
+    return wrapSandboxLoadedCallable(fn);
+  }
+  const shouldInjectStrictCaller = permission?.enabled === true &&
+    permission.unsafe !== true &&
+    permission.mode === "strict" &&
+    permission.strict.recursiveScan !== false;
+  if (!shouldInjectStrictCaller) return fn;
+  const shouldUseStrictSandbox = permission?.strict.sandbox === true;
+  if (!shouldUseStrictSandbox) {
+    return createInjectedStrictCallable(fn);
+  }
+  const sandboxRuntime = ensureStrictSandboxRuntime(permission);
+  if (!sandboxRuntime) {
+    return createInjectedStrictCallable(fn);
+  }
+  return loadInSandbox(fn, sandboxRuntime);
 };
 
 export type WorkerComposedWithKey = ComposedWithKey & {
@@ -56,14 +142,28 @@ export type WorkerComposedWithKey = ComposedWithKey & {
 };
 
 export const getFunctions = async (
-  { list, ids, at }: GetFunctionParams,
+  { list, ids, at, permission }: GetFunctionParams,
 ) => {
 
   const modules = list.map((specifier) => toModuleUrl(specifier));
+  const shouldUseStrictSandbox = permission?.enabled === true &&
+    permission.unsafe !== true &&
+    permission.mode === "strict" &&
+    permission.strict.recursiveScan !== false &&
+    permission.strict.sandbox === true;
+  const sandboxRuntime = shouldUseStrictSandbox
+    ? ensureStrictSandboxRuntime(permission)
+    : undefined;
 
   const results = await Promise.all(
     modules.map(async (imports) => {
-      const module = await import(imports);
+      const loadedModule = sandboxRuntime
+        ? await loadModuleInSandbox(imports, sandboxRuntime)
+        : {
+          namespace: (await import(imports)) as Record<string, unknown>,
+          loadedInSandbox: false,
+        };
+      const module = loadedModule.namespace;
       return Object.entries(module)
         .filter(
           ([_, value]) =>
@@ -75,6 +175,7 @@ export const getFunctions = async (
           //@ts-ignore Reason -> trust me
           ...value,
           name,
+          __knittingLoadedInSandbox: loadedModule.loadedInSandbox,
         })) as unknown as ComposedWithKey[];
     }),
   );
@@ -95,7 +196,11 @@ export const getFunctions = async (
 
   return flattenedResults.map((fixed) => ({
     ...fixed,
-    run: composeWorkerCallable(fixed),
+    run: composeWorkerCallable(
+      fixed,
+      permission,
+      (fixed as unknown as { __knittingLoadedInSandbox?: boolean }).__knittingLoadedInSandbox === true,
+    ),
     timeout: normalizeTimeout(fixed.timeout),
   })) as WorkerComposedWithKey[];
 };

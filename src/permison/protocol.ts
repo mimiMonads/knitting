@@ -23,6 +23,12 @@ type BunPermissionSettings = {
   allowRun?: boolean;
 };
 
+type StrictPermissionSettings = {
+  recursiveScan?: boolean;
+  maxEvalDepth?: number;
+  sandbox?: boolean;
+};
+
 type PermissionEnvironment = {
   files?: PermissionPath | PermissionPath[];
 };
@@ -64,6 +70,7 @@ type PermisonProtocol = {
   node?: NodePermissionSettings;
   deno?: DenoPermissionSettings;
   bun?: BunPermissionSettings;
+  strict?: StrictPermissionSettings;
 };
 
 type PermisonProtocolInput = PermisonMode | PermisonProtocol;
@@ -83,6 +90,11 @@ type ResolvedPermisonProtocol = {
     deno?: string;
     bun?: string;
   };
+  strict: {
+    recursiveScan: boolean;
+    maxEvalDepth: number;
+    sandbox: boolean;
+  };
   node: Required<NodePermissionSettings> & { flags: string[] };
   deno: Required<Omit<DenoPermissionSettings, "lock">> & { flags: string[] };
   bun: Required<Omit<BunPermissionSettings, "lock">> & { flags: string[] };
@@ -91,6 +103,9 @@ type ResolvedPermisonProtocol = {
 const DEFAULT_ENV_FILE = ".env";
 const DEFAULT_DENO_LOCK_FILE = "deno.lock";
 const DEFAULT_BUN_LOCK_FILES = ["bun.lockb", "bun.lock"] as const;
+const DEFAULT_STRICT_MAX_EVAL_DEPTH = 16;
+const MIN_STRICT_MAX_EVAL_DEPTH = 1;
+const MAX_STRICT_MAX_EVAL_DEPTH = 64;
 const DEFAULT_DENY_RELATIVE = [
   ".env",
   ".git",
@@ -98,6 +113,26 @@ const DEFAULT_DENY_RELATIVE = [
   ".docker",
   ".secrets",
 ] as const;
+
+const clampStrictMaxEvalDepth = (value: number | undefined): number => {
+  if (!Number.isFinite(value)) return DEFAULT_STRICT_MAX_EVAL_DEPTH;
+  const int = Math.floor(value as number);
+  if (int < MIN_STRICT_MAX_EVAL_DEPTH) return MIN_STRICT_MAX_EVAL_DEPTH;
+  if (int > MAX_STRICT_MAX_EVAL_DEPTH) return MAX_STRICT_MAX_EVAL_DEPTH;
+  return int;
+};
+
+const resolveStrictPermissionSettings = (
+  input: StrictPermissionSettings | undefined,
+): {
+  recursiveScan: boolean;
+  maxEvalDepth: number;
+  sandbox: boolean;
+} => ({
+  recursiveScan: input?.recursiveScan !== false,
+  maxEvalDepth: clampStrictMaxEvalDepth(input?.maxEvalDepth),
+  sandbox: input?.sandbox === true,
+});
 const DEFAULT_DENY_HOME = [
   ".ssh",
   ".gnupg",
@@ -456,6 +491,7 @@ export const resolvePermisonProtocol = ({
     : "strict";
   const unsafe = mode === "unsafe";
   const allowConsole = input.console ?? unsafe;
+  const strictSettings = resolveStrictPermissionSettings(input.strict);
 
   const cwd = path.resolve(input.cwd ?? getCwd());
   const home = getHome();
@@ -472,6 +508,7 @@ export const resolvePermisonProtocol = ({
       denyWrite: [],
       envFiles: [],
       lockFiles: {},
+      strict: strictSettings,
       node: {
         allowWorker: true,
         allowChildProcess: true,
@@ -554,6 +591,7 @@ export const resolvePermisonProtocol = ({
       deno: denoLock,
       bun: bunLock,
     },
+    strict: strictSettings,
     node: {
       ...nodeSettings,
       flags: toNodeFlags({
@@ -600,6 +638,7 @@ export type {
   NodePermissionSettings as NodePermissionSettings,
   DenoPermissionSettings as DenoPermissionSettings,
   BunPermissionSettings as BunPermissionSettings,
+  StrictPermissionSettings as StrictPermissionSettings,
   PermissionEnvironment as PermissionEnvironment,
   PermisonProtocol as PermisonProtocol,
   PermisonProtocolInput as PermisonProtocolInput,

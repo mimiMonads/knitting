@@ -8,6 +8,7 @@ export type {
   NodePermissionSettings,
   DenoPermissionSettings,
   BunPermissionSettings,
+  StrictPermissionSettings,
   PermissionEnvironment,
   PermisonProtocol,
   PermisonProtocolInput,

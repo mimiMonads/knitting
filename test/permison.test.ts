@@ -252,3 +252,32 @@ test("resolvePermisonProtocol allows explicit process execution in strict mode",
   assert.equal(resolved.deno.allowRun, true);
   assert.equal(resolved.bun.allowRun, true);
 });
+
+test("resolvePermisonProtocol resolves strict scan defaults", () => {
+  const resolved = resolvePermisonProtocol({
+    permission: { mode: "strict" },
+  });
+
+  assert.ok(resolved);
+  assert.equal(resolved.strict.recursiveScan, true);
+  assert.equal(resolved.strict.maxEvalDepth, 16);
+  assert.equal(resolved.strict.sandbox, false);
+});
+
+test("resolvePermisonProtocol clamps strict.maxEvalDepth and accepts recursiveScan=false", () => {
+  const resolved = resolvePermisonProtocol({
+    permission: {
+      mode: "strict",
+      strict: {
+        recursiveScan: false,
+        maxEvalDepth: 999,
+        sandbox: true,
+      },
+    },
+  });
+
+  assert.ok(resolved);
+  assert.equal(resolved.strict.recursiveScan, false);
+  assert.equal(resolved.strict.maxEvalDepth, 64);
+  assert.equal(resolved.strict.sandbox, true);
+});
