@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -300,10 +300,15 @@ test("node:test permission protocol keeps node_modules read-only", {
     "node_modules",
     ".knitting-permission-probe.tmp",
   );
+  const nodeModulesDir = path.dirname(nodeModulesOutput);
+  const hadNodeModulesDir = existsSync(nodeModulesDir);
   const cwdOutput = path.resolve(
     process.cwd(),
     ".knitting-permission-allowed.tmp",
   );
+  if (!hadNodeModulesDir) {
+    mkdirSync(nodeModulesDir, { recursive: true });
+  }
   const pool = createPool({
     threads: 1,
     permission: {},
@@ -383,6 +388,9 @@ test("node:test permission protocol keeps node_modules read-only", {
     if (existsSync(nodeModulesOutput)) {
       unlinkSync(nodeModulesOutput);
     }
+    if (!hadNodeModulesDir && existsSync(nodeModulesDir)) {
+      rmSync(nodeModulesDir, { recursive: true, force: true });
+    }
   }
 });
 
@@ -399,6 +407,11 @@ test("node:test permission unsafe mode allows unrestricted file access", {
     "node_modules",
     ".knitting-permission-probe.tmp",
   );
+  const nodeModulesDir = path.dirname(nodeModulesOutput);
+  const hadNodeModulesDir = existsSync(nodeModulesDir);
+  if (!hadNodeModulesDir) {
+    mkdirSync(nodeModulesDir, { recursive: true });
+  }
   const pool = createPool({
     threads: 1,
     permission: "unsafe",
@@ -477,6 +490,9 @@ test("node:test permission unsafe mode allows unrestricted file access", {
     await pool.shutdown();
     if (existsSync(nodeModulesOutput)) {
       unlinkSync(nodeModulesOutput);
+    }
+    if (!hadNodeModulesDir && existsSync(nodeModulesDir)) {
+      rmSync(nodeModulesDir, { recursive: true, force: true });
     }
   }
 });

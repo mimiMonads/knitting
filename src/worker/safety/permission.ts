@@ -454,8 +454,8 @@ const installNodeProcessGuard = (): void => {
 const installNodeInternalsGuard = (): void => {
   if (typeof process === "undefined") return;
   const proc = process as NodeJS.Process & {
-    binding?: (name: string) => unknown;
-    _linkedBinding?: (name: string) => unknown;
+    binding?: (name: string, ...args: unknown[]) => unknown;
+    _linkedBinding?: (name: string, ...args: unknown[]) => unknown;
     dlopen?: (...args: unknown[]) => unknown;
   };
   const block = (name: string): never => {
@@ -476,7 +476,7 @@ const installNodeInternalsGuard = (): void => {
       if (dangerousBindingNames.has(name)) {
         return block(`process.${method}(${name})`);
       }
-      return original.call(proc, name, ...rest);
+      return Reflect.apply(original, proc, [name, ...rest]);
     }) as typeof original & { [WRAPPED]?: boolean };
 
     wrapped[WRAPPED] = true;
@@ -488,7 +488,7 @@ const installNodeInternalsGuard = (): void => {
       });
     } catch {
       try {
-        (proc as Record<string, unknown>)[method] = wrapped;
+        (proc as unknown as Record<string, unknown>)[method] = wrapped;
       } catch {
       }
     }
@@ -513,7 +513,7 @@ const installNodeInternalsGuard = (): void => {
       });
     } catch {
       try {
-        (proc as Record<string, unknown>).dlopen = wrappedDlopen;
+        (proc as unknown as Record<string, unknown>).dlopen = wrappedDlopen;
       } catch {
       }
     }
@@ -563,16 +563,16 @@ const installWorkerSpawnGuard = (): void => {
     (globalWorker as { [WRAPPED]?: boolean })[WRAPPED] !== true
   ) {
     try {
-      const wrapped = new Proxy(globalWorker as (...args: unknown[]) => unknown, {
-        apply(): never {
-          return blockWorker("Worker");
+      const wrapped = new Proxy(
+        globalWorker as new (...args: unknown[]) => unknown,
+        {
+          construct(): never {
+            return blockWorker("Worker");
+          },
         },
-        construct(): never {
-          return blockWorker("Worker");
-        },
-      });
+      );
       (wrapped as { [WRAPPED]?: boolean })[WRAPPED] = true;
-      g.Worker = wrapped;
+      (g as unknown as Record<string, unknown>).Worker = wrapped;
     } catch {
     }
   }
@@ -652,16 +652,16 @@ const installDenoGuard = ({
         typeof command === "function" &&
         (command as { [WRAPPED]?: boolean })[WRAPPED] !== true
       ) {
-        const wrapped = new Proxy(command as (...args: unknown[]) => unknown, {
-          apply(_target, _thisArg, args): never {
-            return throwDeniedAccess(args[0] ?? "Deno.Command", "run");
+        const wrapped = new Proxy(
+          command as new (...args: unknown[]) => unknown,
+          {
+            construct(_target, args): never {
+              return throwDeniedAccess(args[0] ?? "Deno.Command", "run");
+            },
           },
-          construct(_target, args): never {
-            return throwDeniedAccess(args[0] ?? "Deno.Command", "run");
-          },
-        });
+        );
         (wrapped as { [WRAPPED]?: boolean })[WRAPPED] = true;
-        deno.Command = wrapped;
+        (deno as unknown as Record<string, unknown>).Command = wrapped;
       }
     } catch {
     }
