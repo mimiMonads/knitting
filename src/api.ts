@@ -8,13 +8,13 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  resolvePermisonProtocol,
+  resolvePermissionProtocol,
   toRuntimePermissionFlags,
-} from "./permison/index.ts";
+} from "./permission/index.ts";
 import {
   scanCode,
   StrictModeViolationError,
-} from "./permison/strict-scan.ts";
+} from "./permission/strict-scan.ts";
 import { RUNTIME } from "./common/runtime.ts";
 
 import { managerMethod } from "./runtime/balancer.ts";
@@ -67,7 +67,7 @@ const assertBunStrictModuleSafety = ({
   protocol,
   modules,
 }: {
-  protocol?: ReturnType<typeof resolvePermisonProtocol>;
+  protocol?: ReturnType<typeof resolvePermissionProtocol>;
   modules: string[];
 }): void => {
   if (!protocol || protocol.unsafe === true || RUNTIME !== "bun") return;
@@ -155,7 +155,6 @@ export const createPool: CreatePoolFactory = ({
   worker,
   workerExecArgv,
   permission,
-  permison,
   dispatcher,
   host,
 }: CreatePool) =>
@@ -217,9 +216,8 @@ export const createPool: CreatePoolFactory = ({
   const usingInliner = typeof inliner === "object" && inliner != null;
   const totalNumberOfThread = (threads ?? 1) +
     (usingInliner ? 1 : 0);
-  const permissionProtocol = resolvePermisonProtocol({
+  const permissionProtocol = resolvePermissionProtocol({
     permission,
-    permison,
     modules: list,
   });
   assertBunStrictModuleSafety({

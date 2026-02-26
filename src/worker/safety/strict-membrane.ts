@@ -22,7 +22,12 @@ type MembraneConfig = {
   reflectConstructors?: MembraneReflectConstructors;
 };
 
-type SafeReflect = Omit<typeof Reflect, "setPrototypeOf">;
+type SafeReflect = typeof Reflect;
+
+type SafeReflectOptions = {
+  constructors?: MembraneReflectConstructors;
+  protectedTargets?: Iterable<object>;
+};
 
 type MembraneGlobal = Record<string, unknown> & {
   globalThis: MembraneGlobal;
@@ -143,10 +148,26 @@ const BLOCKED_ADDITIONAL_GLOBAL_PREFIXES = [
   "globalThis.",
 ] as const;
 
+const CONSTRUCTOR_ROUTE_ENTRIES = [
+  ["originalFunction", "secureFunction"],
+  ["originalGeneratorFunction", "secureGeneratorFunction"],
+  ["originalAsyncFunction", "secureAsyncFunction"],
+  ["originalAsyncGeneratorFunction", "secureAsyncGeneratorFunction"],
+] as const;
+
 const hasOwn = (target: object, key: PropertyKey): boolean =>
   Object.prototype.hasOwnProperty.call(target, key);
 
 type LooseRecord = Record<string, unknown>;
+
+const isObjectLike = (value: unknown): value is object =>
+  (typeof value === "object" && value !== null) || typeof value === "function";
+
+const isSelfBoundGlobalScopeTarget = (value: unknown): value is object => {
+  if (!isObjectLike(value)) return false;
+  const record = value as Record<PropertyKey, unknown>;
+  return record.globalThis === value && record.self === value;
+};
 
 const defineLockedValue = (
   target: object,
@@ -217,36 +238,27 @@ const createSafeConsole = (): object => {
   return Object.freeze(out);
 };
 
+const defineAppliedMethod = (
+  target: Record<string, unknown>,
+  source: LooseRecord,
+  methodName: string,
+): void => {
+  const method = source[methodName];
+  if (typeof method !== "function") return;
+  defineLockedValue(
+    target,
+    methodName,
+    (...args: unknown[]) =>
+      Reflect.apply(method as (...input: unknown[]) => unknown, source, args),
+  );
+};
+
 const createSafeCrypto = (): object | undefined => {
   const hostCrypto = (globalThis as unknown as { crypto?: LooseRecord }).crypto;
   if (!hostCrypto || typeof hostCrypto !== "object") return undefined;
   const out = Object.create(null) as Record<string, unknown>;
-  const getRandomValues = hostCrypto.getRandomValues;
-  if (typeof getRandomValues === "function") {
-    defineLockedValue(
-      out,
-      "getRandomValues",
-      (view: ArrayBufferView) =>
-        Reflect.apply(
-          getRandomValues as (value: ArrayBufferView) => ArrayBufferView,
-          hostCrypto,
-          [view],
-        ),
-    );
-  }
-  const randomUUID = hostCrypto.randomUUID;
-  if (typeof randomUUID === "function") {
-    defineLockedValue(
-      out,
-      "randomUUID",
-      () =>
-        Reflect.apply(
-          randomUUID as () => string,
-          hostCrypto,
-          [],
-        ),
-    );
-  }
+  defineAppliedMethod(out, hostCrypto, "getRandomValues");
+  defineAppliedMethod(out, hostCrypto, "randomUUID");
   return Object.freeze(out);
 };
 
@@ -254,19 +266,9 @@ const createSafePerformance = (): object | undefined => {
   const hostPerformance =
     (globalThis as unknown as { performance?: LooseRecord }).performance;
   if (!hostPerformance || typeof hostPerformance !== "object") return undefined;
-  const now = hostPerformance.now;
-  if (typeof now !== "function") return undefined;
   const out = Object.create(null) as Record<string, unknown>;
-  defineLockedValue(
-    out,
-    "now",
-    () =>
-      Reflect.apply(
-        now as () => number,
-        hostPerformance,
-        [],
-      ),
-  );
+  defineAppliedMethod(out, hostPerformance, "now");
+  if (out.now === undefined) return undefined;
   return Object.freeze(out);
 };
 
@@ -349,33 +351,10 @@ const routeConstructor = (
   constructors?: MembraneReflectConstructors,
 ): Function | undefined => {
   if (!constructors || typeof candidate !== "function") return undefined;
-  if (
-    constructors.originalFunction &&
-    constructors.secureFunction &&
-    candidate === constructors.originalFunction
-  ) {
-    return constructors.secureFunction;
-  }
-  if (
-    constructors.originalGeneratorFunction &&
-    constructors.secureGeneratorFunction &&
-    candidate === constructors.originalGeneratorFunction
-  ) {
-    return constructors.secureGeneratorFunction;
-  }
-  if (
-    constructors.originalAsyncFunction &&
-    constructors.secureAsyncFunction &&
-    candidate === constructors.originalAsyncFunction
-  ) {
-    return constructors.secureAsyncFunction;
-  }
-  if (
-    constructors.originalAsyncGeneratorFunction &&
-    constructors.secureAsyncGeneratorFunction &&
-    candidate === constructors.originalAsyncGeneratorFunction
-  ) {
-    return constructors.secureAsyncGeneratorFunction;
+  for (const [originalKey, secureKey] of CONSTRUCTOR_ROUTE_ENTRIES) {
+    const original = constructors[originalKey];
+    const secure = constructors[secureKey];
+    if (original && secure && candidate === original) return secure;
   }
   return undefined;
 };
@@ -392,16 +371,83 @@ const toConstructor = (
   return candidate;
 };
 
+const toSafeReflectOptions = (
+  input?: MembraneReflectConstructors | SafeReflectOptions,
+): SafeReflectOptions => {
+  if (!input) return {};
+  if (
+    typeof input === "object" &&
+    (
+      Object.prototype.hasOwnProperty.call(input, "constructors") ||
+      Object.prototype.hasOwnProperty.call(input, "protectedTargets")
+    )
+  ) {
+    return input as SafeReflectOptions;
+  }
+  return {
+    constructors: input as MembraneReflectConstructors,
+  };
+};
+
+function assertReflectMutationAllowed(
+  apiName: "Reflect.defineProperty" | "Reflect.setPrototypeOf",
+  target: unknown,
+  protectedTargets: Set<object>,
+): asserts target is object {
+  if (!isObjectLike(target)) return;
+  if (
+    protectedTargets.has(target) ||
+    Object.isFrozen(target) ||
+    isSelfBoundGlobalScopeTarget(target)
+  ) {
+    throw new Error(
+      `KNT_ERROR_PERMISSION_DENIED: strict membrane blocked ${apiName} on protected target`,
+    );
+  }
+}
+
 export const createSafeReflect = (
-  constructors?: MembraneReflectConstructors,
+  input?: MembraneReflectConstructors | SafeReflectOptions,
 ): SafeReflect => {
+  const options = toSafeReflectOptions(input);
+  const constructors = options.constructors;
+  const protectedTargets = new Set(options.protectedTargets ?? []);
   const out = Object.create(null) as Record<string, unknown>;
   for (const method of SAFE_REFLECT_METHODS) {
+    if (method === "defineProperty") continue;
     const reflectMethod = (Reflect as unknown as Record<string, unknown>)[method];
     if (typeof reflectMethod !== "function") continue;
     defineLockedValue(out, method, reflectMethod.bind(Reflect));
   }
 
+  defineLockedValue(
+    out,
+    "defineProperty",
+    (
+      target: object,
+      property: PropertyKey,
+      attributes: PropertyDescriptor,
+    ): boolean => {
+      assertReflectMutationAllowed(
+        "Reflect.defineProperty",
+        target,
+        protectedTargets,
+      );
+      return Reflect.defineProperty(target, property, attributes);
+    },
+  );
+  defineLockedValue(
+    out,
+    "setPrototypeOf",
+    (target: object, proto: object | null): boolean => {
+      assertReflectMutationAllowed(
+        "Reflect.setPrototypeOf",
+        target,
+        protectedTargets,
+      );
+      return Reflect.setPrototypeOf(target, proto);
+    },
+  );
   defineLockedValue(
     out,
     "construct",
@@ -425,6 +471,89 @@ export const createSafeReflect = (
   return Object.freeze(out) as SafeReflect;
 };
 
+function assertObjectGlobalMutationAllowed(
+  apiName: "Object.defineProperty" | "Object.defineProperties",
+  membraneGlobal: MembraneGlobal,
+  target: unknown,
+): asserts target is object {
+  if (!isObjectLike(target)) return;
+  if (
+    target === membraneGlobal ||
+    target === globalThis ||
+    isSelfBoundGlobalScopeTarget(target)
+  ) {
+    throw new Error(
+      `KNT_ERROR_PERMISSION_DENIED: strict membrane blocked ${apiName} on global scope`,
+    );
+  }
+}
+
+const createSafeObjectConstructor = (
+  membraneGlobal: MembraneGlobal,
+): ObjectConstructor => {
+  const OriginalObject = Object;
+  const secureObject = function (this: unknown, ...args: unknown[]) {
+    if (new.target) {
+      return Reflect.construct(
+        OriginalObject as unknown as Function,
+        args,
+        new.target as Function,
+      );
+    }
+    return Reflect.apply(
+      OriginalObject as unknown as (...input: unknown[]) => unknown,
+      undefined,
+      args,
+    );
+  } as unknown as ObjectConstructor;
+
+  for (const key of Reflect.ownKeys(OriginalObject)) {
+    const descriptor = Object.getOwnPropertyDescriptor(OriginalObject, key);
+    if (!descriptor) continue;
+    if (key === "defineProperty") {
+      descriptor.value = (
+        target: object,
+        property: PropertyKey,
+        attributes: PropertyDescriptor,
+      ): object => {
+        assertObjectGlobalMutationAllowed(
+          "Object.defineProperty",
+          membraneGlobal,
+          target,
+        );
+        return OriginalObject.defineProperty(target, property, attributes);
+      };
+    } else if (key === "defineProperties") {
+      descriptor.value = (
+        target: object,
+        properties: PropertyDescriptorMap & ThisType<unknown>,
+      ): object => {
+        assertObjectGlobalMutationAllowed(
+          "Object.defineProperties",
+          membraneGlobal,
+          target,
+        );
+        return OriginalObject.defineProperties(target, properties);
+      };
+    }
+    try {
+      Object.defineProperty(secureObject, key, descriptor);
+    } catch {
+    }
+  }
+
+  try {
+    Object.setPrototypeOf(secureObject, OriginalObject);
+  } catch {
+  }
+  try {
+    (secureObject as unknown as { prototype?: unknown }).prototype =
+      OriginalObject.prototype;
+  } catch {
+  }
+  return secureObject;
+};
+
 export const createMembraneGlobal = (
   config: MembraneConfig = {},
 ): MembraneGlobal => {
@@ -432,12 +561,16 @@ export const createMembraneGlobal = (
   const allowCrypto = config.allowCrypto !== false;
   const allowPerformance = config.allowPerformance !== false;
   const membraneGlobal = Object.create(null) as MembraneGlobal;
+  const protectedTargets = new Set<object>([membraneGlobal]);
 
   for (const name of SAFE_CORE_GLOBAL_NAMES) {
+    if (name === "Object") continue;
     const value = getHostGlobalValue(name);
     if (value === undefined) continue;
     defineLockedValue(membraneGlobal, name, value);
   }
+  const safeObject = createSafeObjectConstructor(membraneGlobal);
+  defineLockedValue(membraneGlobal, "Object", safeObject);
 
   for (const name of SAFE_LITERAL_GLOBAL_NAMES) {
     defineLockedValue(membraneGlobal, name, getHostGlobalValue(name));
@@ -449,44 +582,59 @@ export const createMembraneGlobal = (
     defineLockedValue(membraneGlobal, name, bound);
   }
 
-  defineLockedValue(membraneGlobal, "Math", createFrozenNamespace(Math));
+  const safeMath = createFrozenNamespace(Math);
+  defineLockedValue(membraneGlobal, "Math", safeMath);
+  protectedTargets.add(safeMath);
+  const safeJSON = Object.freeze(
+    Object.create(null, {
+      parse: {
+        value: JSON.parse.bind(JSON),
+        writable: false,
+        configurable: false,
+        enumerable: true,
+      },
+      stringify: {
+        value: JSON.stringify.bind(JSON),
+        writable: false,
+        configurable: false,
+        enumerable: true,
+      },
+    }),
+  );
   defineLockedValue(
     membraneGlobal,
     "JSON",
-    Object.freeze(
-      Object.create(null, {
-        parse: {
-          value: JSON.parse.bind(JSON),
-          writable: false,
-          configurable: false,
-          enumerable: true,
-        },
-        stringify: {
-          value: JSON.stringify.bind(JSON),
-          writable: false,
-          configurable: false,
-          enumerable: true,
-        },
-      }),
-    ),
+    safeJSON,
   );
+  protectedTargets.add(safeJSON);
+  const safeReflect = createSafeReflect({
+    constructors: config.reflectConstructors,
+    protectedTargets,
+  });
   defineLockedValue(
     membraneGlobal,
     "Reflect",
-    createSafeReflect(config.reflectConstructors),
+    safeReflect,
   );
+  protectedTargets.add(safeReflect);
 
   if (allowConsole) {
-    defineLockedValue(membraneGlobal, "console", createSafeConsole());
+    const safeConsole = createSafeConsole();
+    defineLockedValue(membraneGlobal, "console", safeConsole);
+    protectedTargets.add(safeConsole);
   }
   if (allowCrypto) {
     const safeCrypto = createSafeCrypto();
-    if (safeCrypto) defineLockedValue(membraneGlobal, "crypto", safeCrypto);
+    if (safeCrypto) {
+      defineLockedValue(membraneGlobal, "crypto", safeCrypto);
+      protectedTargets.add(safeCrypto);
+    }
   }
   if (allowPerformance) {
     const safePerformance = createSafePerformance();
     if (safePerformance) {
       defineLockedValue(membraneGlobal, "performance", safePerformance);
+      protectedTargets.add(safePerformance);
     }
   }
 
@@ -499,6 +647,9 @@ export const createMembraneGlobal = (
       : originalValue;
     assertAdditionalGlobalValue(name, wrapped);
     freezeDeep(wrapped);
+    if (isObjectLike(wrapped) && Object.isFrozen(wrapped)) {
+      protectedTargets.add(wrapped);
+    }
     defineLockedValue(membraneGlobal, name, wrapped);
   }
 
@@ -510,8 +661,8 @@ export const createMembraneGlobal = (
 };
 
 export type {
-  MembraneConfig as MembraneConfig,
-  MembraneGlobal as MembraneGlobal,
-  MembraneReflectConstructors as MembraneReflectConstructors,
-  SafeReflect as SafeReflect,
+  MembraneConfig,
+  MembraneGlobal,
+  MembraneReflectConstructors,
+  SafeReflect,
 };

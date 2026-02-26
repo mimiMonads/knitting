@@ -1,7 +1,7 @@
 import type { ComposedWithKey, TaskTimeout } from "../types.ts";
 import { endpointSymbol } from "../common/task-symbol.ts";
 import { toModuleUrl } from "../common/module-url.ts";
-import type { ResolvedPermisonProtocol } from "../permison/protocol.ts";
+import type { ResolvedPermissionProtocol } from "../permission/protocol.ts";
 import { createInjectedStrictCallable } from "./safety/strict-import.ts";
 import {
   ensureStrictSandboxRuntime,
@@ -14,7 +14,7 @@ type GetFunctionParams = {
   ids: number[];
   at: number[];
   isWorker: boolean;
-  permission?: ResolvedPermisonProtocol;
+  permission?: ResolvedPermissionProtocol;
 };
 
 type WorkerCallable = (args: unknown, abortToolkit?: unknown) => unknown;
@@ -113,7 +113,7 @@ const wrapSandboxLoadedCallable = (fn: WorkerCallable): WorkerCallable => {
 
 const composeWorkerCallable = (
   fixed: ComposedWithKey,
-  permission?: ResolvedPermisonProtocol,
+  permission?: ResolvedPermissionProtocol,
   loadedInSandbox?: boolean,
 ): WorkerCallable => {
   const fn = fixed.f as WorkerCallable;

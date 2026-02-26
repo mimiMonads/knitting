@@ -80,12 +80,30 @@ test("TMEM-10..TMEM-12 membrane properties are frozen and immutable", () => {
   });
 });
 
-test("TMEM-14 safe Reflect excludes setPrototypeOf", () => {
+test("TMEM-14 safe Reflect blocks protected target mutations", () => {
   const sandbox = createMembraneGlobal() as Record<string, unknown>;
-  const safeReflect = sandbox.Reflect as Record<string, unknown>;
+  const safeReflect = sandbox.Reflect as typeof Reflect;
   assert.equal(typeof safeReflect.construct, "function");
-  assert.equal(safeReflect.setPrototypeOf, undefined);
-  assert.equal("setPrototypeOf" in safeReflect, false);
+  assert.equal(typeof safeReflect.setPrototypeOf, "function");
+  assert.throws(() => {
+    safeReflect.defineProperty(sandbox as unknown as object, "tmem14", {
+      value: 1,
+      configurable: true,
+    });
+  }, /KNT_ERROR_PERMISSION_DENIED/);
+  assert.throws(() => {
+    safeReflect.setPrototypeOf(sandbox as unknown as object, null);
+  }, /KNT_ERROR_PERMISSION_DENIED/);
+  const mutable: Record<string, unknown> = {};
+  assert.equal(
+    safeReflect.defineProperty(mutable, "ok", {
+      value: true,
+      configurable: true,
+      writable: true,
+    }),
+    true,
+  );
+  assert.equal(mutable.ok, true);
 });
 
 test("TMEM-15 safe Reflect.construct can route through secure constructors", () => {
@@ -143,6 +161,42 @@ test("TMEM-17 membrane hides non-allowlisted host globals by default", () => {
       `expected ${key} to be undefined on membrane`,
     );
   }
+});
+
+test("TMEM-18 membrane Object.defineProperty/defineProperties reject global scope writes", () => {
+  const sandbox = createMembraneGlobal() as Record<string, unknown>;
+  const safeObject = sandbox.Object as ObjectConstructor;
+
+  assert.throws(() => {
+    safeObject.defineProperty(sandbox as unknown as object, "tmem18", {
+      value: 1,
+      configurable: true,
+    });
+  }, /KNT_ERROR_PERMISSION_DENIED/);
+  assert.throws(() => {
+    safeObject.defineProperties(sandbox as unknown as object, {
+      tmem18: {
+        value: 1,
+        configurable: true,
+      },
+    });
+  }, /KNT_ERROR_PERMISSION_DENIED/);
+
+  const local: Record<string, unknown> = {};
+  safeObject.defineProperty(local, "x", {
+    value: 1,
+    configurable: true,
+    writable: true,
+  });
+  safeObject.defineProperties(local, {
+    y: {
+      value: 2,
+      configurable: true,
+      writable: true,
+    },
+  });
+  assert.equal(local.x, 1);
+  assert.equal(local.y, 2);
 });
 
 test("CFG-10 additional globals reject runtime-native API names", () => {

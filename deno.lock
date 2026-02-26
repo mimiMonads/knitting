@@ -7,7 +7,8 @@
     "npm:@types/deno@latest": "2.2.0",
     "npm:@types/node@*": "24.2.0",
     "npm:@types/node@latest": "25.2.3",
-    "npm:mitata@^1.0.34": "1.0.34"
+    "npm:mitata@^1.0.34": "1.0.34",
+    "npm:typescript@5": "5.9.3"
   },
   "jsr": {
     "@std/assert@1.0.11": {
@@ -58,6 +59,10 @@
     "mitata@1.0.34": {
       "integrity": "sha512-Mc3zrtNBKIMeHSCQ0XqRLo1vbdIx1wvFV9c8NJAiyho6AjNfMY8bVhbS12bwciUdd1t4rj8099CH3N3NFahaUA=="
     },
+    "typescript@5.9.3": {
+      "integrity": "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==",
+      "bin": true
+    },
     "undici-types@7.10.0": {
       "integrity": "sha512-t5Fy/nfn+14LuOc2KNYg75vZqClpAiqscVvMygNnlsHBFpSXdJaYtXMcdNLpl/Qvc3P2cB3s6lOV51nqsFq4ag=="
     },
@@ -65,13 +70,18 @@
       "integrity": "sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw=="
     }
   },
+  "remote": {
+    "https://knittingdocs.netlify.app/example-task.mjs": "da276bb02bff8b47717826b12843234a3ecff7b292e2a9843a75309ea0bc3da1",
+    "https://knittingdocs.netlify.app/knitting.js": "27239a2dc4241e86303b6d9e5529088024239793b51bd7ed33abf348fb17efbf"
+  },
   "workspace": {
     "packageJson": {
       "dependencies": [
         "npm:@types/bun@latest",
         "npm:@types/deno@latest",
         "npm:@types/node@latest",
-        "npm:mitata@^1.0.34"
+        "npm:mitata@^1.0.34",
+        "npm:typescript@5"
       ]
     }
   }

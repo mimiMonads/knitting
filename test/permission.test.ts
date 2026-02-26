@@ -2,14 +2,14 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
-import { resolvePermisonProtocol } from "../src/permison/index.ts";
+import { resolvePermissionProtocol } from "../src/permission/index.ts";
 
-test("resolvePermisonProtocol returns undefined when disabled", () => {
-  assert.equal(resolvePermisonProtocol({}), undefined);
+test("resolvePermissionProtocol returns undefined when disabled", () => {
+  assert.equal(resolvePermissionProtocol({}), undefined);
 });
 
-test("resolvePermisonProtocol treats legacy off mode as unsafe", () => {
-  const resolved = resolvePermisonProtocol({
+test("resolvePermissionProtocol treats legacy off mode as unsafe", () => {
+  const resolved = resolvePermissionProtocol({
     permission: "off" as unknown as "unsafe",
   });
 
@@ -18,11 +18,11 @@ test("resolvePermisonProtocol treats legacy off mode as unsafe", () => {
   assert.equal(resolved.unsafe, true);
 });
 
-test("resolvePermisonProtocol applies strict defaults from cwd", () => {
+test("resolvePermissionProtocol applies strict defaults from cwd", () => {
   const cwd = process.cwd();
   const home = process.env.HOME ?? process.env.USERPROFILE;
   const isWindows = process.platform === "win32";
-  const resolved = resolvePermisonProtocol({
+  const resolved = resolvePermissionProtocol({
     permission: {},
   });
 
@@ -134,11 +134,11 @@ test("resolvePermisonProtocol applies strict defaults from cwd", () => {
   assert.equal(resolved.bun.allowRun, false);
 });
 
-test("resolvePermisonProtocol includes module read paths and custom env files", () => {
+test("resolvePermissionProtocol includes module read paths and custom env files", () => {
   const cwd = process.cwd();
   const home = process.env.HOME ?? process.env.USERPROFILE;
   const fixturePath = path.resolve(cwd, "test/fixtures/runtime_tasks.ts");
-  const resolved = resolvePermisonProtocol({
+  const resolved = resolvePermissionProtocol({
     permission: {
       env: { files: [".env.test"] },
       read: ["README.md"],
@@ -182,7 +182,7 @@ test("resolvePermisonProtocol includes module read paths and custom env files", 
   );
 });
 
-test("resolvePermisonProtocol keeps absolute Windows paths", () => {
+test("resolvePermissionProtocol keeps absolute Windows paths", () => {
   if (process.platform !== "win32") return;
 
   const cwd = process.cwd();
@@ -191,7 +191,7 @@ test("resolvePermisonProtocol keeps absolute Windows paths", () => {
   const absoluteDenyRead = path.resolve(cwd, "blocked-read");
   const absoluteDenyWrite = path.resolve(cwd, "blocked-write");
   const absoluteEnv = path.resolve(cwd, ".env.test");
-  const resolved = resolvePermisonProtocol({
+  const resolved = resolvePermissionProtocol({
     permission: {
       read: [absoluteRead],
       write: [absoluteWrite],
@@ -209,8 +209,8 @@ test("resolvePermisonProtocol keeps absolute Windows paths", () => {
   assert.equal(resolved.envFiles.includes(absoluteEnv), true);
 });
 
-test("resolvePermisonProtocol supports unsafe mode shorthand", () => {
-  const resolved = resolvePermisonProtocol({
+test("resolvePermissionProtocol supports unsafe mode shorthand", () => {
+  const resolved = resolvePermissionProtocol({
     permission: "unsafe",
   });
 
@@ -226,8 +226,8 @@ test("resolvePermisonProtocol supports unsafe mode shorthand", () => {
   assert.equal(resolved.bun.allowRun, true);
 });
 
-test("resolvePermisonProtocol allows explicit console in strict mode", () => {
-  const resolved = resolvePermisonProtocol({
+test("resolvePermissionProtocol allows explicit console in strict mode", () => {
+  const resolved = resolvePermissionProtocol({
     permission: { mode: "strict", console: true },
   });
 
@@ -236,8 +236,8 @@ test("resolvePermisonProtocol allows explicit console in strict mode", () => {
   assert.equal(resolved.allowConsole, true);
 });
 
-test("resolvePermisonProtocol allows explicit process execution in strict mode", () => {
-  const resolved = resolvePermisonProtocol({
+test("resolvePermissionProtocol allows explicit process execution in strict mode", () => {
+  const resolved = resolvePermissionProtocol({
     permission: {
       mode: "strict",
       node: { allowChildProcess: true },
@@ -253,8 +253,8 @@ test("resolvePermisonProtocol allows explicit process execution in strict mode",
   assert.equal(resolved.bun.allowRun, true);
 });
 
-test("resolvePermisonProtocol resolves strict scan defaults", () => {
-  const resolved = resolvePermisonProtocol({
+test("resolvePermissionProtocol resolves strict scan defaults", () => {
+  const resolved = resolvePermissionProtocol({
     permission: { mode: "strict" },
   });
 
@@ -264,8 +264,8 @@ test("resolvePermisonProtocol resolves strict scan defaults", () => {
   assert.equal(resolved.strict.sandbox, false);
 });
 
-test("resolvePermisonProtocol clamps strict.maxEvalDepth and accepts recursiveScan=false", () => {
-  const resolved = resolvePermisonProtocol({
+test("resolvePermissionProtocol clamps strict.maxEvalDepth and accepts recursiveScan=false", () => {
+  const resolved = resolvePermissionProtocol({
     permission: {
       mode: "strict",
       strict: {

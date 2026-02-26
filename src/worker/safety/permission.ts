@@ -1,6 +1,6 @@
 import path from "node:path";
 import { createRequire } from "node:module";
-import type { ResolvedPermisonProtocol } from "../../permison/protocol.ts";
+import type { ResolvedPermissionProtocol } from "../../permission/protocol.ts";
 import { fileURLToPath } from "node:url";
 
 type GlobalWithPermissionGuard = typeof globalThis & {
@@ -709,7 +709,7 @@ const installBunGuard = ({
 };
 
 export const installWritePermissionGuard = (
-  protocol?: ResolvedPermisonProtocol,
+  protocol?: ResolvedPermissionProtocol,
 ): void => {
   if (!protocol || protocol.enabled !== true) return;
 

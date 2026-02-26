@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import test from "node:test";
-import { resolvePermisonProtocol } from "../src/permison/protocol.ts";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { resolvePermissionProtocol } from "../src/permission/protocol.ts";
 import {
   ensureStrictSandboxRuntime,
   loadInSandbox,
 } from "../src/worker/safety/strict-sandbox.ts";
 
 const strictProtocol = () =>
-  resolvePermisonProtocol({
+  resolvePermissionProtocol({
     permission: {
       mode: "strict",
       strict: {
@@ -30,6 +33,18 @@ test("ensureStrictSandboxRuntime creates runtime with membrane globals", () => {
   assert.equal(g.globalThis, g);
   assert.equal(g.self, g);
   assert.equal(Object.getPrototypeOf(g), null);
+});
+
+test("ensureStrictSandboxRuntime vm context keeps Proxy unreachable", () => {
+  const protocol = strictProtocol();
+  assert.ok(protocol);
+  const runtime = ensureStrictSandboxRuntime(protocol);
+  assert.ok(runtime);
+  if (!runtime.context) return;
+  const assertionFailure = runtime.issues.find((issue) =>
+    issue.includes("vm proxy reachability assertion failed")
+  );
+  assert.equal(assertionFailure, undefined);
 });
 
 test("loadInSandbox executes callables against strict membrane global state", () => {
@@ -185,4 +200,84 @@ test("loadInSandbox keeps require/module inaccessible", () => {
   };
   assert.equal(result.requireType, "undefined");
   assert.equal(result.moduleType, "undefined");
+});
+
+test("loadInSandbox rejects Object.defineProperties on sandbox global scope", () => {
+  const protocol = strictProtocol();
+  assert.ok(protocol);
+  const runtime = ensureStrictSandboxRuntime(protocol);
+  assert.ok(runtime);
+
+  const wrapped = loadInSandbox(function definePropertiesProbe() {
+    try {
+      Object.defineProperties(globalThis, {
+        __knitProbe__: {
+          value: true,
+          configurable: true,
+        },
+      });
+      return "allowed";
+    } catch (error) {
+      return String(error);
+    }
+  }, runtime);
+
+  const result = wrapped();
+  assert.equal(typeof result, "string");
+  assert.equal(
+    String(result).includes("KNT_ERROR_PERMISSION_DENIED"),
+    true,
+  );
+});
+
+test("loadInSandbox fallback keeps membrane overlay for async calls and restores host globals", () => {
+  const cwd = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
+  const probePath = path.join(cwd, "test", "fixtures", "strict_sandbox_async_overlay_probe.ts");
+  const result = spawnSync(
+    process.execPath,
+    ["--no-warnings", "--experimental-transform-types", probePath],
+    {
+      cwd,
+      encoding: "utf8",
+    },
+  );
+
+  assert.equal(
+    result.status,
+    0,
+    `strict sandbox async overlay probe failed:\n${result.stderr || result.stdout}`,
+  );
+  const payload = JSON.parse(result.stdout.trim()) as {
+    firstResult: string;
+    secondResult: string;
+    finalProcessType: string;
+  };
+  assert.equal(payload.firstResult, "undefined");
+  assert.equal(payload.secondResult, "undefined");
+  assert.equal(payload.finalProcessType, "object");
+});
+
+test("fallback host import overlays eval to prevent indirect-eval capture", () => {
+  const cwd = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
+  const probePath = path.join(cwd, "test", "fixtures", "strict_sandbox_indirect_eval_probe.ts");
+  const result = spawnSync(
+    process.execPath,
+    ["--no-warnings", "--experimental-transform-types", probePath],
+    {
+      cwd,
+      encoding: "utf8",
+    },
+  );
+
+  assert.equal(
+    result.status,
+    0,
+    `strict sandbox indirect-eval probe failed:\n${result.stderr || result.stdout}`,
+  );
+  const payload = JSON.parse(result.stdout.trim()) as {
+    loadedInSandbox: boolean;
+    result: string;
+  };
+  assert.equal(payload.loadedInSandbox, false);
+  assert.equal(payload.result.includes("KNT_ERROR_PERMISSION_DENIED"), true);
 });

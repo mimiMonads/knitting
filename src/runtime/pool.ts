@@ -65,6 +65,8 @@ type DenoWorkerOptions = {
   };
 };
 
+const DENO_WORKER_PERMISSIONS_ENV = "KNITTING_DENO_WORKER_PERMISSIONS";
+
 const isNodeWorkerSafeExecFlag = (flag: string): boolean => {
   const key = flag.split("=", 1)[0];
   return key === "--experimental-vm-modules" ||
@@ -130,6 +132,67 @@ const toDenoWorkerPermissions = (
     sys: "inherit",
     write: protocol.write.length > 0 ? protocol.write : false,
   };
+};
+
+const readEnvFlag = (name: string): string | undefined => {
+  try {
+    if (typeof process !== "undefined" && typeof process.env === "object") {
+      const value = process.env[name];
+      if (typeof value === "string") return value;
+    }
+  } catch {
+  }
+  const g = globalThis as typeof globalThis & {
+    Deno?: { env?: { get?: (key: string) => string | undefined } };
+  };
+  try {
+    const value = g.Deno?.env?.get?.(name);
+    if (typeof value === "string") return value;
+  } catch {
+  }
+  return undefined;
+};
+
+const parseEnvBool = (
+  value: string | undefined,
+): boolean | undefined => {
+  if (!value) return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "1" || normalized === "true" || normalized === "yes") {
+    return true;
+  }
+  if (normalized === "0" || normalized === "false" || normalized === "no") {
+    return false;
+  }
+  return undefined;
+};
+
+const hasDenoUnstableWorkerOptionsFlag = (): boolean => {
+  const g = globalThis as typeof globalThis & {
+    Deno?: { readTextFileSync?: (path: string) => string };
+  };
+  const readTextFileSync = g.Deno?.readTextFileSync;
+  if (typeof readTextFileSync !== "function") return false;
+  try {
+    const cmdline = readTextFileSync("/proc/self/cmdline");
+    if (!cmdline) return false;
+    const args = cmdline.split("\u0000").filter((entry) => entry.length > 0);
+    return args.some((arg) =>
+      arg === "--unstable" ||
+      arg === "--unstable-worker-options" ||
+      arg.startsWith("--unstable=") && arg.includes("worker-options")
+    );
+  } catch {
+    return false;
+  }
+};
+
+const shouldUseDenoWorkerPermissions = (): boolean => {
+  const envOverride = parseEnvBool(readEnvFlag(DENO_WORKER_PERMISSIONS_ENV));
+  if (envOverride !== undefined) return envOverride;
+  // Deno exits the process when Worker.deno.permissions is used without
+  // --unstable-worker-options, so gate it behind best-effort flag detection.
+  return hasDenoUnstableWorkerOptionsFlag();
 };
 
 const isUnstableDenoWorkerOptionsError = (error: unknown): boolean => {
@@ -332,7 +395,9 @@ export const spawnWorkerContext = ({
 
   if (canUseDenoWebWorker) {
     const scriptURL = toDenoWorkerScript(workerUrl, tsFileUrl);
-    const denoPermissions = toDenoWorkerPermissions(permission);
+    const denoPermissions = shouldUseDenoWorkerPermissions()
+      ? toDenoWorkerPermissions(permission)
+      : undefined;
     const baseDenoOptions: DenoWorkerOptions = {
       type: "module",
     };

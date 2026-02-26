@@ -62,160 +62,58 @@ const NON_EXCLUDABLE_PATTERN_IDS = new Set([
   "FFI-06",
 ]);
 
+const createBlockPattern = (
+  id: string,
+  regex: RegExp,
+  category: PatternCategory,
+  flags?: Pick<PatternDefinition, "preflightOnly" | "runtimeOnly" | "description">,
+): PatternDefinition => ({
+  id,
+  regex,
+  category,
+  severity: "block",
+  ...flags,
+});
+
 const PATTERN_REGISTRY: PatternDefinition[] = [
   // FFI & native execution
-  {
-    id: "FFI-01",
-    regex: /\bbun\s*:\s*ffi\b/g,
-    category: "ffi",
-    severity: "block",
-  },
-  {
-    id: "FFI-02",
-    regex: /\bBun\s*\.\s*dlopen\b/g,
-    category: "ffi",
-    severity: "block",
-  },
-  {
-    id: "FFI-03",
-    regex: /\bBun\s*\.\s*linkSymbols\b/g,
-    category: "ffi",
-    severity: "block",
-  },
-  {
-    id: "FFI-04",
-    regex: /\bprocess\s*\.\s*dlopen\b/g,
-    category: "ffi",
-    severity: "block",
-  },
-  {
-    id: "FFI-05",
-    regex: /\bprocess\s*\.\s*binding\b/g,
-    category: "ffi",
-    severity: "block",
-  },
-  {
-    id: "FFI-06",
-    regex: /\bprocess\s*\.\s*_linkedBinding\b/g,
-    category: "ffi",
-    severity: "block",
-  },
+  createBlockPattern("FFI-01", /\bbun\s*:\s*ffi\b/g, "ffi"),
+  createBlockPattern("FFI-02", /\bBun\s*\.\s*dlopen\b/g, "ffi"),
+  createBlockPattern("FFI-03", /\bBun\s*\.\s*linkSymbols\b/g, "ffi"),
+  createBlockPattern("FFI-04", /\bprocess\s*\.\s*dlopen\b/g, "ffi"),
+  createBlockPattern("FFI-05", /\bprocess\s*\.\s*binding\b/g, "ffi"),
+  createBlockPattern("FFI-06", /\bprocess\s*\.\s*_linkedBinding\b/g, "ffi"),
   // Filesystem
-  {
-    id: "FS-01",
-    regex: /\bnode\s*:\s*fs\b/g,
-    category: "fs",
-    severity: "block",
-  },
-  {
-    id: "FS-02",
-    regex: /['"]fs['"]/g,
-    category: "fs",
-    severity: "block",
-  },
-  {
-    id: "FS-03",
-    regex: /['"]fs\/promises['"]/g,
-    category: "fs",
-    severity: "block",
-  },
+  createBlockPattern("FS-01", /\bnode\s*:\s*fs\b/g, "fs"),
+  createBlockPattern("FS-02", /['"]fs['"]/g, "fs"),
+  createBlockPattern("FS-03", /['"]fs\/promises['"]/g, "fs"),
   // Threading / worker escape
-  {
-    id: "THR-01",
-    regex: /\bnode\s*:\s*worker_threads\b/g,
-    category: "thread",
-    severity: "block",
-  },
-  {
-    id: "THR-02",
-    regex: /\bnode\s*:\s*child_process\b/g,
-    category: "thread",
-    severity: "block",
-  },
-  {
-    id: "THR-03",
-    regex: /\bnode\s*:\s*cluster\b/g,
-    category: "thread",
-    severity: "block",
-  },
+  createBlockPattern("THR-01", /\bnode\s*:\s*worker_threads\b/g, "thread"),
+  createBlockPattern("THR-02", /\bnode\s*:\s*child_process\b/g, "thread"),
+  createBlockPattern("THR-03", /\bnode\s*:\s*cluster\b/g, "thread"),
   // Dynamic code generation
-  {
-    id: "EVAL-01",
-    regex: /\beval\s*\(/g,
-    category: "eval",
-    severity: "block",
+  createBlockPattern("EVAL-01", /\beval\s*\(/g, "eval", { preflightOnly: true }),
+  createBlockPattern("EVAL-02", /\bnew\s+Function\s*\(/g, "eval", {
     preflightOnly: true,
-  },
-  {
-    id: "EVAL-02",
-    regex: /\bnew\s+Function\s*\(/g,
-    category: "eval",
-    severity: "block",
+  }),
+  createBlockPattern("EVAL-03", /\bFunction\s*\(/g, "eval", {
     preflightOnly: true,
-  },
-  {
-    id: "EVAL-03",
-    regex: /\bFunction\s*\(/g,
-    category: "eval",
-    severity: "block",
-    preflightOnly: true,
-  },
-  {
-    id: "EVAL-04",
-    regex: /\bsetTimeout\s*\(\s*['"`]/g,
-    category: "eval",
-    severity: "block",
-  },
-  {
-    id: "EVAL-05",
-    regex: /\bsetInterval\s*\(\s*['"`]/g,
-    category: "eval",
-    severity: "block",
-  },
+  }),
+  createBlockPattern("EVAL-04", /\bsetTimeout\s*\(\s*['"`]/g, "eval"),
+  createBlockPattern("EVAL-05", /\bsetInterval\s*\(\s*['"`]/g, "eval"),
   // Module import escape
-  {
-    id: "IMP-01",
-    regex: /\bimport\s*\(/g,
-    category: "import",
-    severity: "block",
-  },
-  {
-    id: "IMP-02",
-    regex: /\brequire\s*\(/g,
-    category: "import",
-    severity: "block",
-  },
-  {
-    id: "IMP-03",
-    regex: /\brequire\s*\.\s*resolve\s*\(/g,
-    category: "import",
-    severity: "block",
-  },
-  {
-    id: "IMP-04",
-    regex: /\bimport\s*\.\s*meta\b/g,
-    category: "import",
-    severity: "block",
-  },
-  {
-    id: "IMP-06",
-    regex: /\bmodule\s*\.\s*createRequire\b/g,
-    category: "import",
-    severity: "block",
-  },
+  createBlockPattern("IMP-01", /\bimport\s*\(/g, "import"),
+  createBlockPattern("IMP-02", /\brequire\s*\(/g, "import"),
+  createBlockPattern("IMP-03", /\brequire\s*\.\s*resolve\s*\(/g, "import"),
+  createBlockPattern("IMP-04", /\bimport\s*\.\s*meta\b/g, "import"),
+  createBlockPattern("IMP-06", /\bmodule\s*\.\s*createRequire\b/g, "import"),
   // Global scope escape
-  {
-    id: "GLOB-01",
-    regex: /\bFunction\s*\(\s*['"]return\s+this['"]\s*\)/g,
-    category: "global",
-    severity: "block",
-  },
-  {
-    id: "GLOB-02",
-    regex: /\bconstructor\s*\.\s*constructor\s*\(/g,
-    category: "global",
-    severity: "block",
-  },
+  createBlockPattern(
+    "GLOB-01",
+    /\bFunction\s*\(\s*['"]return\s+this['"]\s*\)/g,
+    "global",
+  ),
+  createBlockPattern("GLOB-02", /\bconstructor\s*\.\s*constructor\s*\(/g, "global"),
 ];
 
 const clampMaxDepth = (value: number | undefined): number => {
@@ -236,11 +134,14 @@ const toFrozenScanResult = (result: ScanResult): ScanResult => ({
 const AST_CACHE_LIMIT = 256;
 const astViolationCache = new Map<string, readonly Violation[]>();
 
+const FUNCTION_CONSTRUCTOR_ORIGINS = new Set([
+  "Function",
+  "GeneratorFunction",
+  "AsyncFunction",
+  "AsyncGeneratorFunction",
+]);
 const isFunctionConstructorOrigin = (origin: string): boolean =>
-  origin === "Function" ||
-  origin === "GeneratorFunction" ||
-  origin === "AsyncFunction" ||
-  origin === "AsyncGeneratorFunction";
+  FUNCTION_CONSTRUCTOR_ORIGINS.has(origin);
 
 const toAstCacheKey = ({
   source,
@@ -257,6 +158,11 @@ const getCachedAstViolations = (key: string): Violation[] | undefined => {
   astViolationCache.delete(key);
   astViolationCache.set(key, cached);
   return cached.map((entry) => ({ ...entry }));
+};
+
+const storeAstViolations = (key: string, violations: Violation[]): Violation[] => {
+  setCachedAstViolations(key, violations);
+  return violations;
 };
 
 const setCachedAstViolations = (key: string, violations: Violation[]): void => {
@@ -296,23 +202,13 @@ type TsLike = {
 };
 
 const require = createRequire(import.meta.url);
-const tsRuntime = (() => {
+const tsApi = (() => {
   try {
-    return {
-      api: require("typescript") as TsLike,
-      unavailableReason: undefined,
-    };
-  } catch (error) {
-    const message = String((error as { message?: unknown })?.message ?? error)
-      .slice(0, 120);
-    return {
-      api: undefined,
-      unavailableReason: message,
-    };
+    return require("typescript") as TsLike;
+  } catch {
+    return undefined;
   }
 })();
-
-const tsApi = tsRuntime.api;
 
 const toAstViolation = ({
   pattern,
@@ -333,13 +229,73 @@ const toAstViolation = ({
   severity: "block",
 });
 
-const toAstUnavailableViolation = (): Violation =>
-  toAstViolation({
-    pattern: "AST-PARSE",
-    match: `parser unavailable: ${tsRuntime.unavailableReason ?? "unknown parser error"}`,
-    line: 1,
-    column: 1,
-  });
+const toLineColumnFromIndex = (
+  source: string,
+  index: number,
+): { line: number; column: number } => {
+  const bounded = Math.max(0, Math.min(index, source.length));
+  let line = 1;
+  let column = 1;
+  for (let i = 0; i < bounded; i++) {
+    const ch = source.charCodeAt(i);
+    if (ch === 10 /* \n */) {
+      line++;
+      column = 1;
+      continue;
+    }
+    column++;
+  }
+  return { line, column };
+};
+
+const forEachRegexMatch = (
+  source: string,
+  regex: RegExp,
+  cb: (found: RegExpMatchArray) => void,
+): void => {
+  regex.lastIndex = 0;
+  for (const found of source.matchAll(regex)) cb(found);
+};
+
+const scanAstHeuristic = ({
+  source,
+  context,
+}: {
+  source: string;
+  context: ScanContext;
+}): Violation[] => {
+  const out: Violation[] = [];
+  for (const [regex, pattern, match] of [
+    [/\bimport\s*\(/g, "AST-ImportExpression", "import(...)"],
+    [/\bimport\s*\.\s*meta\b/g, "AST-MetaProperty", "import.meta"],
+    [/\brequire\s*\(/g, "AST-CallExpression:require", "require(...)"],
+  ] as const) {
+    forEachRegexMatch(source, regex, (found) => {
+      const { line, column } = toLineColumnFromIndex(source, found.index ?? 0);
+      out.push(toAstViolation({ pattern, match, line, column }));
+    });
+  }
+
+  if (out.length === 0 && context.depth > 0) {
+    try {
+      // Runtime intercepted strings are function bodies or scripts.
+      // Function constructor parse is a cheap fallback when TS parser is unavailable.
+      new Function(source);
+    } catch (error) {
+      out.push(toAstViolation({
+        pattern: "AST-PARSE",
+        match: String((error as { message?: unknown })?.message ?? error).slice(
+          0,
+          120,
+        ),
+        line: 1,
+        column: 1,
+      }));
+    }
+  }
+
+  return out;
+};
 
 const parseSourceWithTs = ({
   source,
@@ -355,14 +311,12 @@ const parseSourceWithTs = ({
     }>;
     getLineAndCharacterOfPosition: (position: number) => TsSourceLocation;
   };
-  wrappedSource: string;
   lineOffset: number;
   parseError?: Violation;
 } => {
   const ts = tsApi;
   if (!ts) {
     return {
-      wrappedSource: source,
       lineOffset: 0,
     };
   }
@@ -383,7 +337,6 @@ const parseSourceWithTs = ({
   if (diagnostics.length === 0) {
     return {
       sourceFile,
-      wrappedSource,
       lineOffset,
     };
   }
@@ -396,7 +349,6 @@ const parseSourceWithTs = ({
     : rawMessage?.messageText ?? "syntax parse failure";
   return {
     sourceFile,
-    wrappedSource,
     lineOffset,
     parseError: toAstViolation({
       pattern: "AST-PARSE",
@@ -418,27 +370,15 @@ const scanAst = ({
   const cached = getCachedAstViolations(cacheKey);
   if (cached) return cached;
 
-  const ts = tsApi;
-  if (!ts) {
-    const unavailable = [toAstUnavailableViolation()];
-    setCachedAstViolations(cacheKey, unavailable);
-    return unavailable;
-  }
+  if (!tsApi) return storeAstViolations(cacheKey, scanAstHeuristic({ source, context }));
+
   const parsed = parseSourceWithTs({ source, context });
   const sourceFile = parsed.sourceFile;
-  if (!sourceFile) {
-    const unavailable = [toAstUnavailableViolation()];
-    setCachedAstViolations(cacheKey, unavailable);
-    return unavailable;
-  }
-  if (parsed.parseError) {
-    const parseErrors = [parsed.parseError];
-    setCachedAstViolations(cacheKey, parseErrors);
-    return parseErrors;
-  }
+  if (!sourceFile) return storeAstViolations(cacheKey, scanAstHeuristic({ source, context }));
+  if (parsed.parseError) return storeAstViolations(cacheKey, [parsed.parseError]);
 
   const out: Violation[] = [];
-  const syntaxKind = ts.SyntaxKind;
+  const syntaxKind = tsApi.SyntaxKind;
   const toLineColumn = (node: unknown): { line: number; column: number } => {
     const nodeAny = node as { getStart?: (sf?: unknown) => number; pos?: number };
     const start = typeof nodeAny.getStart === "function"
@@ -449,6 +389,10 @@ const scanAst = ({
       line: pos.line + 1 + parsed.lineOffset,
       column: pos.character + 1,
     };
+  };
+  const pushNodeViolation = (node: unknown, pattern: string, match: string) => {
+    const { line, column } = toLineColumn(node);
+    out.push(toAstViolation({ pattern, match, line, column }));
   };
   const visit = (node: unknown): void => {
     const n = node as {
@@ -461,51 +405,26 @@ const scanAst = ({
       n.kind === syntaxKind.CallExpression &&
       n.expression?.kind === syntaxKind.ImportKeyword
     ) {
-      const { line, column } = toLineColumn(node);
-      out.push(
-        toAstViolation({
-          pattern: "AST-ImportExpression",
-          match: "import(...)",
-          line,
-          column,
-        }),
-      );
+      pushNodeViolation(node, "AST-ImportExpression", "import(...)");
     }
     if (
       n.kind === syntaxKind.MetaProperty &&
       n.keywordToken === syntaxKind.ImportKeyword &&
       n.name?.escapedText === "meta"
     ) {
-      const { line, column } = toLineColumn(node);
-      out.push(
-        toAstViolation({
-          pattern: "AST-MetaProperty",
-          match: "import.meta",
-          line,
-          column,
-        }),
-      );
+      pushNodeViolation(node, "AST-MetaProperty", "import.meta");
     }
     if (
       n.kind === syntaxKind.CallExpression &&
       n.expression?.kind === syntaxKind.Identifier &&
       n.expression.escapedText === "require"
     ) {
-      const { line, column } = toLineColumn(node);
-      out.push(
-        toAstViolation({
-          pattern: "AST-CallExpression:require",
-          match: "require(...)",
-          line,
-          column,
-        }),
-      );
+      pushNodeViolation(node, "AST-CallExpression:require", "require(...)");
     }
-    ts.forEachChild(node, visit);
+    tsApi.forEachChild(node, visit);
   };
   visit(sourceFile);
-  setCachedAstViolations(cacheKey, out);
-  return out;
+  return storeAstViolations(cacheKey, out);
 };
 
 const validatePatternRegistry = (
@@ -529,14 +448,16 @@ const validatePatternRegistry = (
 const resolvePatternRegistry = (
   options?: StrictModeOptions,
 ): PatternDefinition[] => {
-  const additional = options?.additionalPatterns ?? [];
   const exclude = new Set(options?.excludePatterns ?? []);
   for (const id of exclude) {
     if (NON_EXCLUDABLE_PATTERN_IDS.has(id)) {
       throw new Error(`strict pattern ${id} cannot be excluded`);
     }
   }
-  return validatePatternRegistry([...PATTERN_REGISTRY, ...additional])
+  return validatePatternRegistry([
+    ...PATTERN_REGISTRY,
+    ...(options?.additionalPatterns ?? []),
+  ])
     .filter((pattern) => !exclude.has(pattern.id));
 };
 
@@ -619,34 +540,23 @@ export const scanCode = (
   }
 
   const registry = resolvePatternRegistry(options);
-  const patterns = registry.filter((pattern) => {
-    if (context.depth === 0 && pattern.runtimeOnly === true) return false;
-    if (context.depth > 0 && pattern.preflightOnly === true) return false;
-    return true;
-  });
-
-  const lines = source.split("\n");
+  const isPreflight = context.depth === 0;
+  const patterns = registry.filter((pattern) =>
+    isPreflight ? pattern.runtimeOnly !== true : pattern.preflightOnly !== true
+  );
   const violations: Violation[] = [];
-  for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
-    const line = lines[lineIndex]!;
-    for (const pattern of patterns) {
-      pattern.regex.lastIndex = 0;
-      const matches = line.matchAll(pattern.regex);
-      for (const match of matches) {
-        const violation: Violation = {
-          pattern: pattern.id,
-          match: match[0]!,
-          line: lineIndex + 1,
-          column: (match.index ?? 0) + 1,
-          category: pattern.category,
-          severity: pattern.severity,
-        };
-        violations.push(violation);
-        if (violation.severity === "warn") {
-          options?.onWarning?.(violation);
-        }
-      }
-    }
+  for (const pattern of patterns) {
+    forEachRegexMatch(source, pattern.regex, (match) => {
+      const violation: Violation = {
+        pattern: pattern.id,
+        match: match[0]!,
+        ...toLineColumnFromIndex(source, match.index ?? 0),
+        category: pattern.category,
+        severity: pattern.severity,
+      };
+      violations.push(violation);
+      if (violation.severity === "warn") options?.onWarning?.(violation);
+    });
   }
 
   violations.push(...scanAst({ source, context }));
@@ -672,9 +582,9 @@ export const resolveStrictModeOptions = (
   });
 
 export type {
-  PatternDefinition as PatternDefinition,
-  ScanContext as ScanContext,
-  ScanResult as ScanResult,
-  StrictModeOptions as StrictModeOptions,
-  Violation as Violation,
+  PatternDefinition,
+  ScanContext,
+  ScanResult,
+  StrictModeOptions,
+  Violation,
 };

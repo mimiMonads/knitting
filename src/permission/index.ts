@@ -1,16 +1,16 @@
 export {
-  resolvePermisonProtocol,
+  resolvePermissionProtocol,
   toRuntimePermissionFlags,
 } from "./protocol.ts";
 export type {
   PermissionPath,
-  PermisonMode,
+  PermissionMode,
   NodePermissionSettings,
   DenoPermissionSettings,
   BunPermissionSettings,
   StrictPermissionSettings,
   PermissionEnvironment,
-  PermisonProtocol,
-  PermisonProtocolInput,
-  ResolvedPermisonProtocol,
+  PermissionProtocol,
+  PermissionProtocolInput,
+  ResolvedPermissionProtocol,
 } from "./protocol.ts";

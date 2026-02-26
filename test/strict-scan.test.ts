@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { scanCode } from "../src/permison/strict-scan.ts";
+import { scanCode } from "../src/permission/strict-scan.ts";
 
 test("scanCode rejects null/undefined input", () => {
   assert.throws(

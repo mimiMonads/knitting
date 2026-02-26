@@ -197,8 +197,8 @@ Key options:
   This applies only when at least one task declares `abortSignal`.
 - `host?: DispatcherSettings`
 - `workerExecArgv?: string[]` extra worker `execArgv` flags.
-- `permission?: "strict" | "unsafe" | PermisonProtocol`
-  (and `permison` alias) for runtime access policy:
+- `permission?: "strict" | "unsafe" | PermissionProtocol`
+  for runtime access policy:
   - `"strict"` (default when passing an object): hardened mode with deny lists.
   - `"unsafe"`: disables permission hardening (no fs deny guards, console enabled,
     strips Node permission flags inherited from parent/worker options).
@@ -215,6 +215,8 @@ Key options:
   `process.dlopen`) in strict mode,
   read support for `deno.lock` and `bun.lock*`,
   and Node `--permission` worker flags (Node runtime).
+  Deno `Worker.deno.permissions` is only applied when `--unstable-worker-options`
+  is detected (Linux `/proc` probe) or `KNITTING_DENO_WORKER_PERMISSIONS=1` is set.
   `console?: boolean` can be set in object mode (`false` by default in strict,
   `true` by default in unsafe).
   Process execution overrides:

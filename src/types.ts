@@ -1,11 +1,11 @@
 import { endpointSymbol } from "./common/task-symbol.ts";
 import type { Buffer as NodeBuffer } from "node:buffer";
 import type {
-  PermisonProtocol,
-  PermisonProtocolInput,
-  ResolvedPermisonProtocol,
+  PermissionProtocol,
+  PermissionProtocolInput,
+  ResolvedPermissionProtocol,
   StrictPermissionSettings,
-} from "./permison/protocol.ts";
+} from "./permission/protocol.ts";
 type WorkerCall = {
   fnNumber: number;
   timeout?: TaskTimeout;
@@ -36,7 +36,7 @@ type WorkerData = {
   at: number[];
   lock: LockBuffers;
   returnLock: LockBuffers;
-  permission?: ResolvedPermisonProtocol;
+  permission?: ResolvedPermissionProtocol;
 };
 
 type LockBuffers = {
@@ -385,11 +385,7 @@ type CreatePool = {
    * Use `"strict"` (default for object mode) or `"unsafe"`.
    * Accepts object form for fine-grained read/write deny lists.
    */
-  permission?: PermisonProtocolInput;
-  /**
-   * Alias of `permission` kept for compatibility.
-   */
-  permison?: PermisonProtocolInput;
+  permission?: PermissionProtocolInput;
   /**
    * @deprecated Use `host` instead.
    */
@@ -435,9 +431,9 @@ export type {
   WorkerTimers as WorkerTimers,
   DispatcherSettings as DispatcherSettings,
   CreatePool as CreatePool,
-  PermisonProtocol as PermisonProtocol,
-  PermisonProtocolInput as PermisonProtocolInput,
-  ResolvedPermisonProtocol as ResolvedPermisonProtocol,
+  PermissionProtocol as PermissionProtocol,
+  PermissionProtocolInput as PermissionProtocolInput,
+  ResolvedPermissionProtocol as ResolvedPermissionProtocol,
   StrictPermissionSettings as StrictPermissionSettings,
 };
 export type { Task as Task } from "./memory/lock.ts";

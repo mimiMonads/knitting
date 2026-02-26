@@ -1,10 +1,10 @@
-import type { ResolvedPermisonProtocol } from "../../permison/protocol.ts";
+import type { ResolvedPermissionProtocol } from "../../permission/protocol.ts";
 import {
   StrictModeDepthError,
   StrictModeViolationError,
   resolveStrictModeOptions,
   scanCode,
-} from "../../permison/strict-scan.ts";
+} from "../../permission/strict-scan.ts";
 import { RUNTIME } from "../../common/runtime.ts";
 import {
   createBlockedBindingDescriptor,
@@ -19,6 +19,24 @@ type GlobalWithStrictRuntimeGuard = typeof globalThis & {
 const STRICT_SECURE_CONSTRUCTOR = Symbol.for(
   "knitting.strict.secureConstructor",
 );
+
+const ignoreError = (action: () => void): void => {
+  try {
+    action();
+  } catch {
+  }
+};
+
+const tryDefineProperty = (
+  defineProperty: ObjectConstructor["defineProperty"],
+  target: object,
+  property: PropertyKey,
+  descriptor: PropertyDescriptor,
+): void => {
+  ignoreError(() => {
+    defineProperty(target, property, descriptor);
+  });
+};
 
 const markProtectedProperty = (
   state: WeakMap<object, Set<PropertyKey>>,
@@ -65,16 +83,14 @@ const defineLockedDescriptor = (
 };
 
 const shouldInstallStrictRuntimeGuard = (
-  protocol?: ResolvedPermisonProtocol,
-): boolean => {
-  if (!protocol || protocol.enabled !== true) return false;
-  if (protocol.unsafe === true) return false;
-  if (protocol.mode !== "strict") return false;
-  return true;
-};
+  protocol?: ResolvedPermissionProtocol,
+): boolean =>
+  protocol?.enabled === true &&
+  protocol.unsafe !== true &&
+  protocol.mode === "strict";
 
 export const installStrictModeRuntimeGuard = (
-  protocol?: ResolvedPermisonProtocol,
+  protocol?: ResolvedPermissionProtocol,
 ): void => {
   if (!shouldInstallStrictRuntimeGuard(protocol)) return;
   const strictOptions = resolveStrictModeOptions(protocol?.strict);
@@ -86,7 +102,31 @@ export const installStrictModeRuntimeGuard = (
     const maxEvalDepth = strictOptions.maxEvalDepth;
     const protectedState = new WeakMap<object, Set<PropertyKey>>();
     const originalDefineProperty = Object.defineProperty;
+    const originalDefineProperties = Object.defineProperties;
     let evalDepth = 0;
+    const lockValue = (target: object, property: PropertyKey, value: unknown): void => {
+      defineLockedProperty(
+        originalDefineProperty,
+        protectedState,
+        target,
+        property,
+        value,
+      );
+    };
+    const withScannedExecution = <T>(
+      origin: string,
+      source: string,
+      run: () => T,
+    ): T => {
+      const nextDepth = enter(origin);
+      runScan(source, origin, nextDepth);
+      evalDepth++;
+      try {
+        return run();
+      } finally {
+        evalDepth--;
+      }
+    };
 
     if (RUNTIME === "bun") {
       for (const binding of ["require", "module"] as const) {
@@ -148,48 +188,38 @@ export const installStrictModeRuntimeGuard = (
         return originalCtor;
       }
       const secure = function (this: unknown, ...args: unknown[]) {
-        const nextDepth = enter(origin);
-        runScan(args.map((value) => String(value)).join("\n"), origin, nextDepth);
-        evalDepth++;
-        try {
-          return Reflect.construct(
-            originalCtor,
-            args,
-            new.target ? (new.target as Function) : originalCtor,
-          );
-        } finally {
-          evalDepth--;
-        }
+        return withScannedExecution(
+          origin,
+          args.map((value) => String(value)).join("\n"),
+          () =>
+            Reflect.construct(
+              originalCtor,
+              args,
+              new.target ? (new.target as Function) : originalCtor,
+            ),
+        );
       };
 
-      try {
-        originalDefineProperty(secure, "name", { value: origin });
-      } catch {
-      }
-      try {
-        originalDefineProperty(secure, STRICT_SECURE_CONSTRUCTOR, {
-          value: true,
-        });
-      } catch {
-      }
+      tryDefineProperty(originalDefineProperty, secure as object, "name", { value: origin });
+      tryDefineProperty(
+        originalDefineProperty,
+        secure as object,
+        STRICT_SECURE_CONSTRUCTOR,
+        { value: true },
+      );
       return secure;
     };
 
     const originalEval = globalThis.eval;
     const secureEval = function (code: unknown): unknown {
       if (typeof code !== "string") return code;
-      const nextDepth = enter("eval");
-      runScan(code, "eval", nextDepth);
-      evalDepth++;
-      try {
-        return Reflect.apply(
+      return withScannedExecution("eval", code, () =>
+        Reflect.apply(
           originalEval as (source: string) => unknown,
           globalThis,
           [code],
-        );
-      } finally {
-        evalDepth--;
-      }
+        ),
+      );
     };
 
     const OriginalFunction = Function as unknown as Function;
@@ -209,48 +239,16 @@ export const installStrictModeRuntimeGuard = (
       "AsyncGeneratorFunction",
     );
 
-    defineLockedProperty(
-      originalDefineProperty,
-      protectedState,
-      globalThis as object,
-      "eval",
-      secureEval,
-    );
-    defineLockedProperty(
-      originalDefineProperty,
-      protectedState,
-      globalThis as object,
-      "Function",
-      SecureFunction,
-    );
-    defineLockedProperty(
-      originalDefineProperty,
-      protectedState,
-      OriginalFunction.prototype,
-      "constructor",
-      SecureFunction,
-    );
-    defineLockedProperty(
-      originalDefineProperty,
-      protectedState,
-      GeneratorFunction.prototype,
-      "constructor",
-      SecureGeneratorFunction,
-    );
-    defineLockedProperty(
-      originalDefineProperty,
-      protectedState,
-      AsyncFunction.prototype,
-      "constructor",
-      SecureAsyncFunction,
-    );
-    defineLockedProperty(
-      originalDefineProperty,
-      protectedState,
-      AsyncGeneratorFunction.prototype,
-      "constructor",
-      SecureAsyncGeneratorFunction,
-    );
+    lockValue(globalThis as object, "eval", secureEval);
+    lockValue(globalThis as object, "Function", SecureFunction);
+    for (const [prototype, ctor] of [
+      [OriginalFunction.prototype, SecureFunction],
+      [GeneratorFunction.prototype, SecureGeneratorFunction],
+      [AsyncFunction.prototype, SecureAsyncFunction],
+      [AsyncGeneratorFunction.prototype, SecureAsyncGeneratorFunction],
+    ] as const) {
+      lockValue(prototype, "constructor", ctor);
+    }
 
     const wrapTimer = (
       originalTimer: (...args: unknown[]) => unknown,
@@ -264,25 +262,16 @@ export const installStrictModeRuntimeGuard = (
       return Reflect.apply(originalTimer, globalThis, [handler, ...rest]);
     };
 
-    if (typeof globalThis.setTimeout === "function") {
-      defineLockedProperty(
-        originalDefineProperty,
-        protectedState,
+    for (const [name, origin] of [
+      ["setTimeout", "setTimeout"],
+      ["setInterval", "setInterval"],
+    ] as const) {
+      const timer = (globalThis as Record<string, unknown>)[name];
+      if (typeof timer !== "function") continue;
+      lockValue(
         globalThis as object,
-        "setTimeout",
-        wrapTimer(globalThis.setTimeout as unknown as (...args: unknown[]) => unknown, "setTimeout"),
-      );
-    }
-    if (typeof globalThis.setInterval === "function") {
-      defineLockedProperty(
-        originalDefineProperty,
-        protectedState,
-        globalThis as object,
-        "setInterval",
-        wrapTimer(
-          globalThis.setInterval as unknown as (...args: unknown[]) => unknown,
-          "setInterval",
-        ),
+        name,
+        wrapTimer(timer as (...args: unknown[]) => unknown, origin),
       );
     }
 
@@ -302,14 +291,26 @@ export const installStrictModeRuntimeGuard = (
         [target, property, descriptor],
       );
     };
+    const secureDefineProperties = (
+      target: object,
+      properties: PropertyDescriptorMap & ThisType<unknown>,
+    ): object => {
+      for (const property of Reflect.ownKeys(properties as object)) {
+        if (isProtectedProperty(protectedState, target, property)) {
+          throw new Error(
+            `KNT_ERROR_PERMISSION_DENIED: strict mode lock for ${String(property)}`,
+          );
+        }
+      }
+      return Reflect.apply(
+        originalDefineProperties as unknown as (...args: unknown[]) => object,
+        Object,
+        [target, properties],
+      );
+    };
 
-    defineLockedProperty(
-      originalDefineProperty,
-      protectedState,
-      Object,
-      "defineProperty",
-      secureDefineProperty,
-    );
+    lockValue(Object, "defineProperty", secureDefineProperty);
+    lockValue(Object, "defineProperties", secureDefineProperties);
 
     g.__knittingStrictRuntimeGuardInstalled = true;
   } catch (error) {

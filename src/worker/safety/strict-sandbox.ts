@@ -2,13 +2,13 @@ import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import type { ResolvedPermisonProtocol } from "../../permison/protocol.ts";
+import type { ResolvedPermissionProtocol } from "../../permission/protocol.ts";
 import {
   StrictModeDepthError,
   StrictModeViolationError,
   resolveStrictModeOptions,
   scanCode,
-} from "../../permison/strict-scan.ts";
+} from "../../permission/strict-scan.ts";
 import {
   createMembraneGlobal,
   createSafeReflect,
@@ -67,6 +67,7 @@ type StrictSandboxRuntime = {
   vmModuleCache: Map<string, Promise<VmModule>>;
   moduleNamespaceCache: Map<string, VmModuleNamespace>;
   overlayQueue: Promise<void>;
+  overlayQueueDepth: number;
 };
 
 type MembraneInterceptorBundle = {
@@ -93,6 +94,11 @@ type OverlayState = {
 };
 
 const ROOT_GLOBAL_RECORD = globalThis as unknown as Record<string, unknown>;
+const ROOT_DEFINE_PROPERTY = Object.defineProperty;
+const ROOT_GET_OWN_PROPERTY_DESCRIPTOR = Object.getOwnPropertyDescriptor;
+const ROOT_DELETE_PROPERTY = Reflect.deleteProperty;
+const ROOT_HAS_OWN_PROPERTY = Object.prototype.hasOwnProperty;
+const toValueTag = Object.prototype.toString;
 const STRICT_SECURE_CONSTRUCTOR = Symbol.for(
   "knitting.strict.secureConstructor",
 );
@@ -117,6 +123,9 @@ const STRICT_IMPORT_OVERLAY_GLOBALS = [
   "Bun",
   "Deno",
   "process",
+  // Keep eval overlaid during fallback host import so module top-level code
+  // cannot capture a reference to host eval before task invocation.
+  "eval",
   "require",
   "module",
 ] as const;
@@ -131,6 +140,46 @@ const BLOCKED_REQUIRE_MODULE_MESSAGE = (
 
 const toFrozenIssue = (error: unknown): string =>
   String((error as { message?: unknown })?.message ?? error).slice(0, 160);
+
+const ignoreError = (action: () => void): void => {
+  try {
+    action();
+  } catch {
+  }
+};
+
+const tryDefineProperty = (
+  target: object,
+  key: PropertyKey,
+  descriptor: PropertyDescriptor,
+): void => {
+  ignoreError(() => {
+    ROOT_DEFINE_PROPERTY(target, key, descriptor);
+  });
+};
+
+const tryMirrorCallableMetadata = ({
+  target,
+  source,
+  name,
+}: {
+  target: Function;
+  source: Function;
+  name: string;
+}): void => {
+  tryDefineProperty(target, "name", {
+    value: name,
+    configurable: true,
+  });
+  tryDefineProperty(target, "length", {
+    value: source.length,
+    configurable: true,
+  });
+  tryDefineProperty(target, "toString", {
+    value: () => Function.prototype.toString.call(source),
+    configurable: true,
+  });
+};
 
 const require = createRequire(import.meta.url);
 
@@ -175,7 +224,7 @@ const nodeVm = (() => {
 })();
 
 const shouldUseStrictSandbox = (
-  protocol?: ResolvedPermisonProtocol,
+  protocol?: ResolvedPermissionProtocol,
 ): boolean =>
   protocol?.enabled === true &&
   protocol.unsafe !== true &&
@@ -258,9 +307,27 @@ const defineMembraneValue = (
   });
 };
 
+const collectProtectedReflectTargets = (
+  membraneGlobal: MembraneGlobal,
+): Set<object> => {
+  const protectedTargets = new Set<object>([
+    membraneGlobal as unknown as object,
+  ]);
+  for (const key of Reflect.ownKeys(membraneGlobal)) {
+    const value = (membraneGlobal as unknown as Record<PropertyKey, unknown>)[key];
+    if (
+      (typeof value === "object" && value !== null) ||
+      typeof value === "function"
+    ) {
+      if (Object.isFrozen(value)) protectedTargets.add(value as object);
+    }
+  }
+  return protectedTargets;
+};
+
 const installVmBlockedGlobals = (membraneGlobal: MembraneGlobal): void => {
   for (const key of STRICT_VM_BLOCKED_GLOBALS) {
-    if (Object.prototype.hasOwnProperty.call(membraneGlobal, key)) continue;
+    if (ROOT_HAS_OWN_PROPERTY.call(membraneGlobal, key)) continue;
     defineMembraneValue(membraneGlobal, key, undefined);
   }
 };
@@ -302,43 +369,22 @@ const wrapMembraneConstructor = ({
     }
   };
 
-  try {
-    Object.defineProperty(secure, "name", {
-      value: origin,
-      configurable: true,
-    });
-  } catch {
-  }
-  try {
-    Object.defineProperty(secure, "length", {
-      value: originalCtor.length,
-      configurable: true,
-    });
-  } catch {
-  }
-  try {
-    Object.defineProperty(secure, "toString", {
-      value: () => Function.prototype.toString.call(originalCtor),
-      configurable: true,
-    });
-  } catch {
-  }
-  try {
-    Object.defineProperty(secure, STRICT_SECURE_CONSTRUCTOR, {
-      value: true,
-      configurable: true,
-    });
-  } catch {
-  }
-  try {
+  tryMirrorCallableMetadata({
+    target: secure as Function,
+    source: originalCtor,
+    name: origin,
+  });
+  tryDefineProperty(secure as Function, STRICT_SECURE_CONSTRUCTOR, {
+    value: true,
+    configurable: true,
+  });
+  ignoreError(() => {
     Object.setPrototypeOf(secure, originalCtor);
-  } catch {
-  }
-  try {
+  });
+  ignoreError(() => {
     (secure as { prototype?: unknown }).prototype =
       (originalCtor as { prototype?: unknown }).prototype;
-  } catch {
-  }
+  });
   return secure;
 };
 
@@ -387,38 +433,25 @@ export const installInterceptorsOnMembrane = (
   const AsyncGeneratorFunction =
     Object.getPrototypeOf(async function* () {}).constructor as Function;
 
-  const SecureFunction = wrapMembraneConstructor({
-    originalCtor: OriginalFunction,
-    origin: "Function",
-    runScan,
-    enter,
-    begin,
-    end,
-  });
-  const SecureGeneratorFunction = wrapMembraneConstructor({
-    originalCtor: GeneratorFunction,
-    origin: "GeneratorFunction",
-    runScan,
-    enter,
-    begin,
-    end,
-  });
-  const SecureAsyncFunction = wrapMembraneConstructor({
-    originalCtor: AsyncFunction,
-    origin: "AsyncFunction",
-    runScan,
-    enter,
-    begin,
-    end,
-  });
-  const SecureAsyncGeneratorFunction = wrapMembraneConstructor({
-    originalCtor: AsyncGeneratorFunction,
-    origin: "AsyncGeneratorFunction",
-    runScan,
-    enter,
-    begin,
-    end,
-  });
+  const wrapConstructor = (originalCtor: Function, origin: string): Function =>
+    wrapMembraneConstructor({
+      originalCtor,
+      origin,
+      runScan,
+      enter,
+      begin,
+      end,
+    });
+  const SecureFunction = wrapConstructor(OriginalFunction, "Function");
+  const SecureGeneratorFunction = wrapConstructor(
+    GeneratorFunction,
+    "GeneratorFunction",
+  );
+  const SecureAsyncFunction = wrapConstructor(AsyncFunction, "AsyncFunction");
+  const SecureAsyncGeneratorFunction = wrapConstructor(
+    AsyncGeneratorFunction,
+    "AsyncGeneratorFunction",
+  );
 
   const originalEval = (membraneGlobal.eval ?? globalThis.eval) as (
     source: string,
@@ -437,15 +470,19 @@ export const installInterceptorsOnMembrane = (
 
   defineMembraneValue(membraneGlobal, "eval", secureEval);
   defineMembraneValue(membraneGlobal, "Function", SecureFunction);
+  const protectedTargets = collectProtectedReflectTargets(membraneGlobal);
   defineMembraneValue(membraneGlobal, "Reflect", createSafeReflect({
-    originalFunction: OriginalFunction,
-    secureFunction: SecureFunction,
-    originalGeneratorFunction: GeneratorFunction,
-    secureGeneratorFunction: SecureGeneratorFunction,
-    originalAsyncFunction: AsyncFunction,
-    secureAsyncFunction: SecureAsyncFunction,
-    originalAsyncGeneratorFunction: AsyncGeneratorFunction,
-    secureAsyncGeneratorFunction: SecureAsyncGeneratorFunction,
+    constructors: {
+      originalFunction: OriginalFunction,
+      secureFunction: SecureFunction,
+      originalGeneratorFunction: GeneratorFunction,
+      secureGeneratorFunction: SecureGeneratorFunction,
+      originalAsyncFunction: AsyncFunction,
+      secureAsyncFunction: SecureAsyncFunction,
+      originalAsyncGeneratorFunction: AsyncGeneratorFunction,
+      secureAsyncGeneratorFunction: SecureAsyncGeneratorFunction,
+    },
+    protectedTargets,
   }));
 
   const wrapTimer = (
@@ -460,39 +497,22 @@ export const installInterceptorsOnMembrane = (
     return Reflect.apply(originalTimer, globalThis, [handler, ...rest]);
   };
 
-  if (typeof globalThis.setTimeout === "function") {
+  for (const [name, origin] of [
+    ["setTimeout", "setTimeout"],
+    ["setInterval", "setInterval"],
+  ] as const) {
+    const timer = (globalThis as Record<string, unknown>)[name];
+    if (typeof timer !== "function") continue;
     defineMembraneValue(
       membraneGlobal,
-      "setTimeout",
-      wrapTimer(
-        globalThis.setTimeout as unknown as (...args: unknown[]) => unknown,
-        "setTimeout",
-      ),
+      name,
+      wrapTimer(timer as (...args: unknown[]) => unknown, origin),
     );
   }
-  if (typeof globalThis.setInterval === "function") {
-    defineMembraneValue(
-      membraneGlobal,
-      "setInterval",
-      wrapTimer(
-        globalThis.setInterval as unknown as (...args: unknown[]) => unknown,
-        "setInterval",
-      ),
-    );
-  }
-  if (typeof globalThis.clearTimeout === "function") {
-    defineMembraneValue(
-      membraneGlobal,
-      "clearTimeout",
-      globalThis.clearTimeout.bind(globalThis),
-    );
-  }
-  if (typeof globalThis.clearInterval === "function") {
-    defineMembraneValue(
-      membraneGlobal,
-      "clearInterval",
-      globalThis.clearInterval.bind(globalThis),
-    );
+  for (const name of ["clearTimeout", "clearInterval"] as const) {
+    const clear = (globalThis as Record<string, unknown>)[name];
+    if (typeof clear !== "function") continue;
+    defineMembraneValue(membraneGlobal, name, clear.bind(globalThis));
   }
 
   return {
@@ -510,39 +530,19 @@ export const installInterceptorsOnMembrane = (
 export const freezePrototypeChains = (
   bundle: MembraneInterceptorBundle,
 ): void => {
-  const pairs: Array<{
-    prototype: object | undefined;
-    constructorValue: Function;
-  }> = [
-    {
-      prototype: bundle.OriginalFunction.prototype,
-      constructorValue: bundle.SecureFunction,
-    },
-    {
-      prototype: bundle.GeneratorFunction.prototype,
-      constructorValue: bundle.SecureGeneratorFunction,
-    },
-    {
-      prototype: bundle.AsyncFunction.prototype,
-      constructorValue: bundle.SecureAsyncFunction,
-    },
-    {
-      prototype: bundle.AsyncGeneratorFunction.prototype,
-      constructorValue: bundle.SecureAsyncGeneratorFunction,
-    },
-  ];
-
-  for (const pair of pairs) {
-    if (!pair.prototype) continue;
-    try {
-      Object.defineProperty(pair.prototype, "constructor", {
-        value: pair.constructorValue,
-        writable: false,
-        configurable: false,
-        enumerable: false,
-      });
-    } catch {
-    }
+  for (const [prototype, constructorValue] of [
+    [bundle.OriginalFunction.prototype, bundle.SecureFunction],
+    [bundle.GeneratorFunction.prototype, bundle.SecureGeneratorFunction],
+    [bundle.AsyncFunction.prototype, bundle.SecureAsyncFunction],
+    [bundle.AsyncGeneratorFunction.prototype, bundle.SecureAsyncGeneratorFunction],
+  ] as const) {
+    if (!prototype) continue;
+    tryDefineProperty(prototype, "constructor", {
+      value: constructorValue,
+      writable: false,
+      configurable: false,
+      enumerable: false,
+    });
   }
 };
 
@@ -562,67 +562,72 @@ const applyGlobalOverlay = (
   state: Map<string, OverlayState>,
 ): void => {
   const g = ROOT_GLOBAL_RECORD;
-  const existing = Object.getOwnPropertyDescriptor(g, targetName);
+  const existing = ROOT_GET_OWN_PROPERTY_DESCRIPTOR(g, targetName);
   if (!existing || existing.configurable === true) {
-    try {
-      Object.defineProperty(g, targetName, overlayDescriptor);
-      state.set(targetName, {
+    let defined = false;
+    ignoreError(() => {
+      ROOT_DEFINE_PROPERTY(g, targetName, overlayDescriptor);
+      defined = true;
+    });
+    state.set(targetName, defined
+      ? {
         mode: "defined",
         descriptor: existing,
-      });
-      return;
-    } catch {
-      state.set(targetName, { mode: "skipped" });
-      return;
-    }
+      }
+      : { mode: "skipped" });
+    return;
   }
 
   if ("value" in existing && existing.writable === true) {
-    try {
-      const previousValue = existing.value;
-      const nextValue = "value" in overlayDescriptor
-        ? overlayDescriptor.value
-        : undefined;
+    const previousValue = existing.value;
+    const nextValue = "value" in overlayDescriptor
+      ? overlayDescriptor.value
+      : undefined;
+    let assigned = false;
+    ignoreError(() => {
       g[targetName] = nextValue;
-      state.set(targetName, {
+      assigned = true;
+    });
+    state.set(targetName, assigned
+      ? {
         mode: "assigned",
         previousValue,
-      });
-      return;
-    } catch {
-      state.set(targetName, { mode: "skipped" });
-      return;
-    }
+      }
+      : { mode: "skipped" });
+    return;
   }
 
   state.set(targetName, { mode: "skipped" });
 };
 
 const restoreGlobalOverlay = (state: Map<string, OverlayState>): void => {
-  const g = globalThis as Record<string, unknown>;
+  const g = ROOT_GLOBAL_RECORD;
   for (const [name, item] of state.entries()) {
     if (item.mode === "defined") {
       if (item.descriptor) {
-        try {
-          Object.defineProperty(g, name, item.descriptor);
-        } catch {
-        }
+        tryDefineProperty(g, name, item.descriptor);
         continue;
       }
-      try {
-        Reflect.deleteProperty(g, name);
-      } catch {
-      }
+      ignoreError(() => {
+        ROOT_DELETE_PROPERTY(g, name);
+      });
       continue;
     }
     if (item.mode === "assigned") {
-      try {
+      ignoreError(() => {
         g[name] = item.previousValue;
-      } catch {
-      }
+      });
     }
   }
 };
+
+const isPromiseAcrossRealms = (value: unknown): value is Promise<unknown> =>
+  value instanceof Promise ||
+  (
+    typeof value === "object" &&
+    value !== null &&
+    toValueTag.call(value) === "[object Promise]"
+  );
 
 const applyMembraneOverlay = (
   membraneGlobal: MembraneGlobal,
@@ -638,7 +643,7 @@ const applyMembraneOverlay = (
 
   const overlayState = new Map<string, OverlayState>();
   for (const name of globalNames) {
-    const isMembraneValue = Object.prototype.hasOwnProperty.call(
+    const isMembraneValue = ROOT_HAS_OWN_PROPERTY.call(
       membraneGlobal,
       name,
     );
@@ -681,9 +686,16 @@ const withOverlayQueue = async <T>(
   work: () => Promise<T>,
 ): Promise<T> => {
   const previous = runtime.overlayQueue;
+  runtime.overlayQueueDepth += 1;
   let release: (() => void) | undefined;
+  let released = false;
   runtime.overlayQueue = new Promise<void>((resolve) => {
-    release = resolve;
+    release = () => {
+      if (released) return;
+      released = true;
+      runtime.overlayQueueDepth = Math.max(0, runtime.overlayQueueDepth - 1);
+      resolve();
+    };
   });
   await previous;
   try {
@@ -693,43 +705,93 @@ const withOverlayQueue = async <T>(
   }
 };
 
+const withOverlayQueueMaybeSync = <T>(
+  runtime: StrictSandboxRuntime,
+  work: () => T | Promise<T>,
+): T | Promise<T> => {
+  if (runtime.overlayQueueDepth > 0) {
+    return withOverlayQueue(runtime, async () => await work());
+  }
+
+  runtime.overlayQueueDepth += 1;
+  let release: (() => void) | undefined;
+  let released = false;
+  runtime.overlayQueue = new Promise<void>((resolve) => {
+    release = () => {
+      if (released) return;
+      released = true;
+      runtime.overlayQueueDepth = Math.max(0, runtime.overlayQueueDepth - 1);
+      resolve();
+    };
+  });
+
+  try {
+    const result = work();
+    if (!isPromiseAcrossRealms(result)) {
+      release?.();
+      return result;
+    }
+    return Promise.resolve(result).then(
+      (value) => {
+        release?.();
+        return value;
+      },
+      (error) => {
+        release?.();
+        throw error;
+      },
+    );
+  } catch (error) {
+    release?.();
+    throw error;
+  }
+};
+
 const createMembraneInjectedCallable = <T extends (...args: any[]) => any>(
   target: T,
   membraneGlobal: MembraneGlobal,
+  runtime?: StrictSandboxRuntime,
 ): T => {
   const callable = target as unknown as GenericCallable;
 
-  const wrapped = function (this: unknown, ...args: unknown[]) {
+  const runWithOverlay = (self: unknown, args: unknown[]) => {
     const overlayState = applyMembraneOverlay(membraneGlobal);
+    let result: unknown;
 
     try {
-      return Reflect.apply(callable, this, args);
-    } finally {
+      result = Reflect.apply(callable, self, args);
+    } catch (error) {
       restoreGlobalOverlay(overlayState);
+      throw error;
     }
+
+    if (!isPromiseAcrossRealms(result)) {
+      restoreGlobalOverlay(overlayState);
+      return result;
+    }
+
+    return Promise.resolve(result).then(
+      (value) => {
+        restoreGlobalOverlay(overlayState);
+        return value;
+      },
+      (error) => {
+        restoreGlobalOverlay(overlayState);
+        throw error;
+      },
+    );
+  };
+
+  const wrapped = function (this: unknown, ...args: unknown[]) {
+    if (!runtime) return runWithOverlay(this, args);
+    return withOverlayQueueMaybeSync(runtime, () => runWithOverlay(this, args));
   } as unknown as T;
 
-  try {
-    Object.defineProperty(wrapped, "name", {
-      value: target.name || "strictSandboxInjectedCallable",
-      configurable: true,
-    });
-  } catch {
-  }
-  try {
-    Object.defineProperty(wrapped, "length", {
-      value: target.length,
-      configurable: true,
-    });
-  } catch {
-  }
-  try {
-    Object.defineProperty(wrapped, "toString", {
-      value: () => Function.prototype.toString.call(target),
-      configurable: true,
-    });
-  } catch {
-  }
+  tryMirrorCallableMetadata({
+    target: wrapped as unknown as Function,
+    source: target as unknown as Function,
+    name: target.name || "strictSandboxInjectedCallable",
+  });
 
   return wrapped;
 };
@@ -759,6 +821,28 @@ const lockVmContextGlobalPrototype = (
   } catch (error) {
     issues.push(
       `[strict-sandbox] failed to lock vm global prototype: ${toFrozenIssue(error)}`,
+    );
+  }
+};
+
+const assertVmContextProxyBlocked = (
+  context: object,
+  issues: string[],
+): void => {
+  if (!nodeVm) return;
+  try {
+    const script = new nodeVm.Script(
+      "typeof Proxy === 'undefined' && typeof globalThis.Proxy === 'undefined'",
+    );
+    const blocked = script.runInContext(context);
+    if (blocked !== true) {
+      issues.push(
+        "[strict-sandbox] vm proxy reachability assertion failed: Proxy is reachable in sandbox context",
+      );
+    }
+  } catch (error) {
+    issues.push(
+      `[strict-sandbox] vm proxy reachability assertion failed: ${toFrozenIssue(error)}`,
     );
   }
 };
@@ -1059,6 +1143,7 @@ export const loadInSandbox = <T extends (...args: any[]) => any>(
   const injectedFallback = createMembraneInjectedCallable(
     target,
     runtime.membraneGlobal,
+    runtime,
   );
   const vmCallable = tryCompileVmCallable(runtime, target);
   if (!vmCallable) return injectedFallback as unknown as T;
@@ -1079,33 +1164,26 @@ export const loadInSandbox = <T extends (...args: any[]) => any>(
     }
   } as unknown as T;
 
-  try {
-    Object.defineProperty(wrapped, "name", {
-      value: target.name || "strictSandboxCallable",
-      configurable: true,
-    });
-  } catch {
-  }
-  try {
-    Object.defineProperty(wrapped, "length", {
-      value: target.length,
-      configurable: true,
-    });
-  } catch {
-  }
-  try {
-    Object.defineProperty(wrapped, "toString", {
-      value: () => Function.prototype.toString.call(target),
-      configurable: true,
-    });
-  } catch {
-  }
+  tryMirrorCallableMetadata({
+    target: wrapped as unknown as Function,
+    source: target as unknown as Function,
+    name: target.name || "strictSandboxCallable",
+  });
 
   return wrapped;
 };
 
+const bindContextSelfReferences = (
+  membraneGlobal: MembraneGlobal,
+  context: object,
+): void => {
+  const contextGlobal = context as unknown as MembraneGlobal;
+  defineMembraneValue(membraneGlobal, "globalThis", contextGlobal);
+  defineMembraneValue(membraneGlobal, "self", contextGlobal);
+};
+
 const createStrictSandboxRuntime = (
-  protocol: ResolvedPermisonProtocol,
+  protocol: ResolvedPermissionProtocol,
 ): StrictSandboxRuntime => {
   const strictOptions = resolveStrictModeOptions(protocol.strict);
   const issues: string[] = [];
@@ -1126,23 +1204,15 @@ const createStrictSandboxRuntime = (
   const context = tryCreateVmContext(membraneGlobal);
   if (context) {
     lockVmContextGlobalPrototype(context, issues);
+    assertVmContextProxyBlocked(context, issues);
   }
   if (context) {
-    defineMembraneValue(
-      membraneGlobal,
-      "globalThis",
-      context as unknown as MembraneGlobal,
-    );
-    defineMembraneValue(
-      membraneGlobal,
-      "self",
-      context as unknown as MembraneGlobal,
-    );
+    bindContextSelfReferences(membraneGlobal, context);
   }
   lockMembraneGlobal(membraneGlobal);
   if (!context) {
     issues.push(
-      "[strict-sandbox] node:vm unavailable; using membrane injected call fallback",
+      "[strict-sandbox] node:vm unavailable; using membrane injected fallback (reduced isolation vs vm context)",
     );
   } else if (!nodeVm?.SourceTextModule || !nodeVm?.SyntheticModule) {
     issues.push(
@@ -1161,11 +1231,12 @@ const createStrictSandboxRuntime = (
     vmModuleCache: new Map<string, Promise<VmModule>>(),
     moduleNamespaceCache: new Map<string, VmModuleNamespace>(),
     overlayQueue: Promise.resolve(),
+    overlayQueueDepth: 0,
   };
 };
 
 export const ensureStrictSandboxRuntime = (
-  protocol?: ResolvedPermisonProtocol,
+  protocol?: ResolvedPermissionProtocol,
 ): StrictSandboxRuntime | undefined => {
   if (!protocol || !shouldUseStrictSandbox(protocol)) return undefined;
   const g = globalThis as GlobalWithStrictSandboxRuntime;

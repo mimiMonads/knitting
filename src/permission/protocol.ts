@@ -33,13 +33,13 @@ type PermissionEnvironment = {
   files?: PermissionPath | PermissionPath[];
 };
 
-type PermisonMode = "strict" | "unsafe";
+type PermissionMode = "strict" | "unsafe";
 
-type PermisonProtocol = {
+type PermissionProtocol = {
   /**
    * `strict` = hardened defaults, `unsafe` = full access.
    */
-  mode?: PermisonMode;
+  mode?: PermissionMode;
   /**
    * Console access for worker task code.
    * Defaults to `false` in strict mode, `true` in unsafe mode.
@@ -73,11 +73,11 @@ type PermisonProtocol = {
   strict?: StrictPermissionSettings;
 };
 
-type PermisonProtocolInput = PermisonMode | PermisonProtocol;
+type PermissionProtocolInput = PermissionMode | PermissionProtocol;
 
-type ResolvedPermisonProtocol = {
+type ResolvedPermissionProtocol = {
   enabled: boolean;
-  mode: PermisonMode;
+  mode: PermissionMode;
   unsafe: boolean;
   allowConsole: boolean;
   cwd: string;
@@ -106,6 +106,7 @@ const DEFAULT_BUN_LOCK_FILES = ["bun.lockb", "bun.lock"] as const;
 const DEFAULT_STRICT_MAX_EVAL_DEPTH = 16;
 const MIN_STRICT_MAX_EVAL_DEPTH = 1;
 const MAX_STRICT_MAX_EVAL_DEPTH = 64;
+const NODE_MODULES_DIR = "node_modules";
 const DEFAULT_DENY_RELATIVE = [
   ".env",
   ".git",
@@ -163,8 +164,8 @@ const normalizeList = (values: string[]): string[] => {
 };
 
 const normalizeProtocolInput = (
-  input: PermisonProtocolInput | undefined,
-): PermisonProtocol | undefined =>
+  input: PermissionProtocolInput | undefined,
+): PermissionProtocol | undefined =>
   !input ? undefined : (typeof input === "string" ? { mode: input } : input);
 
 const isWindows = (): boolean => {
@@ -265,11 +266,11 @@ const toPathList = (
   return out;
 };
 
-const toPaths = (
+const toUniquePathList = (
   values: PermissionPath[] | undefined,
   cwd: string,
   home: string | undefined,
-): string[] => toPathList(values, cwd, home);
+): string[] => normalizeList(toPathList(values, cwd, home));
 
 const toEnvFiles = (
   input: PermissionPath | PermissionPath[] | undefined,
@@ -277,26 +278,7 @@ const toEnvFiles = (
   home: string | undefined,
 ): string[] => {
   const values = Array.isArray(input) ? input : input ? [input] : [DEFAULT_ENV_FILE];
-  return normalizeList(toPathList(values, cwd, home));
-};
-
-const toLockPath = (
-  input: boolean | PermissionPath | undefined,
-  cwd: string,
-  home: string | undefined,
-  fallback: string,
-): string | undefined => {
-  if (input === false) return undefined;
-  if (input === true || input === undefined) return path.resolve(cwd, fallback);
-  return toPath(input, cwd, home);
-};
-
-const toModuleFilePaths = (
-  modules: string[] | undefined,
-  cwd: string,
-  home: string | undefined,
-): string[] => {
-  return normalizeList(toPathList(modules, cwd, home));
+  return toUniquePathList(values, cwd, home);
 };
 
 const toNodeFlags = ({
@@ -425,7 +407,7 @@ const collectReadPaths = ({
 }): string[] => {
   const out = [
     cwd,
-    path.resolve(cwd, "node_modules"),
+    path.resolve(cwd, NODE_MODULES_DIR),
     ...read,
     ...moduleFiles,
     ...envFiles,
@@ -474,16 +456,14 @@ const resolveBunLock = (
   return path.resolve(cwd, DEFAULT_BUN_LOCK_FILES[0]);
 };
 
-export const resolvePermisonProtocol = ({
+export const resolvePermissionProtocol = ({
   permission,
-  permison,
   modules,
 }: {
-  permission?: PermisonProtocolInput;
-  permison?: PermisonProtocolInput;
+  permission?: PermissionProtocolInput;
   modules?: string[];
-}): ResolvedPermisonProtocol | undefined => {
-  const input = normalizeProtocolInput(permission ?? permison);
+}): ResolvedPermissionProtocol | undefined => {
+  const input = normalizeProtocolInput(permission);
   if (!input) return undefined;
   const rawMode = (input as { mode?: unknown }).mode;
   const mode = (rawMode === "unsafe" || rawMode === "off")
@@ -495,6 +475,7 @@ export const resolvePermisonProtocol = ({
 
   const cwd = path.resolve(input.cwd ?? getCwd());
   const home = getHome();
+  const nodeModulesPath = path.resolve(cwd, NODE_MODULES_DIR);
   if (unsafe) {
     return {
       enabled: true,
@@ -527,30 +508,29 @@ export const resolvePermisonProtocol = ({
       },
     };
   }
-  const read = toPaths(input.read, cwd, home);
-  const write = toPaths(input.write, cwd, home);
+  const read = toPathList(input.read, cwd, home);
+  const write = toPathList(input.write, cwd, home);
   const sensitiveDefaultPaths = defaultSensitiveDenyPaths(cwd, home);
   const denyRead = normalizeList([
-    ...toPaths(input.denyRead, cwd, home),
+    ...toPathList(input.denyRead, cwd, home),
     ...sensitiveDefaultPaths,
   ]);
   const denyWrite = normalizeList([
-    ...toPaths(input.denyWrite, cwd, home),
+    ...toPathList(input.denyWrite, cwd, home),
     ...sensitiveDefaultPaths,
-    path.resolve(cwd, "node_modules"),
+    nodeModulesPath,
   ]);
   const isDeniedRead = (candidate: string) =>
     denyRead.some((deny) => isPathWithin(deny, candidate));
   const envFiles = toEnvFiles(input.env?.files, cwd, home)
     .filter((entry) => !isDeniedRead(entry));
-  const denoLock = toLockPath(
-    input.deno?.lock,
-    cwd,
-    home,
-    DEFAULT_DENO_LOCK_FILE,
-  );
+  const denoLock = input.deno?.lock === false
+    ? undefined
+    : (input.deno?.lock === true || input.deno?.lock === undefined)
+    ? path.resolve(cwd, DEFAULT_DENO_LOCK_FILE)
+    : toPath(input.deno.lock, cwd, home);
   const bunLock = resolveBunLock(input.bun?.lock, cwd, home);
-  const moduleFiles = toModuleFilePaths(modules, cwd, home);
+  const moduleFiles = toUniquePathList(modules, cwd, home);
 
   const nodeSettings: Required<NodePermissionSettings> = {
     allowWorker: input.node?.allowWorker === true,
@@ -625,22 +605,21 @@ export const resolvePermisonProtocol = ({
 };
 
 export const toRuntimePermissionFlags = (
-  protocol: ResolvedPermisonProtocol | undefined,
-): string[] => {
-  return protocol?.enabled === true && protocol.unsafe !== true && RUNTIME === "node"
+  protocol: ResolvedPermissionProtocol | undefined,
+): string[] =>
+  protocol?.enabled === true && protocol.unsafe !== true && RUNTIME === "node"
     ? protocol.node.flags
     : [];
-};
 
 export type {
-  PermissionPath as PermissionPath,
-  PermisonMode as PermisonMode,
-  NodePermissionSettings as NodePermissionSettings,
-  DenoPermissionSettings as DenoPermissionSettings,
-  BunPermissionSettings as BunPermissionSettings,
-  StrictPermissionSettings as StrictPermissionSettings,
-  PermissionEnvironment as PermissionEnvironment,
-  PermisonProtocol as PermisonProtocol,
-  PermisonProtocolInput as PermisonProtocolInput,
-  ResolvedPermisonProtocol as ResolvedPermisonProtocol,
+  PermissionPath,
+  PermissionMode,
+  NodePermissionSettings,
+  DenoPermissionSettings,
+  BunPermissionSettings,
+  StrictPermissionSettings,
+  PermissionEnvironment,
+  PermissionProtocol,
+  PermissionProtocolInput,
+  ResolvedPermissionProtocol,
 };
