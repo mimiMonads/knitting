@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
@@ -459,4 +461,42 @@ test("resolvePermissionProtocol clamps strict.maxEvalDepth and accepts recursive
   assert.equal(resolved.strict.recursiveScan, false);
   assert.equal(resolved.strict.maxEvalDepth, 64);
   assert.equal(resolved.strict.sandbox, true);
+});
+
+test("resolvePermissionProtocol chooses existing bun.lock when Bun exists() is async", () => {
+  const tempDir = mkdtempSync(path.join(os.tmpdir(), "knitting-permission-"));
+  const bunLock = path.resolve(tempDir, "bun.lock");
+  writeFileSync(bunLock, "");
+
+  const g = globalThis as typeof globalThis & {
+    Bun?: {
+      file?: (filePath: string) => {
+        exists?: () => boolean | Promise<boolean>;
+      };
+    };
+  };
+  const previousBun = g.Bun;
+
+  g.Bun = {
+    file: (_filePath: string) => ({
+      exists: async () => false,
+    }),
+  };
+
+  try {
+    const resolved = resolvePermissionProtocol({
+      permission: {
+        cwd: tempDir,
+      },
+    });
+    assert.ok(resolved);
+    assert.equal(resolved.lockFiles.bun, bunLock);
+  } finally {
+    if (previousBun === undefined) {
+      delete g.Bun;
+    } else {
+      g.Bun = previousBun;
+    }
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 });

@@ -2,6 +2,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import type { ResolvedPermissionProtocol } from "../../permission/protocol.ts";
 import { fileURLToPath } from "node:url";
+import { toCanonicalPath as toSharedCanonicalPath } from "../../common/path-canonical.ts";
 
 type GlobalWithPermissionGuard = typeof globalThis & {
   __knittingPermissionGuardInstalled?: boolean;
@@ -93,39 +94,10 @@ const isPathWithin = (base: string, candidate: string): boolean => {
 };
 
 const toCanonicalPath = (candidate: string): string => {
-  const absolute = path.resolve(candidate);
-  const realpath = rawRealpathSync;
-  const direct = (() => {
-    if (!realpath) return undefined;
-    try {
-      return realpath(absolute);
-    } catch {
-      return undefined;
-    }
-  })();
-  if (direct) return path.resolve(direct);
-  if (!rawExistsSync || !realpath) return absolute;
-
-  const missingSegments: string[] = [];
-  let cursor = absolute;
-  while (!rawExistsSync(cursor)) {
-    const parent = path.dirname(cursor);
-    if (parent === cursor) return absolute;
-    missingSegments.push(path.basename(cursor));
-    cursor = parent;
-  }
-
-  let base = cursor;
-  try {
-    base = realpath(cursor);
-  } catch {
-  }
-
-  let rebuilt = base;
-  for (let i = missingSegments.length - 1; i >= 0; i--) {
-    rebuilt = path.join(rebuilt, missingSegments[i]!);
-  }
-  return path.resolve(rebuilt);
+  return toSharedCanonicalPath(candidate, {
+    existsSync: rawExistsSync,
+    realpathSync: rawRealpathSync,
+  });
 };
 
 const toStringPath = (value: unknown): string | undefined => {
