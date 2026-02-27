@@ -2,6 +2,7 @@ import path from "node:path";
 import { existsSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { RUNTIME } from "../common/runtime.ts";
+import { toCanonicalPath as toSharedCanonicalPath } from "../common/path-canonical.ts";
 
 type PermissionPath = string | URL;
 
@@ -478,32 +479,10 @@ const toEnvFiles = (
 const rawRealpathSync = realpathSync.native ?? realpathSync;
 
 const toCanonicalPath = (candidate: string): string => {
-  const absolute = path.resolve(candidate);
-  try {
-    return path.resolve(rawRealpathSync(absolute));
-  } catch {
-  }
-
-  const missingSegments: string[] = [];
-  let cursor = absolute;
-  while (!existsSync(cursor)) {
-    const parent = path.dirname(cursor);
-    if (parent === cursor) return absolute;
-    missingSegments.push(path.basename(cursor));
-    cursor = parent;
-  }
-
-  let base = cursor;
-  try {
-    base = rawRealpathSync(cursor);
-  } catch {
-  }
-
-  let rebuilt = base;
-  for (let i = missingSegments.length - 1; i >= 0; i--) {
-    rebuilt = path.join(rebuilt, missingSegments[i]!);
-  }
-  return path.resolve(rebuilt);
+  return toSharedCanonicalPath(candidate, {
+    existsSync,
+    realpathSync: rawRealpathSync,
+  });
 };
 
 const isPathWithin = (base: string, candidate: string): boolean => {
@@ -582,7 +561,7 @@ const resolveBunLock = (
   const g = globalThis as typeof globalThis & {
     Deno?: { statSync?: (path: string) => unknown };
     Bun?: {
-      file?: (path: string) => { exists?: () => boolean };
+      file?: (path: string) => { exists?: () => boolean | Promise<boolean> };
     };
   };
   for (const fileName of DEFAULT_BUN_LOCK_FILES) {
@@ -597,7 +576,7 @@ const resolveBunLock = (
     try {
       if (typeof g.Bun?.file === "function") {
         const file = g.Bun.file(candidate);
-        if (typeof file.exists === "function" && file.exists()) return candidate;
+        if (typeof file.exists === "function" && file.exists() === true) return candidate;
       }
     } catch {
     }

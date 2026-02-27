@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
@@ -459,4 +461,87 @@ test("resolvePermissionProtocol clamps strict.maxEvalDepth and accepts recursive
   assert.equal(resolved.strict.recursiveScan, false);
   assert.equal(resolved.strict.maxEvalDepth, 64);
   assert.equal(resolved.strict.sandbox, true);
+});
+
+test("resolvePermissionProtocol chooses existing bun.lock when Bun exists() is async", () => {
+  const tempDir = mkdtempSync(path.join(os.tmpdir(), "knitting-permission-"));
+  const bunLock = path.resolve(tempDir, "bun.lock");
+  writeFileSync(bunLock, "");
+
+  const g = globalThis as typeof globalThis & {
+    Bun?: {
+      file?: (filePath: string) => {
+        exists?: () => boolean | Promise<boolean>;
+      };
+    };
+  };
+  const bunFileStub = (_filePath: string) => ({
+    exists: async () => false,
+  });
+  let restoreBun: (() => void) | undefined;
+
+  if (g.Bun && typeof g.Bun === "object") {
+    const bunObject = g.Bun as { file?: typeof bunFileStub };
+    const previousFileDescriptor = Object.getOwnPropertyDescriptor(bunObject, "file");
+
+    try {
+      Object.defineProperty(bunObject, "file", {
+        configurable: true,
+        writable: true,
+        value: bunFileStub,
+      });
+    } catch {
+      try {
+        bunObject.file = bunFileStub;
+      } catch {
+        rmSync(tempDir, { recursive: true, force: true });
+        return;
+      }
+    }
+
+    restoreBun = () => {
+      if (previousFileDescriptor) {
+        Object.defineProperty(bunObject, "file", previousFileDescriptor);
+      } else {
+        delete bunObject.file;
+      }
+    };
+  } else {
+    const previousBunDescriptor = Object.getOwnPropertyDescriptor(g, "Bun");
+    try {
+      Object.defineProperty(g, "Bun", {
+        configurable: true,
+        writable: true,
+        value: { file: bunFileStub },
+      });
+    } catch {
+      try {
+        g.Bun = { file: bunFileStub };
+      } catch {
+        rmSync(tempDir, { recursive: true, force: true });
+        return;
+      }
+    }
+
+    restoreBun = () => {
+      if (previousBunDescriptor) {
+        Object.defineProperty(g, "Bun", previousBunDescriptor);
+      } else {
+        delete g.Bun;
+      }
+    };
+  }
+
+  try {
+    const resolved = resolvePermissionProtocol({
+      permission: {
+        cwd: tempDir,
+      },
+    });
+    assert.ok(resolved);
+    assert.equal(resolved.lockFiles.bun, bunLock);
+  } finally {
+    restoreBun?.();
+    rmSync(tempDir, { recursive: true, force: true });
+  }
 });
