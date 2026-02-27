@@ -26,7 +26,6 @@ import type {
 import { jsrIsGreatAndWorkWithoutBugs } from "../worker/loop.ts";
 import {
   HAS_SAB_GROW,
-  IS_DENO,
   createSharedArrayBuffer,
 } from "../common/runtime.ts";
 import { signalAbortFactory } from "../shared/abortSignal.ts";
@@ -48,35 +47,6 @@ type NodeWorkerLike = {
     listener: (...args: unknown[]) => void,
   ) => void;
 };
-
-type WebWorkerLike = {
-  addEventListener?: (
-    type: "error" | "message",
-    listener: (event: { message?: unknown; error?: unknown; data?: unknown }) => void,
-  ) => void;
-};
-
-type DenoPermissionValue = "inherit" | boolean | string[];
-
-type DenoWorkerPermissions = {
-  env?: DenoPermissionValue;
-  ffi?: DenoPermissionValue;
-  import?: DenoPermissionValue;
-  net?: DenoPermissionValue;
-  read?: DenoPermissionValue;
-  run?: DenoPermissionValue;
-  sys?: DenoPermissionValue;
-  write?: DenoPermissionValue;
-};
-
-type DenoWorkerOptions = {
-  type: "module";
-  deno?: {
-    permissions?: DenoWorkerPermissions;
-  };
-};
-
-const DENO_WORKER_PERMISSIONS_ENV = "KNITTING_DENO_WORKER_PERMISSIONS";
 const WORKER_FATAL_MESSAGE_KEY = "__knittingWorkerFatal";
 const execFlagKey = (flag: string): string => flag.split("=", 1)[0]!;
 const NODE_PERMISSION_EXEC_FLAGS = new Set<string>([
@@ -90,7 +60,6 @@ const NODE_PERMISSION_EXEC_FLAGS = new Set<string>([
   "--allow-wasi",
 ]);
 const NODE_WORKER_SAFE_EXEC_FLAGS = new Set<string>([
-  "--experimental-vm-modules",
   "--experimental-transform-types",
   "--expose-gc",
   "--no-warnings",
@@ -159,108 +128,10 @@ const toNodeWorkerResourceLimits = (
   return Object.values(out).some((value) => value !== undefined) ? out : undefined;
 };
 
-const toDenoWorkerPermissions = (
-  protocol?: WorkerData["permission"],
-): DenoWorkerPermissions | undefined => {
-  if (!protocol || protocol.enabled !== true || protocol.unsafe === true) {
-    return undefined;
-  }
-  const toScoped = (
-    all: boolean,
-    values: string[],
-  ): DenoPermissionValue => all ? "inherit" : (values.length > 0 ? values : false);
-  return {
-    env: toScoped(protocol.env.allowAll, protocol.env.allow),
-    ffi: toScoped(protocol.ffiAll, protocol.ffi),
-    import: protocol.allowImport.length > 0 ? protocol.allowImport : false,
-    net: toScoped(protocol.netAll, protocol.net),
-    read: toScoped(protocol.readAll, protocol.read),
-    run: toScoped(protocol.runAll, protocol.run),
-    sys: toScoped(protocol.sysAll, protocol.sys),
-    write: toScoped(protocol.writeAll, protocol.write),
-  };
-};
-
-const readEnvFlag = (name: string): string | undefined => {
-  try {
-    if (typeof process !== "undefined" && typeof process.env === "object") {
-      const value = process.env[name];
-      if (typeof value === "string") return value;
-    }
-  } catch {
-  }
-  const g = globalThis as typeof globalThis & {
-    Deno?: { env?: { get?: (key: string) => string | undefined } };
-  };
-  try {
-    const value = g.Deno?.env?.get?.(name);
-    if (typeof value === "string") return value;
-  } catch {
-  }
-  return undefined;
-};
-
-const parseEnvBool = (
-  value: string | undefined,
-): boolean | undefined => {
-  if (!value) return undefined;
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "1" || normalized === "true" || normalized === "yes") {
-    return true;
-  }
-  if (normalized === "0" || normalized === "false" || normalized === "no") {
-    return false;
-  }
-  return undefined;
-};
-
-const hasDenoUnstableWorkerOptionsFlag = (): boolean => {
-  const g = globalThis as typeof globalThis & {
-    Deno?: { readTextFileSync?: (path: string) => string };
-  };
-  const readTextFileSync = g.Deno?.readTextFileSync;
-  if (typeof readTextFileSync !== "function") return false;
-  try {
-    const cmdline = readTextFileSync("/proc/self/cmdline");
-    if (!cmdline) return false;
-    const args = cmdline.split("\u0000").filter((entry) => entry.length > 0);
-    return args.some((arg) =>
-      arg === "--unstable" ||
-      arg === "--unstable-worker-options" ||
-      arg.startsWith("--unstable=") && arg.includes("worker-options")
-    );
-  } catch {
-    return false;
-  }
-};
-
-const shouldUseDenoWorkerPermissions = (): boolean => {
-  const envOverride = parseEnvBool(readEnvFlag(DENO_WORKER_PERMISSIONS_ENV));
-  if (envOverride !== undefined) return envOverride;
-  // Deno exits the process when Worker.deno.permissions is used without
-  // --unstable-worker-options, so gate it behind best-effort flag detection.
-  return hasDenoUnstableWorkerOptionsFlag();
-};
-
-const isUnstableDenoWorkerOptionsError = (error: unknown): boolean => {
-  const message = String((error as { message?: unknown })?.message ?? error);
-  return message.includes("unstable-worker-options") ||
-    message.includes("Worker.deno.permissions");
-};
-
 const terminateWorkerQuietly = (worker: SpawnedWorker): void => {
   try {
     void Promise.resolve(worker.terminate()).catch(() => {});
   } catch {
-  }
-};
-
-const toDenoWorkerScript = (source: string | URL, fallback: URL): string => {
-  if (source instanceof URL) return source.href;
-  try {
-    return new URL(source, fallback).href;
-  } catch {
-    return source;
   }
 };
 
@@ -273,8 +144,6 @@ export const spawnWorkerContext = ({
   totalNumberOfThread,
   source,
   at,
-  castOnModule,
-  castOnAt,
   workerOptions,
   workerExecArgv,
   permission,
@@ -293,8 +162,6 @@ export const spawnWorkerContext = ({
   totalNumberOfThread: number;
 
   source?: string;
-  castOnModule?: string;
-  castOnAt?: number;
   workerOptions?: WorkerSettings;
   workerExecArgv?: string[];
   permission?: WorkerData["permission"];
@@ -418,8 +285,6 @@ export const spawnWorkerContext = ({
     sab: signals.sab,
     abortSignalSAB,
     abortSignalMax: usesAbortSignal === true ? resolvedAbortSignalCapacity : undefined,
-    castOnModule,
-    castOnAt,
     list,
     ids,
     at,
@@ -452,78 +317,43 @@ export const spawnWorkerContext = ({
   const withExecArgv = workerExecArgv && workerExecArgv.length > 0
     ? { ...baseNodeWorkerOptions, execArgv: workerExecArgv }
     : baseNodeWorkerOptions;
-  const webWorkerCtor = (globalThis as {
-    Worker?: new (
-      scriptURL: string | URL,
-      options?: DenoWorkerOptions,
-    ) => SpawnedWorker;
-  }).Worker;
-  const canUseDenoWebWorker = IS_DENO === true && typeof webWorkerCtor === "function";
-
-  if (canUseDenoWebWorker) {
-    const scriptURL = toDenoWorkerScript(workerUrl, tsFileUrl);
-    const denoPermissions = shouldUseDenoWorkerPermissions()
-      ? toDenoWorkerPermissions(permission)
-      : undefined;
-    const baseDenoOptions: DenoWorkerOptions = {
-      type: "module",
-    };
-    const withPermissionOptions = denoPermissions
-      ? {
-        ...baseDenoOptions,
-        deno: {
-          permissions: denoPermissions,
-        },
-      }
-      : baseDenoOptions;
-    try {
-      worker = new webWorkerCtor(scriptURL, withPermissionOptions);
-    } catch (error) {
-      if (!denoPermissions || !isUnstableDenoWorkerOptionsError(error)) {
-        throw error;
-      }
-      worker = new webWorkerCtor(scriptURL, baseDenoOptions);
-    }
-    worker.postMessage?.(workerDataPayload);
-  } else {
-    try {
-      worker = new poliWorker(workerUrl, withExecArgv) as Worker;
-    } catch (error) {
-      if ((error as { code?: string })?.code === "ERR_WORKER_INVALID_EXEC_ARGV") {
-        const fallbackExecArgv = toWorkerSafeExecArgv(withExecArgv.execArgv);
-        if (fallbackExecArgv && fallbackExecArgv.length > 0) {
-          try {
-            worker = new poliWorker(
-              workerUrl,
-              { ...baseNodeWorkerOptions, execArgv: fallbackExecArgv },
-            ) as Worker;
-          } catch (fallbackError) {
-            if (
-              (fallbackError as { code?: string })?.code === "ERR_WORKER_INVALID_EXEC_ARGV"
-            ) {
-              const compatExecArgv = toWorkerCompatExecArgv(fallbackExecArgv);
-              if (compatExecArgv && compatExecArgv.length > 0) {
-                try {
-                  worker = new poliWorker(
-                    workerUrl,
-                    { ...baseNodeWorkerOptions, execArgv: compatExecArgv },
-                  ) as Worker;
-                } catch {
-                  worker = new poliWorker(workerUrl, baseNodeWorkerOptions) as Worker;
-                }
-              } else {
+  try {
+    worker = new poliWorker(workerUrl, withExecArgv) as Worker;
+  } catch (error) {
+    if ((error as { code?: string })?.code === "ERR_WORKER_INVALID_EXEC_ARGV") {
+      const fallbackExecArgv = toWorkerSafeExecArgv(withExecArgv.execArgv);
+      if (fallbackExecArgv && fallbackExecArgv.length > 0) {
+        try {
+          worker = new poliWorker(
+            workerUrl,
+            { ...baseNodeWorkerOptions, execArgv: fallbackExecArgv },
+          ) as Worker;
+        } catch (fallbackError) {
+          if (
+            (fallbackError as { code?: string })?.code === "ERR_WORKER_INVALID_EXEC_ARGV"
+          ) {
+            const compatExecArgv = toWorkerCompatExecArgv(fallbackExecArgv);
+            if (compatExecArgv && compatExecArgv.length > 0) {
+              try {
+                worker = new poliWorker(
+                  workerUrl,
+                  { ...baseNodeWorkerOptions, execArgv: compatExecArgv },
+                ) as Worker;
+              } catch {
                 worker = new poliWorker(workerUrl, baseNodeWorkerOptions) as Worker;
               }
             } else {
-              throw fallbackError;
+              worker = new poliWorker(workerUrl, baseNodeWorkerOptions) as Worker;
             }
+          } else {
+            throw fallbackError;
           }
-        } else {
-          worker = new poliWorker(workerUrl, baseNodeWorkerOptions) as Worker;
         }
       } else {
-        throw error;
+        worker = new poliWorker(workerUrl, baseNodeWorkerOptions) as Worker;
       }
+    } else {
+      throw error;
     }
   }
 
@@ -536,40 +366,22 @@ export const spawnWorkerContext = ({
   };
 
   const nodeWorker = worker as unknown as NodeWorkerLike;
-  if (typeof nodeWorker.on === "function") {
-    nodeWorker.on("message", (message: unknown) => {
-      if (!isWorkerFatalMessage(message)) return;
-      markWorkerClosed(
-        `Worker startup failed: ${message[WORKER_FATAL_MESSAGE_KEY]}`,
-      );
-      terminateWorkerQuietly(worker);
-    });
-    nodeWorker.on("error", (error: unknown) => {
-      const message = String((error as { message?: unknown })?.message ?? error);
-      markWorkerClosed(`Worker crashed: ${message}`);
-    });
-    nodeWorker.on("exit", (code: unknown) => {
-      if (typeof code === "number" && code === 0) return;
-      const normalized = typeof code === "number" ? code : -1;
-      markWorkerClosed(`Worker exited with code ${normalized}`);
-    });
-  } else {
-    const webWorker = worker as unknown as WebWorkerLike;
-    if (typeof webWorker.addEventListener === "function") {
-      webWorker.addEventListener("message", (event) => {
-        const data = event?.data;
-        if (!isWorkerFatalMessage(data)) return;
-        markWorkerClosed(
-          `Worker startup failed: ${data[WORKER_FATAL_MESSAGE_KEY]}`,
-        );
-        terminateWorkerQuietly(worker);
-      });
-      webWorker.addEventListener("error", (event) => {
-        const message = String(event?.message ?? event?.error ?? "worker error");
-        markWorkerClosed(`Worker crashed: ${message}`);
-      });
-    }
-  }
+  nodeWorker.on?.("message", (message: unknown) => {
+    if (!isWorkerFatalMessage(message)) return;
+    markWorkerClosed(
+      `Worker startup failed: ${message[WORKER_FATAL_MESSAGE_KEY]}`,
+    );
+    terminateWorkerQuietly(worker);
+  });
+  nodeWorker.on?.("error", (error: unknown) => {
+    const message = String((error as { message?: unknown })?.message ?? error);
+    markWorkerClosed(`Worker crashed: ${message}`);
+  });
+  nodeWorker.on?.("exit", (code: unknown) => {
+    if (typeof code === "number" && code === 0) return;
+    const normalized = typeof code === "number" ? code : -1;
+    markWorkerClosed(`Worker exited with code ${normalized}`);
+  });
 
   const thisSignal = signalBox.opView;
   const a_add = Atomics.add;

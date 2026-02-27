@@ -12,8 +12,6 @@ export type {
   SysApiName,
   NodePermissionSettings,
   DenoPermissionSettings,
-  BunPermissionSettings,
-  StrictPermissionSettings,
   PermissionEnvironment,
   PermissionProtocol,
   PermissionProtocolInput,

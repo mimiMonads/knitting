@@ -2,21 +2,12 @@ import { getCallerFilePath } from "./common/others.ts";
 import { genTaskID } from "./common/others.ts";
 import { toModuleUrl } from "./common/module-url.ts";
 import { endpointSymbol } from "./common/task-symbol.ts";
-import { castOnSymbol } from "./common/caston-symbol.ts";
 import { spawnWorkerContext } from "./runtime/pool.ts";
 import { isMainThread, workerData } from "node:worker_threads";
-import { readFileSync } from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import {
   resolvePermissionProtocol,
   toRuntimePermissionFlags,
 } from "./permission/index.ts";
-import {
-  scanCode,
-  StrictModeViolationError,
-} from "./permission/strict-scan.ts";
-import { RUNTIME } from "./common/runtime.ts";
 
 import { managerMethod } from "./runtime/balancer.ts";
 import { createInlineExecutor } from "./runtime/inline-executor.ts";
@@ -24,8 +15,6 @@ import type {
   Args,
   AbortSignalConfig,
   AbortSignalOption,
-  CastOnComposed,
-  CastOnSetup,
   ComposedWithKey,
   CreatePool,
   DispatcherSettings,
@@ -54,56 +43,6 @@ type CreatePoolFactory = (
 
 const MAX_FUNCTION_ID = 0xFFFF;
 const MAX_FUNCTION_COUNT = MAX_FUNCTION_ID + 1;
-
-const resolveLocalModulePath = (value: string): string | undefined => {
-  try {
-    const parsed = new URL(value);
-    if (parsed.protocol !== "file:") return undefined;
-    return path.resolve(fileURLToPath(parsed));
-  } catch {
-    if (!path.isAbsolute(value)) return undefined;
-    return path.resolve(value);
-  }
-};
-
-const assertBunStrictModuleSafety = ({
-  protocol,
-  modules,
-}: {
-  protocol?: ReturnType<typeof resolvePermissionProtocol>;
-  modules: string[];
-}): void => {
-  if (!protocol || protocol.unsafe === true || RUNTIME !== "bun") return;
-
-  const strictScanOptions = protocol.strict;
-
-  for (const moduleRef of modules) {
-    const modulePath = resolveLocalModulePath(moduleRef);
-    if (!modulePath) continue;
-
-    let source: string;
-    try {
-      source = readFileSync(modulePath, "utf8");
-    } catch {
-      continue;
-    }
-
-    const result = scanCode(source, {
-      depth: 0,
-      origin: "preflight",
-      source: modulePath,
-    }, strictScanOptions);
-    if (result.passed !== true) {
-      throw new StrictModeViolationError({
-        origin: "preflight",
-        depth: 0,
-        source: modulePath,
-        violations: result.violations,
-        scannedCode: source,
-      });
-    }
-  }
-};
 
 export const isMain: boolean = isMainThread;
 export { endpointSymbol as endpointSymbol };
@@ -148,7 +87,6 @@ export const toListAndIds: ToListAndIdsFn = (
 
 export const createPool: CreatePoolFactory = ({
   threads,
-  castOn,
   debug,
   inliner,
   balancer,
@@ -217,26 +155,11 @@ export const createPool: CreatePoolFactory = ({
     );
   }
 
-  const requestedInliner = typeof inliner === "object" && inliner != null;
-  const usingInliner = requestedInliner && castOn == null;
-  if (requestedInliner && !usingInliner && debug?.extras === true) {
-    console.warn(
-      "inliner is disabled when castOn is configured (castOn runs only in workers)",
-    );
-  }
+  const usingInliner = typeof inliner === "object" && inliner != null;
   const totalNumberOfThread = (threads ?? 1) +
     (usingInliner ? 1 : 0);
-  const castOnModule = castOn?.importedFrom;
-  const castOnAt = castOn?.at;
-  const moduleRefs = castOnModule
-    ? Array.from(new Set([...list, castOnModule]))
-    : list;
   const permissionProtocol = resolvePermissionProtocol({
     permission,
-    modules: moduleRefs,
-  });
-  assertBunStrictModuleSafety({
-    protocol: permissionProtocol,
     modules: list,
   });
   const permissionExecArgv = toRuntimePermissionFlags(permissionProtocol);
@@ -292,13 +215,7 @@ export const createPool: CreatePoolFactory = ({
   const defaultExecArgv = permissionProtocol?.unsafe === true
     ? stripNodePermissionFlags(defaultExecArgvCandidate)
     : defaultExecArgvCandidate;
-  const needsVmModuleFlag = RUNTIME === "node" &&
-    permissionProtocol?.enabled === true &&
-    permissionProtocol.unsafe !== true &&
-    permissionProtocol.mode === "strict" &&
-    permissionProtocol.strict.sandbox === true;
   const combinedExecArgv = dedupeFlags([
-    ...(needsVmModuleFlag ? ["--experimental-vm-modules"] : []),
     ...permissionExecArgv,
     ...(defaultExecArgv ?? []),
   ]);
@@ -330,8 +247,6 @@ export const createPool: CreatePoolFactory = ({
       payloadMaxBytes,
       abortSignalCapacity,
       usesAbortSignal,
-      castOnModule,
-      castOnAt,
       permission: permissionProtocol,
     })
   );
@@ -561,20 +476,3 @@ export function task<
 
   return out;
 }
-
-/**
- * Define a cast-on setup function that runs before worker task execution.
- */
-export const castOn = (I: CastOnSetup): CastOnComposed => {
-  const [href, at] = getCallerFilePath();
-  const importedFrom = I?.href != null
-    ? toModuleUrl(I.href)
-    : new URL(href).href;
-
-  return ({
-    ...I,
-    at,
-    importedFrom,
-    [castOnSymbol]: true,
-  }) as CastOnComposed;
-};

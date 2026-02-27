@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
@@ -15,24 +15,17 @@ import {
   addOnePromiseViaPath,
 } from "./fixtures/runtime_tasks.ts";
 import {
-  copyDeniedViaCpPromise,
-  copyDeniedViaCpSync,
   fetchNetworkProbe,
   nodeHttpNetworkProbe,
   nodeNetNetworkProbe,
-  probeDeniedExistsSync,
   readEnvVar,
-  readDeniedViaPreexistingSymlinkTraversal,
-  readDeniedViaHardLink,
   readDeniedViaSymlink,
   readGitDirectory,
-  readReadme,
   spawnChildProcess,
   spawnChildProcessLegacySpecifier,
   spawnViaProcessBinding,
   spawnViaWorkerThread,
   tamperPerformanceNow,
-  writeIntoCwd,
   writeIntoNodeModules,
 } from "./fixtures/permission_tasks.ts";
 import {
@@ -40,18 +33,6 @@ import {
   returnLocalSymbol,
   returnWeakMap,
 } from "./fixtures/error_tasks.ts";
-import {
-  inspectStrictMembraneGlobals,
-  readStrictModuleBinding,
-  readStrictModuleTopLevelProcessType,
-  readStrictRequireBinding,
-} from "./fixtures/strict_tasks.ts";
-import {
-  probeStrictEvalDynamicImport,
-  probeStrictEvalObfuscatedDynamicImport,
-  probeStrictFunctionCtorDynamicImport,
-  probeStrictSandboxRequireModuleTypes,
-} from "./fixtures/strict_import_tasks.ts";
 import {
   addOneLimitProbe,
   runawayCpuLoop,
@@ -323,276 +304,6 @@ test("node:test workerData lock buffers are hidden from task code", {
   );
 });
 
-test("node:test permission protocol keeps node_modules read-only", {
-  concurrency: false,
-  timeout: TEST_TIMEOUT_MS,
-}, async () => {
-  if (process.versions.bun) {
-    return;
-  }
-
-  const nodeModulesOutput = path.resolve(
-    process.cwd(),
-    "node_modules",
-    ".knitting-permission-probe.tmp",
-  );
-  const nodeModulesDir = path.dirname(nodeModulesOutput);
-  const hadNodeModulesDir = existsSync(nodeModulesDir);
-  const cwdOutput = path.resolve(
-    process.cwd(),
-    ".knitting-permission-allowed.tmp",
-  );
-  const traversalLinkPath = path.resolve(
-    process.cwd(),
-    ".knitting-permission-etc-traversal-link",
-  );
-  const envProbeKey = "KNT_PERMISSION_ENV_PROBE";
-  const previousEnvProbe = process.env[envProbeKey];
-  process.env[envProbeKey] = "probe-value";
-  const blockedNetworkUrl = "http://127.0.0.1:9/";
-  if (!hadNodeModulesDir) {
-    mkdirSync(nodeModulesDir, { recursive: true });
-  }
-  const pool = createPool({
-    threads: 1,
-    permission: {},
-  })({
-    writeIntoNodeModules,
-    writeIntoCwd,
-    readGitDirectory,
-    readReadme,
-    spawnChildProcess,
-    spawnChildProcessLegacySpecifier,
-    spawnViaWorkerThread,
-    spawnViaProcessBinding,
-    copyDeniedViaCpSync,
-    copyDeniedViaCpPromise,
-    readEnvVar,
-    fetchNetworkProbe,
-    nodeHttpNetworkProbe,
-    nodeNetNetworkProbe,
-    readDeniedViaHardLink,
-    readDeniedViaPreexistingSymlinkTraversal,
-    probeDeniedExistsSync,
-    readDeniedViaSymlink,
-  });
-
-  try {
-    if (existsSync(nodeModulesOutput)) {
-      unlinkSync(nodeModulesOutput);
-    }
-    if (process.platform !== "win32") {
-      rmSync(traversalLinkPath, { recursive: true, force: true });
-      symlinkSync("/etc", traversalLinkPath, "dir");
-    }
-
-    await assert.rejects(
-      withTimeout(pool.call.writeIntoNodeModules(), TEST_TIMEOUT_MS),
-      isPermissionDenied,
-    );
-
-    const out = await withTimeout(pool.call.writeIntoCwd(), TEST_TIMEOUT_MS);
-    assert.equal(out, cwdOutput);
-    assert.equal(existsSync(cwdOutput), true);
-    assert.equal(existsSync(nodeModulesOutput), false);
-
-    await assert.rejects(
-      withTimeout(pool.call.readGitDirectory(), TEST_TIMEOUT_MS),
-      isPermissionDenied,
-    );
-
-    await assert.rejects(
-      withTimeout(pool.call.copyDeniedViaCpSync(), TEST_TIMEOUT_MS),
-      isPermissionDenied,
-    );
-
-    await assert.rejects(
-      withTimeout(pool.call.copyDeniedViaCpPromise(), TEST_TIMEOUT_MS),
-      isPermissionDenied,
-    );
-
-    await assert.rejects(
-      withTimeout(pool.call.probeDeniedExistsSync(), TEST_TIMEOUT_MS),
-      isPermissionDenied,
-    );
-    const hiddenEnv = await withTimeout(pool.call.readEnvVar(envProbeKey), TEST_TIMEOUT_MS);
-    assert.equal(hiddenEnv, undefined);
-    await assert.rejects(
-      withTimeout(pool.call.fetchNetworkProbe(blockedNetworkUrl), TEST_TIMEOUT_MS),
-      isPermissionDenied,
-    );
-    await assert.rejects(
-      withTimeout(pool.call.nodeHttpNetworkProbe(blockedNetworkUrl), TEST_TIMEOUT_MS),
-      isPermissionDenied,
-    );
-    await assert.rejects(
-      withTimeout(pool.call.nodeNetNetworkProbe({ host: "127.0.0.1", port: 9 }), TEST_TIMEOUT_MS),
-      isPermissionDenied,
-    );
-
-    const readme = await withTimeout(pool.call.readReadme(), TEST_TIMEOUT_MS);
-    assert.equal(typeof readme, "string");
-    assert.equal(readme.includes("knitting"), true);
-
-    await assert.rejects(
-      withTimeout(pool.call.spawnChildProcess(), TEST_TIMEOUT_MS),
-      isPermissionDenied,
-    );
-
-    await assert.rejects(
-      withTimeout(pool.call.spawnChildProcessLegacySpecifier(), TEST_TIMEOUT_MS),
-      isPermissionDenied,
-    );
-
-    await assert.rejects(
-      withTimeout(pool.call.spawnViaWorkerThread(), TEST_TIMEOUT_MS),
-      isPermissionDenied,
-    );
-
-    await assert.rejects(
-      withTimeout(pool.call.spawnViaProcessBinding(), TEST_TIMEOUT_MS),
-      isPermissionDenied,
-    );
-
-    if (process.platform !== "win32") {
-      await assert.rejects(
-        withTimeout(pool.call.readDeniedViaPreexistingSymlinkTraversal(), TEST_TIMEOUT_MS),
-        isPermissionDenied,
-      );
-      await assert.rejects(
-        withTimeout(pool.call.readDeniedViaHardLink(), TEST_TIMEOUT_MS),
-        isPermissionDenied,
-      );
-      await assert.rejects(
-        withTimeout(pool.call.readDeniedViaSymlink(), TEST_TIMEOUT_MS),
-        isPermissionDenied,
-      );
-    }
-  } finally {
-    await pool.shutdown();
-    if (existsSync(cwdOutput)) {
-      unlinkSync(cwdOutput);
-    }
-    if (existsSync(nodeModulesOutput)) {
-      unlinkSync(nodeModulesOutput);
-    }
-    if (!hadNodeModulesDir && existsSync(nodeModulesDir)) {
-      rmSync(nodeModulesDir, { recursive: true, force: true });
-    }
-    if (process.platform !== "win32") {
-      rmSync(traversalLinkPath, { recursive: true, force: true });
-    }
-    if (previousEnvProbe === undefined) {
-      delete process.env[envProbeKey];
-    } else {
-      process.env[envProbeKey] = previousEnvProbe;
-    }
-  }
-});
-
-test("node:test L3 run/env/net guards stay active even with empty fs deny lists", {
-  concurrency: false,
-  timeout: TEST_TIMEOUT_MS,
-}, async () => {
-  if (process.versions.bun) {
-    return;
-  }
-
-  const pool = createPool({
-    threads: 1,
-    permission: {
-      mode: "custom",
-      denyRead: [],
-      denyWrite: [],
-    },
-  })({
-    readEnvVar,
-    fetchNetworkProbe,
-    nodeHttpNetworkProbe,
-    nodeNetNetworkProbe,
-    spawnChildProcess,
-    spawnChildProcessLegacySpecifier,
-  });
-  const envProbeKey = "KNT_PERMISSION_ENV_PROBE";
-  const previousEnvProbe = process.env[envProbeKey];
-  process.env[envProbeKey] = "probe-value";
-  const blockedNetworkUrl = "http://127.0.0.1:9/";
-
-  try {
-    const hiddenEnv = await withTimeout(pool.call.readEnvVar(envProbeKey), TEST_TIMEOUT_MS);
-    assert.equal(hiddenEnv, undefined);
-    await assert.rejects(
-      withTimeout(pool.call.fetchNetworkProbe(blockedNetworkUrl), TEST_TIMEOUT_MS),
-      isPermissionDenied,
-    );
-    await assert.rejects(
-      withTimeout(pool.call.nodeHttpNetworkProbe(blockedNetworkUrl), TEST_TIMEOUT_MS),
-      isPermissionDenied,
-    );
-    await assert.rejects(
-      withTimeout(pool.call.nodeNetNetworkProbe({ host: "127.0.0.1", port: 9 }), TEST_TIMEOUT_MS),
-      isPermissionDenied,
-    );
-    await assert.rejects(
-      withTimeout(pool.call.spawnChildProcess(), TEST_TIMEOUT_MS),
-      isPermissionDenied,
-    );
-    await assert.rejects(
-      withTimeout(pool.call.spawnChildProcessLegacySpecifier(), TEST_TIMEOUT_MS),
-      isPermissionDenied,
-    );
-  } finally {
-    await pool.shutdown();
-    if (previousEnvProbe === undefined) {
-      delete process.env[envProbeKey];
-    } else {
-      process.env[envProbeKey] = previousEnvProbe;
-    }
-  }
-});
-
-test("node:test L3 env guard allows allow-list and blocks other keys", {
-  concurrency: false,
-  timeout: TEST_TIMEOUT_MS,
-}, async () => {
-  if (process.versions.bun) {
-    return;
-  }
-
-  const allowedKey = "KNT_PERMISSION_ENV_ALLOWED";
-  const previousAllowed = process.env[allowedKey];
-  process.env[allowedKey] = "allowed";
-  const blockedKey = process.platform === "win32" ? "WINDIR" : "HOME";
-
-  const pool = createPool({
-    threads: 1,
-    permission: {
-      mode: "custom",
-      denyRead: [],
-      denyWrite: [],
-      env: {
-        allow: [allowedKey],
-      },
-    },
-  })({
-    readEnvVar,
-  });
-
-  try {
-    const allowed = await withTimeout(pool.call.readEnvVar(allowedKey), TEST_TIMEOUT_MS);
-    assert.equal(allowed, "allowed");
-    const blocked = await withTimeout(pool.call.readEnvVar(blockedKey), TEST_TIMEOUT_MS);
-    assert.equal(blocked, undefined);
-  } finally {
-    await pool.shutdown();
-    if (previousAllowed === undefined) {
-      delete process.env[allowedKey];
-    } else {
-      process.env[allowedKey] = previousAllowed;
-    }
-  }
-});
-
 test("node:test permission unsafe mode allows unrestricted file access", {
   concurrency: false,
   timeout: TEST_TIMEOUT_MS,
@@ -768,128 +479,6 @@ test("node:test worker keeps performance.now precise and tamper-resistant", {
     assert.equal(typeof result.changedToZero, "boolean");
     assert.equal(typeof result.replacedObject, "boolean");
     assert.equal(result.stableSample > 0, true);
-  } finally {
-    await pool.shutdown();
-  }
-});
-
-test("node:test strict mode injects blocked require/module bindings during task calls", {
-  concurrency: false,
-  timeout: TEST_TIMEOUT_MS,
-}, async () => {
-  const pool = createPool({
-    threads: 1,
-    permission: {
-      mode: "strict",
-      strict: {
-        recursiveScan: true,
-      },
-    },
-  })({
-    readStrictRequireBinding,
-    readStrictModuleBinding,
-  });
-
-  try {
-    const [requireState, moduleState] = await withTimeout(
-      Promise.all([
-        pool.call.readStrictRequireBinding(),
-        pool.call.readStrictModuleBinding(),
-      ]),
-      TEST_TIMEOUT_MS,
-    );
-
-    assert.equal(requireState.includes("require is blocked"), true);
-    assert.equal(moduleState.includes("module is blocked"), true);
-  } finally {
-    await pool.shutdown();
-  }
-});
-
-test("node:test strict mode executes tasks against membrane globals in section 18 path", {
-  concurrency: false,
-  timeout: TEST_TIMEOUT_MS,
-}, async () => {
-  if (process.versions.bun) {
-    return;
-  }
-
-  const pool = createPool({
-    threads: 1,
-    permission: {
-      mode: "strict",
-      strict: {
-        recursiveScan: true,
-        sandbox: true,
-      },
-    },
-  })({
-    inspectStrictMembraneGlobals,
-    readStrictModuleTopLevelProcessType,
-  });
-
-  try {
-    const result = await withTimeout(
-      pool.call.inspectStrictMembraneGlobals(),
-      TEST_TIMEOUT_MS,
-    );
-    const topLevelProcessType = await withTimeout(
-      pool.call.readStrictModuleTopLevelProcessType(),
-      TEST_TIMEOUT_MS,
-    );
-    assert.equal(topLevelProcessType, "undefined");
-    assert.equal(result.processType, "undefined");
-    assert.equal(result.bunType, "undefined");
-    assert.equal(result.webAssemblyType, "undefined");
-    assert.equal(result.fetchType, "undefined");
-    assert.equal(typeof result.globalThisIsSelf, "boolean");
-    assert.equal(typeof result.globalProtoIsNull, "boolean");
-    assert.equal(result.constructorEscape.includes("object"), false);
-  } finally {
-    await pool.shutdown();
-  }
-});
-
-test("node:test strict mode blocks dynamic import vectors in section 19 path", {
-  concurrency: false,
-  timeout: TEST_TIMEOUT_MS,
-}, async () => {
-  if (process.versions.bun) {
-    return;
-  }
-
-  const pool = createPool({
-    threads: 1,
-    permission: {
-      mode: "strict",
-      strict: {
-        recursiveScan: true,
-        sandbox: true,
-      },
-    },
-  })({
-    probeStrictEvalDynamicImport,
-    probeStrictEvalObfuscatedDynamicImport,
-    probeStrictFunctionCtorDynamicImport,
-    probeStrictSandboxRequireModuleTypes,
-  });
-
-  try {
-    const [evalDirect, evalObfuscated, ctorImport, bindings] = await withTimeout(
-      Promise.all([
-        pool.call.probeStrictEvalDynamicImport(),
-        pool.call.probeStrictEvalObfuscatedDynamicImport(),
-        pool.call.probeStrictFunctionCtorDynamicImport(),
-        pool.call.probeStrictSandboxRequireModuleTypes(),
-      ]),
-      TEST_TIMEOUT_MS,
-    );
-
-    assert.equal(evalDirect.includes("KNT_ERROR_PERMISSION_DENIED"), true);
-    assert.equal(evalObfuscated.includes("KNT_ERROR_PERMISSION_DENIED"), true);
-    assert.equal(ctorImport.includes("KNT_ERROR_PERMISSION_DENIED"), true);
-    assert.equal(bindings.requireType, "undefined");
-    assert.equal(bindings.moduleType, "undefined");
   } finally {
     await pool.shutdown();
   }

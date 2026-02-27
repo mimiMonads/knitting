@@ -22,20 +22,6 @@ type DenoPermissionSettings = {
   allowRun?: boolean;
 };
 
-type BunPermissionSettings = {
-  lock?: boolean | PermissionPath;
-  /**
-   * Legacy compatibility: superseded by top-level `run`.
-   */
-  allowRun?: boolean;
-};
-
-type StrictPermissionSettings = {
-  recursiveScan?: boolean;
-  maxEvalDepth?: number;
-  sandbox?: boolean;
-};
-
 type SysApiName =
   | "hostname"
   | "osRelease"
@@ -140,8 +126,6 @@ type PermissionProtocol = {
    */
   node?: NodePermissionSettings;
   deno?: DenoPermissionSettings;
-  bun?: BunPermissionSettings;
-  strict?: StrictPermissionSettings;
 };
 
 type PermissionProtocolInput = PermissionMode | PermissionLegacyMode | PermissionProtocol;
@@ -149,7 +133,6 @@ type PermissionProtocolInput = PermissionMode | PermissionLegacyMode | Permissio
 type L3RuntimeKeys = {
   deno: string[];
   node: string[];
-  bun: string[];
 };
 
 type ResolvedPermissionProtocol = {
@@ -197,25 +180,14 @@ type ResolvedPermissionProtocol = {
 
   lockFiles: {
     deno?: string;
-    bun?: string;
-  };
-  strict: {
-    recursiveScan: boolean;
-    maxEvalDepth: number;
-    sandbox: boolean;
   };
   node: Required<NodePermissionSettings> & { flags: string[] };
   deno: Required<Omit<DenoPermissionSettings, "lock">> & { flags: string[] };
-  bun: Required<Omit<BunPermissionSettings, "lock">> & { flags: string[] };
   l3: L3RuntimeKeys;
 };
 
 const DEFAULT_ENV_FILE = ".env";
 const DEFAULT_DENO_LOCK_FILE = "deno.lock";
-const DEFAULT_BUN_LOCK_FILES = ["bun.lockb", "bun.lock"] as const;
-const DEFAULT_STRICT_MAX_EVAL_DEPTH = 16;
-const MIN_STRICT_MAX_EVAL_DEPTH = 1;
-const MAX_STRICT_MAX_EVAL_DEPTH = 64;
 const NODE_MODULES_DIR = "node_modules";
 const DEFAULT_DENY_RELATIVE = [
   ".env",
@@ -252,31 +224,11 @@ const L3_KEYS: L3RuntimeKeys = {
     "denySys",
     "allowImport",
   ],
-  bun: [
-    "read",
-    "write",
-    "denyRead",
-    "denyWrite",
-    "net",
-    "denyNet",
-    "env.allow",
-    "env.deny",
-    "run",
-    "denyRun",
-    "ffi",
-    "denyFfi",
-    "sys",
-    "denySys",
-    "wasi",
-    "workers",
-    "allowImport",
-  ],
 };
 
 const cloneL3Keys = (): L3RuntimeKeys => ({
   deno: [...L3_KEYS.deno],
   node: [...L3_KEYS.node],
-  bun: [...L3_KEYS.bun],
 });
 
 const DEFAULT_DENY_HOME = [
@@ -296,26 +248,6 @@ const DEFAULT_DENY_ABSOLUTE_POSIX = [
   "/dev",
   "/etc",
 ] as const;
-
-const clampStrictMaxEvalDepth = (value: number | undefined): number => {
-  if (!Number.isFinite(value)) return DEFAULT_STRICT_MAX_EVAL_DEPTH;
-  const int = Math.floor(value as number);
-  if (int < MIN_STRICT_MAX_EVAL_DEPTH) return MIN_STRICT_MAX_EVAL_DEPTH;
-  if (int > MAX_STRICT_MAX_EVAL_DEPTH) return MAX_STRICT_MAX_EVAL_DEPTH;
-  return int;
-};
-
-const resolveStrictPermissionSettings = (
-  input: StrictPermissionSettings | undefined,
-): {
-  recursiveScan: boolean;
-  maxEvalDepth: number;
-  sandbox: boolean;
-} => ({
-  recursiveScan: input?.recursiveScan !== false,
-  maxEvalDepth: clampStrictMaxEvalDepth(input?.maxEvalDepth),
-  sandbox: input?.sandbox === true,
-});
 
 const normalizeList = (values: string[]): string[] => {
   const out: string[] = [];
@@ -528,14 +460,12 @@ const collectReadPaths = ({
   moduleFiles,
   envFiles,
   denoLock,
-  bunLock,
 }: {
   cwd: string;
   read: string[];
   moduleFiles: string[];
   envFiles: string[];
   denoLock?: string;
-  bunLock?: string;
 }): string[] => {
   const out = [
     cwd,
@@ -545,11 +475,10 @@ const collectReadPaths = ({
     ...envFiles,
   ];
   if (denoLock) out.push(denoLock);
-  if (bunLock) out.push(bunLock);
   return normalizeList(out);
 };
 
-const resolveBunLock = (
+const resolveDenoLock = (
   input: boolean | PermissionPath | undefined,
   cwd: string,
   home: string | undefined,
@@ -558,34 +487,7 @@ const resolveBunLock = (
   if (input && input !== true) {
     return toPath(input, cwd, home);
   }
-  const g = globalThis as typeof globalThis & {
-    Deno?: { statSync?: (path: string) => unknown };
-    Bun?: {
-      file?: (path: string) => { exists?: () => boolean | Promise<boolean> };
-    };
-  };
-  for (const fileName of DEFAULT_BUN_LOCK_FILES) {
-    const candidate = path.resolve(cwd, fileName);
-    try {
-      if (typeof g.Deno?.statSync === "function") {
-        g.Deno.statSync(candidate);
-        return candidate;
-      }
-    } catch {
-    }
-    try {
-      if (typeof g.Bun?.file === "function") {
-        const file = g.Bun.file(candidate);
-        if (typeof file.exists === "function" && file.exists() === true) return candidate;
-      }
-    } catch {
-    }
-    try {
-      if (existsSync(candidate)) return candidate;
-    } catch {
-    }
-  }
-  return path.resolve(cwd, DEFAULT_BUN_LOCK_FILES[0]);
+  return path.resolve(cwd, DEFAULT_DENO_LOCK_FILE);
 };
 
 const resolveNodePermissionActivationFlag = (): string => {
@@ -792,12 +694,6 @@ const toDenoFlags = ({
   return flags;
 };
 
-const toBunFlags = ({
-  envFiles,
-}: {
-  envFiles: string[];
-}): string[] => envFiles.map((file) => `--env-file=${file}`);
-
 export const resolvePermissionProtocol = ({
   permission,
   modules,
@@ -814,7 +710,6 @@ export const resolvePermissionProtocol = ({
     : (rawMode === "custom" ? "custom" : "strict");
   const unsafe = mode === "unsafe";
   const allowConsole = input.console ?? unsafe;
-  const strictSettings = resolveStrictPermissionSettings(input.strict);
 
   const cwd = path.resolve(input.cwd ?? getCwd());
   const home = getHome();
@@ -824,12 +719,7 @@ export const resolvePermissionProtocol = ({
 
   const denoLockInput = input.deno?.lock;
   const denoLockEnabled = denoLockInput !== false;
-  const denoLock = denoLockEnabled
-    ? (denoLockInput === true || denoLockInput === undefined)
-      ? path.resolve(cwd, DEFAULT_DENO_LOCK_FILE)
-      : toPath(denoLockInput, cwd, home)
-    : undefined;
-  const bunLock = resolveBunLock(input.bun?.lock, cwd, home);
+  const denoLock = resolveDenoLock(denoLockInput, cwd, home);
 
   if (unsafe) {
     return {
@@ -876,9 +766,7 @@ export const resolvePermissionProtocol = ({
 
       lockFiles: {
         deno: denoLock,
-        bun: bunLock,
       },
-      strict: strictSettings,
       node: {
         allowWorker: true,
         allowChildProcess: true,
@@ -888,10 +776,6 @@ export const resolvePermissionProtocol = ({
       },
       deno: {
         frozen: false,
-        allowRun: true,
-        flags: [],
-      },
-      bun: {
         allowRun: true,
         flags: [],
       },
@@ -940,7 +824,6 @@ export const resolvePermissionProtocol = ({
       moduleFiles,
       envFiles,
       denoLock,
-      bunLock,
     });
   const resolvedWrite = writeAll
     ? []
@@ -965,8 +848,7 @@ export const resolvePermissionProtocol = ({
   const envDeny = normalizeStringList(input.env?.deny);
 
   const legacyRunEnabled = input.node?.allowChildProcess === true ||
-    input.deno?.allowRun === true ||
-    input.bun?.allowRun === true;
+    input.deno?.allowRun === true;
   const runSource = hasOwn(input, "run") ? input.run : (legacyRunEnabled ? true : []);
   const runAll = runSource === true;
   const run = runAll
@@ -1006,9 +888,6 @@ export const resolvePermissionProtocol = ({
   };
   const denoSettings: Required<Omit<DenoPermissionSettings, "lock">> = {
     frozen: input.deno?.frozen !== false,
-    allowRun: runAll || run.length > 0,
-  };
-  const bunSettings: Required<Omit<BunPermissionSettings, "lock">> = {
     allowRun: runAll || run.length > 0,
   };
 
@@ -1056,9 +935,7 @@ export const resolvePermissionProtocol = ({
 
     lockFiles: {
       deno: denoLock,
-      bun: bunLock,
     },
-    strict: strictSettings,
     node: {
       ...nodeSettings,
       flags: toNodeFlags({
@@ -1101,10 +978,6 @@ export const resolvePermissionProtocol = ({
         frozen: denoSettings.frozen,
       }),
     },
-    bun: {
-      ...bunSettings,
-      flags: toBunFlags({ envFiles }),
-    },
     l3: cloneL3Keys(),
   };
 };
@@ -1112,8 +985,10 @@ export const resolvePermissionProtocol = ({
 export const toRuntimePermissionFlags = (
   protocol: ResolvedPermissionProtocol | undefined,
 ): string[] =>
-  protocol?.enabled === true && protocol.unsafe !== true && RUNTIME === "node"
-    ? protocol.node.flags
+  protocol?.enabled === true && protocol.unsafe !== true
+    ? (RUNTIME === "node"
+      ? protocol.node.flags
+      : (RUNTIME === "deno" ? protocol.deno.flags : []))
     : [];
 
 export type {
@@ -1123,8 +998,6 @@ export type {
   SysApiName,
   NodePermissionSettings,
   DenoPermissionSettings,
-  BunPermissionSettings,
-  StrictPermissionSettings,
   PermissionEnvironment,
   PermissionProtocol,
   PermissionProtocolInput,

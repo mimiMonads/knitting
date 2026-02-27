@@ -199,38 +199,32 @@ Key options:
 - `host?: DispatcherSettings`
 - `workerExecArgv?: string[]` extra worker `execArgv` flags.
 - `permission?: "strict" | "unsafe" | PermissionProtocol`
-  for runtime access policy:
-  - `"strict"` (default when passing an object): hardened mode with deny lists.
-  - `"unsafe"`: disables permission hardening (no fs deny guards, console enabled,
-    strips Node permission flags inherited from parent/worker options).
+  for runtime permission flag policy:
+  - `"strict"` (default when passing an object): computes conservative defaults.
+  - `"unsafe"`: disables permission flags and strips inherited Node permission flags.
   - disable permission protocol entirely by omitting `permission`.
   Strict defaults include read/write rooted at current `cwd`, deny-write for
   `node_modules`, deny read/write for sensitive paths (`.env`, `.git`,
   `.npmrc`, `.docker`, `.secrets`, `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.azure`,
   `~/.config/gcloud`, `~/.kube`, plus POSIX system paths `/proc`,
   `/proc/self`, `/proc/self/environ`, `/proc/self/mem`, `/sys`, `/dev`, `/etc`),
-  block process execution APIs (`node:child_process`, `Deno.Command`, `Deno.run`,
-  `Bun.spawn*`) unless explicitly enabled,
-  block worker-spawn APIs (`node:worker_threads.Worker`, global `Worker`) in strict mode,
-  block Node internals that can spawn (`process.binding`, `process._linkedBinding`,
-  `process.dlopen`) in strict mode,
-  read support for `deno.lock` and `bun.lock*`,
-  and Node `--permission` worker flags (Node runtime).
+  and read support for `deno.lock` and `bun.lock*`.
+  Runtime mapping:
+  - Node workers receive `--permission`/`--experimental-permission` with
+    `--allow-fs-read`, `--allow-fs-write`, `--allow-worker`,
+    `--allow-child-process`, `--allow-addons`, `--allow-wasi`.
+    Node worker flags are allow-list based; protocol deny lists are not
+    expressible as Node worker flags.
+  - Deno workers receive `Worker.deno.permissions` when enabled (see below).
+  - Bun currently has no worker permission flags; protocol values are accepted
+    for API compatibility but are not enforced by Bun runtime flags.
   Deno `Worker.deno.permissions` is only applied when `--unstable-worker-options`
   is detected (Linux `/proc` probe) or `KNITTING_DENO_WORKER_PERMISSIONS=1` is set.
-  `console?: boolean` can be set in object mode (`false` by default in strict,
-  `true` by default in unsafe).
+  `console?: boolean` can be set in object mode for compatibility (`false` by
+  default in strict, `true` by default in unsafe).
   Process execution overrides:
-  `node.allowChildProcess?: boolean`, `deno.allowRun?: boolean`,
-  `bun.allowRun?: boolean` (all default to `false` in strict mode).
-  Bun caveat: `bun:ffi` is a native interface and can bypass in-process JS guards.
-  Bun strict mode runs a preflight source scan and rejects task modules that
-  reference `bun:ffi`, `node:worker_threads`, `node:fs`, `node:module`,
-  `process.binding`, `process._linkedBinding`, `process.dlopen`,
-  `Bun.dlopen`/`Bun.linkSymbols`, dynamic `import(...)`, `require(...)`,
-  `createRequire(...)`, or `eval`/`Function` constructors.
-  Do not treat Bun strict mode as a full sandbox for untrusted code; use an
-  OS/container boundary for hard isolation.
+  `node.allowChildProcess?: boolean`, `deno.allowRun?: boolean`
+  (both default to `false` in strict mode).
 - `dispatcher?: DispatcherSettings` deprecated alias of `host`.
 - `debug?: { extras?: boolean; logMain?: boolean; logHref?: boolean;
   logImportedUrl?: boolean }`
@@ -248,7 +242,7 @@ const pool = createPool({
 Permission examples:
 
 ```ts
-// Hardened defaults
+// Default permission profile
 createPool({ permission: {} })({ add });
 
 // Shorthand full-access mode
@@ -269,15 +263,12 @@ Timing note:
 - Startup-only guard layer: safety hooks are installed once before the worker
   loop starts (no extra checks inside the hot task-processing loop).
 - Process termination APIs from task code are blocked (`process.exit`,
-  `process.kill`, `process.abort`, plus `Deno.exit`/`Bun.exit` when present).
+  `process.kill`, `process.abort`, plus `Deno.exit` when present).
 - Worker timing uses captured high-resolution clock references to avoid
   precision regressions from later task-level monkey-patching.
-- In strict permission mode, Node FS/Deno/Bun file APIs are wrapped with deny
-  checks for sensitive paths. Node workers also receive permission CLI flags in
-  strict mode.
-- Strict sandbox runtimes are partitioned by module key inside each worker,
-  reducing cross-module shared-context surface (while still running in the
-  worker's single V8 isolate).
+- Permission enforcement is delegated to runtime-native mechanisms (Node worker
+  `--permission` flags and Deno worker permissions when available). In-process
+  FS/network/env monkey-patching is not performed.
 
 #### Runtime tuning options
 
