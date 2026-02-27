@@ -1,11 +1,9 @@
 import { endpointSymbol } from "./common/task-symbol.ts";
-import { castOnSymbol } from "./common/caston-symbol.ts";
 import type { Buffer as NodeBuffer } from "node:buffer";
 import type {
   PermissionProtocol,
   PermissionProtocolInput,
   ResolvedPermissionProtocol,
-  StrictPermissionSettings,
 } from "./permission/protocol.ts";
 type WorkerCall = {
   fnNumber: number;
@@ -27,8 +25,6 @@ type WorkerData = {
   sab: SharedArrayBuffer;
   abortSignalSAB?: SharedArrayBuffer;
   abortSignalMax?: number;
-  castOnModule?: string;
-  castOnAt?: number;
   list: string[];
   ids: number[];
   thread: number;
@@ -231,22 +227,6 @@ interface FixPointBase<
   readonly timeout?: TaskTimeout;
 }
 
-type CastOnSetup = {
-  /**
-   * Optional module URL override for worker discovery.
-   */
-  readonly href?: string;
-  readonly f: () => MaybePromise<void>;
-};
-
-type CastOnComposed =
-  & CastOnSetup
-  & {
-    readonly [castOnSymbol]: true;
-    readonly at: number;
-    readonly importedFrom: string;
-  };
-
 type FixPoint<
   A extends TaskInput,
   B extends Args,
@@ -388,7 +368,6 @@ type DispatcherSettings = {
 
 type CreatePool = {
   threads?: number;
-  castOn?: CastOnComposed;
   inliner?: Inliner;
   balancer?: Balancer;
   worker?: WorkerSettings;
@@ -455,8 +434,6 @@ export type {
   ComposedWithKey as ComposedWithKey,
   FunctionMapType as FunctionMapType,
   FixPoint as FixPoint,
-  CastOnSetup as CastOnSetup,
-  CastOnComposed as CastOnComposed,
   SecondPart as SecondPart,
   SingleTaskPool as SingleTaskPool,
   Pool as Pool,
@@ -474,7 +451,6 @@ export type {
   PermissionProtocol as PermissionProtocol,
   PermissionProtocolInput as PermissionProtocolInput,
   ResolvedPermissionProtocol as ResolvedPermissionProtocol,
-  StrictPermissionSettings as StrictPermissionSettings,
 };
 export type { Task as Task } from "./memory/lock.ts";
 export {

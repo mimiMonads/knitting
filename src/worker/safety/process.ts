@@ -57,32 +57,8 @@ export const installTerminationGuard = (): void => {
   guardMethod("reallyExit");
 
   const globalScope = globalThis as typeof globalThis & {
-    Bun?: { exit?: (code?: number) => never };
     Deno?: { exit?: (code?: number) => never };
   };
-
-  if (globalScope.Bun && typeof globalScope.Bun.exit === "function") {
-    try {
-      Object.defineProperty(globalScope.Bun, "exit", {
-        configurable: false,
-        writable: false,
-        value: (_code?: number) => blocked("Bun.exit"),
-      });
-    } catch (defineError) {
-      try {
-        (globalScope.Bun as unknown as Record<string, unknown>).exit = (_code?: number) =>
-          blocked("Bun.exit");
-      } catch (assignError) {
-        failProcessGuardInstall("Bun.exit", "install failed", [
-          toErrorMessage(defineError),
-          toErrorMessage(assignError),
-        ].join("; "));
-      }
-    }
-    if (typeof (globalScope.Bun as { exit?: unknown }).exit !== "function") {
-      failProcessGuardInstall("Bun.exit", "install verification failed");
-    }
-  }
 
   if (globalScope.Deno && typeof globalScope.Deno.exit === "function") {
     try {

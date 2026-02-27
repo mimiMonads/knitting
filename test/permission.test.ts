@@ -1,6 +1,4 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
@@ -138,7 +136,6 @@ test("resolvePermissionProtocol applies strict defaults from cwd", () => {
   );
   assert.equal(resolved.node.allowChildProcess, false);
   assert.equal(resolved.deno.allowRun, false);
-  assert.equal(resolved.bun.allowRun, false);
   assert.equal(resolved.netAll, false);
   assert.equal(resolved.net.length, 0);
   assert.equal(resolved.allowImport.includes("deno.land"), true);
@@ -151,7 +148,6 @@ test("resolvePermissionProtocol applies strict defaults from cwd", () => {
   assert.equal(resolved.wasi, false);
   assert.deepEqual(resolved.l3.deno, []);
   assert.equal(resolved.l3.node.includes("net"), true);
-  assert.equal(resolved.l3.bun.includes("run"), true);
 });
 
 test("resolvePermissionProtocol honors explicit read/write lists and custom env files", () => {
@@ -294,7 +290,6 @@ test("resolvePermissionProtocol supports unsafe mode shorthand", () => {
   assert.equal(resolved.node.flags.length, 0);
   assert.equal(resolved.node.allowChildProcess, true);
   assert.equal(resolved.deno.allowRun, true);
-  assert.equal(resolved.bun.allowRun, true);
 });
 
 test("resolvePermissionProtocol allows explicit console in strict mode", () => {
@@ -313,7 +308,6 @@ test("resolvePermissionProtocol allows explicit process execution in strict mode
       mode: "strict",
       node: { allowChildProcess: true },
       deno: { allowRun: true },
-      bun: { allowRun: true },
     },
   });
 
@@ -321,7 +315,6 @@ test("resolvePermissionProtocol allows explicit process execution in strict mode
   assert.equal(resolved.mode, "strict");
   assert.equal(resolved.node.allowChildProcess, true);
   assert.equal(resolved.deno.allowRun, true);
-  assert.equal(resolved.bun.allowRun, true);
   assert.equal(resolved.runAll, true);
 });
 
@@ -432,116 +425,4 @@ test("resolvePermissionProtocol emits deno flags for unified categories", () => 
     resolved.deno.flags.some((flag) => flag === "--deny-sys=uid"),
     true,
   );
-});
-
-test("resolvePermissionProtocol resolves strict scan defaults", () => {
-  const resolved = resolvePermissionProtocol({
-    permission: { mode: "strict" },
-  });
-
-  assert.ok(resolved);
-  assert.equal(resolved.strict.recursiveScan, true);
-  assert.equal(resolved.strict.maxEvalDepth, 16);
-  assert.equal(resolved.strict.sandbox, false);
-});
-
-test("resolvePermissionProtocol clamps strict.maxEvalDepth and accepts recursiveScan=false", () => {
-  const resolved = resolvePermissionProtocol({
-    permission: {
-      mode: "strict",
-      strict: {
-        recursiveScan: false,
-        maxEvalDepth: 999,
-        sandbox: true,
-      },
-    },
-  });
-
-  assert.ok(resolved);
-  assert.equal(resolved.strict.recursiveScan, false);
-  assert.equal(resolved.strict.maxEvalDepth, 64);
-  assert.equal(resolved.strict.sandbox, true);
-});
-
-test("resolvePermissionProtocol chooses existing bun.lock when Bun exists() is async", () => {
-  const tempDir = mkdtempSync(path.join(os.tmpdir(), "knitting-permission-"));
-  const bunLock = path.resolve(tempDir, "bun.lock");
-  writeFileSync(bunLock, "");
-
-  const g = globalThis as typeof globalThis & {
-    Bun?: {
-      file?: (filePath: string) => {
-        exists?: () => boolean | Promise<boolean>;
-      };
-    };
-  };
-  const bunFileStub = (_filePath: string) => ({
-    exists: async () => false,
-  });
-  let restoreBun: (() => void) | undefined;
-
-  if (g.Bun && typeof g.Bun === "object") {
-    const bunObject = g.Bun as { file?: typeof bunFileStub };
-    const previousFileDescriptor = Object.getOwnPropertyDescriptor(bunObject, "file");
-
-    try {
-      Object.defineProperty(bunObject, "file", {
-        configurable: true,
-        writable: true,
-        value: bunFileStub,
-      });
-    } catch {
-      try {
-        bunObject.file = bunFileStub;
-      } catch {
-        rmSync(tempDir, { recursive: true, force: true });
-        return;
-      }
-    }
-
-    restoreBun = () => {
-      if (previousFileDescriptor) {
-        Object.defineProperty(bunObject, "file", previousFileDescriptor);
-      } else {
-        delete bunObject.file;
-      }
-    };
-  } else {
-    const previousBunDescriptor = Object.getOwnPropertyDescriptor(g, "Bun");
-    try {
-      Object.defineProperty(g, "Bun", {
-        configurable: true,
-        writable: true,
-        value: { file: bunFileStub },
-      });
-    } catch {
-      try {
-        g.Bun = { file: bunFileStub };
-      } catch {
-        rmSync(tempDir, { recursive: true, force: true });
-        return;
-      }
-    }
-
-    restoreBun = () => {
-      if (previousBunDescriptor) {
-        Object.defineProperty(g, "Bun", previousBunDescriptor);
-      } else {
-        delete g.Bun;
-      }
-    };
-  }
-
-  try {
-    const resolved = resolvePermissionProtocol({
-      permission: {
-        cwd: tempDir,
-      },
-    });
-    assert.ok(resolved);
-    assert.equal(resolved.lockFiles.bun, bunLock);
-  } finally {
-    restoreBun?.();
-    rmSync(tempDir, { recursive: true, force: true });
-  }
 });
