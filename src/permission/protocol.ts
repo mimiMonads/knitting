@@ -1,5 +1,5 @@
 import path from "node:path";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { RUNTIME } from "../common/runtime.ts";
 
@@ -475,8 +475,41 @@ const toEnvFiles = (
   return toUniquePathList(values, cwd, home);
 };
 
+const rawRealpathSync = realpathSync.native ?? realpathSync;
+
+const toCanonicalPath = (candidate: string): string => {
+  const absolute = path.resolve(candidate);
+  try {
+    return path.resolve(rawRealpathSync(absolute));
+  } catch {
+  }
+
+  const missingSegments: string[] = [];
+  let cursor = absolute;
+  while (!existsSync(cursor)) {
+    const parent = path.dirname(cursor);
+    if (parent === cursor) return absolute;
+    missingSegments.push(path.basename(cursor));
+    cursor = parent;
+  }
+
+  let base = cursor;
+  try {
+    base = rawRealpathSync(cursor);
+  } catch {
+  }
+
+  let rebuilt = base;
+  for (let i = missingSegments.length - 1; i >= 0; i--) {
+    rebuilt = path.join(rebuilt, missingSegments[i]!);
+  }
+  return path.resolve(rebuilt);
+};
+
 const isPathWithin = (base: string, candidate: string): boolean => {
-  const relative = path.relative(base, candidate);
+  const canonicalBase = toCanonicalPath(base);
+  const canonicalCandidate = toCanonicalPath(candidate);
+  const relative = path.relative(canonicalBase, canonicalCandidate);
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 };
 
