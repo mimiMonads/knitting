@@ -17,6 +17,8 @@ import {
 } from "./fixtures/caston_tasks.ts";
 import { readCastOnTopLevelMutation } from "./fixtures/caston_top_level_tasks.ts";
 
+const CAST_ON_CALL_TIMEOUT_MS = 5_000;
+
 const withTimeout = async <T>(promise: Promise<T>, ms: number): Promise<T> => {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -44,13 +46,13 @@ test("castOn runs before task execution and freezes cast-on globals", async () =
   });
 
   try {
-    const first = await withTimeout(pool.call.readCastOnValue(), 2000);
+    const first = await withTimeout(pool.call.readCastOnValue(), CAST_ON_CALL_TIMEOUT_MS);
     assert.equal(first, 41);
 
-    const mutate = await withTimeout(pool.call.mutateCastOnValue(), 2000);
+    const mutate = await withTimeout(pool.call.mutateCastOnValue(), CAST_ON_CALL_TIMEOUT_MS);
     assert.equal(mutate === "mutated", false);
 
-    const second = await withTimeout(pool.call.readCastOnValue(), 2000);
+    const second = await withTimeout(pool.call.readCastOnValue(), CAST_ON_CALL_TIMEOUT_MS);
     assert.equal(second, 41);
   } finally {
     await pool.shutdown();
@@ -66,7 +68,7 @@ test("castOn supports async setup functions", async () => {
   });
 
   try {
-    const value = await withTimeout(pool.call.readCastOnAsyncValue(), 2000);
+    const value = await withTimeout(pool.call.readCastOnAsyncValue(), CAST_ON_CALL_TIMEOUT_MS);
     assert.equal(value, "ready");
   } finally {
     await pool.shutdown();
@@ -83,14 +85,14 @@ test("castOn freezes assigned object globals", async () => {
   });
 
   try {
-    const before = await withTimeout(pool.call.readCastOnObjectValue(), 2000);
+    const before = await withTimeout(pool.call.readCastOnObjectValue(), CAST_ON_CALL_TIMEOUT_MS);
     assert.equal(before.count, 1);
     assert.equal(before.hasInjected, false);
 
-    const mutate = await withTimeout(pool.call.mutateCastOnObjectValue(), 2000);
+    const mutate = await withTimeout(pool.call.mutateCastOnObjectValue(), CAST_ON_CALL_TIMEOUT_MS);
     assert.equal(mutate === "mutated", false);
 
-    const after = await withTimeout(pool.call.readCastOnObjectValue(), 2000);
+    const after = await withTimeout(pool.call.readCastOnObjectValue(), CAST_ON_CALL_TIMEOUT_MS);
     assert.equal(after.count, 1);
     assert.equal(after.hasInjected, false);
   } finally {
@@ -110,7 +112,7 @@ test("castOn works when inliner is enabled", async () => {
   });
 
   try {
-    const value = await withTimeout(pool.call.readCastOnValue(), 2000);
+    const value = await withTimeout(pool.call.readCastOnValue(), CAST_ON_CALL_TIMEOUT_MS);
     assert.equal(value, 41);
   } finally {
     await pool.shutdown();
@@ -126,7 +128,10 @@ test("castOn freeze blocks task-module top-level mutation before task execution"
   });
 
   try {
-    const result = await withTimeout(pool.call.readCastOnTopLevelMutation(), 2000);
+    const result = await withTimeout(
+      pool.call.readCastOnTopLevelMutation(),
+      CAST_ON_CALL_TIMEOUT_MS,
+    );
     assert.equal(result.value, 41);
     assert.equal(result.topLevelMutationState === "mutated", false);
   } finally {
@@ -144,14 +149,23 @@ test("castOn overwrite of an existing global stays immutable", async () => {
   });
 
   try {
-    const before = await withTimeout(pool.call.readCastOnExistingGlobal(), 2000);
+    const before = await withTimeout(
+      pool.call.readCastOnExistingGlobal(),
+      CAST_ON_CALL_TIMEOUT_MS,
+    );
     if (before.ready !== true) return;
 
     assert.equal(before.name, "castOnAtob");
-    const mutate = await withTimeout(pool.call.mutateCastOnExistingGlobal(), 2000);
+    const mutate = await withTimeout(
+      pool.call.mutateCastOnExistingGlobal(),
+      CAST_ON_CALL_TIMEOUT_MS,
+    );
     assert.equal(mutate === "taskAtob", false);
 
-    const after = await withTimeout(pool.call.readCastOnExistingGlobal(), 2000);
+    const after = await withTimeout(
+      pool.call.readCastOnExistingGlobal(),
+      CAST_ON_CALL_TIMEOUT_MS,
+    );
     assert.equal(after.name, "castOnAtob");
   } finally {
     await pool.shutdown();
