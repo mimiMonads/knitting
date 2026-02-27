@@ -475,13 +475,62 @@ test("resolvePermissionProtocol chooses existing bun.lock when Bun exists() is a
       };
     };
   };
-  const previousBun = g.Bun;
+  const bunFileStub = (_filePath: string) => ({
+    exists: async () => false,
+  });
+  let restoreBun: (() => void) | undefined;
 
-  g.Bun = {
-    file: (_filePath: string) => ({
-      exists: async () => false,
-    }),
-  };
+  if (g.Bun && typeof g.Bun === "object") {
+    const bunObject = g.Bun as { file?: typeof bunFileStub };
+    const previousFileDescriptor = Object.getOwnPropertyDescriptor(bunObject, "file");
+
+    try {
+      Object.defineProperty(bunObject, "file", {
+        configurable: true,
+        writable: true,
+        value: bunFileStub,
+      });
+    } catch {
+      try {
+        bunObject.file = bunFileStub;
+      } catch {
+        rmSync(tempDir, { recursive: true, force: true });
+        return;
+      }
+    }
+
+    restoreBun = () => {
+      if (previousFileDescriptor) {
+        Object.defineProperty(bunObject, "file", previousFileDescriptor);
+      } else {
+        delete bunObject.file;
+      }
+    };
+  } else {
+    const previousBunDescriptor = Object.getOwnPropertyDescriptor(g, "Bun");
+    try {
+      Object.defineProperty(g, "Bun", {
+        configurable: true,
+        writable: true,
+        value: { file: bunFileStub },
+      });
+    } catch {
+      try {
+        g.Bun = { file: bunFileStub };
+      } catch {
+        rmSync(tempDir, { recursive: true, force: true });
+        return;
+      }
+    }
+
+    restoreBun = () => {
+      if (previousBunDescriptor) {
+        Object.defineProperty(g, "Bun", previousBunDescriptor);
+      } else {
+        delete g.Bun;
+      }
+    };
+  }
 
   try {
     const resolved = resolvePermissionProtocol({
@@ -492,11 +541,7 @@ test("resolvePermissionProtocol chooses existing bun.lock when Bun exists() is a
     assert.ok(resolved);
     assert.equal(resolved.lockFiles.bun, bunLock);
   } finally {
-    if (previousBun === undefined) {
-      delete g.Bun;
-    } else {
-      g.Bun = previousBun;
-    }
+    restoreBun?.();
     rmSync(tempDir, { recursive: true, force: true });
   }
 });

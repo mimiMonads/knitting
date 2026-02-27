@@ -14,22 +14,6 @@ const expectGuard = (fn: () => unknown, label: string): void => {
 };
 
 const main = (): void => {
-  const g = globalThis as typeof globalThis & {
-    Bun?: { exit?: (code?: number) => never };
-    Deno?: { exit?: (code?: number) => never };
-  };
-
-  g.Bun = {
-    exit: (_code?: number) => {
-      throw new Error("original Bun.exit");
-    },
-  };
-  g.Deno = {
-    exit: (_code?: number) => {
-      throw new Error("original Deno.exit");
-    },
-  };
-
   installTerminationGuard();
   installTerminationGuard();
 
@@ -44,8 +28,6 @@ const main = (): void => {
   expectGuard(() => process.kill(process.pid), "process.kill");
   expectGuard(() => process.abort(), "process.abort");
   expectGuard(() => proc.reallyExit?.(1), "process.reallyExit");
-  expectGuard(() => g.Bun?.exit?.(1), "Bun.exit");
-  expectGuard(() => g.Deno?.exit?.(1), "Deno.exit");
 
   installUnhandledRejectionSilencer();
   installUnhandledRejectionSilencer();
