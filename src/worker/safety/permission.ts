@@ -355,7 +355,6 @@ const defaultPortForProtocol = (protocol: string): string | undefined => {
 
 const toEndpointFromURL = (
   value: string | URL,
-  fallback: string,
 ): NetworkEndpoint | undefined => {
   try {
     const parsed = typeof value === "string" ? new URL(value) : value;
@@ -417,7 +416,7 @@ const toEndpointFromHostPortString = (
     const host = normalizeNetHost(trimmed);
     return { host, label: host };
   }
-  const fromUrl = toEndpointFromURL(trimmed, fallback);
+  const fromUrl = toEndpointFromURL(trimmed);
   return fromUrl ?? { label: trimmed };
 };
 
@@ -429,11 +428,11 @@ const toEndpointFromUnknown = (
     return toEndpointFromHostPortString(value, fallback);
   }
   if (value instanceof URL) {
-    return toEndpointFromURL(value, fallback) ?? { label: fallback };
+    return toEndpointFromURL(value) ?? { label: fallback };
   }
   if (typeof value === "object" && value !== null) {
     if ("url" in value && typeof (value as { url?: unknown }).url === "string") {
-      const byUrl = toEndpointFromURL((value as { url: string }).url, fallback);
+      const byUrl = toEndpointFromURL((value as { url: string }).url);
       if (byUrl) return byUrl;
     }
     const host = typeof (value as { hostname?: unknown }).hostname === "string"
@@ -466,9 +465,7 @@ const toNetworkRule = (raw: string): NetworkRule | undefined => {
   const trimmed = raw.trim();
   if (trimmed.length === 0) return undefined;
   if (trimmed === "*") return { any: true };
-  const asUrl = trimmed.includes("://")
-    ? toEndpointFromURL(trimmed, trimmed)
-    : undefined;
+  const asUrl = trimmed.includes("://") ? toEndpointFromURL(trimmed) : undefined;
   if (asUrl?.host) {
     return {
       any: false,

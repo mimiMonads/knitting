@@ -228,8 +228,9 @@ test("legitimate code without import/eval escapes passes strict scan", () => {
   assert.equal(result.violations.length, 0);
 });
 
-test("AST scan handles 10KB payload deterministically", () => {
-  const block = "const value = Math.imul(13, 37);\n";
+test("AST scan accepts a benign ~10KB payload", () => {
+  // Keep each declaration block-scoped so parser behavior is stable across TS versions.
+  const block = "{ const value = Math.imul(13, 37); }\n";
   const source = block.repeat(350);
   const result = scanCode(source, {
     depth: 1,
