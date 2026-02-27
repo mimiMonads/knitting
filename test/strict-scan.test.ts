@@ -228,30 +228,15 @@ test("legitimate code without import/eval escapes passes strict scan", () => {
   assert.equal(result.violations.length, 0);
 });
 
-test("AST scan benchmark for 10KB payload runs without regression hard-fail", () => {
-  const block = "const value = Math.imul(13, 37);\n";
+test("AST scan accepts a benign ~10KB payload", () => {
+  // Keep each declaration block-scoped so parser behavior is stable across TS versions.
+  const block = "{ const value = Math.imul(13, 37); }\n";
   const source = block.repeat(350);
-  // Warm cache/parser setup once so benchmark reflects steady-state scan cost.
-  scanCode(source, {
-    depth: 1,
-    origin: "eval",
-  });
-
-  const startedAt = Date.now();
   const result = scanCode(source, {
     depth: 1,
     origin: "eval",
   });
-  const elapsed = Date.now() - startedAt;
 
   assert.equal(result.passed, true);
   assert.equal(result.violations.length, 0);
-  // Benchmark-only signal; intentionally non-blocking.
-  // Elapsed was 5 but it had to be moved to 10 so github action had enough time to resolve.
-  if (elapsed > 10) {
-    console.warn(
-      `[strict-scan] benchmark soft-target exceeded: ${elapsed}ms (>5ms)`,
-    );
-  }
-  assert.equal(Number.isFinite(elapsed), true);
 });
