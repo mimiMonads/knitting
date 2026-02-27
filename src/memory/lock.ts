@@ -28,7 +28,6 @@ export enum PayloadBuffer {
   BORDER_SIGNAL_BUFFER = 11,
   String = 11,
   Json = 12,
-  NumericBuffer = 14,
   StaticString = 15,
   StaticJson = 16,
   Binary = 17,

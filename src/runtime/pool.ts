@@ -3,7 +3,6 @@
 import { createHostTxQueue } from "./tx-queue.ts";
 import {
   createSharedMemoryTransport,
-  mainSignal,
   type Sab,
 } from "../ipc/transport/shared-memory.ts";
 import { ChannelHandler, hostDispatcherLoop } from "./dispatcher.ts";
@@ -18,6 +17,7 @@ import type {
   DebugOptions,
   DispatcherSettings,
   LockBuffers,
+  WorkerResourceLimits,
   WorkerCall,
   WorkerContext,
   WorkerData,
@@ -32,17 +32,28 @@ import {
 import { signalAbortFactory } from "../shared/abortSignal.ts";
 import { Worker } from "node:worker_threads";
 
-enum Comment {
-  thisIsAHint = 0,
-}
-
 //const isBrowser = typeof window !== "undefined";
 
 let poliWorker = Worker;
+const TX_STATUS_HINT_INDEX = 0;
 
 type SpawnedWorker = {
   terminate: () => unknown;
   postMessage?: (message: unknown) => void;
+};
+
+type NodeWorkerLike = {
+  on?: (
+    event: "error" | "exit" | "message",
+    listener: (...args: unknown[]) => void,
+  ) => void;
+};
+
+type WebWorkerLike = {
+  addEventListener?: (
+    type: "error" | "message",
+    listener: (event: { message?: unknown; error?: unknown; data?: unknown }) => void,
+  ) => void;
 };
 
 type DenoPermissionValue = "inherit" | boolean | string[];
@@ -66,34 +77,40 @@ type DenoWorkerOptions = {
 };
 
 const DENO_WORKER_PERMISSIONS_ENV = "KNITTING_DENO_WORKER_PERMISSIONS";
+const WORKER_FATAL_MESSAGE_KEY = "__knittingWorkerFatal";
+const execFlagKey = (flag: string): string => flag.split("=", 1)[0]!;
+const NODE_PERMISSION_EXEC_FLAGS = new Set<string>([
+  "--permission",
+  "--experimental-permission",
+  "--allow-fs-read",
+  "--allow-fs-write",
+  "--allow-worker",
+  "--allow-child-process",
+  "--allow-addons",
+  "--allow-wasi",
+]);
+const NODE_WORKER_SAFE_EXEC_FLAGS = new Set<string>([
+  "--experimental-vm-modules",
+  "--experimental-transform-types",
+  "--expose-gc",
+  "--no-warnings",
+  ...NODE_PERMISSION_EXEC_FLAGS,
+]);
 
-const isNodeWorkerSafeExecFlag = (flag: string): boolean => {
-  const key = flag.split("=", 1)[0];
-  return key === "--experimental-vm-modules" ||
-    key === "--experimental-transform-types" ||
-    key === "--expose-gc" ||
-    key === "--no-warnings" ||
-    key === "--permission" ||
-    key === "--experimental-permission" ||
-    key === "--allow-fs-read" ||
-    key === "--allow-fs-write" ||
-    key === "--allow-worker" ||
-    key === "--allow-child-process" ||
-    key === "--allow-addons" ||
-    key === "--allow-wasi";
-};
+const isWorkerFatalMessage = (
+  value: unknown,
+): value is { [WORKER_FATAL_MESSAGE_KEY]: string } =>
+  !!value &&
+  typeof value === "object" &&
+  typeof (value as { [WORKER_FATAL_MESSAGE_KEY]?: unknown })[
+    WORKER_FATAL_MESSAGE_KEY
+  ] === "string";
 
-const isNodePermissionExecFlag = (flag: string): boolean => {
-  const key = flag.split("=", 1)[0];
-  return key === "--permission" ||
-    key === "--experimental-permission" ||
-    key === "--allow-fs-read" ||
-    key === "--allow-fs-write" ||
-    key === "--allow-worker" ||
-    key === "--allow-child-process" ||
-    key === "--allow-addons" ||
-    key === "--allow-wasi";
-};
+const isNodeWorkerSafeExecFlag = (flag: string): boolean =>
+  NODE_WORKER_SAFE_EXEC_FLAGS.has(execFlagKey(flag));
+
+const isNodePermissionExecFlag = (flag: string): boolean =>
+  NODE_PERMISSION_EXEC_FLAGS.has(execFlagKey(flag));
 
 const toWorkerSafeExecArgv = (flags: string[] | undefined): string[] | undefined => {
   if (!flags || flags.length === 0) return undefined;
@@ -116,21 +133,51 @@ const toWorkerCompatExecArgv = (flags: string[] | undefined): string[] | undefin
   return compat.length > 0 ? compat : undefined;
 };
 
+type NodeWorkerResourceLimits = {
+  maxOldGenerationSizeMb?: number;
+  maxYoungGenerationSizeMb?: number;
+  codeRangeSizeMb?: number;
+  stackSizeMb?: number;
+};
+
+const toPositiveInteger = (value: number | undefined): number | undefined => {
+  if (!Number.isFinite(value)) return undefined;
+  const int = Math.floor(value as number);
+  return int > 0 ? int : undefined;
+};
+
+const toNodeWorkerResourceLimits = (
+  limits: WorkerResourceLimits | undefined,
+): NodeWorkerResourceLimits | undefined => {
+  if (!limits) return undefined;
+  const out: NodeWorkerResourceLimits = {
+    maxOldGenerationSizeMb: toPositiveInteger(limits.maxOldGenerationSizeMb),
+    maxYoungGenerationSizeMb: toPositiveInteger(limits.maxYoungGenerationSizeMb),
+    codeRangeSizeMb: toPositiveInteger(limits.codeRangeSizeMb),
+    stackSizeMb: toPositiveInteger(limits.stackSizeMb),
+  };
+  return Object.values(out).some((value) => value !== undefined) ? out : undefined;
+};
+
 const toDenoWorkerPermissions = (
   protocol?: WorkerData["permission"],
 ): DenoWorkerPermissions | undefined => {
   if (!protocol || protocol.enabled !== true || protocol.unsafe === true) {
     return undefined;
   }
+  const toScoped = (
+    all: boolean,
+    values: string[],
+  ): DenoPermissionValue => all ? "inherit" : (values.length > 0 ? values : false);
   return {
-    env: "inherit",
-    ffi: "inherit",
-    import: "inherit",
-    net: "inherit",
-    read: protocol.read.length > 0 ? protocol.read : false,
-    run: protocol.deno.allowRun === true ? "inherit" : false,
-    sys: "inherit",
-    write: protocol.write.length > 0 ? protocol.write : false,
+    env: toScoped(protocol.env.allowAll, protocol.env.allow),
+    ffi: toScoped(protocol.ffiAll, protocol.ffi),
+    import: protocol.allowImport.length > 0 ? protocol.allowImport : false,
+    net: toScoped(protocol.netAll, protocol.net),
+    read: toScoped(protocol.readAll, protocol.read),
+    run: toScoped(protocol.runAll, protocol.run),
+    sys: toScoped(protocol.sysAll, protocol.sys),
+    write: toScoped(protocol.writeAll, protocol.write),
   };
 };
 
@@ -201,6 +248,13 @@ const isUnstableDenoWorkerOptionsError = (error: unknown): boolean => {
     message.includes("Worker.deno.permissions");
 };
 
+const terminateWorkerQuietly = (worker: SpawnedWorker): void => {
+  try {
+    void Promise.resolve(worker.terminate()).catch(() => {});
+  } catch {
+  }
+};
+
 const toDenoWorkerScript = (source: string | URL, fallback: URL): string => {
   if (source instanceof URL) return source.href;
   try {
@@ -219,6 +273,8 @@ export const spawnWorkerContext = ({
   totalNumberOfThread,
   source,
   at,
+  castOnModule,
+  castOnAt,
   workerOptions,
   workerExecArgv,
   permission,
@@ -237,6 +293,8 @@ export const spawnWorkerContext = ({
   totalNumberOfThread: number;
 
   source?: string;
+  castOnModule?: string;
+  castOnAt?: number;
   workerOptions?: WorkerSettings;
   workerExecArgv?: string[];
   permission?: WorkerData["permission"];
@@ -321,7 +379,7 @@ export const spawnWorkerContext = ({
     thread,
     debug,
   });
-  const signalBox = mainSignal(signals);
+  const signalBox = signals;
 
   const queue = createHostTxQueue({
     lock,
@@ -360,6 +418,8 @@ export const spawnWorkerContext = ({
     sab: signals.sab,
     abortSignalSAB,
     abortSignalMax: usesAbortSignal === true ? resolvedAbortSignalCapacity : undefined,
+    castOnModule,
+    castOnAt,
     list,
     ids,
     at,
@@ -381,10 +441,17 @@ export const spawnWorkerContext = ({
     type: "module";
     workerData: WorkerData;
     execArgv?: string[];
+    resourceLimits?: NodeWorkerResourceLimits;
   };
-  const withExecArgv = workerExecArgv && workerExecArgv.length > 0
-    ? { ...baseWorkerOptions, execArgv: workerExecArgv }
+  const nodeResourceLimits = toNodeWorkerResourceLimits(
+    workerOptions?.resourceLimits,
+  );
+  const baseNodeWorkerOptions = nodeResourceLimits
+    ? { ...baseWorkerOptions, resourceLimits: nodeResourceLimits }
     : baseWorkerOptions;
+  const withExecArgv = workerExecArgv && workerExecArgv.length > 0
+    ? { ...baseNodeWorkerOptions, execArgv: workerExecArgv }
+    : baseNodeWorkerOptions;
   const webWorkerCtor = (globalThis as {
     Worker?: new (
       scriptURL: string | URL,
@@ -428,7 +495,7 @@ export const spawnWorkerContext = ({
           try {
             worker = new poliWorker(
               workerUrl,
-              { ...baseWorkerOptions, execArgv: fallbackExecArgv },
+              { ...baseNodeWorkerOptions, execArgv: fallbackExecArgv },
             ) as Worker;
           } catch (fallbackError) {
             if (
@@ -439,24 +506,68 @@ export const spawnWorkerContext = ({
                 try {
                   worker = new poliWorker(
                     workerUrl,
-                    { ...baseWorkerOptions, execArgv: compatExecArgv },
+                    { ...baseNodeWorkerOptions, execArgv: compatExecArgv },
                   ) as Worker;
                 } catch {
-                  worker = new poliWorker(workerUrl, baseWorkerOptions) as Worker;
+                  worker = new poliWorker(workerUrl, baseNodeWorkerOptions) as Worker;
                 }
               } else {
-                worker = new poliWorker(workerUrl, baseWorkerOptions) as Worker;
+                worker = new poliWorker(workerUrl, baseNodeWorkerOptions) as Worker;
               }
             } else {
               throw fallbackError;
             }
           }
         } else {
-          worker = new poliWorker(workerUrl, baseWorkerOptions) as Worker;
+          worker = new poliWorker(workerUrl, baseNodeWorkerOptions) as Worker;
         }
       } else {
         throw error;
       }
+    }
+  }
+
+  let closedReason: string | undefined;
+  const markWorkerClosed = (reason: string): void => {
+    if (closedReason) return;
+    closedReason = reason;
+    rejectAll(reason);
+    channelHandler.close();
+  };
+
+  const nodeWorker = worker as unknown as NodeWorkerLike;
+  if (typeof nodeWorker.on === "function") {
+    nodeWorker.on("message", (message: unknown) => {
+      if (!isWorkerFatalMessage(message)) return;
+      markWorkerClosed(
+        `Worker startup failed: ${message[WORKER_FATAL_MESSAGE_KEY]}`,
+      );
+      terminateWorkerQuietly(worker);
+    });
+    nodeWorker.on("error", (error: unknown) => {
+      const message = String((error as { message?: unknown })?.message ?? error);
+      markWorkerClosed(`Worker crashed: ${message}`);
+    });
+    nodeWorker.on("exit", (code: unknown) => {
+      if (typeof code === "number" && code === 0) return;
+      const normalized = typeof code === "number" ? code : -1;
+      markWorkerClosed(`Worker exited with code ${normalized}`);
+    });
+  } else {
+    const webWorker = worker as unknown as WebWorkerLike;
+    if (typeof webWorker.addEventListener === "function") {
+      webWorker.addEventListener("message", (event) => {
+        const data = event?.data;
+        if (!isWorkerFatalMessage(data)) return;
+        markWorkerClosed(
+          `Worker startup failed: ${data[WORKER_FATAL_MESSAGE_KEY]}`,
+        );
+        terminateWorkerQuietly(worker);
+      });
+      webWorker.addEventListener("error", (event) => {
+        const message = String(event?.message ?? event?.error ?? "worker error");
+        markWorkerClosed(`Worker crashed: ${message}`);
+      });
     }
   }
 
@@ -493,7 +604,7 @@ export const spawnWorkerContext = ({
       if (fastCheck.isRunning === false) {
         // Prevent worker from sleeping before the dispatcher loop starts.
         // Best-effort hint only; non-atomic by design.
-        signalBox.txStatus[Comment.thisIsAHint] = 1;
+        signalBox.txStatus[TX_STATUS_HINT_INDEX] = 1;
         fastCheck.isRunning = true;
         scheduleFastCheck(fastCheck);
         send();
@@ -507,8 +618,7 @@ export const spawnWorkerContext = ({
     txIdle,
     call,
     kills: async () => {
-      rejectAll("Thread closed");
-      channelHandler.close();
+      markWorkerClosed("Thread closed");
       try {
         void Promise.resolve(worker.terminate()).catch(() => {});
       } catch {

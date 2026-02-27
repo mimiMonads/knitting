@@ -15,11 +15,17 @@ type NodePermissionSettings = {
 type DenoPermissionSettings = {
   lock?: boolean | PermissionPath;
   frozen?: boolean;
+  /**
+   * Legacy compatibility: superseded by top-level `run`.
+   */
   allowRun?: boolean;
 };
 
 type BunPermissionSettings = {
   lock?: boolean | PermissionPath;
+  /**
+   * Legacy compatibility: superseded by top-level `run`.
+   */
   allowRun?: boolean;
 };
 
@@ -29,20 +35,34 @@ type StrictPermissionSettings = {
   sandbox?: boolean;
 };
 
+type SysApiName =
+  | "hostname"
+  | "osRelease"
+  | "osUptime"
+  | "loadavg"
+  | "networkInterfaces"
+  | "systemMemoryInfo"
+  | "uid"
+  | "gid";
+
 type PermissionEnvironment = {
+  allow?: string[] | true;
+  deny?: string[];
   files?: PermissionPath | PermissionPath[];
 };
 
-type PermissionMode = "strict" | "unsafe";
+type PermissionMode = "strict" | "unsafe" | "custom";
+type PermissionLegacyMode = "off";
 
 type PermissionProtocol = {
   /**
-   * `strict` = hardened defaults, `unsafe` = full access.
+   * `strict` = hardened defaults, `unsafe` = full access,
+   * `custom` = strict baseline with user overrides.
    */
   mode?: PermissionMode;
   /**
    * Console access for worker task code.
-   * Defaults to `false` in strict mode, `true` in unsafe mode.
+   * Defaults to `false` in strict/custom mode, `true` in unsafe mode.
    */
   console?: boolean;
   /**
@@ -51,29 +71,85 @@ type PermissionProtocol = {
    */
   cwd?: string;
   /**
-   * Extra read allow-list entries.
+   * Read allow-list. `true` means unrestricted access.
    */
-  read?: PermissionPath[];
+  read?: PermissionPath[] | true;
   /**
-   * Extra write allow-list entries.
+   * Write allow-list. `true` means unrestricted access.
    */
-  write?: PermissionPath[];
+  write?: PermissionPath[] | true;
   /**
-   * Extra deny-read entries.
+   * Explicit deny-read entries.
    */
   denyRead?: PermissionPath[];
   /**
-   * Extra deny-write entries.
+   * Explicit deny-write entries.
    */
   denyWrite?: PermissionPath[];
+  /**
+   * Network allow-list. `true` means unrestricted access.
+   */
+  net?: string[] | true;
+  /**
+   * Explicit network deny-list.
+   */
+  denyNet?: string[];
+  /**
+   * Allowed import hostnames.
+   */
+  allowImport?: string[];
+  /**
+   * Environment permission settings.
+   */
   env?: PermissionEnvironment;
+  /**
+   * Subprocess allow-list. `true` means unrestricted access.
+   */
+  run?: string[] | true;
+  /**
+   * Explicit subprocess deny-list.
+   */
+  denyRun?: string[];
+  /**
+   * Whether worker spawning is allowed.
+   */
+  workers?: boolean;
+  /**
+   * FFI allow-list or toggle.
+   */
+  ffi?: PermissionPath[] | boolean;
+  /**
+   * Explicit FFI deny-list.
+   */
+  denyFfi?: PermissionPath[];
+  /**
+   * System API allow-list. `true` means unrestricted access.
+   */
+  sys?: SysApiName[] | true;
+  /**
+   * Explicit system API deny-list.
+   */
+  denySys?: SysApiName[];
+  /**
+   * Whether WASI is allowed.
+   */
+  wasi?: boolean;
+  /**
+   * Backward-compat runtime overrides.
+   */
   node?: NodePermissionSettings;
   deno?: DenoPermissionSettings;
   bun?: BunPermissionSettings;
   strict?: StrictPermissionSettings;
 };
 
-type PermissionProtocolInput = PermissionMode | PermissionProtocol;
+type PermissionProtocolInput = PermissionMode | PermissionLegacyMode | PermissionProtocol;
+
+type L3RuntimeKeys = {
+  deno: string[];
+  node: string[];
+  bun: string[];
+};
 
 type ResolvedPermissionProtocol = {
   enabled: boolean;
@@ -81,11 +157,43 @@ type ResolvedPermissionProtocol = {
   unsafe: boolean;
   allowConsole: boolean;
   cwd: string;
+
   read: string[];
+  readAll: boolean;
   write: string[];
+  writeAll: boolean;
   denyRead: string[];
   denyWrite: string[];
+
+  net: string[];
+  netAll: boolean;
+  denyNet: string[];
+  allowImport: string[];
+
+  env: {
+    allow: string[];
+    allowAll: boolean;
+    deny: string[];
+    files: string[];
+  };
+  // Backward compatibility for existing consumers.
   envFiles: string[];
+
+  run: string[];
+  runAll: boolean;
+  denyRun: string[];
+  workers: boolean;
+
+  ffi: string[];
+  ffiAll: boolean;
+  denyFfi: string[];
+
+  sys: SysApiName[];
+  sysAll: boolean;
+  denySys: SysApiName[];
+
+  wasi: boolean;
+
   lockFiles: {
     deno?: string;
     bun?: string;
@@ -98,6 +206,7 @@ type ResolvedPermissionProtocol = {
   node: Required<NodePermissionSettings> & { flags: string[] };
   deno: Required<Omit<DenoPermissionSettings, "lock">> & { flags: string[] };
   bun: Required<Omit<BunPermissionSettings, "lock">> & { flags: string[] };
+  l3: L3RuntimeKeys;
 };
 
 const DEFAULT_ENV_FILE = ".env";
@@ -113,6 +222,78 @@ const DEFAULT_DENY_RELATIVE = [
   ".npmrc",
   ".docker",
   ".secrets",
+] as const;
+const DEFAULT_ALLOW_IMPORT_HOSTS = ["deno.land", "esm.sh", "jsr.io"] as const;
+const SUPPORTED_SYS_API_NAMES: readonly SysApiName[] = [
+  "hostname",
+  "osRelease",
+  "osUptime",
+  "loadavg",
+  "networkInterfaces",
+  "systemMemoryInfo",
+  "uid",
+  "gid",
+] as const;
+const SUPPORTED_SYS_API_NAME_SET = new Set<string>(SUPPORTED_SYS_API_NAMES);
+
+const L3_KEYS: L3RuntimeKeys = {
+  deno: [],
+  node: [
+    "denyRead",
+    "denyWrite",
+    "net",
+    "denyNet",
+    "env.allow",
+    "env.deny",
+    "denyRun",
+    "denyFfi",
+    "sys",
+    "denySys",
+    "allowImport",
+  ],
+  bun: [
+    "read",
+    "write",
+    "denyRead",
+    "denyWrite",
+    "net",
+    "denyNet",
+    "env.allow",
+    "env.deny",
+    "run",
+    "denyRun",
+    "ffi",
+    "denyFfi",
+    "sys",
+    "denySys",
+    "wasi",
+    "workers",
+    "allowImport",
+  ],
+};
+
+const cloneL3Keys = (): L3RuntimeKeys => ({
+  deno: [...L3_KEYS.deno],
+  node: [...L3_KEYS.node],
+  bun: [...L3_KEYS.bun],
+});
+
+const DEFAULT_DENY_HOME = [
+  ".ssh",
+  ".gnupg",
+  ".aws",
+  ".azure",
+  ".config/gcloud",
+  ".kube",
+] as const;
+const DEFAULT_DENY_ABSOLUTE_POSIX = [
+  "/proc",
+  "/proc/self",
+  "/proc/self/environ",
+  "/proc/self/mem",
+  "/sys",
+  "/dev",
+  "/etc",
 ] as const;
 
 const clampStrictMaxEvalDepth = (value: number | undefined): number => {
@@ -134,23 +315,6 @@ const resolveStrictPermissionSettings = (
   maxEvalDepth: clampStrictMaxEvalDepth(input?.maxEvalDepth),
   sandbox: input?.sandbox === true,
 });
-const DEFAULT_DENY_HOME = [
-  ".ssh",
-  ".gnupg",
-  ".aws",
-  ".azure",
-  ".config/gcloud",
-  ".kube",
-] as const;
-const DEFAULT_DENY_ABSOLUTE_POSIX = [
-  "/proc",
-  "/proc/self",
-  "/proc/self/environ",
-  "/proc/self/mem",
-  "/sys",
-  "/dev",
-  "/etc",
-] as const;
 
 const normalizeList = (values: string[]): string[] => {
   const out: string[] = [];
@@ -163,10 +327,40 @@ const normalizeList = (values: string[]): string[] => {
   return out;
 };
 
+const normalizeStringList = (values: readonly string[] | undefined): string[] => {
+  if (!values || values.length === 0) return [];
+  const cleaned: string[] = [];
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    const trimmed = value.trim();
+    if (trimmed.length === 0) continue;
+    cleaned.push(trimmed);
+  }
+  return normalizeList(cleaned);
+};
+
+const normalizeSysApiList = (values: readonly string[] | undefined): SysApiName[] => {
+  if (!values || values.length === 0) return [];
+  const out: SysApiName[] = [];
+  const seen = new Set<string>();
+  for (const raw of values) {
+    if (typeof raw !== "string") continue;
+    const value = raw.trim();
+    if (value.length === 0 || seen.has(value)) continue;
+    if (!SUPPORTED_SYS_API_NAME_SET.has(value)) continue;
+    seen.add(value);
+    out.push(value as SysApiName);
+  }
+  return out;
+};
+
+const hasOwn = (value: object, key: PropertyKey): boolean =>
+  Object.prototype.hasOwnProperty.call(value, key);
+
 const normalizeProtocolInput = (
   input: PermissionProtocolInput | undefined,
 ): PermissionProtocol | undefined =>
-  !input ? undefined : (typeof input === "string" ? { mode: input } : input);
+  !input ? undefined : (typeof input === "string" ? { mode: input as PermissionMode } : input);
 
 const isWindows = (): boolean => {
   if (typeof process !== "undefined") return process.platform === "win32";
@@ -281,94 +475,12 @@ const toEnvFiles = (
   return toUniquePathList(values, cwd, home);
 };
 
-const toNodeFlags = ({
-  read,
-  write,
-  envFiles,
-  node,
-}: {
-  read: string[];
-  write: string[];
-  envFiles: string[];
-  node: Required<NodePermissionSettings>;
-}): string[] => {
-  const flags = [
-    "--permission",
-    ...read.map((entry) => `--allow-fs-read=${entry}`),
-    ...write.map((entry) => `--allow-fs-write=${entry}`),
-    ...envFiles.map((file) => `--env-file-if-exists=${file}`),
-  ];
-
-  if (node.allowWorker) flags.push("--allow-worker");
-  if (node.allowChildProcess) flags.push("--allow-child-process");
-  if (node.allowAddons) flags.push("--allow-addons");
-  if (node.allowWasi) flags.push("--allow-wasi");
-
-  return flags;
-};
-
-const toDenoFlags = ({
-  read,
-  write,
-  denyRead,
-  denyWrite,
-  envFiles,
-  denoLock,
-  frozen,
-  allowRun,
-}: {
-  read: string[];
-  write: string[];
-  denyRead: string[];
-  denyWrite: string[];
-  envFiles: string[];
-  denoLock?: string;
-  frozen: boolean;
-  allowRun: boolean;
-}): string[] => {
-  const flags = [
-    `--allow-read=${read.join(",")}`,
-    `--allow-write=${write.join(",")}`,
-    ...envFiles.map((file) => `--env-file=${file}`),
-  ];
-
-  if (denyRead.length > 0) {
-    flags.push(`--deny-read=${denyRead.join(",")}`);
-  }
-  if (denyWrite.length > 0) {
-    flags.push(`--deny-write=${denyWrite.join(",")}`);
-  }
-  if (denoLock) {
-    flags.push(`--lock=${denoLock}`);
-    if (frozen) flags.push("--frozen=true");
-  }
-  if (allowRun === false) {
-    flags.push("--deny-run");
-  }
-
-  return flags;
-};
-
-const toBunFlags = ({
-  envFiles,
-  allowRun,
-}: {
-  envFiles: string[];
-  allowRun: boolean;
-}): string[] => {
-  const flags = envFiles.map((file) => `--env-file=${file}`);
-  if (allowRun === false) {
-    flags.push("--deny-run");
-  }
-  return flags;
-};
-
 const isPathWithin = (base: string, candidate: string): boolean => {
   const relative = path.relative(base, candidate);
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 };
 
-const defaultSensitiveDenyPaths = (
+const defaultSensitiveProjectAndHomePaths = (
   cwd: string,
   home: string | undefined,
 ): string[] => {
@@ -376,10 +488,18 @@ const defaultSensitiveDenyPaths = (
   const homeSensitive = home
     ? DEFAULT_DENY_HOME.map((entry) => path.resolve(home, entry))
     : [];
+  return normalizeList([...projectSensitive, ...homeSensitive]);
+};
+
+const defaultSensitiveReadDenyPaths = (
+  cwd: string,
+  home: string | undefined,
+): string[] => {
+  const projectAndHome = defaultSensitiveProjectAndHomePaths(cwd, home);
   const osSensitive = isWindows()
     ? []
     : DEFAULT_DENY_ABSOLUTE_POSIX.map((entry) => path.resolve(entry));
-  return normalizeList([...projectSensitive, ...homeSensitive, ...osSensitive]);
+  return normalizeList([...projectAndHome, ...osSensitive]);
 };
 
 const collectWritePaths = (cwd: string, values: string[]): string[] => {
@@ -456,6 +576,216 @@ const resolveBunLock = (
   return path.resolve(cwd, DEFAULT_BUN_LOCK_FILES[0]);
 };
 
+const resolveNodePermissionActivationFlag = (): string => {
+  try {
+    if (typeof process !== "undefined") {
+      const raw = process.versions?.node;
+      const major = Number.parseInt(String(raw).split(".", 1)[0] ?? "", 10);
+      if (Number.isFinite(major) && major > 0 && major < 22) {
+        return "--experimental-permission";
+      }
+    }
+  } catch {
+  }
+  return "--permission";
+};
+
+const toNodeFlags = ({
+  read,
+  readAll,
+  write,
+  writeAll,
+  envFiles,
+  node,
+}: {
+  read: string[];
+  readAll: boolean;
+  write: string[];
+  writeAll: boolean;
+  envFiles: string[];
+  node: Required<NodePermissionSettings>;
+}): string[] => {
+  const modelFlags: string[] = [];
+
+  if (readAll) {
+    modelFlags.push("--allow-fs-read=*");
+  } else if (read.length > 0) {
+    modelFlags.push(`--allow-fs-read=${read.join(",")}`);
+  }
+
+  if (writeAll) {
+    modelFlags.push("--allow-fs-write=*");
+  } else if (write.length > 0) {
+    modelFlags.push(`--allow-fs-write=${write.join(",")}`);
+  }
+
+  if (node.allowWorker) modelFlags.push("--allow-worker");
+  if (node.allowChildProcess) modelFlags.push("--allow-child-process");
+  if (node.allowAddons) modelFlags.push("--allow-addons");
+  if (node.allowWasi) modelFlags.push("--allow-wasi");
+
+  const flags: string[] = [];
+  if (modelFlags.length > 0) {
+    flags.push(resolveNodePermissionActivationFlag(), ...modelFlags);
+  }
+
+  for (const file of envFiles) {
+    flags.push(`--env-file-if-exists=${file}`);
+  }
+
+  return flags;
+};
+
+const toDenoFlags = ({
+  read,
+  readAll,
+  write,
+  writeAll,
+  denyRead,
+  denyWrite,
+  net,
+  netAll,
+  denyNet,
+  allowImport,
+  envAllow,
+  envAllowAll,
+  envDeny,
+  envFiles,
+  run,
+  runAll,
+  denyRun,
+  ffi,
+  ffiAll,
+  denyFfi,
+  sys,
+  sysAll,
+  denySys,
+  denoLock,
+  denoLockEnabled,
+  frozen,
+}: {
+  read: string[];
+  readAll: boolean;
+  write: string[];
+  writeAll: boolean;
+  denyRead: string[];
+  denyWrite: string[];
+  net: string[];
+  netAll: boolean;
+  denyNet: string[];
+  allowImport: string[];
+  envAllow: string[];
+  envAllowAll: boolean;
+  envDeny: string[];
+  envFiles: string[];
+  run: string[];
+  runAll: boolean;
+  denyRun: string[];
+  ffi: string[];
+  ffiAll: boolean;
+  denyFfi: string[];
+  sys: SysApiName[];
+  sysAll: boolean;
+  denySys: SysApiName[];
+  denoLock?: string;
+  denoLockEnabled: boolean;
+  frozen: boolean;
+}): string[] => {
+  const flags: string[] = [];
+
+  if (readAll) {
+    flags.push("--allow-read");
+  } else if (read.length > 0) {
+    flags.push(`--allow-read=${read.join(",")}`);
+  }
+
+  if (writeAll) {
+    flags.push("--allow-write");
+  } else if (write.length > 0) {
+    flags.push(`--allow-write=${write.join(",")}`);
+  }
+
+  if (denyRead.length > 0) {
+    flags.push(`--deny-read=${denyRead.join(",")}`);
+  }
+  if (denyWrite.length > 0) {
+    flags.push(`--deny-write=${denyWrite.join(",")}`);
+  }
+
+  if (netAll) {
+    flags.push("--allow-net");
+  } else if (net.length > 0) {
+    flags.push(`--allow-net=${net.join(",")}`);
+  }
+
+  if (denyNet.length > 0) {
+    flags.push(`--deny-net=${denyNet.join(",")}`);
+  }
+
+  if (allowImport.length > 0) {
+    flags.push(`--allow-import=${allowImport.join(",")}`);
+  }
+
+  if (envAllowAll) {
+    flags.push("--allow-env");
+  } else if (envAllow.length > 0) {
+    flags.push(`--allow-env=${envAllow.join(",")}`);
+  }
+
+  if (envDeny.length > 0) {
+    flags.push(`--deny-env=${envDeny.join(",")}`);
+  }
+
+  for (const file of envFiles) {
+    flags.push(`--env-file=${file}`);
+  }
+
+  if (runAll) {
+    flags.push("--allow-run");
+  } else if (run.length > 0) {
+    flags.push(`--allow-run=${run.join(",")}`);
+  }
+
+  if (denyRun.length > 0) {
+    flags.push(`--deny-run=${denyRun.join(",")}`);
+  }
+
+  if (ffiAll) {
+    flags.push("--allow-ffi");
+  } else if (ffi.length > 0) {
+    flags.push(`--allow-ffi=${ffi.join(",")}`);
+  }
+
+  if (denyFfi.length > 0) {
+    flags.push(`--deny-ffi=${denyFfi.join(",")}`);
+  }
+
+  if (sysAll) {
+    flags.push("--allow-sys");
+  } else if (sys.length > 0) {
+    flags.push(`--allow-sys=${sys.join(",")}`);
+  }
+
+  if (denySys.length > 0) {
+    flags.push(`--deny-sys=${denySys.join(",")}`);
+  }
+
+  if (!denoLockEnabled) {
+    flags.push("--no-lock");
+  } else if (denoLock) {
+    flags.push(`--lock=${denoLock}`);
+    if (frozen) flags.push("--frozen=true");
+  }
+
+  return flags;
+};
+
+const toBunFlags = ({
+  envFiles,
+}: {
+  envFiles: string[];
+}): string[] => envFiles.map((file) => `--env-file=${file}`);
+
 export const resolvePermissionProtocol = ({
   permission,
   modules,
@@ -465,17 +795,30 @@ export const resolvePermissionProtocol = ({
 }): ResolvedPermissionProtocol | undefined => {
   const input = normalizeProtocolInput(permission);
   if (!input) return undefined;
+
   const rawMode = (input as { mode?: unknown }).mode;
-  const mode = (rawMode === "unsafe" || rawMode === "off")
+  const mode: PermissionMode = (rawMode === "unsafe" || rawMode === "off")
     ? "unsafe"
-    : "strict";
+    : (rawMode === "custom" ? "custom" : "strict");
   const unsafe = mode === "unsafe";
   const allowConsole = input.console ?? unsafe;
   const strictSettings = resolveStrictPermissionSettings(input.strict);
 
   const cwd = path.resolve(input.cwd ?? getCwd());
   const home = getHome();
-  const nodeModulesPath = path.resolve(cwd, NODE_MODULES_DIR);
+
+  const envFiles = toEnvFiles(input.env?.files, cwd, home);
+  const moduleFiles = toUniquePathList(modules, cwd, home);
+
+  const denoLockInput = input.deno?.lock;
+  const denoLockEnabled = denoLockInput !== false;
+  const denoLock = denoLockEnabled
+    ? (denoLockInput === true || denoLockInput === undefined)
+      ? path.resolve(cwd, DEFAULT_DENO_LOCK_FILE)
+      : toPath(denoLockInput, cwd, home)
+    : undefined;
+  const bunLock = resolveBunLock(input.bun?.lock, cwd, home);
+
   if (unsafe) {
     return {
       enabled: true,
@@ -483,12 +826,46 @@ export const resolvePermissionProtocol = ({
       unsafe: true,
       allowConsole,
       cwd,
+
       read: [],
+      readAll: true,
       write: [],
+      writeAll: true,
       denyRead: [],
       denyWrite: [],
-      envFiles: [],
-      lockFiles: {},
+
+      net: [],
+      netAll: true,
+      denyNet: [],
+      allowImport: [],
+
+      env: {
+        allow: [],
+        allowAll: true,
+        deny: [],
+        files: envFiles,
+      },
+      envFiles,
+
+      run: [],
+      runAll: true,
+      denyRun: [],
+      workers: true,
+
+      ffi: [],
+      ffiAll: true,
+      denyFfi: [],
+
+      sys: [],
+      sysAll: true,
+      denySys: [],
+
+      wasi: true,
+
+      lockFiles: {
+        deno: denoLock,
+        bun: bunLock,
+      },
       strict: strictSettings,
       node: {
         allowWorker: true,
@@ -506,55 +883,122 @@ export const resolvePermissionProtocol = ({
         allowRun: true,
         flags: [],
       },
+      l3: cloneL3Keys(),
     };
   }
-  const read = toPathList(input.read, cwd, home);
-  const write = toPathList(input.write, cwd, home);
-  const sensitiveDefaultPaths = defaultSensitiveDenyPaths(cwd, home);
+
+  const nodeModulesPath = path.resolve(cwd, NODE_MODULES_DIR);
+  const hasExplicitDenyRead = hasOwn(input, "denyRead");
+  const hasExplicitDenyWrite = hasOwn(input, "denyWrite");
+  const hasExplicitRead = hasOwn(input, "read");
+  const hasExplicitWrite = hasOwn(input, "write");
+
+  const denyReadDefaults = defaultSensitiveReadDenyPaths(cwd, home);
+  const denyWriteDefaults = normalizeList([
+    ...defaultSensitiveProjectAndHomePaths(cwd, home),
+    nodeModulesPath,
+  ]);
+
   const denyRead = normalizeList([
     ...toPathList(input.denyRead, cwd, home),
-    ...sensitiveDefaultPaths,
+    ...((mode === "custom" && hasExplicitDenyRead) ? [] : denyReadDefaults),
   ]);
   const denyWrite = normalizeList([
     ...toPathList(input.denyWrite, cwd, home),
-    ...sensitiveDefaultPaths,
-    nodeModulesPath,
+    ...((mode === "custom" && hasExplicitDenyWrite) ? [] : denyWriteDefaults),
   ]);
-  const isDeniedRead = (candidate: string) =>
-    denyRead.some((deny) => isPathWithin(deny, candidate));
-  const envFiles = toEnvFiles(input.env?.files, cwd, home)
-    .filter((entry) => !isDeniedRead(entry));
-  const denoLock = input.deno?.lock === false
-    ? undefined
-    : (input.deno?.lock === true || input.deno?.lock === undefined)
-    ? path.resolve(cwd, DEFAULT_DENO_LOCK_FILE)
-    : toPath(input.deno.lock, cwd, home);
-  const bunLock = resolveBunLock(input.bun?.lock, cwd, home);
-  const moduleFiles = toUniquePathList(modules, cwd, home);
+
+  const readAll = input.read === true;
+  const writeAll = input.write === true;
+
+  const configuredRead = readAll
+    ? []
+    : toPathList(Array.isArray(input.read) ? input.read : undefined, cwd, home);
+  const configuredWrite = writeAll
+    ? []
+    : toPathList(Array.isArray(input.write) ? input.write : undefined, cwd, home);
+
+  const resolvedRead = readAll
+    ? []
+    : hasExplicitRead
+    ? normalizeList(configuredRead)
+    : collectReadPaths({
+      cwd,
+      read: configuredRead,
+      moduleFiles,
+      envFiles,
+      denoLock,
+      bunLock,
+    });
+  const resolvedWrite = writeAll
+    ? []
+    : hasExplicitWrite
+    ? normalizeList(configuredWrite)
+    : collectWritePaths(cwd, configuredWrite);
+
+  const netAll = input.net === true;
+  const net = netAll
+    ? []
+    : normalizeStringList(Array.isArray(input.net) ? input.net : []);
+  const denyNet = normalizeStringList(input.denyNet);
+
+  const allowImport = normalizeStringList(
+    Array.isArray(input.allowImport) ? input.allowImport : [...DEFAULT_ALLOW_IMPORT_HOSTS],
+  );
+
+  const envAllowAll = input.env?.allow === true;
+  const envAllow = envAllowAll
+    ? []
+    : normalizeStringList(Array.isArray(input.env?.allow) ? input.env.allow : []);
+  const envDeny = normalizeStringList(input.env?.deny);
+
+  const legacyRunEnabled = input.node?.allowChildProcess === true ||
+    input.deno?.allowRun === true ||
+    input.bun?.allowRun === true;
+  const runSource = hasOwn(input, "run") ? input.run : (legacyRunEnabled ? true : []);
+  const runAll = runSource === true;
+  const run = runAll
+    ? []
+    : normalizeStringList(Array.isArray(runSource) ? runSource : []);
+  const denyRun = normalizeStringList(input.denyRun);
+
+  const workers = hasOwn(input, "workers")
+    ? input.workers === true
+    : input.node?.allowWorker === true;
+
+  const ffiSource = hasOwn(input, "ffi")
+    ? input.ffi
+    : (input.node?.allowAddons === true ? true : false);
+  const ffiAll = ffiSource === true;
+  const ffi = ffiAll
+    ? []
+    : toUniquePathList(Array.isArray(ffiSource) ? ffiSource : undefined, cwd, home);
+  const denyFfi = toUniquePathList(input.denyFfi, cwd, home);
+
+  const sysSource = input.sys;
+  const sysAll = sysSource === true;
+  const sys = sysAll
+    ? []
+    : normalizeSysApiList(Array.isArray(sysSource) ? sysSource : []);
+  const denySys = normalizeSysApiList(input.denySys);
+
+  const wasi = hasOwn(input, "wasi")
+    ? input.wasi === true
+    : input.node?.allowWasi === true;
 
   const nodeSettings: Required<NodePermissionSettings> = {
-    allowWorker: input.node?.allowWorker === true,
-    allowChildProcess: input.node?.allowChildProcess === true,
-    allowAddons: input.node?.allowAddons === true,
-    allowWasi: input.node?.allowWasi === true,
+    allowWorker: workers,
+    allowChildProcess: runAll || run.length > 0,
+    allowAddons: ffiAll || ffi.length > 0,
+    allowWasi: wasi,
   };
   const denoSettings: Required<Omit<DenoPermissionSettings, "lock">> = {
     frozen: input.deno?.frozen !== false,
-    allowRun: input.deno?.allowRun === true,
+    allowRun: runAll || run.length > 0,
   };
   const bunSettings: Required<Omit<BunPermissionSettings, "lock">> = {
-    allowRun: input.bun?.allowRun === true,
+    allowRun: runAll || run.length > 0,
   };
-
-  const resolvedRead = collectReadPaths({
-    cwd,
-    read,
-    moduleFiles,
-    envFiles,
-    denoLock,
-    bunLock,
-  });
-  const resolvedWrite = collectWritePaths(cwd, write);
 
   return {
     enabled: true,
@@ -562,11 +1006,42 @@ export const resolvePermissionProtocol = ({
     unsafe: false,
     allowConsole,
     cwd,
+
     read: resolvedRead,
+    readAll,
     write: resolvedWrite,
+    writeAll,
     denyRead,
     denyWrite,
+
+    net,
+    netAll,
+    denyNet,
+    allowImport,
+
+    env: {
+      allow: envAllow,
+      allowAll: envAllowAll,
+      deny: envDeny,
+      files: envFiles,
+    },
     envFiles,
+
+    run,
+    runAll,
+    denyRun,
+    workers,
+
+    ffi,
+    ffiAll,
+    denyFfi,
+
+    sys,
+    sysAll,
+    denySys,
+
+    wasi,
+
     lockFiles: {
       deno: denoLock,
       bun: bunLock,
@@ -576,7 +1051,9 @@ export const resolvePermissionProtocol = ({
       ...nodeSettings,
       flags: toNodeFlags({
         read: resolvedRead,
+        readAll,
         write: resolvedWrite,
+        writeAll,
         envFiles,
         node: nodeSettings,
       }),
@@ -585,22 +1062,38 @@ export const resolvePermissionProtocol = ({
       ...denoSettings,
       flags: toDenoFlags({
         read: resolvedRead,
+        readAll,
         write: resolvedWrite,
+        writeAll,
         denyRead,
         denyWrite,
+        net,
+        netAll,
+        denyNet,
+        allowImport,
+        envAllow,
+        envAllowAll,
+        envDeny,
         envFiles,
+        run,
+        runAll,
+        denyRun,
+        ffi,
+        ffiAll,
+        denyFfi,
+        sys,
+        sysAll,
+        denySys,
         denoLock,
+        denoLockEnabled,
         frozen: denoSettings.frozen,
-        allowRun: denoSettings.allowRun,
       }),
     },
     bun: {
       ...bunSettings,
-      flags: toBunFlags({
-        envFiles,
-        allowRun: bunSettings.allowRun,
-      }),
+      flags: toBunFlags({ envFiles }),
     },
+    l3: cloneL3Keys(),
   };
 };
 
@@ -614,6 +1107,8 @@ export const toRuntimePermissionFlags = (
 export type {
   PermissionPath,
   PermissionMode,
+  PermissionLegacyMode,
+  SysApiName,
   NodePermissionSettings,
   DenoPermissionSettings,
   BunPermissionSettings,

@@ -5,6 +5,8 @@ export {
 export type {
   PermissionPath,
   PermissionMode,
+  PermissionLegacyMode,
+  SysApiName,
   NodePermissionSettings,
   DenoPermissionSettings,
   BunPermissionSettings,

@@ -180,7 +180,8 @@ if (isMain) {
 Creates a worker pool and returns:
 
 - `call.<task>(args)` enqueue a task call.
-- `shutdown(): Promise<void>` terminates workers.
+- `shutdown(delayMs?): Promise<void>` terminates workers immediately or after
+  an optional delay.
 
 Key options:
 
@@ -190,7 +191,7 @@ Key options:
 - `balancer?: "roundRobin" | "robinRound" | "firstIdle" | "randomLane" | "firstIdleOrRandom"`
   or `{ strategy?: "roundRobin" | "robinRound" | "firstIdle" | "randomLane" | "firstIdleOrRandom" }`
   task routing strategy.
-- `worker?: { resolveAfterFinishingAll?: true; timers?: WorkerTimers }`
+- `worker?: { resolveAfterFinishingAll?: true; timers?: WorkerTimers; hardTimeoutMs?: number; resourceLimits?: WorkerResourceLimits }`
 - `payloadInitialBytes?: number` initial payload SAB size per worker direction (bytes).
 - `payloadMaxBytes?: number` max payload SAB size per worker direction (bytes).
 - `abortSignalCapacity?: number` max abort-aware in-flight signals (default `258`).
@@ -274,6 +275,9 @@ Timing note:
 - In strict permission mode, Node FS/Deno/Bun file APIs are wrapped with deny
   checks for sensitive paths. Node workers also receive permission CLI flags in
   strict mode.
+- Strict sandbox runtimes are partitioned by module key inside each worker,
+  reducing cross-module shared-context surface (while still running in the
+  worker's single V8 isolate).
 
 #### Runtime tuning options
 
@@ -283,6 +287,10 @@ You can tune idle behavior and backoff:
 - `worker.timers.parkMs?: number` `Atomics.wait` timeout when parked (ms).
 - `worker.timers.pauseNanoseconds?: number` `Atomics.pause` duration while spinning (ns). Set to
   `0` to disable pause calls.
+- `worker.hardTimeoutMs?: number` hard wall-clock timeout for each task call.
+  On timeout, the pool force-shuts down to stop runaway CPU execution.
+- `worker.resourceLimits?: { maxOldGenerationSizeMb?, maxYoungGenerationSizeMb?, codeRangeSizeMb?, stackSizeMb? }`
+  Node worker memory/stack limits.
 - `payloadInitialBytes?: number` initial payload buffer size in bytes.
 - `payloadMaxBytes?: number` max payload buffer size in bytes.
 - `abortSignalCapacity?: number` max concurrent abort-aware in-flight calls

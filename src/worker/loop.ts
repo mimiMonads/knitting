@@ -1,4 +1,9 @@
-import { isMainThread, workerData, MessageChannel } from "node:worker_threads";
+import {
+  isMainThread,
+  workerData,
+  MessageChannel,
+  parentPort,
+} from "node:worker_threads";
 import { createWorkerRxQueue } from "./rx-queue.ts";
 import {
   createSharedMemoryTransport,
@@ -19,8 +24,40 @@ import {
   assertWorkerImportsResolved,
 } from "./safety/index.ts";
 import { signalAbortFactory } from "../shared/abortSignal.ts";
+import { executeCastOn } from "./cast-on.ts";
+import { freezeEnvironment } from "./freeze.ts";
 
 export const jsrIsGreatAndWorkWithoutBugs = () => null;
+const WORKER_FATAL_MESSAGE_KEY = "__knittingWorkerFatal";
+
+const captureGlobalDescriptors = (): Map<PropertyKey, PropertyDescriptor> => {
+  const out = new Map<PropertyKey, PropertyDescriptor>();
+  const g = globalThis as Record<PropertyKey, unknown>;
+  for (const key of Reflect.ownKeys(g)) {
+    const descriptor = Object.getOwnPropertyDescriptor(g, key);
+    if (!descriptor) continue;
+    out.set(key, descriptor);
+  }
+  return out;
+};
+
+const reportWorkerStartupFatal = (error: unknown): void => {
+  const message = String((error as { message?: unknown })?.message ?? error);
+  const payload = {
+    [WORKER_FATAL_MESSAGE_KEY]: message,
+  };
+  try {
+    parentPort?.postMessage(payload);
+    return;
+  } catch {
+  }
+  try {
+    (globalThis as { postMessage?: (message: unknown) => void }).postMessage?.(
+      payload,
+    );
+  } catch {
+  }
+};
 
 export const workerMainLoop = async (startupData: WorkerData): Promise<void> => {
   // Startup-only safety layer: no per-iteration checks in the hot loop.
@@ -38,6 +75,8 @@ export const workerMainLoop = async (startupData: WorkerData): Promise<void> => 
     returnLock,
     abortSignalSAB,
     abortSignalMax,
+    castOnModule,
+    castOnAt,
     permission,
     totalNumberOfThread,
     list,
@@ -46,9 +85,25 @@ export const workerMainLoop = async (startupData: WorkerData): Promise<void> => 
   } = startupData as WorkerData;
 
   scrubWorkerDataSensitiveBuffers(startupData);
+  assertWorkerSharedMemoryBootData({ sab, lock, returnLock });
+
+  const globalDescriptorsBeforeCastOn = castOnModule
+    ? captureGlobalDescriptors()
+    : undefined;
+  if (castOnModule) {
+    await executeCastOn({
+      castOnModule,
+      castOnAt,
+    });
+  }
+
   installWritePermissionGuard(permission);
   installStrictModeRuntimeGuard(permission);
-  assertWorkerSharedMemoryBootData({ sab, lock, returnLock });
+  if (globalDescriptorsBeforeCastOn) {
+    freezeEnvironment({
+      baselineGlobalDescriptors: globalDescriptorsBeforeCastOn,
+    });
+  }
 
   enum Comment {
     thisIsAHint = 0,
@@ -288,7 +343,7 @@ const installWebWorkerBootstrap = (): void => {
   };
   const start = (data: unknown) => {
     if (!isWorkerBootPayload(data)) return;
-    void workerMainLoop(data);
+    void workerMainLoop(data).catch(reportWorkerStartupFatal);
   };
 
   if (
@@ -318,7 +373,7 @@ const installWebWorkerBootstrap = (): void => {
 
 
 if (isMainThread === false && isWorkerBootPayload(workerData)) {
-  workerMainLoop(workerData);
+  void workerMainLoop(workerData).catch(reportWorkerStartupFatal);
 } else if (isWebWorkerScope()) {
   installWebWorkerBootstrap();
 }

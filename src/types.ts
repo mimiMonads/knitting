@@ -1,4 +1,5 @@
 import { endpointSymbol } from "./common/task-symbol.ts";
+import { castOnSymbol } from "./common/caston-symbol.ts";
 import type { Buffer as NodeBuffer } from "node:buffer";
 import type {
   PermissionProtocol,
@@ -26,6 +27,8 @@ type WorkerData = {
   sab: SharedArrayBuffer;
   abortSignalSAB?: SharedArrayBuffer;
   abortSignalMax?: number;
+  castOnModule?: string;
+  castOnAt?: number;
   list: string[];
   ids: number[];
   thread: number;
@@ -228,6 +231,22 @@ interface FixPointBase<
   readonly timeout?: TaskTimeout;
 }
 
+type CastOnSetup = {
+  /**
+   * Optional module URL override for worker discovery.
+   */
+  readonly href?: string;
+  readonly f: () => MaybePromise<void>;
+};
+
+type CastOnComposed =
+  & CastOnSetup
+  & {
+    readonly [castOnSymbol]: true;
+    readonly at: number;
+    readonly importedFrom: string;
+  };
+
 type FixPoint<
   A extends TaskInput,
   B extends Args,
@@ -259,11 +278,11 @@ type SingleTaskPool<
   AS extends AbortSignalOption = undefined,
 > = {
   call: PromiseWrapped<TaskFn<A, B, AS>, AS>;
-  shutdown: () => Promise<void>;
+  shutdown: (delayMs?: number) => Promise<void>;
 };
 
 type Pool<T extends Record<string, TaskLike<any>>> = {
-  shutdown: () => Promise<void>;
+  shutdown: (delayMs?: number) => Promise<void>;
   call: FunctionMapType<T>;
 };
 
@@ -321,6 +340,23 @@ type DebugOptions = {
 type WorkerSettings = {
   resolveAfterFinishingAll?: true;
   timers?: WorkerTimers;
+  /**
+   * Hard task execution timeout in milliseconds.
+   * When exceeded, the pool is force-shutdown to stop runaway CPU tasks.
+   */
+  hardTimeoutMs?: number;
+  /**
+   * Node.js worker thread memory/stack limits.
+   * Ignored on non-Node runtimes.
+   */
+  resourceLimits?: WorkerResourceLimits;
+};
+
+type WorkerResourceLimits = {
+  maxOldGenerationSizeMb?: number;
+  maxYoungGenerationSizeMb?: number;
+  codeRangeSizeMb?: number;
+  stackSizeMb?: number;
 };
 
 type WorkerTimers = {
@@ -352,6 +388,7 @@ type DispatcherSettings = {
 
 type CreatePool = {
   threads?: number;
+  castOn?: CastOnComposed;
   inliner?: Inliner;
   balancer?: Balancer;
   worker?: WorkerSettings;
@@ -418,6 +455,8 @@ export type {
   ComposedWithKey as ComposedWithKey,
   FunctionMapType as FunctionMapType,
   FixPoint as FixPoint,
+  CastOnSetup as CastOnSetup,
+  CastOnComposed as CastOnComposed,
   SecondPart as SecondPart,
   SingleTaskPool as SingleTaskPool,
   Pool as Pool,
@@ -428,6 +467,7 @@ export type {
   Balancer as Balancer,
   DebugOptions as DebugOptions,
   WorkerSettings as WorkerSettings,
+  WorkerResourceLimits as WorkerResourceLimits,
   WorkerTimers as WorkerTimers,
   DispatcherSettings as DispatcherSettings,
   CreatePool as CreatePool,

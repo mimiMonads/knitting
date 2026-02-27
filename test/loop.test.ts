@@ -64,3 +64,17 @@ test("worker loop progresses across async work and idle periods", async () => {
     await shutdown();
   }
 });
+
+test("shutdown supports delayed termination timer", async () => {
+  const { call, shutdown } = createPool({
+    threads: 1,
+  })({ addOne });
+
+  const value = await call.addOne(1);
+  assertEquals(value, 2);
+
+  const startedAt = Date.now();
+  await shutdown(60);
+  const elapsed = Date.now() - startedAt;
+  assert.equal(elapsed >= 40, true);
+});

@@ -83,6 +83,7 @@ type MembraneInterceptorBundle = {
 
 type GlobalWithStrictSandboxRuntime = typeof globalThis & {
   __knittingStrictSandboxRuntime?: StrictSandboxRuntime;
+  __knittingStrictSandboxRuntimeMap?: Map<string, StrictSandboxRuntime>;
 };
 
 type GenericCallable = (this: unknown, ...args: unknown[]) => unknown;
@@ -102,6 +103,7 @@ const toValueTag = Object.prototype.toString;
 const STRICT_SECURE_CONSTRUCTOR = Symbol.for(
   "knitting.strict.secureConstructor",
 );
+const DEFAULT_STRICT_RUNTIME_KEY = "__default__";
 
 const STRICT_BLOCKED_GLOBALS = [
   "Bun",
@@ -1237,12 +1239,22 @@ const createStrictSandboxRuntime = (
 
 export const ensureStrictSandboxRuntime = (
   protocol?: ResolvedPermissionProtocol,
+  runtimeKey?: string,
 ): StrictSandboxRuntime | undefined => {
   if (!protocol || !shouldUseStrictSandbox(protocol)) return undefined;
+  const key = typeof runtimeKey === "string" && runtimeKey.length > 0
+    ? runtimeKey
+    : DEFAULT_STRICT_RUNTIME_KEY;
   const g = globalThis as GlobalWithStrictSandboxRuntime;
-  if (g.__knittingStrictSandboxRuntime) return g.__knittingStrictSandboxRuntime;
+  const byKey = g.__knittingStrictSandboxRuntimeMap ?? new Map<string, StrictSandboxRuntime>();
+  g.__knittingStrictSandboxRuntimeMap = byKey;
+  const existing = byKey.get(key);
+  if (existing) return existing;
   const runtime = createStrictSandboxRuntime(protocol);
-  g.__knittingStrictSandboxRuntime = runtime;
+  byKey.set(key, runtime);
+  if (!g.__knittingStrictSandboxRuntime) {
+    g.__knittingStrictSandboxRuntime = runtime;
+  }
   return runtime;
 };
 

@@ -2,6 +2,7 @@ import { getCallerFilePath } from "./common/others.ts";
 import { genTaskID } from "./common/others.ts";
 import { toModuleUrl } from "./common/module-url.ts";
 import { endpointSymbol } from "./common/task-symbol.ts";
+import { castOnSymbol } from "./common/caston-symbol.ts";
 import { spawnWorkerContext } from "./runtime/pool.ts";
 import { isMainThread, workerData } from "node:worker_threads";
 import { readFileSync } from "node:fs";
@@ -23,6 +24,8 @@ import type {
   Args,
   AbortSignalConfig,
   AbortSignalOption,
+  CastOnComposed,
+  CastOnSetup,
   ComposedWithKey,
   CreatePool,
   DispatcherSettings,
@@ -145,6 +148,7 @@ export const toListAndIds: ToListAndIdsFn = (
 
 export const createPool: CreatePoolFactory = ({
   threads,
+  castOn,
   debug,
   inliner,
   balancer,
@@ -213,12 +217,23 @@ export const createPool: CreatePoolFactory = ({
     );
   }
 
-  const usingInliner = typeof inliner === "object" && inliner != null;
+  const requestedInliner = typeof inliner === "object" && inliner != null;
+  const usingInliner = requestedInliner && castOn == null;
+  if (requestedInliner && !usingInliner && debug?.extras === true) {
+    console.warn(
+      "inliner is disabled when castOn is configured (castOn runs only in workers)",
+    );
+  }
   const totalNumberOfThread = (threads ?? 1) +
     (usingInliner ? 1 : 0);
+  const castOnModule = castOn?.importedFrom;
+  const castOnAt = castOn?.at;
+  const moduleRefs = castOnModule
+    ? Array.from(new Set([...list, castOnModule]))
+    : list;
   const permissionProtocol = resolvePermissionProtocol({
     permission,
-    modules: list,
+    modules: moduleRefs,
   });
   assertBunStrictModuleSafety({
     protocol: permissionProtocol,
@@ -293,6 +308,9 @@ export const createPool: CreatePoolFactory = ({
 
   const hostDispatcher: DispatcherSettings | undefined = host ?? dispatcher;
   const usesAbortSignal = listOfFunctions.some((fn) => fn.abortSignal !== undefined);
+  const hardTimeoutMs = Number.isFinite(worker?.hardTimeoutMs)
+    ? Math.max(1, Math.floor(worker?.hardTimeoutMs as number))
+    : undefined;
 
   let workers = Array.from({
     length: threads ?? 1,
@@ -312,6 +330,8 @@ export const createPool: CreatePoolFactory = ({
       payloadMaxBytes,
       abortSignalCapacity,
       usesAbortSignal,
+      castOnModule,
+      castOnAt,
       permission: permissionProtocol,
     })
   );
@@ -342,6 +362,79 @@ export const createPool: CreatePoolFactory = ({
   const inlinerDispatchThreshold = Number.isFinite(inliner?.dispatchThreshold)
     ? Math.max(1, Math.floor(inliner?.dispatchThreshold ?? 1))
     : 1;
+  let closing = false;
+  let closePromise: Promise<void> | undefined;
+  let shutdownPromise: Promise<void> | undefined;
+
+  const closePoolNow = (): Promise<void> => {
+    if (closePromise) return closePromise;
+    closing = true;
+    closePromise = Promise.allSettled(workers.map((context) => context.kills()))
+      .then(() => undefined);
+    return closePromise;
+  };
+
+  const wrapGuardedInvoke = ({
+    invoke,
+    taskName,
+  }: {
+    invoke: WorkerInvoke;
+    taskName: string;
+  }): WorkerInvoke =>
+  (args: Uint8Array) => {
+    if (closing) {
+      return Promise.reject(new Error("Pool is shut down"));
+    }
+
+    const pending = invoke(args);
+    if (!hardTimeoutMs) return pending;
+
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const timeoutId = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        reject(
+          new Error(
+            `Task hard timeout after ${hardTimeoutMs}ms (${taskName}); pool force-shutdown`,
+          ),
+        );
+        void closePoolNow();
+      }, hardTimeoutMs);
+
+      pending.then(
+        (value) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeoutId);
+          resolve(value);
+        },
+        (error) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeoutId);
+          reject(error);
+        },
+      );
+    });
+  };
+
+  const shutdownWithDelay = (delayMs?: number): Promise<void> => {
+    if (closePromise) return closePromise;
+    if (shutdownPromise) return shutdownPromise;
+    const ms = Number.isFinite(delayMs)
+      ? Math.max(0, Math.floor(delayMs as number))
+      : 0;
+    shutdownPromise = (async () => {
+      if (closePromise) return await closePromise;
+      if (ms > 0) {
+        await new Promise<void>((resolve) => setTimeout(resolve, ms));
+      }
+      if (closePromise) return await closePromise;
+      await closePoolNow();
+    })();
+    return shutdownPromise;
+  };
 
   const indexedFunctions = listOfFunctions.map((fn, index) => ({
     name: fn.name,
@@ -359,10 +452,13 @@ export const createPool: CreatePoolFactory = ({
   for (const worker of workers) {
     for (const { name, index, timeout, abortSignal } of indexedFunctions) {
       callHandlers.get(name)!.push(
-        worker.call({
-          fnNumber: index,
-          timeout,
-          abortSignal,
+        wrapGuardedInvoke({
+          taskName: name,
+          invoke: worker.call({
+            fnNumber: index,
+            timeout,
+            abortSignal,
+          }),
         }),
       );
     }
@@ -391,9 +487,7 @@ export const createPool: CreatePoolFactory = ({
   );
 
   return {
-    shutdown: async () => {
-      await Promise.allSettled(workers.map((worker) => worker.kills()));
-    },
+    shutdown: shutdownWithDelay,
     call: Object.fromEntries(callEntries) as unknown as FunctionMapType<T>,
   } as Pool<T>;
 };
@@ -467,3 +561,20 @@ export function task<
 
   return out;
 }
+
+/**
+ * Define a cast-on setup function that runs before worker task execution.
+ */
+export const castOn = (I: CastOnSetup): CastOnComposed => {
+  const [href, at] = getCallerFilePath();
+  const importedFrom = I?.href != null
+    ? toModuleUrl(I.href)
+    : new URL(href).href;
+
+  return ({
+    ...I,
+    at,
+    importedFrom,
+    [castOnSymbol]: true,
+  }) as CastOnComposed;
+};

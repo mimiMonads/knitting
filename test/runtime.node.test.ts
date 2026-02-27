@@ -42,6 +42,10 @@ import {
   probeStrictFunctionCtorDynamicImport,
   probeStrictSandboxRequireModuleTypes,
 } from "./fixtures/strict_import_tasks.ts";
+import {
+  addOneLimitProbe,
+  runawayCpuLoop,
+} from "./fixtures/limit_tasks.ts";
 
 const TEST_TIMEOUT_MS = 10_000;
 const NODE_BIN = process.versions.bun ? "node" : process.execPath;
@@ -646,6 +650,38 @@ test("node:test strict mode blocks dynamic import vectors in section 19 path", {
     assert.equal(ctorImport.includes("KNT_ERROR_PERMISSION_DENIED"), true);
     assert.equal(bindings.requireType, "undefined");
     assert.equal(bindings.moduleType, "undefined");
+  } finally {
+    await pool.shutdown();
+  }
+});
+
+test("node:test worker hard timeout force-shuts pool on runaway cpu loops", {
+  concurrency: false,
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
+  if (process.versions.bun) {
+    return;
+  }
+
+  const pool = createPool({
+    threads: 1,
+    worker: {
+      hardTimeoutMs: 100,
+    },
+  })({
+    runawayCpuLoop,
+    addOneLimitProbe,
+  });
+
+  try {
+    await assert.rejects(
+      withTimeout(pool.call.runawayCpuLoop(), TEST_TIMEOUT_MS),
+      /Task hard timeout after 100ms/,
+    );
+    await assert.rejects(
+      pool.call.addOneLimitProbe(1),
+      /Pool is shut down/,
+    );
   } finally {
     await pool.shutdown();
   }

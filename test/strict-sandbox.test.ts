@@ -35,6 +35,21 @@ test("ensureStrictSandboxRuntime creates runtime with membrane globals", () => {
   assert.equal(Object.getPrototypeOf(g), null);
 });
 
+test("ensureStrictSandboxRuntime scopes runtimes by key", () => {
+  const protocol = strictProtocol();
+  assert.ok(protocol);
+
+  const runtimeA = ensureStrictSandboxRuntime(protocol, "module:a");
+  const runtimeB = ensureStrictSandboxRuntime(protocol, "module:b");
+  const runtimeA2 = ensureStrictSandboxRuntime(protocol, "module:a");
+
+  assert.ok(runtimeA);
+  assert.ok(runtimeB);
+  assert.ok(runtimeA2);
+  assert.equal(runtimeA === runtimeA2, true);
+  assert.equal(runtimeA === runtimeB, false);
+});
+
 test("ensureStrictSandboxRuntime vm context keeps Proxy unreachable", () => {
   const protocol = strictProtocol();
   assert.ok(protocol);

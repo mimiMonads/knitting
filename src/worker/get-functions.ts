@@ -115,6 +115,7 @@ const composeWorkerCallable = (
   fixed: ComposedWithKey,
   permission?: ResolvedPermissionProtocol,
   loadedInSandbox?: boolean,
+  runtimeKey?: string,
 ): WorkerCallable => {
   const fn = fixed.f as WorkerCallable;
   if (loadedInSandbox === true) {
@@ -129,7 +130,7 @@ const composeWorkerCallable = (
   if (!shouldUseStrictSandbox) {
     return createInjectedStrictCallable(fn);
   }
-  const sandboxRuntime = ensureStrictSandboxRuntime(permission);
+  const sandboxRuntime = ensureStrictSandboxRuntime(permission, runtimeKey);
   if (!sandboxRuntime) {
     return createInjectedStrictCallable(fn);
   }
@@ -151,14 +152,14 @@ export const getFunctions = async (
     permission.mode === "strict" &&
     permission.strict.recursiveScan !== false &&
     permission.strict.sandbox === true;
-  const sandboxRuntime = shouldUseStrictSandbox
-    ? ensureStrictSandboxRuntime(permission)
-    : undefined;
 
   const results = await Promise.all(
     modules.map(async (imports) => {
-      const loadedModule = sandboxRuntime
-        ? await loadModuleInSandbox(imports, sandboxRuntime)
+      const moduleRuntime = shouldUseStrictSandbox
+        ? ensureStrictSandboxRuntime(permission, imports)
+        : undefined;
+      const loadedModule = moduleRuntime
+        ? await loadModuleInSandbox(imports, moduleRuntime)
         : {
           namespace: (await import(imports)) as Record<string, unknown>,
           loadedInSandbox: false,
@@ -176,6 +177,7 @@ export const getFunctions = async (
           ...value,
           name,
           __knittingLoadedInSandbox: loadedModule.loadedInSandbox,
+          __knittingStrictRuntimeKey: imports,
         })) as unknown as ComposedWithKey[];
     }),
   );
@@ -200,6 +202,7 @@ export const getFunctions = async (
       fixed,
       permission,
       (fixed as unknown as { __knittingLoadedInSandbox?: boolean }).__knittingLoadedInSandbox === true,
+      (fixed as unknown as { __knittingStrictRuntimeKey?: string }).__knittingStrictRuntimeKey,
     ),
     timeout: normalizeTimeout(fixed.timeout),
   })) as WorkerComposedWithKey[];

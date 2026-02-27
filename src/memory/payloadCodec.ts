@@ -11,7 +11,6 @@ import {
 import { register } from "./regionRegistry.ts"
 import { createSharedDynamicBufferIO, createSharedStaticBufferIO } from "./createSharedBufferIO.ts"
 import { Buffer as NodeBuffer } from "node:buffer";
-import { NumericBuffer } from "../ipc/protocol/parsers/NumericBuffer.ts";
 import { ErrorKnitting, encoderError } from "../error.ts";
 
 const memory = new ArrayBuffer(8);
@@ -473,15 +472,6 @@ export const encodePayload = ({
         );
       }
 
-      if (objectValue instanceof NumericBuffer) {
-        const float64 = objectValue.toFloat64();
-        task[TaskIndex.Type] = PayloadBuffer.NumericBuffer;
-        if (!reserveDynamicObject(task, float64.byteLength)) return false;
-        writeDynamic8Binary(float64, task[TaskIndex.Start]);
-        task.value = null;
-        return true;
-      }
-
       if (arrayBufferIsView(objectValue)) {
         switch (getArrayBufferViewKind(objectValue)) {
           case VIEW_KIND_INT32_ARRAY:
@@ -908,15 +898,6 @@ export const decodePayload = ({
     return
     case PayloadBuffer.StaticBuffer:
       task.value = readStaticBufferCopy(0, task[TaskIndex.PayloadLen], slotIndex)
-    return
-    case PayloadBuffer.NumericBuffer:
-      task.value = NumericBuffer.fromFloat64(
-        readDynamic8BytesFloatView(
-          task[TaskIndex.Start],
-          task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
-        )
-      )
-      freeTaskSlot(task)
     return
   }
 } 

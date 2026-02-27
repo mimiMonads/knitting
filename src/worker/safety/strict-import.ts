@@ -11,6 +11,12 @@ type StrictBlockedGetter = (() => never) & {
   [BLOCKED_BINDING_GETTER]?: true;
 };
 
+type StrictBlockedBindingValue = {
+  [Symbol.toPrimitive]: () => never;
+  toString: () => never;
+  valueOf: () => never;
+};
+
 const toBlockedBindingMessage = (binding: string): string =>
   `[Knitting Strict] ${binding} is blocked. Use static imports in your task module.`;
 
@@ -20,6 +26,17 @@ const createBlockedGetter = (binding: string): StrictBlockedGetter => {
   }) as StrictBlockedGetter;
   getter[BLOCKED_BINDING_GETTER] = true;
   return getter;
+};
+
+const createBlockedBindingValue = (binding: string): StrictBlockedBindingValue => {
+  const throwBlocked = (): never => {
+    throw new Error(toBlockedBindingMessage(binding));
+  };
+  return {
+    [Symbol.toPrimitive]: throwBlocked,
+    toString: throwBlocked,
+    valueOf: throwBlocked,
+  };
 };
 
 export const isBlockedBindingDescriptor = (
@@ -166,8 +183,15 @@ export const createInjectedStrictCallable = <T extends (...args: any[]) => any>(
         continue;
       }
 
-      if (current && current.configurable !== true) continue;
-      tryDefineProperty(g, name, createEphemeralBlockedBindingDescriptor(name));
+      if (!current || current.configurable === true) {
+        tryDefineProperty(g, name, createEphemeralBlockedBindingDescriptor(name));
+        continue;
+      }
+      if ("value" in current && current.writable === true) {
+        ignoreError(() => {
+          g[name] = createBlockedBindingValue(name);
+        });
+      }
     }
 
     try {
@@ -176,6 +200,16 @@ export const createInjectedStrictCallable = <T extends (...args: any[]) => any>(
       for (const name of OVERLAY_BINDINGS) {
         const previous = saved.get(name);
         if (previous) {
+          if (previous.configurable === true) {
+            tryDefineProperty(g, name, previous);
+            continue;
+          }
+          if ("value" in previous && previous.writable === true) {
+            ignoreError(() => {
+              g[name] = previous.value;
+            });
+            continue;
+          }
           tryDefineProperty(g, name, previous);
           continue;
         }
