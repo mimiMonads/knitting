@@ -12,6 +12,7 @@ import { register } from "./regionRegistry.ts"
 import { createSharedDynamicBufferIO, createSharedStaticBufferIO } from "./createSharedBufferIO.ts"
 import { Buffer as NodeBuffer } from "node:buffer";
 import { ErrorKnitting, encoderError } from "../error.ts";
+import { Envelope } from "../common/envelope.ts";
 
 const memory = new ArrayBuffer(8);
 const Float64View = new Float64Array(memory);
@@ -32,7 +33,13 @@ const bigInt64ArrayPrototype = BigInt64Array.prototype;
 const bigUint64ArrayPrototype = BigUint64Array.prototype;
 const dataViewPrototype = DataView.prototype;
 const UNSUPPORTED_OBJECT_DETAIL =
-  "Unsupported object type. Allowed: plain object, array, Error, Date, Buffer, ArrayBuffer, DataView, and typed arrays. Serialize it yourself.";
+  "Unsupported object type. Allowed: plain object, array, Error, Date, Envelope, Buffer, ArrayBuffer, DataView, and typed arrays. Serialize it yourself.";
+const ENVELOPE_PAYLOAD_DETAIL =
+  "Envelope payload must be an ArrayBuffer.";
+const ENVELOPE_HEADER_DETAIL =
+  "Envelope header must be a JSON-like value or string.";
+const ENVELOPE_PROMISE_DETAIL =
+  "Envelope header cannot contain Promise values.";
 
 const VIEW_KIND_UNKNOWN = 0;
 const VIEW_KIND_INT32_ARRAY = 1;
@@ -64,6 +71,36 @@ const getArrayBufferViewKind = (value: object): ArrayBufferViewKindType => {
 const isPlainJsonObject = (value: object) => {
   const proto = objectGetPrototypeOf(value);
   return proto === objectPrototype || proto === null;
+};
+
+const hasPromiseInEnvelopeHeader = (
+  value: unknown,
+  seen?: Set<object>,
+): boolean => {
+  if (value instanceof Promise) return true;
+  if (value === null || typeof value !== "object") return false;
+
+  const objectValue = value as object;
+  const visited = seen ?? new Set<object>();
+  if (visited.has(objectValue)) return false;
+  visited.add(objectValue);
+
+  if (arrayIsArray(objectValue)) {
+    const list = objectValue as unknown[];
+    for (let i = 0; i < list.length; i++) {
+      if (hasPromiseInEnvelopeHeader(list[i], visited)) return true;
+    }
+    return false;
+  }
+
+  if (!isPlainJsonObject(objectValue)) return false;
+
+  const record = objectValue as Record<string, unknown>;
+  for (const key in record) {
+    if (!objectHasOwn.call(record, key)) continue;
+    if (hasPromiseInEnvelopeHeader(record[key], visited)) return true;
+  }
+  return false;
 };
 
 type ErrorPayload = {
@@ -524,6 +561,87 @@ export const encodePayload = ({
         return true;
       }
 
+      if (objectValue instanceof Envelope) {
+        const header = objectValue.header;
+        const payload = objectValue.payload;
+        if (!(payload instanceof ArrayBuffer)) {
+          return encoderError({
+            task,
+            type: ErrorKnitting.Serializable,
+            onPromise,
+            detail: ENVELOPE_PAYLOAD_DETAIL,
+          });
+        }
+        if (hasPromiseInEnvelopeHeader(header)) {
+          return encoderError({
+            task,
+            type: ErrorKnitting.Serializable,
+            onPromise,
+            detail: ENVELOPE_PROMISE_DETAIL,
+          });
+        }
+
+        let headerText: string | undefined;
+        try {
+          headerText = stringifyJSON(header);
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          return encoderError({
+            task,
+            type: ErrorKnitting.Json,
+            onPromise,
+            detail,
+          });
+        }
+        if (typeof headerText !== "string") {
+          return encoderError({
+            task,
+            type: ErrorKnitting.Serializable,
+            onPromise,
+            detail: ENVELOPE_HEADER_DETAIL,
+          });
+        }
+
+        const payloadBytes = new Uint8Array(payload);
+        const payloadLength = payloadBytes.byteLength;
+        const payloadReserveBytes = payloadLength > 0 ? payloadLength : 1;
+
+        const staticHeaderWritten = writeStaticUtf8(headerText, slotIndex);
+        if (staticHeaderWritten !== -1) {
+          if (!reserveDynamicObject(task, payloadReserveBytes)) return false;
+          task[TaskIndex.Type] = PayloadBuffer.EnvelopeStaticHeader;
+          task[TaskIndex.PayloadLen] = staticHeaderWritten;
+          task[TaskIndex.End] = payloadLength;
+          if (payloadLength > 0) {
+            writeDynamicBinary(payloadBytes, task[TaskIndex.Start]);
+          }
+          task.value = null;
+          return true;
+        }
+
+        const estimatedHeaderBytes = headerText.length * 3;
+        const estimatedTotalBytes = estimatedHeaderBytes + payloadLength;
+        task[TaskIndex.Type] = PayloadBuffer.EnvelopeDynamicHeader;
+        if (!reserveDynamicObject(task, estimatedTotalBytes)) return false;
+        const baseStart = task[TaskIndex.Start];
+        const writtenHeaderBytes = writeDynamicUtf8(
+          headerText,
+          baseStart,
+          estimatedHeaderBytes,
+        );
+        if (payloadLength > 0) {
+          writeDynamicBinary(payloadBytes, baseStart + writtenHeaderBytes);
+        }
+        task[TaskIndex.PayloadLen] = writtenHeaderBytes;
+        task[TaskIndex.End] = payloadLength;
+        setSlotLength(
+          slotOf(task),
+          writtenHeaderBytes + payloadLength,
+        );
+        task.value = null;
+        return true;
+      }
+
       if (objectValue instanceof Promise) {
         const markedTask = task as Task & {
           [PromisePayloadMarker]?: boolean;
@@ -725,6 +843,38 @@ export const decodePayload = ({
         readStaticUtf8(0, task[TaskIndex.PayloadLen], slotIndex)
       )
     return
+    case PayloadBuffer.EnvelopeStaticHeader: {
+      const header = parseJSON(
+        readStaticUtf8(0, task[TaskIndex.PayloadLen], slotIndex),
+      );
+      const payloadLength = task[TaskIndex.End];
+      const payload = payloadLength > 0
+        ? readDynamicArrayBufferCopy(
+          task[TaskIndex.Start],
+          task[TaskIndex.Start] + payloadLength,
+        )
+        : new ArrayBuffer(0);
+      task.value = new Envelope(header as any, payload);
+      freeTaskSlot(task);
+    return
+    }
+    case PayloadBuffer.EnvelopeDynamicHeader: {
+      const headerStart = task[TaskIndex.Start];
+      const payloadStart = headerStart + task[TaskIndex.PayloadLen];
+      const payloadLength = task[TaskIndex.End];
+      const header = parseJSON(
+        readDynamicUtf8(headerStart, payloadStart),
+      );
+      const payload = payloadLength > 0
+        ? readDynamicArrayBufferCopy(
+          payloadStart,
+          payloadStart + payloadLength,
+        )
+        : new ArrayBuffer(0);
+      task.value = new Envelope(header as any, payload);
+      freeTaskSlot(task);
+    return
+    }
     case PayloadBuffer.BigInt:
       task.value = decodeBigIntBinary(
         readDynamicBytesCopy(
