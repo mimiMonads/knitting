@@ -141,9 +141,8 @@ const enqueueLock = () => {
     serviceBatchImmediate: () => {
       let processed = 0;
 
-      while (processed < 3) {
-        const slot = toWorkShift();
-        if (!slot) break;
+      while (toWork.size !== 0) {
+        const slot = toWorkShift()!;
 
         try {
           const fnIndex = slot[TaskIndex.FunctionID] & FUNCTION_ID_MASK;

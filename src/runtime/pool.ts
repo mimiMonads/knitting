@@ -405,7 +405,7 @@ export const spawnWorkerContext = ({
   const a_add = Atomics.add;
   const a_load = Atomics.load;
   const a_notify = Atomics.notify;
-  const scheduleFastCheck = queueMicrotask;
+  //const scheduleFastCheck = queueMicrotask;
 
   const send = () => {
     if (check.isRunning === true) return;
@@ -430,16 +430,7 @@ export const spawnWorkerContext = ({
 
     return (args: Uint8Array) => {
       const pending = enqueues(args);
-
-      if (fastCheck.isRunning === false) {
-        // Prevent worker from sleeping before the dispatcher loop starts.
-        // Best-effort hint only; non-atomic by design.
-        signalBox.txStatus[TX_STATUS_HINT_INDEX] = 1;
-        fastCheck.isRunning = true;
-        scheduleFastCheck(fastCheck);
         send();
-      }
-
       return pending;
     };
   };
