@@ -2,6 +2,10 @@ import { endpointSymbol } from "./common/task-symbol.ts";
 import type { Buffer as NodeBuffer } from "node:buffer";
 import type { Envelope } from "./common/envelope.ts";
 import type {
+  PayloadBufferMode,
+  PayloadBufferOptions,
+} from "./memory/payload-config.ts";
+import type {
   PermissionProtocol,
   PermissionProtocolInput,
   ResolvedPermissionProtocol,
@@ -36,6 +40,7 @@ type WorkerData = {
   at: number[];
   lock: LockBuffers;
   returnLock: LockBuffers;
+  payloadConfig?: PayloadBufferOptions;
   permission?: ResolvedPermissionProtocol;
 };
 
@@ -374,16 +379,30 @@ type CreatePool = {
   balancer?: Balancer;
   worker?: WorkerSettings;
   /**
+   * Payload transport settings.
+   */
+  payload?: PayloadBufferOptions;
+  /**
    * Initial payload SharedArrayBuffer size (bytes) per worker direction.
    * Defaults to 4 MiB when growable SAB is available, otherwise defaults to
    * `payloadMaxBytes`.
+   * @deprecated Use `payload.payloadInitialBytes`.
    */
   payloadInitialBytes?: number;
   /**
    * Maximum payload SharedArrayBuffer size (bytes) per worker direction.
    * Defaults to 64 MiB.
+   * @deprecated Use `payload.payloadMaxByteLength`.
    */
   payloadMaxBytes?: number;
+  /**
+   * @deprecated Use `payload.mode`.
+   */
+  bufferMode?: PayloadBufferMode;
+  /**
+   * @deprecated Use `payload.maxPayloadBytes`.
+   */
+  maxPayloadBytes?: number;
   /**
    * Abort-aware signal pool capacity.
    * Defaults to `258`.
@@ -450,6 +469,8 @@ export type {
   WorkerTimers as WorkerTimers,
   DispatcherSettings as DispatcherSettings,
   CreatePool as CreatePool,
+  PayloadBufferMode as PayloadBufferMode,
+  PayloadBufferOptions as PayloadBufferOptions,
   PermissionProtocol as PermissionProtocol,
   PermissionProtocolInput as PermissionProtocolInput,
   ResolvedPermissionProtocol as ResolvedPermissionProtocol,

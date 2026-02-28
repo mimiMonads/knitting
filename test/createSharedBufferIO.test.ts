@@ -104,6 +104,39 @@ test("writeUtf8 does not grow when buffer is large enough", () => {
   assertEquals(sab.byteLength, before);
 });
 
+test("dynamic fixed mode returns -1 on binary overflow", () => {
+  const sab = new SharedArrayBuffer(header + 32);
+  const io = createSharedDynamicBufferIO({
+    sab,
+    payloadConfig: {
+      mode: "fixed",
+      payloadMaxByteLength: 1024 * 1024,
+      maxPayloadBytes: 256,
+    },
+  });
+  const src = new Uint8Array(64);
+
+  const written = io.writeBinary(src, 0);
+
+  assertEquals(written, -1);
+});
+
+test("dynamic fixed mode returns -1 on utf8 overflow", () => {
+  const sab = new SharedArrayBuffer(header + 32);
+  const io = createSharedDynamicBufferIO({
+    sab,
+    payloadConfig: {
+      mode: "fixed",
+      payloadMaxByteLength: 1024 * 1024,
+      maxPayloadBytes: 256,
+    },
+  });
+
+  const written = io.writeUtf8("a".repeat(80), 0, 80);
+
+  assertEquals(written, -1);
+});
+
 test("dynamic writeUtf8 honors exact reserved bytes and start offsets", () => {
   const sab = makeSab(64);
   const io = createSharedDynamicBufferIO({ sab });

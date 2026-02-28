@@ -13,6 +13,10 @@ import { createSharedDynamicBufferIO, createSharedStaticBufferIO } from "./creat
 import { Buffer as NodeBuffer } from "node:buffer";
 import { ErrorKnitting, encoderError } from "../error.ts";
 import { Envelope } from "../common/envelope.ts";
+import {
+  resolvePayloadBufferOptions,
+  type PayloadBufferOptions,
+} from "./payload-config.ts";
 
 const memory = new ArrayBuffer(8);
 const Float64View = new Float64Array(memory);
@@ -40,6 +44,9 @@ const ENVELOPE_HEADER_DETAIL =
   "Envelope header must be a JSON-like value or string.";
 const ENVELOPE_PROMISE_DETAIL =
   "Envelope header cannot contain Promise values.";
+const DYNAMIC_PAYLOAD_LIMIT_DETAIL = "Dynamic payload exceeds maxPayloadBytes.";
+const DYNAMIC_PAYLOAD_CAPACITY_DETAIL =
+  "Dynamic payload buffer capacity exceeded.";
 
 const VIEW_KIND_UNKNOWN = 0;
 const VIEW_KIND_INT32_ARRAY = 1;
@@ -225,16 +232,35 @@ const requireStaticIO = (headersBuffer: Uint32Array) => {
 
 export const encodePayload = ({
   lockSector,
+  payload,
   sab,
+  payloadConfig,
   headersBuffer,
   onPromise,
 }: {
   lockSector?: SharedArrayBuffer;
+  payload?: {
+    sab?: SharedArrayBuffer;
+    config?: PayloadBufferOptions;
+  };
+  /**
+   * @deprecated Use `payload.sab`.
+   */
   sab?: SharedArrayBuffer;
+  /**
+   * @deprecated Use `payload.config`.
+   */
+  payloadConfig?: PayloadBufferOptions;
   headersBuffer: Uint32Array;
   onPromise?: PromisePayloadHandler;
 }  ) =>  { 
-  
+  const payloadSab = payload?.sab ?? sab;
+  const resolvedPayloadConfig = resolvePayloadBufferOptions({
+    sab: payloadSab,
+    options: payload?.config ?? payloadConfig,
+  });
+  const maxPayloadBytes = resolvedPayloadConfig.maxPayloadBytes;
+
   const { allocTask, setSlotLength, free } = register({
     lockSector,
   });
@@ -243,7 +269,8 @@ export const encodePayload = ({
     write8Binary: writeDynamic8Binary,
     writeUtf8: writeDynamicUtf8,
   } = createSharedDynamicBufferIO({
-    sab,
+    sab: payloadSab,
+    payloadConfig: resolvedPayloadConfig,
   });
   const {
     maxBytes: staticMaxBytes,
@@ -252,6 +279,70 @@ export const encodePayload = ({
     writeUtf8: writeStaticUtf8,
   } = requireStaticIO(headersBuffer);
   const slotOf = (task: Task) => getTaskSlotIndex(task);
+  const dynamicLimitError = (
+    task: Task,
+    actualBytes: number,
+    label: string,
+  ) =>
+    encoderError({
+      task,
+      type: ErrorKnitting.Serializable,
+      onPromise,
+      detail:
+        `${DYNAMIC_PAYLOAD_LIMIT_DETAIL} limit=${maxPayloadBytes}; ` +
+        `actual=${actualBytes}; type=${label}.`,
+    });
+  const dynamicCapacityError = (task: Task) =>
+    encoderError({
+      task,
+      type: ErrorKnitting.Serializable,
+      onPromise,
+      detail: DYNAMIC_PAYLOAD_CAPACITY_DETAIL,
+    });
+  const ensureWithinDynamicLimit = (
+    task: Task,
+    bytes: number,
+    label: string,
+  ) => {
+    if (bytes <= maxPayloadBytes) return true;
+    return dynamicLimitError(task, bytes, label);
+  };
+  const dynamicUtf8PlanWithExtra = (
+    task: Task,
+    text: string,
+    extraBytes: number,
+    label: string,
+  ): { reserveBytes: number; totalBytes: number } | null => {
+    const estimatedBytes = text.length * 3;
+    const estimatedTotal = estimatedBytes + extraBytes;
+    if (estimatedTotal <= maxPayloadBytes) {
+      return {
+        reserveBytes: estimatedBytes,
+        totalBytes: estimatedTotal,
+      };
+    }
+
+    const exactBytes = NodeBuffer.byteLength(text, "utf8");
+    const exactTotal = exactBytes + extraBytes;
+    if (exactTotal > maxPayloadBytes) {
+      dynamicLimitError(task, exactTotal, label);
+      return null;
+    }
+
+    return {
+      reserveBytes: exactBytes,
+      totalBytes: exactTotal,
+    };
+  };
+  const dynamicUtf8Plan = (
+    task: Task,
+    text: string,
+    label: string,
+  ): { reserveBytes: number } | null => {
+    const plan = dynamicUtf8PlanWithExtra(task, text, 0, label);
+    if (plan === null) return null;
+    return { reserveBytes: plan.reserveBytes };
+  };
 
   const reserveDynamic = (task: Task, bytes: number) => {
     task[TaskIndex.PayloadLen] = bytes;
@@ -261,15 +352,20 @@ export const encodePayload = ({
   let objectDynamicSlot = -1;
   const reserveDynamicObject = (task: Task, bytes: number) => {
     task[TaskIndex.PayloadLen] = bytes;
-    if (allocTask(task) === -1) return false;
+    allocTask(task);
     objectDynamicSlot = slotOf(task);
-    return true;
   };
   const rollbackObjectDynamic = () => {
     if (objectDynamicSlot !== -1) {
       free(objectDynamicSlot);
       objectDynamicSlot = -1;
     }
+  };
+  const failDynamicWriteAfterReserve = (task: Task) => {
+    const reservedSlot = slotOf(task);
+    free(reservedSlot);
+    if (objectDynamicSlot === reservedSlot) objectDynamicSlot = -1;
+    return dynamicCapacityError(task);
   };
 
   let bigintScratch = new Uint8Array(16);
@@ -316,10 +412,16 @@ export const encodePayload = ({
         detail,
       });
     }
-    const estimatedBytes = text.length * 3;
+    const plan = dynamicUtf8Plan(task, text, "Error");
+    if (plan === null) return false;
     task[TaskIndex.Type] = PayloadBuffer.Error;
-    if (!reserveDynamicObject(task, estimatedBytes)) return false;
-    const written = writeDynamicUtf8(text, task[TaskIndex.Start]);
+    reserveDynamicObject(task, plan.reserveBytes);
+    const written = writeDynamicUtf8(
+      text,
+      task[TaskIndex.Start],
+      plan.reserveBytes,
+    );
+    if (written < 0) return failDynamicWriteAfterReserve(task);
     task[TaskIndex.PayloadLen] = written;
     setSlotLength(slotOf(task), written);
     task.value = null;
@@ -345,8 +447,14 @@ export const encodePayload = ({
     }
 
     task[TaskIndex.Type] = dynamicType;
-    if (!reserveDynamicObject(task, bytes)) return false;
-    writeDynamicBinary(bytesView, task[TaskIndex.Start]);
+    if (!ensureWithinDynamicLimit(task, bytes, PayloadBuffer[dynamicType])) {
+      return false;
+    }
+    reserveDynamicObject(task, bytes);
+    const written = writeDynamicBinary(bytesView, task[TaskIndex.Start]);
+    if (written < 0) return failDynamicWriteAfterReserve(task);
+    task[TaskIndex.PayloadLen] = written;
+    setSlotLength(slotOf(task), written);
     task.value = null;
     return true;
   };
@@ -368,8 +476,12 @@ export const encodePayload = ({
     }
 
     task[TaskIndex.Type] = PayloadBuffer.Float64Array;
-    if (!reserveDynamicObject(task, bytes)) return false;
-    writeDynamic8Binary(float64, task[TaskIndex.Start]);
+    if (!ensureWithinDynamicLimit(task, bytes, "Float64Array")) return false;
+    reserveDynamicObject(task, bytes);
+    const written = writeDynamic8Binary(float64, task[TaskIndex.Start]);
+    if (written < 0) return failDynamicWriteAfterReserve(task);
+    task[TaskIndex.PayloadLen] = written;
+    setSlotLength(slotOf(task), written);
     task.value = null;
     return true;
   };
@@ -395,11 +507,21 @@ export const encodePayload = ({
         }
 
         task[TaskIndex.Type] = PayloadBuffer.BigInt;
+        if (!ensureWithinDynamicLimit(task, binaryBytes, "BigInt")) {
+          clearBigIntScratch(binaryBytes);
+          return false;
+        }
         if (!reserveDynamic(task, binaryBytes)) {
           clearBigIntScratch(binaryBytes);
           return false;
         }
-        writeDynamicBinary(binary, task[TaskIndex.Start])
+        const written = writeDynamicBinary(binary, task[TaskIndex.Start]);
+        if (written < 0) {
+          clearBigIntScratch(binaryBytes);
+          return failDynamicWriteAfterReserve(task);
+        }
+        task[TaskIndex.PayloadLen] = written;
+        setSlotLength(slotOf(task), written);
         clearBigIntScratch(binaryBytes);
         return true
       }
@@ -471,8 +593,15 @@ export const encodePayload = ({
         }
 
         task[TaskIndex.Type] = PayloadBuffer.Json;
-        if (!reserveDynamicObject(task, text.length * 3)) return false;
-        const written = writeDynamicUtf8(text, task[TaskIndex.Start]);
+        const plan = dynamicUtf8Plan(task, text, "Json");
+        if (plan === null) return false;
+        reserveDynamicObject(task, plan.reserveBytes);
+        const written = writeDynamicUtf8(
+          text,
+          task[TaskIndex.Start],
+          plan.reserveBytes,
+        );
+        if (written < 0) return failDynamicWriteAfterReserve(task);
         task[TaskIndex.PayloadLen] = written;
         setSlotLength(slotOf(task), written);
         task.value = null;
@@ -608,29 +737,51 @@ export const encodePayload = ({
 
         const staticHeaderWritten = writeStaticUtf8(headerText, slotIndex);
         if (staticHeaderWritten !== -1) {
-          if (!reserveDynamicObject(task, payloadReserveBytes)) return false;
+          if (
+            !ensureWithinDynamicLimit(
+              task,
+              payloadReserveBytes,
+              "EnvelopeStaticHeaderPayload",
+            )
+          ) return false;
+          reserveDynamicObject(task, payloadReserveBytes);
           task[TaskIndex.Type] = PayloadBuffer.EnvelopeStaticHeader;
           task[TaskIndex.PayloadLen] = staticHeaderWritten;
           task[TaskIndex.End] = payloadLength;
           if (payloadLength > 0) {
-            writeDynamicBinary(payloadBytes, task[TaskIndex.Start]);
+            const payloadWritten = writeDynamicBinary(
+              payloadBytes,
+              task[TaskIndex.Start],
+            );
+            if (payloadWritten < 0) return failDynamicWriteAfterReserve(task);
+            setSlotLength(slotOf(task), payloadWritten);
           }
           task.value = null;
           return true;
         }
 
-        const estimatedHeaderBytes = headerText.length * 3;
-        const estimatedTotalBytes = estimatedHeaderBytes + payloadLength;
+        const dynamicPlan = dynamicUtf8PlanWithExtra(
+          task,
+          headerText,
+          payloadLength,
+          "EnvelopeDynamicHeader",
+        );
+        if (dynamicPlan === null) return false;
         task[TaskIndex.Type] = PayloadBuffer.EnvelopeDynamicHeader;
-        if (!reserveDynamicObject(task, estimatedTotalBytes)) return false;
+        reserveDynamicObject(task, dynamicPlan.totalBytes);
         const baseStart = task[TaskIndex.Start];
         const writtenHeaderBytes = writeDynamicUtf8(
           headerText,
           baseStart,
-          estimatedHeaderBytes,
+          dynamicPlan.reserveBytes,
         );
+        if (writtenHeaderBytes < 0) return failDynamicWriteAfterReserve(task);
         if (payloadLength > 0) {
-          writeDynamicBinary(payloadBytes, baseStart + writtenHeaderBytes);
+          const payloadWritten = writeDynamicBinary(
+            payloadBytes,
+            baseStart + writtenHeaderBytes,
+          );
+          if (payloadWritten < 0) return failDynamicWriteAfterReserve(task);
         }
         task[TaskIndex.PayloadLen] = writtenHeaderBytes;
         task[TaskIndex.End] = payloadLength;
@@ -687,7 +838,6 @@ export const encodePayload = ({
     case "string":
       {
         const text = args as string;
-        const estimatedBytes = text.length * 3;
         if (text.length <= staticMaxBytes) {
           const written = writeStaticUtf8(text, slotIndex);
           if (written !== -1) {
@@ -699,13 +849,16 @@ export const encodePayload = ({
         }
 
         task[TaskIndex.Type] = PayloadBuffer.String;
-        if (!reserveDynamic(task, estimatedBytes)) return false;
+        const plan = dynamicUtf8Plan(task, text, "String");
+        if (plan === null) return false;
+        if (!reserveDynamic(task, plan.reserveBytes)) return false;
 
         const written = writeDynamicUtf8(
           text,
           task[TaskIndex.Start],
-          estimatedBytes,
+          plan.reserveBytes,
         );
+        if (written < 0) return failDynamicWriteAfterReserve(task);
         task[TaskIndex.PayloadLen] = written;
         setSlotLength(slotOf(task), written);
         return true
@@ -720,8 +873,7 @@ export const encodePayload = ({
             onPromise,
           });
         }
-        const estimatedBytes = key.length * 3;
-        if (estimatedBytes <= staticMaxBytes) {
+        if (key.length * 3 <= staticMaxBytes) {
           const written = writeStaticUtf8(key, slotIndex);
           if (written !== -1) {
             task[TaskIndex.Type] = PayloadBuffer.StaticSymbol;
@@ -731,8 +883,15 @@ export const encodePayload = ({
         }
 
         task[TaskIndex.Type] = PayloadBuffer.Symbol;
-        if (!reserveDynamic(task, estimatedBytes)) return false;
-        const written = writeDynamicUtf8(key, task[TaskIndex.Start]);
+        const plan = dynamicUtf8Plan(task, key, "Symbol");
+        if (plan === null) return false;
+        if (!reserveDynamic(task, plan.reserveBytes)) return false;
+        const written = writeDynamicUtf8(
+          key,
+          task[TaskIndex.Start],
+          plan.reserveBytes,
+        );
+        if (written < 0) return failDynamicWriteAfterReserve(task);
         task[TaskIndex.PayloadLen] = written;
         setSlotLength(slotOf(task), written);
         return true;
@@ -746,16 +905,33 @@ export const encodePayload = ({
 
 export const decodePayload = ({
   lockSector,
+  payload,
   sab,
+  payloadConfig,
   headersBuffer,
   host,
 }: {
   lockSector?: SharedArrayBuffer;
-   sab?: SharedArrayBuffer; 
-   headersBuffer: Uint32Array
-   host?: true
+  payload?: {
+    sab?: SharedArrayBuffer;
+    config?: PayloadBufferOptions;
+  };
+  /**
+   * @deprecated Use `payload.sab`.
+   */
+  sab?: SharedArrayBuffer;
+  /**
+   * @deprecated Use `payload.config`.
+   */
+  payloadConfig?: PayloadBufferOptions;
+  headersBuffer: Uint32Array
+  host?: true
 }  ) => {
-  
+  const payloadSab = payload?.sab ?? sab;
+  const resolvedPayloadConfig = resolvePayloadBufferOptions({
+    sab: payloadSab,
+    options: payload?.config ?? payloadConfig,
+  });
   const { free } = register({
     lockSector,
   });
@@ -768,7 +944,8 @@ export const decodePayload = ({
     read8BytesFloatCopy: readDynamic8BytesFloatCopy,
     read8BytesFloatView: readDynamic8BytesFloatView,
   } = createSharedDynamicBufferIO({
-    sab,
+    sab: payloadSab,
+    payloadConfig: resolvedPayloadConfig,
   });
   const {
     readUtf8: readStaticUtf8,

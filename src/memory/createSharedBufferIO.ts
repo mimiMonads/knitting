@@ -1,60 +1,63 @@
-
 import { Buffer as NodeBuffer } from "node:buffer";
 import { LockBound, TaskIndex } from "./lock.ts";
 import {
-  HAS_SAB_GROW,
   createSharedArrayBuffer,
 } from "../common/runtime.ts";
+import {
+  resolvePayloadBufferOptions,
+  type PayloadBufferOptions,
+} from "./payload-config.ts";
 const page = 1024 * 4;
 const textEncode = new TextEncoder();
-
-
-enum SignalEnumOptions {
-  header = 64,
-  maxByteLength = page * page,
-  defaultSize = page,
-  safePadding = page,
-}
+const DYNAMIC_HEADER_BYTES = 64;
+const DYNAMIC_SAFE_PADDING_BYTES = page;
 
 const alignUpto64 = (n: number) => (n + (64 - 1)) & ~(64 - 1);
 
 export const createSharedDynamicBufferIO = ({
   sab,
+  payloadConfig,
 }: {
-  sab?: SharedArrayBuffer; 
+  sab?: SharedArrayBuffer;
+  payloadConfig?: PayloadBufferOptions;
 }) => {
-
-
-  const maxBytes = 64 * 1024 * 1024;
-  const initialBytes = HAS_SAB_GROW ? 4 * 1024 * 1024 : maxBytes;
+  const resolvedPayload = resolvePayloadBufferOptions({
+    sab,
+    options: payloadConfig,
+  });
+  const canGrow = resolvedPayload.mode === "growable";
   const lockSAB =
-      sab ??
-      createSharedArrayBuffer(
-        initialBytes,
-        maxBytes,
-      );
+    sab ??
+    (
+      canGrow
+        ? createSharedArrayBuffer(
+          resolvedPayload.payloadInitialBytes,
+          resolvedPayload.payloadMaxByteLength,
+        )
+        : createSharedArrayBuffer(resolvedPayload.payloadInitialBytes)
+    );
 
-  let u8 = new Uint8Array(lockSAB, SignalEnumOptions.header);
+  let u8 = new Uint8Array(lockSAB, DYNAMIC_HEADER_BYTES);
   const requireBufferView = (buffer: SharedArrayBuffer) => {
-    const view = NodeBuffer.from(buffer, SignalEnumOptions.header);
+    const view = NodeBuffer.from(buffer, DYNAMIC_HEADER_BYTES);
     if (view.buffer !== buffer) {
       throw new Error("Buffer view does not alias SharedArrayBuffer");
     }
     return view;
   };
   let buf = requireBufferView(lockSAB);
-  let f64 = new Float64Array(lockSAB, SignalEnumOptions.header);
+  let f64 = new Float64Array(lockSAB, DYNAMIC_HEADER_BYTES);
 
-  const capacityBytes = () => lockSAB.byteLength - SignalEnumOptions.header;
+  const capacityBytes = () => lockSAB.byteLength - DYNAMIC_HEADER_BYTES;
 
   const ensureCapacity = (neededBytes: number) => {
     if (capacityBytes() >= neededBytes) return true;
-    if (!HAS_SAB_GROW || typeof lockSAB.grow !== "function") return false;
+    if (!canGrow || typeof lockSAB.grow !== "function") return false;
 
     try {
       lockSAB.grow(
         alignUpto64(
-          SignalEnumOptions.header + neededBytes + SignalEnumOptions.safePadding,
+          DYNAMIC_HEADER_BYTES + neededBytes + DYNAMIC_SAFE_PADDING_BYTES,
         ),
       );
     } catch {
@@ -63,14 +66,14 @@ export const createSharedDynamicBufferIO = ({
 
     u8 = new Uint8Array(
       lockSAB,
-      SignalEnumOptions.header,
-      lockSAB.byteLength - SignalEnumOptions.header,
+      DYNAMIC_HEADER_BYTES,
+      lockSAB.byteLength - DYNAMIC_HEADER_BYTES,
     );
     buf = requireBufferView(lockSAB);
     f64 = new Float64Array(
       lockSAB,
-      SignalEnumOptions.header,
-      (lockSAB.byteLength - SignalEnumOptions.header) >>> 3,
+      DYNAMIC_HEADER_BYTES,
+      (lockSAB.byteLength - DYNAMIC_HEADER_BYTES) >>> 3,
     );
     return true;
   };
@@ -82,7 +85,7 @@ export const createSharedDynamicBufferIO = ({
 
   const writeBinary = (src: Uint8Array, start = 0) => {
     if (!ensureCapacity(start + src.byteLength)) {
-      throw new RangeError("Shared buffer capacity exceeded");
+      return -1;
     }
     u8.set(src, start);
     return src.byteLength;
@@ -91,10 +94,10 @@ export const createSharedDynamicBufferIO = ({
   const write8Binary = (src: Float64Array, start = 0) => {
     const bytes = src.byteLength;
     if (!ensureCapacity(start + bytes)) {
-      throw new RangeError("Shared buffer capacity exceeded");
+      return -1;
     }
     f64.set(src, start >>> 3);
-    return bytes
+    return bytes;
   };
 
   const readBytesCopy = (start:number, end:number) => u8.slice(start,end);
@@ -125,13 +128,14 @@ export const createSharedDynamicBufferIO = ({
     reservedBytes = str.length * 3,
   ) => {
     if (!ensureCapacity(start + reservedBytes)) {
-      throw new RangeError("Shared buffer capacity exceeded");
+      return -1;
     }
 
-    const { read, written } = textEncode.encodeInto(str, 
+    const { read, written } = textEncode.encodeInto(
+      str,
       u8.subarray(start, start + reservedBytes)
     );
-    if (read !== str.length) throw new RangeError("Shared buffer capacity exceeded");
+    if (read !== str.length) return -1;
     return written;
   };
 

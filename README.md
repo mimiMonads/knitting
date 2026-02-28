@@ -115,9 +115,6 @@ What this means today:
 
 - Host allocates/recycles per-call signal ids for abort-aware tasks.
 - Workers can read signal state before execution and via `hasAborted()`.
-- There is no public per-call cancel API yet, so user code cannot mark a
-  specific in-flight call as aborted.
-- `shutdown()` rejects pending calls with `"Thread closed"`.
 - Abort-aware pool capacity defaults to `258` in-flight calls (only when at
   least one task uses `abortSignal`) and can be tuned with
   `createPool({ abortSignalCapacity })`.
@@ -190,8 +187,18 @@ Key options:
   or `{ strategy?: "roundRobin" | "robinRound" | "firstIdle" | "randomLane" | "firstIdleOrRandom" }`
   task routing strategy.
 - `worker?: { resolveAfterFinishingAll?: true; timers?: WorkerTimers; hardTimeoutMs?: number; resourceLimits?: WorkerResourceLimits }`
-- `payloadInitialBytes?: number` initial payload SAB size per worker direction (bytes).
-- `payloadMaxBytes?: number` max payload SAB size per worker direction (bytes).
+- `payload?: { mode?: "growable" | "fixed"; payloadInitialBytes?: number; payloadMaxByteLength?: number; maxPayloadBytes?: number }`
+  payload transport settings.
+  - `mode`: defaults to `"growable"` when SAB growth is available, otherwise `"fixed"`.
+  - `payloadMaxByteLength`: defaults to `64 MiB`.
+  - `payloadInitialBytes`: defaults to `4 MiB` in growable mode; fixed mode uses the full max length.
+  - `maxPayloadBytes`: hard cap per dynamic payload. Must be `> 0` and `<= payloadMaxByteLength >> 3`.
+    Default is `payloadMaxByteLength >> 3` (`8 MiB` with defaults).
+- Deprecated payload aliases are still accepted:
+  `payloadInitialBytes` -> `payload.payloadInitialBytes`,
+  `payloadMaxBytes` -> `payload.payloadMaxByteLength`,
+  `bufferMode` -> `payload.mode`,
+  `maxPayloadBytes` -> `payload.maxPayloadBytes`.
 - `abortSignalCapacity?: number` max abort-aware in-flight signals (default `258`).
   This applies only when at least one task declares `abortSignal`.
 - `host?: DispatcherSettings`
@@ -280,14 +287,29 @@ You can tune idle behavior and backoff:
   On timeout, the pool force-shuts down to stop runaway CPU execution.
 - `worker.resourceLimits?: { maxOldGenerationSizeMb?, maxYoungGenerationSizeMb?, codeRangeSizeMb?, stackSizeMb? }`
   Node worker memory/stack limits.
-- `payloadInitialBytes?: number` initial payload buffer size in bytes.
-- `payloadMaxBytes?: number` max payload buffer size in bytes.
+- `payload.mode?: "growable" | "fixed"` select growable GSAB vs fixed SAB transport.
+- `payload.payloadInitialBytes?: number` initial payload buffer size in bytes.
+- `payload.payloadMaxByteLength?: number` max payload buffer size in bytes.
+- `payload.maxPayloadBytes?: number` hard cap per dynamic payload (defaults to `payloadMaxByteLength >> 3`).
 - `abortSignalCapacity?: number` max concurrent abort-aware in-flight calls
   (default `258`).
 - `host.stallFreeLoops?: number` notify loops before backoff starts.
 - `host.maxBackoffMs?: number` max backoff delay (ms).
 - `inliner.dispatchThreshold?: number` minimum in-flight calls before routing can use the
   inline host lane. Defaults to `1`.
+
+#### Payload hard cap
+
+Dynamic payload encoding now has a strict size ceiling to prevent out-of-range
+grow attempts:
+
+- Cap formula: `maxPayloadBytes <= payloadMaxByteLength >> 3`.
+- With defaults (`64 MiB` max payload buffer), the default hard cap is `8 MiB`.
+- Calls that exceed the hard cap are rejected with `KNT_ERROR_3` before dynamic
+  slot reservation.
+- In fixed mode, if the payload fits the cap but cannot fit current buffer
+  capacity, the call is rejected with a controlled encoder error instead of
+  crashing from GSAB range growth.
 
 Example:
 
