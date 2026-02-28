@@ -1,5 +1,6 @@
 import { endpointSymbol } from "./common/task-symbol.ts";
 import type { Buffer as NodeBuffer } from "node:buffer";
+import type { Envelope } from "./common/envelope.ts";
 import type {
   PermissionProtocol,
   PermissionProtocolInput,
@@ -79,7 +80,8 @@ type ValidInput =
   | BigUint64Array
   | DataView
   | Error
-  | Date;
+  | Date
+  | Envelope;
 
 type Args = ValidInput | Serializable;
 
@@ -451,6 +453,7 @@ export type {
   PermissionProtocol as PermissionProtocol,
   PermissionProtocolInput as PermissionProtocolInput,
   ResolvedPermissionProtocol as ResolvedPermissionProtocol,
+  Envelope as Envelope,
 };
 export type { Task as Task } from "./memory/lock.ts";
 export {

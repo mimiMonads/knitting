@@ -4,7 +4,7 @@ const assertEquals: (actual: unknown, expected: unknown) => void =
   (actual, expected) => {
     assert.deepStrictEqual(actual, expected);
   };
-import { createPool } from "../knitting.ts";
+import { Envelope, createPool } from "../knitting.ts";
 import {
   toBigInt,
   toBoolean,
@@ -14,6 +14,7 @@ import {
   toString,
   toVoid,
 } from "./fixtures/parameter_tasks.ts";
+import { echoEnvelope } from "./fixtures/envelope_tasks.ts";
 
 test("Using one thread calling with multiple arguments", async () => {
   const { call, shutdown } = createPool({})({
@@ -140,4 +141,21 @@ test("Using all thread calling with multiple arguments", async () => {
   });
 
   await shutdown();
+});
+
+test("Envelope payload round-trips through worker calls", async () => {
+  const pool = createPool({ threads: 1 })({
+    echoEnvelope,
+  });
+  const payload = new Uint8Array([10, 20, 30, 40]).buffer;
+  const input = new Envelope({ path: "/hello", status: 200 }, payload);
+
+  try {
+    const out = await pool.call.echoEnvelope(input);
+    assertEquals(out instanceof Envelope, true);
+    assertEquals(out.header, { path: "/hello", status: 200 });
+    assertEquals(Array.from(new Uint8Array(out.payload)), [10, 20, 30, 40]);
+  } finally {
+    await pool.shutdown();
+  }
 });

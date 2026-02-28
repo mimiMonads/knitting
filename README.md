@@ -80,11 +80,12 @@ promises, they’ll be awaited before dispatch.
 Only native `Promise` values are awaited; thenables are treated as regular
 values.
 
-`abortSignal` enables abort-aware metadata for that task.
+`abortSignal` opts a task into abort-aware call metadata.
 Accepted values:
 
-- `true`
-- `{ hasAborted: true }`
+- `true`: mark the task as abort-aware.
+- `{ hasAborted: true }`: same as above, plus a worker-side toolkit as the
+  second task argument: `{ hasAborted(): boolean }`.
 
 Usage:
 
@@ -92,9 +93,9 @@ Usage:
 import { createPool, task } from "@vixeny/knitting";
 
 export const slowTask = task({
-  abortSignal: true,
-  f: async (value: string) => {
-    // Your worker code
+  abortSignal: { hasAborted: true },
+  f: async (value: string, signal) => {
+    if (signal.hasAborted()) return "aborted";
     return value.toUpperCase();
   },
 });
@@ -103,26 +104,23 @@ const { call, shutdown } = createPool({ threads: 1 })({
   slowTask,
 });
 
-const pending = call.slowTask("hello");
-// today there is no public per-call cancel API yet
-// shutdown() rejects pending calls with "Thread closed"
+const pending = call.slowTask("hello"); // host call signature is unchanged
 await shutdown();
-await pending.catch(() => {});
+await pending.catch((reason) => {
+  console.log(reason); // "Thread closed"
+});
 ```
 
-Current behavior:
+What this means today:
 
-- Host allocates a signal id and encodes it into task metadata.
-- Worker checks signal state before invoking the task function.
-- If already aborted, the call rejects with `Error("Task aborted")`.
-- Signal cleanup is guarded to run once on settle (resolve or reject).
-- Abort-aware pool capacity defaults to `258` signals (when at least one task
-  uses `abortSignal`) and can be tuned with `createPool({ abortSignalCapacity })`.
-
-Current limitation:
-
-- There is no public per-call cancel API yet; `shutdown()` still rejects
-  pending calls with `"Thread closed"`.
+- Host allocates/recycles per-call signal ids for abort-aware tasks.
+- Workers can read signal state before execution and via `hasAborted()`.
+- There is no public per-call cancel API yet, so user code cannot mark a
+  specific in-flight call as aborted.
+- `shutdown()` rejects pending calls with `"Thread closed"`.
+- Abort-aware pool capacity defaults to `258` in-flight calls (only when at
+  least one task uses `abortSignal`) and can be tuned with
+  `createPool({ abortSignalCapacity })`.
 
 #### `href` override behavior (unsafe / experimental)
 
@@ -329,6 +327,8 @@ The transport supports these payloads:
 - `bigint`
 - `undefined` and `null`
 - plain JSON-like `Object` and `Array`
+- `Envelope<header, payload>` where `header` is JSON-like (or string) and
+  `payload` is `ArrayBuffer`
 - `Buffer` (Node.js), `ArrayBuffer`, `Uint8Array`, `Int32Array`, `Float64Array`, `BigInt64Array`,
   `BigUint64Array`, and `DataView`
 - global `symbol` values (`Symbol.for(...)`)
@@ -340,10 +340,21 @@ Thenables are not awaited by the transport.
 
 Not supported directly:
 
-- `Map`, `Set`, `WeakMap`, custom class instances
+- `Map`, `Set`, `WeakMap`, custom class instances (except `Envelope` and subclasses)
 - non-global symbols
 - `Blob`
 - functions
+
+`Envelope` is optimized for pair-like metadata + binary payload transport:
+
+```ts
+import { Envelope } from "@vixeny/knitting";
+
+const message = new Envelope(
+  { route: "/upload", contentType: "application/octet-stream" },
+  new Uint8Array([1, 2, 3]).buffer,
+);
+```
 
 If you need to pass several values, prefer a single object or tuple:
 

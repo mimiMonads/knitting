@@ -6,6 +6,7 @@ const assertEquals: (actual: unknown, expected: unknown) => void =
   };
 import { Buffer as NodeBuffer } from "node:buffer";
 import { decodePayload, encodePayload } from "../src/memory/payloadCodec.ts";
+import { Envelope } from "../src/common/envelope.ts";
 import {
   HEADER_U32_LENGTH,
   LOCK_SECTOR_BYTE_LENGTH,
@@ -358,6 +359,122 @@ test("poisoned constructor getter does not break plain object JSON path", () => 
 
   decode(task, 0);
   assertEquals(task.value, { safe: true });
+});
+
+test("envelope uses static header plus dynamic payload when header fits", () => {
+  const { encode, decode, registry } = makeCodec();
+  const task = makeTask();
+  const header = { hello: "world" };
+  const payload = new Uint8Array([1, 2, 3, 4]).buffer;
+  const headerBytes = utf8Bytes(JSON.stringify(header));
+
+  task.value = new Envelope(header, payload);
+
+  assertEquals(encode(task, 0), true);
+  assertEquals(task[TaskIndex.Type], PayloadBuffer.EnvelopeStaticHeader);
+  assertEquals(task[TaskIndex.PayloadLen], headerBytes);
+  assertEquals(task[TaskIndex.End], 4);
+  assertEquals(task[TaskIndex.slotBuffer], 0);
+
+  decode(task, 0);
+
+  assertEquals(task.value instanceof Envelope, true);
+  const out = task.value as Envelope;
+  assertEquals(out.header, header);
+  assertEquals(Array.from(new Uint8Array(out.payload)), [1, 2, 3, 4]);
+  assertEquals(registry.workerBits[0] & 1, 1);
+});
+
+test("envelope switches to dynamic header when static header limit is exceeded", () => {
+  const { encode, decode, registry } = makeCodec();
+  const task = makeTask();
+  const header = {
+    msg: "😀".repeat((STATIC_STRING_MAX_BYTES >>> 2) + 1),
+  };
+  const headerText = JSON.stringify(header);
+  const headerBytes = utf8Bytes(headerText);
+  const payload = new Uint8Array([9, 8, 7]).buffer;
+
+  assertEquals(headerBytes > STATIC_STRING_MAX_BYTES, true);
+
+  task.value = new Envelope(header, payload);
+
+  assertEquals(encode(task, 0), true);
+  assertEquals(task[TaskIndex.Type], PayloadBuffer.EnvelopeDynamicHeader);
+  assertEquals(task[TaskIndex.PayloadLen], headerBytes);
+  assertEquals(task[TaskIndex.End], 3);
+  assertEquals(task[TaskIndex.slotBuffer], 0);
+
+  decode(task, 0);
+
+  assertEquals(task.value instanceof Envelope, true);
+  const out = task.value as Envelope;
+  assertEquals(out.header, header);
+  assertEquals(Array.from(new Uint8Array(out.payload)), [9, 8, 7]);
+  assertEquals(registry.workerBits[0] & 1, 1);
+});
+
+test("envelope subclass is accepted by codec via instanceof", () => {
+  class SignedEnvelope extends Envelope {
+    readonly signature = "knt";
+  }
+
+  const { encode, decode } = makeCodec();
+  const task = makeTask();
+  task.value = new SignedEnvelope("ok", new Uint8Array([5]).buffer);
+
+  assertEquals(encode(task, 0), true);
+  assertEquals(task[TaskIndex.Type], PayloadBuffer.EnvelopeStaticHeader);
+
+  decode(task, 0);
+  assertEquals(task.value instanceof Envelope, true);
+  const out = task.value as Envelope;
+  assertEquals(out.header, "ok");
+  assertEquals(Array.from(new Uint8Array(out.payload)), [5]);
+});
+
+test("envelope rejects promise values inside header", async () => {
+  let result: Parameters<PromisePayloadHandler>[1] | undefined;
+  const { encode } = makeCodec((_, payload) => {
+    result = payload;
+  });
+  const task = makeTask();
+  task.value = new Envelope(
+    { pending: Promise.resolve(1) } as unknown as Envelope["header"],
+    new Uint8Array([1]).buffer,
+  );
+
+  assertEquals(encode(task, 0), false);
+  await Promise.resolve();
+
+  assertEquals(result?.status, "rejected");
+  if (result?.status === "rejected") {
+    const reason = String(result.reason);
+    assert.ok(reason.includes("KNT_ERROR_3"));
+    assert.ok(reason.includes("Envelope header cannot contain Promise values"));
+  }
+});
+
+test("envelope rejects non-ArrayBuffer payloads", async () => {
+  let result: Parameters<PromisePayloadHandler>[1] | undefined;
+  const { encode } = makeCodec((_, payload) => {
+    result = payload;
+  });
+  const task = makeTask();
+  task.value = new Envelope(
+    "ok",
+    new Uint8Array([1, 2, 3]) as unknown as ArrayBuffer,
+  );
+
+  assertEquals(encode(task, 0), false);
+  await Promise.resolve();
+
+  assertEquals(result?.status, "rejected");
+  if (result?.status === "rejected") {
+    const reason = String(result.reason);
+    assert.ok(reason.includes("KNT_ERROR_3"));
+    assert.ok(reason.includes("Envelope payload must be an ArrayBuffer"));
+  }
 });
 
 test("custom class payload is rejected by strict object policy", async () => {
