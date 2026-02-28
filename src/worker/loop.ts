@@ -60,6 +60,7 @@ export const workerMainLoop = async (startupData: WorkerData): Promise<void> => 
     returnLock,
     abortSignalSAB,
     abortSignalMax,
+    payloadConfig,
     permission,
     totalNumberOfThread,
     list,
@@ -89,6 +90,7 @@ export const workerMainLoop = async (startupData: WorkerData): Promise<void> => 
       LockBoundSector: lock.lockSector,
       payload: lock.payload,
       payloadSector: lock.payloadSector,
+      payloadConfig,
     })
   const returnLockState =
     lock2({
@@ -96,6 +98,7 @@ export const workerMainLoop = async (startupData: WorkerData): Promise<void> => 
       LockBoundSector: returnLock.lockSector,
       payload: returnLock.payload,
       payloadSector: returnLock.payloadSector,
+      payloadConfig,
     })
     
 

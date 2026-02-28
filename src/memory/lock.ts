@@ -1,6 +1,10 @@
 import RingQueue from "../ipc/tools/RingQueue.ts";
 import { decodePayload, encodePayload } from "./payloadCodec.ts";
-import { HAS_SAB_GROW, createSharedArrayBuffer } from "../common/runtime.ts";
+import { createSharedArrayBuffer } from "../common/runtime.ts";
+import {
+  resolvePayloadBufferOptions,
+  type PayloadBufferOptions,
+} from "./payload-config.ts";
 
 
 /**
@@ -280,6 +284,7 @@ export const lock2 = ({
   headers,
   LockBoundSector,
   payload,
+  payloadConfig,
   payloadSector,
   resultList,
   toSentList,
@@ -288,6 +293,7 @@ export const lock2 = ({
   headers?: SharedArrayBuffer;
   LockBoundSector?: SharedArrayBuffer;
   payload?: SharedArrayBuffer;
+  payloadConfig?: PayloadBufferOptions;
   payloadSector?: SharedArrayBuffer;
   toSentList?: RingQueue<Task>;
   resultList?: RingQueue<Task>;
@@ -321,12 +327,18 @@ export const lock2 = ({
   bufferHeadersBuffer
   );
 
-  const payloadMaxBytes = 64 * 1024 * 1024;
-  const payloadInitialBytes = HAS_SAB_GROW ? 4 * 1024 * 1024 : payloadMaxBytes;
+  const resolvedPayloadConfig = resolvePayloadBufferOptions({
+    sab: payload,
+    options: payloadConfig,
+  });
   const payloadSAB = payload ??
-    createSharedArrayBuffer(
-      payloadInitialBytes,
-      payloadMaxBytes,
+    (
+      resolvedPayloadConfig.mode === "growable"
+        ? createSharedArrayBuffer(
+          resolvedPayloadConfig.payloadInitialBytes,
+          resolvedPayloadConfig.payloadMaxByteLength,
+        )
+        : createSharedArrayBuffer(resolvedPayloadConfig.payloadInitialBytes)
     );
   const payloadLockSAB = payloadSector ??
     new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH);
@@ -334,13 +346,19 @@ export const lock2 = ({
   let promiseHandler: PromisePayloadHandler | undefined;
 
   const encodeTask = encodePayload({
-    sab: payloadSAB,
+    payload: {
+      sab: payloadSAB,
+      config: resolvedPayloadConfig,
+    },
     headersBuffer,
     lockSector: payloadLockSAB,
     onPromise: (task, result) => promiseHandler?.(task, result),
   });
   const decodeTask = decodePayload({
-    sab: payloadSAB,
+    payload: {
+      sab: payloadSAB,
+      config: resolvedPayloadConfig,
+    },
     headersBuffer,
     lockSector: payloadLockSAB,
   });

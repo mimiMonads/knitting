@@ -25,11 +25,14 @@ import type {
 } from "../types.ts";
 import { jsrIsGreatAndWorkWithoutBugs } from "../worker/loop.ts";
 import {
-  HAS_SAB_GROW,
   createSharedArrayBuffer,
 } from "../common/runtime.ts";
 import { signalAbortFactory } from "../shared/abortSignal.ts";
 import { Worker } from "node:worker_threads";
+import {
+  resolvePayloadBufferOptions,
+  type PayloadBufferOptions,
+} from "../memory/payload-config.ts";
 
 //const isBrowser = typeof window !== "undefined";
 
@@ -148,8 +151,11 @@ export const spawnWorkerContext = ({
   workerExecArgv,
   permission,
   host,
+  payload,
   payloadInitialBytes,
   payloadMaxBytes,
+  bufferMode,
+  maxPayloadBytes,
   abortSignalCapacity,
   usesAbortSignal,
 }: {
@@ -166,8 +172,11 @@ export const spawnWorkerContext = ({
   workerExecArgv?: string[];
   permission?: WorkerData["permission"];
   host?: DispatcherSettings;
+  payload?: PayloadBufferOptions;
   payloadInitialBytes?: number;
   payloadMaxBytes?: number;
+  bufferMode?: PayloadBufferOptions["mode"];
+  maxPayloadBytes?: number;
   abortSignalCapacity?: number;
   usesAbortSignal?: boolean;
 }) => {
@@ -179,17 +188,29 @@ export const spawnWorkerContext = ({
   }
 
   // Lock buffers must be shared between host and worker.
-  const defaultPayloadMaxBytes = 64 * 1024 * 1024;
   const sanitizeBytes = (value: number | undefined) => {
     if (!Number.isFinite(value)) return undefined;
     const bytes = Math.floor(value as number);
     return bytes > 0 ? bytes : undefined;
   };
-  const maxBytes = sanitizeBytes(payloadMaxBytes) ?? defaultPayloadMaxBytes;
-  const requestedInitial = sanitizeBytes(payloadInitialBytes);
-  const initialBytes = HAS_SAB_GROW
-    ? Math.min(requestedInitial ?? (4 * 1024 * 1024), maxBytes)
-    : maxBytes;
+  const resolvedPayloadConfig = resolvePayloadBufferOptions({
+    options: {
+      ...payload,
+      mode: payload?.mode ?? bufferMode,
+      maxPayloadBytes: payload?.maxPayloadBytes ?? maxPayloadBytes,
+      payloadInitialBytes:
+        payload?.payloadInitialBytes ?? sanitizeBytes(payloadInitialBytes),
+      payloadMaxByteLength:
+        payload?.payloadMaxByteLength ?? sanitizeBytes(payloadMaxBytes),
+    },
+  });
+  const makePayloadBuffer = () =>
+    resolvedPayloadConfig.mode === "growable"
+      ? createSharedArrayBuffer(
+        resolvedPayloadConfig.payloadInitialBytes,
+        resolvedPayloadConfig.payloadMaxByteLength,
+      )
+      : createSharedArrayBuffer(resolvedPayloadConfig.payloadInitialBytes);
   const defaultAbortSignalCapacity = 258;
   const requestedAbortSignalCapacity = sanitizeBytes(abortSignalCapacity);
   const resolvedAbortSignalCapacity =
@@ -199,19 +220,13 @@ export const spawnWorkerContext = ({
     lockSector: new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH),
     payloadSector: new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH),
     headers: new SharedArrayBuffer(HEADER_BYTE_LENGTH),
-    payload: createSharedArrayBuffer(
-      initialBytes,
-      maxBytes,
-    ),
+    payload: makePayloadBuffer(),
   };
   const returnLockBuffers: LockBuffers = {
     lockSector: new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH),
     payloadSector: new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH),
     headers: new SharedArrayBuffer(HEADER_BYTE_LENGTH),
-    payload: createSharedArrayBuffer(
-      initialBytes,
-      maxBytes,
-    ),
+    payload: makePayloadBuffer(),
   };
 
   const lock = lock2({
@@ -219,12 +234,14 @@ export const spawnWorkerContext = ({
     LockBoundSector: lockBuffers.lockSector,
     payload: lockBuffers.payload,
     payloadSector: lockBuffers.payloadSector,
+    payloadConfig: resolvedPayloadConfig,
   });
   const returnLock = lock2({
     headers: returnLockBuffers.headers,
     LockBoundSector: returnLockBuffers.lockSector,
     payload: returnLockBuffers.payload,
     payloadSector: returnLockBuffers.payloadSector,
+    payloadConfig: resolvedPayloadConfig,
   });
   const abortSignalWords = Math.max(
     1,
@@ -295,6 +312,7 @@ export const spawnWorkerContext = ({
     startAt: signalBox.startAt,
     lock: lockBuffers,
     returnLock: returnLockBuffers,
+    payloadConfig: resolvedPayloadConfig,
     permission,
   } as WorkerData;
   const baseWorkerOptions = {

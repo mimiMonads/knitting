@@ -159,3 +159,23 @@ test("Envelope payload round-trips through worker calls", async () => {
     await pool.shutdown();
   }
 });
+
+test("createPool accepts payload config object", async () => {
+  const pool = createPool({
+    threads: 1,
+    payload: {
+      mode: "fixed",
+      payloadMaxByteLength: 2 * 1024 * 1024,
+      maxPayloadBytes: 256 * 1024,
+    },
+  })({
+    toString,
+  });
+
+  try {
+    const out = await pool.call.toString("payload-config-ok");
+    assertEquals(out, "payload-config-ok");
+  } finally {
+    await pool.shutdown();
+  }
+});

@@ -17,6 +17,7 @@ import {
 } from "../src/memory/lock.ts";
 import { register } from "../src/memory/regionRegistry.ts";
 import { withResolvers } from "../src/common/with-resolvers.ts";
+import type { PayloadBufferOptions } from "../src/memory/payload-config.ts";
 
 const align64 = (n: number) => (n + 63) & ~63;
 const textEncoder = new TextEncoder();
@@ -68,16 +69,32 @@ const makeBoundaryOverflowUnicode = (
   return out;
 };
 
-const makeCodec = (onPromise?: PromisePayloadHandler) => {
+const makeCodec = (
+  onPromise?: PromisePayloadHandler,
+  options?: {
+    payloadBytes?: number;
+    payloadConfig?: PayloadBufferOptions;
+  },
+) => {
   const lockSector = new SharedArrayBuffer(
     LOCK_SECTOR_BYTE_LENGTH,
   );
-  const payload = new SharedArrayBuffer(40000);
+  const payload = new SharedArrayBuffer(options?.payloadBytes ?? 40000);
   const headersBuffer = new Uint32Array(HEADER_U32_LENGTH);
+  const payloadConfig = options?.payloadConfig;
 
   return {
-    encode: encodePayload({ lockSector, sab: payload, headersBuffer, onPromise }),
-    decode: decodePayload({ lockSector, sab: payload, headersBuffer }),
+    encode: encodePayload({
+      lockSector,
+      headersBuffer,
+      onPromise,
+      payload: { sab: payload, config: payloadConfig },
+    }),
+    decode: decodePayload({
+      lockSector,
+      headersBuffer,
+      payload: { sab: payload, config: payloadConfig },
+    }),
     registry: register({ lockSector }),
   };
 };
@@ -218,6 +235,83 @@ test("dynamic error uses dedicated error path and preserves allocation", () => {
   assertEquals(out.name, "TypeError");
   assertEquals(out.message, "x".repeat(2000));
   assertEquals(out.cause, { code: 7 });
+});
+
+test("dynamic payload exceeding maxPayloadBytes rejects before reservation", async () => {
+  let result: Parameters<PromisePayloadHandler>[1] | undefined;
+  const { encode, registry } = makeCodec((_, payload) => {
+    result = payload;
+  }, {
+    payloadConfig: {
+      mode: "fixed",
+      payloadMaxByteLength: 40000,
+      maxPayloadBytes: 64,
+    },
+  });
+  const task = makeTask();
+  task.value = "x".repeat(700);
+
+  assertEquals(encode(task, 0), false);
+  await Promise.resolve();
+
+  assertEquals(registry.hostBits[0] >>> 0, 0);
+  assertEquals(result?.status, "rejected");
+  if (result?.status === "rejected") {
+    const reason = String(result.reason);
+    assert.ok(reason.includes("KNT_ERROR_3"));
+    assert.ok(reason.includes("Dynamic payload exceeds maxPayloadBytes"));
+  }
+});
+
+test("dynamic utf8 path uses exact byte count only near cap and still succeeds", () => {
+  const { encode, decode } = makeCodec(undefined, {
+    payloadConfig: {
+      mode: "fixed",
+      payloadMaxByteLength: 40000,
+      maxPayloadBytes: 1100,
+    },
+  });
+  const task = makeTask();
+  const text = "é".repeat(500);
+  task.value = text;
+
+  assertEquals(text.length > STATIC_STRING_MAX_BYTES, true);
+  assertEquals(utf8Bytes(text), 1000);
+  assertEquals(text.length * 3 > 1100, true);
+
+  assertEquals(encode(task, 0), true);
+  assertEquals(task[TaskIndex.Type], PayloadBuffer.String);
+  assertEquals(task[TaskIndex.PayloadLen], utf8Bytes(text));
+
+  decode(task, 0);
+  assertEquals(task.value, text);
+});
+
+test("fixed mode capacity overflow returns controlled encoder error", async () => {
+  let result: Parameters<PromisePayloadHandler>[1] | undefined;
+  const { encode, registry } = makeCodec((_, payload) => {
+    result = payload;
+  }, {
+    payloadBytes: 1024,
+    payloadConfig: {
+      mode: "fixed",
+      payloadMaxByteLength: 64 * 1024,
+      maxPayloadBytes: 2000,
+    },
+  });
+  const task = makeTask();
+  task.value = "a".repeat(1200);
+
+  assertEquals(encode(task, 0), false);
+  await Promise.resolve();
+
+  assertEquals((registry.hostBits[0] ^ registry.workerBits[0]) >>> 0, 0);
+  assertEquals(result?.status, "rejected");
+  if (result?.status === "rejected") {
+    const reason = String(result.reason);
+    assert.ok(reason.includes("KNT_ERROR_3"));
+    assert.ok(reason.includes("Dynamic payload buffer capacity exceeded"));
+  }
 });
 
 test("map payload is rejected by strict object policy", async () => {
