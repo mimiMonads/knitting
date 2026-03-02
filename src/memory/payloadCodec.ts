@@ -29,13 +29,7 @@ const { for: symbolFor, keyFor: symbolKeyFor } = Symbol;
 const objectGetPrototypeOf = Object.getPrototypeOf;
 const objectHasOwn = Object.prototype.hasOwnProperty;
 const arrayIsArray = Array.isArray;
-const arrayBufferIsView = ArrayBuffer.isView;
 const objectPrototype = Object.prototype;
-const int32ArrayPrototype = Int32Array.prototype;
-const float64ArrayPrototype = Float64Array.prototype;
-const bigInt64ArrayPrototype = BigInt64Array.prototype;
-const bigUint64ArrayPrototype = BigUint64Array.prototype;
-const dataViewPrototype = DataView.prototype;
 const UNSUPPORTED_OBJECT_DETAIL =
   "Unsupported object type. Allowed: plain object, array, Error, Date, Envelope, Buffer, ArrayBuffer, DataView, and typed arrays. Serialize it yourself.";
 const ENVELOPE_PAYLOAD_DETAIL =
@@ -47,33 +41,6 @@ const ENVELOPE_PROMISE_DETAIL =
 const DYNAMIC_PAYLOAD_LIMIT_DETAIL = "Dynamic payload exceeds maxPayloadBytes.";
 const DYNAMIC_PAYLOAD_CAPACITY_DETAIL =
   "Dynamic payload buffer capacity exceeded.";
-
-const VIEW_KIND_UNKNOWN = 0;
-const VIEW_KIND_INT32_ARRAY = 1;
-const VIEW_KIND_FLOAT64_ARRAY = 2;
-const VIEW_KIND_BIGINT64_ARRAY = 3;
-const VIEW_KIND_BIGUINT64_ARRAY = 4;
-const VIEW_KIND_DATA_VIEW = 5;
-type ArrayBufferViewKindType = 0 | 1 | 2 | 3 | 4 | 5;
-
-const getArrayBufferViewKind = (value: object): ArrayBufferViewKindType => {
-  const proto = objectGetPrototypeOf(value);
-  if (proto === int32ArrayPrototype) return VIEW_KIND_INT32_ARRAY;
-  if (proto === float64ArrayPrototype) return VIEW_KIND_FLOAT64_ARRAY;
-  if (proto === bigInt64ArrayPrototype) return VIEW_KIND_BIGINT64_ARRAY;
-  if (proto === bigUint64ArrayPrototype) {
-    return VIEW_KIND_BIGUINT64_ARRAY;
-  }
-  if (proto === dataViewPrototype) return VIEW_KIND_DATA_VIEW;
-  if (value instanceof Int32Array) return VIEW_KIND_INT32_ARRAY;
-  if (value instanceof Float64Array) return VIEW_KIND_FLOAT64_ARRAY;
-  if (value instanceof BigInt64Array) return VIEW_KIND_BIGINT64_ARRAY;
-  if (value instanceof BigUint64Array) {
-    return VIEW_KIND_BIGUINT64_ARRAY;
-  }
-  if (value instanceof DataView) return VIEW_KIND_DATA_VIEW;
-  return VIEW_KIND_UNKNOWN;
-};
 
 const isPlainJsonObject = (value: object) => {
   const proto = objectGetPrototypeOf(value);
@@ -307,53 +274,42 @@ export const encodePayload = ({
     if (bytes <= maxPayloadBytes) return true;
     return dynamicLimitError(task, bytes, label);
   };
-  const dynamicUtf8PlanWithExtra = (
+  const dynamicUtf8ReserveBytesWithExtra = (
     task: Task,
     text: string,
     extraBytes: number,
     label: string,
-  ): { reserveBytes: number; totalBytes: number } | null => {
+  ): number => {
     const estimatedBytes = text.length * 3;
     const estimatedTotal = estimatedBytes + extraBytes;
-    if (estimatedTotal <= maxPayloadBytes) {
-      return {
-        reserveBytes: estimatedBytes,
-        totalBytes: estimatedTotal,
-      };
-    }
+    if (estimatedTotal <= maxPayloadBytes) return estimatedBytes;
 
     const exactBytes = NodeBuffer.byteLength(text, "utf8");
     const exactTotal = exactBytes + extraBytes;
     if (exactTotal > maxPayloadBytes) {
       dynamicLimitError(task, exactTotal, label);
-      return null;
+      return -1;
     }
-
-    return {
-      reserveBytes: exactBytes,
-      totalBytes: exactTotal,
-    };
+    return exactBytes;
   };
-  const dynamicUtf8Plan = (
+  const dynamicUtf8ReserveBytes = (
     task: Task,
     text: string,
     label: string,
-  ): { reserveBytes: number } | null => {
-    const plan = dynamicUtf8PlanWithExtra(task, text, 0, label);
-    if (plan === null) return null;
-    return { reserveBytes: plan.reserveBytes };
-  };
+  ): number => dynamicUtf8ReserveBytesWithExtra(task, text, 0, label);
 
   const reserveDynamic = (task: Task, bytes: number) => {
     task[TaskIndex.PayloadLen] = bytes;
-    if (allocTask(task) === -1) return false;
-    return true;
+    if (allocTask(task) === -1) return -1;
+    return slotOf(task);
   };
   let objectDynamicSlot = -1;
   const reserveDynamicObject = (task: Task, bytes: number) => {
     task[TaskIndex.PayloadLen] = bytes;
     allocTask(task);
-    objectDynamicSlot = slotOf(task);
+    const reservedSlot = slotOf(task);
+    objectDynamicSlot = reservedSlot;
+    return reservedSlot;
   };
   const rollbackObjectDynamic = () => {
     if (objectDynamicSlot !== -1) {
@@ -361,8 +317,7 @@ export const encodePayload = ({
       objectDynamicSlot = -1;
     }
   };
-  const failDynamicWriteAfterReserve = (task: Task) => {
-    const reservedSlot = slotOf(task);
+  const failDynamicWriteAfterReserve = (task: Task, reservedSlot: number) => {
     free(reservedSlot);
     if (objectDynamicSlot === reservedSlot) objectDynamicSlot = -1;
     return dynamicCapacityError(task);
@@ -412,18 +367,18 @@ export const encodePayload = ({
         detail,
       });
     }
-    const plan = dynamicUtf8Plan(task, text, "Error");
-    if (plan === null) return false;
+    const reserveBytes = dynamicUtf8ReserveBytes(task, text, "Error");
+    if (reserveBytes < 0) return false;
     task[TaskIndex.Type] = PayloadBuffer.Error;
-    reserveDynamicObject(task, plan.reserveBytes);
+    const reservedSlot = reserveDynamicObject(task, reserveBytes);
     const written = writeDynamicUtf8(
       text,
       task[TaskIndex.Start],
-      plan.reserveBytes,
+      reserveBytes,
     );
-    if (written < 0) return failDynamicWriteAfterReserve(task);
+    if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
     task[TaskIndex.PayloadLen] = written;
-    setSlotLength(slotOf(task), written);
+    setSlotLength(reservedSlot, written);
     task.value = null;
     return true;
   };
@@ -450,11 +405,11 @@ export const encodePayload = ({
     if (!ensureWithinDynamicLimit(task, bytes, PayloadBuffer[dynamicType])) {
       return false;
     }
-    reserveDynamicObject(task, bytes);
+    const reservedSlot = reserveDynamicObject(task, bytes);
     const written = writeDynamicBinary(bytesView, task[TaskIndex.Start]);
-    if (written < 0) return failDynamicWriteAfterReserve(task);
+    if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
     task[TaskIndex.PayloadLen] = written;
-    setSlotLength(slotOf(task), written);
+    setSlotLength(reservedSlot, written);
     task.value = null;
     return true;
   };
@@ -477,17 +432,189 @@ export const encodePayload = ({
 
     task[TaskIndex.Type] = PayloadBuffer.Float64Array;
     if (!ensureWithinDynamicLimit(task, bytes, "Float64Array")) return false;
-    reserveDynamicObject(task, bytes);
+    const reservedSlot = reserveDynamicObject(task, bytes);
     const written = writeDynamic8Binary(float64, task[TaskIndex.Start]);
-    if (written < 0) return failDynamicWriteAfterReserve(task);
+    if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
     task[TaskIndex.PayloadLen] = written;
-    setSlotLength(slotOf(task), written);
+    setSlotLength(reservedSlot, written);
     task.value = null;
     return true;
   };
+  const encodeObjectArrayBuffer = (
+    task: Task,
+    slotIndex: number,
+    arrayBuffer: ArrayBuffer,
+  ) => {
+    const bytes = arrayBuffer.byteLength;
+    let bytesView: Uint8Array | undefined;
+    if (bytes <= staticMaxBytes) {
+      bytesView = new Uint8Array(arrayBuffer);
+      const written = writeStaticBinary(bytesView, slotIndex);
+      if (written !== -1) {
+        task[TaskIndex.Type] = PayloadBuffer.StaticArrayBuffer;
+        task[TaskIndex.PayloadLen] = written;
+        task.value = null;
+        return true;
+      }
+    }
 
-  const toUint8View = (value: ArrayBufferView) =>
-    new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+    task[TaskIndex.Type] = PayloadBuffer.ArrayBuffer;
+    if (!ensureWithinDynamicLimit(task, bytes, "ArrayBuffer")) return false;
+    const reservedSlot = reserveDynamicObject(task, bytes);
+    const written = writeDynamicBinary(
+      bytesView ?? new Uint8Array(arrayBuffer),
+      task[TaskIndex.Start],
+    );
+    if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
+    task[TaskIndex.PayloadLen] = written;
+    setSlotLength(reservedSlot, written);
+    task.value = null;
+    return true;
+  };
+  const encodeObjectDate = (task: Task, date: Date) => {
+    Float64View[0] = date.getTime();
+    task[TaskIndex.Type] = PayloadBuffer.Date;
+    task[TaskIndex.Start] = Uint32View[0];
+    task[TaskIndex.End] = Uint32View[1];
+    task.value = null;
+    return true;
+  };
+  const encodeObjectEnvelope = (
+    task: Task,
+    slotIndex: number,
+    envelope: Envelope,
+  ) => {
+    const header = envelope.header;
+    const payload = envelope.payload;
+    if (!(payload instanceof ArrayBuffer)) {
+      return encoderError({
+        task,
+        type: ErrorKnitting.Serializable,
+        onPromise,
+        detail: ENVELOPE_PAYLOAD_DETAIL,
+      });
+    }
+    if (hasPromiseInEnvelopeHeader(header)) {
+      return encoderError({
+        task,
+        type: ErrorKnitting.Serializable,
+        onPromise,
+        detail: ENVELOPE_PROMISE_DETAIL,
+      });
+    }
+
+    let headerText: string | undefined;
+    try {
+      headerText = stringifyJSON(header);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return encoderError({
+        task,
+        type: ErrorKnitting.Json,
+        onPromise,
+        detail,
+      });
+    }
+    if (typeof headerText !== "string") {
+      return encoderError({
+        task,
+        type: ErrorKnitting.Serializable,
+        onPromise,
+        detail: ENVELOPE_HEADER_DETAIL,
+      });
+    }
+
+    const payloadBytes = new Uint8Array(payload);
+    const payloadLength = payloadBytes.byteLength;
+    const payloadReserveBytes = payloadLength > 0 ? payloadLength : 1;
+
+    const staticHeaderWritten = writeStaticUtf8(headerText, slotIndex);
+    if (staticHeaderWritten !== -1) {
+      if (
+        !ensureWithinDynamicLimit(
+          task,
+          payloadReserveBytes,
+          "EnvelopeStaticHeaderPayload",
+        )
+      ) return false;
+      const reservedSlot = reserveDynamicObject(task, payloadReserveBytes);
+      task[TaskIndex.Type] = PayloadBuffer.EnvelopeStaticHeader;
+      task[TaskIndex.PayloadLen] = staticHeaderWritten;
+      task[TaskIndex.End] = payloadLength;
+      if (payloadLength > 0) {
+        const payloadWritten = writeDynamicBinary(
+          payloadBytes,
+          task[TaskIndex.Start],
+        );
+        if (payloadWritten < 0) {
+          return failDynamicWriteAfterReserve(task, reservedSlot);
+        }
+        setSlotLength(reservedSlot, payloadWritten);
+      }
+      task.value = null;
+      return true;
+    }
+
+    const headerReserveBytes = dynamicUtf8ReserveBytesWithExtra(
+      task,
+      headerText,
+      payloadLength,
+      "EnvelopeDynamicHeader",
+    );
+    if (headerReserveBytes < 0) return false;
+    task[TaskIndex.Type] = PayloadBuffer.EnvelopeDynamicHeader;
+    const reservedSlot = reserveDynamicObject(
+      task,
+      headerReserveBytes + payloadLength,
+    );
+    const baseStart = task[TaskIndex.Start];
+    const writtenHeaderBytes = writeDynamicUtf8(
+      headerText,
+      baseStart,
+      headerReserveBytes,
+    );
+    if (writtenHeaderBytes < 0) {
+      return failDynamicWriteAfterReserve(task, reservedSlot);
+    }
+    if (payloadLength > 0) {
+      const payloadWritten = writeDynamicBinary(
+        payloadBytes,
+        baseStart + writtenHeaderBytes,
+      );
+      if (payloadWritten < 0) {
+        return failDynamicWriteAfterReserve(task, reservedSlot);
+      }
+    }
+    task[TaskIndex.PayloadLen] = writtenHeaderBytes;
+    task[TaskIndex.End] = payloadLength;
+    setSlotLength(
+      reservedSlot,
+      writtenHeaderBytes + payloadLength,
+    );
+    task.value = null;
+    return true;
+  };
+  const encodeObjectPromise = (task: Task, promise: Promise<unknown>) => {
+    const markedTask = task as Task & {
+      [PromisePayloadMarker]?: boolean;
+    };
+    if (markedTask[PromisePayloadMarker] !== true) {
+      markedTask[PromisePayloadMarker] = true;
+      promise.then(
+        (value) => {
+          markedTask[PromisePayloadMarker] = false;
+          task.value = value;
+          onPromise?.(task, { status: "fulfilled", value });
+        },
+        (reason) => {
+          markedTask[PromisePayloadMarker] = false;
+          task.value = reason;
+          onPromise?.(task, { status: "rejected", reason });
+        },
+      );
+    }
+    return false;
+  };
 
   return (task: Task, slotIndex: number) => {
   const args = task.value
@@ -511,17 +638,18 @@ export const encodePayload = ({
           clearBigIntScratch(binaryBytes);
           return false;
         }
-        if (!reserveDynamic(task, binaryBytes)) {
+        const reservedSlot = reserveDynamic(task, binaryBytes);
+        if (reservedSlot < 0) {
           clearBigIntScratch(binaryBytes);
           return false;
         }
         const written = writeDynamicBinary(binary, task[TaskIndex.Start]);
         if (written < 0) {
           clearBigIntScratch(binaryBytes);
-          return failDynamicWriteAfterReserve(task);
+          return failDynamicWriteAfterReserve(task, reservedSlot);
         }
         task[TaskIndex.PayloadLen] = written;
-        setSlotLength(slotOf(task), written);
+        setSlotLength(reservedSlot, written);
         clearBigIntScratch(binaryBytes);
         return true
       }
@@ -593,17 +721,17 @@ export const encodePayload = ({
         }
 
         task[TaskIndex.Type] = PayloadBuffer.Json;
-        const plan = dynamicUtf8Plan(task, text, "Json");
-        if (plan === null) return false;
-        reserveDynamicObject(task, plan.reserveBytes);
+        const reserveBytes = dynamicUtf8ReserveBytes(task, text, "Json");
+        if (reserveBytes < 0) return false;
+        const reservedSlot = reserveDynamicObject(task, reserveBytes);
         const written = writeDynamicUtf8(
           text,
           task[TaskIndex.Start],
-          plan.reserveBytes,
+          reserveBytes,
         );
-        if (written < 0) return failDynamicWriteAfterReserve(task);
+        if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
         task[TaskIndex.PayloadLen] = written;
-        setSlotLength(slotOf(task), written);
+        setSlotLength(reservedSlot, written);
         task.value = null;
         return true;
       }
@@ -618,203 +746,92 @@ export const encodePayload = ({
         );
       }
 
-      if (objectValue instanceof Uint8Array) {
-        return encodeObjectBinary(
-          task,
-          slotIndex,
-          objectValue,
-          PayloadBuffer.Binary,
-          PayloadBuffer.StaticBinary,
-        );
-      }
-
-      if (objectValue instanceof ArrayBuffer) {
-        return encodeObjectBinary(
-          task,
-          slotIndex,
-          new Uint8Array(objectValue),
-          PayloadBuffer.ArrayBuffer,
-          PayloadBuffer.StaticArrayBuffer,
-        );
-      }
-
-      if (arrayBufferIsView(objectValue)) {
-        switch (getArrayBufferViewKind(objectValue)) {
-          case VIEW_KIND_INT32_ARRAY:
-            return encodeObjectBinary(
-              task,
-              slotIndex,
-              toUint8View(objectValue as Int32Array),
-              PayloadBuffer.Int32Array,
-              PayloadBuffer.StaticInt32Array,
-            );
-          case VIEW_KIND_FLOAT64_ARRAY:
-            return encodeObjectFloat64Array(
-              task,
-              slotIndex,
-              objectValue as Float64Array,
-            );
-          case VIEW_KIND_BIGINT64_ARRAY:
-            return encodeObjectBinary(
-              task,
-              slotIndex,
-              toUint8View(objectValue as BigInt64Array),
-              PayloadBuffer.BigInt64Array,
-              PayloadBuffer.StaticBigInt64Array,
-            );
-          case VIEW_KIND_BIGUINT64_ARRAY:
-            return encodeObjectBinary(
-              task,
-              slotIndex,
-              toUint8View(objectValue as BigUint64Array),
-              PayloadBuffer.BigUint64Array,
-              PayloadBuffer.StaticBigUint64Array,
-            );
-          case VIEW_KIND_DATA_VIEW:
-            return encodeObjectBinary(
-              task,
-              slotIndex,
-              toUint8View(objectValue as DataView),
-              PayloadBuffer.DataView,
-              PayloadBuffer.StaticDataView,
-            );
+      switch ((objectValue as { constructor?: unknown }).constructor) {
+        case Uint8Array:
+          return encodeObjectBinary(
+            task,
+            slotIndex,
+            objectValue as Uint8Array,
+            PayloadBuffer.Binary,
+            PayloadBuffer.StaticBinary,
+          );
+        case ArrayBuffer:
+          return encodeObjectArrayBuffer(task, slotIndex, objectValue as ArrayBuffer);
+        case Int32Array: {
+          const int32 = objectValue as Int32Array;
+          return encodeObjectBinary(
+            task,
+            slotIndex,
+            new Uint8Array(int32.buffer, int32.byteOffset, int32.byteLength),
+            PayloadBuffer.Int32Array,
+            PayloadBuffer.StaticInt32Array,
+          );
         }
+        case Float64Array:
+          return encodeObjectFloat64Array(
+            task,
+            slotIndex,
+            objectValue as Float64Array,
+          );
+        case BigInt64Array: {
+          const bigInt64 = objectValue as BigInt64Array;
+          return encodeObjectBinary(
+            task,
+            slotIndex,
+            new Uint8Array(
+              bigInt64.buffer,
+              bigInt64.byteOffset,
+              bigInt64.byteLength,
+            ),
+            PayloadBuffer.BigInt64Array,
+            PayloadBuffer.StaticBigInt64Array,
+          );
+        }
+        case BigUint64Array: {
+          const bigUint64 = objectValue as BigUint64Array;
+          return encodeObjectBinary(
+            task,
+            slotIndex,
+            new Uint8Array(
+              bigUint64.buffer,
+              bigUint64.byteOffset,
+              bigUint64.byteLength,
+            ),
+            PayloadBuffer.BigUint64Array,
+            PayloadBuffer.StaticBigUint64Array,
+          );
+        }
+        case DataView: {
+          const dataView = objectValue as DataView;
+          return encodeObjectBinary(
+            task,
+            slotIndex,
+            new Uint8Array(
+              dataView.buffer,
+              dataView.byteOffset,
+              dataView.byteLength,
+            ),
+            PayloadBuffer.DataView,
+            PayloadBuffer.StaticDataView,
+          );
+        }
+        case Date:
+          return encodeObjectDate(task, objectValue as Date);
+        case Envelope:
+          return encodeObjectEnvelope(task, slotIndex, objectValue as Envelope);
+        case Promise:
+          return encodeObjectPromise(task, objectValue as Promise<unknown>);
+        case Error:
+          return encodeErrorObject(task, objectValue as Error);
       }
 
-      if (objectValue instanceof Date) {
-        Float64View[0] = objectValue.getTime();
-        task[TaskIndex.Type] = PayloadBuffer.Date;
-        task[TaskIndex.Start] = Uint32View[0];
-        task[TaskIndex.End] = Uint32View[1];
-        task.value = null;
-        return true;
-      }
-
+      if (objectValue instanceof Date) return encodeObjectDate(task, objectValue);
       if (objectValue instanceof Envelope) {
-        const header = objectValue.header;
-        const payload = objectValue.payload;
-        if (!(payload instanceof ArrayBuffer)) {
-          return encoderError({
-            task,
-            type: ErrorKnitting.Serializable,
-            onPromise,
-            detail: ENVELOPE_PAYLOAD_DETAIL,
-          });
-        }
-        if (hasPromiseInEnvelopeHeader(header)) {
-          return encoderError({
-            task,
-            type: ErrorKnitting.Serializable,
-            onPromise,
-            detail: ENVELOPE_PROMISE_DETAIL,
-          });
-        }
-
-        let headerText: string | undefined;
-        try {
-          headerText = stringifyJSON(header);
-        } catch (error) {
-          const detail = error instanceof Error ? error.message : String(error);
-          return encoderError({
-            task,
-            type: ErrorKnitting.Json,
-            onPromise,
-            detail,
-          });
-        }
-        if (typeof headerText !== "string") {
-          return encoderError({
-            task,
-            type: ErrorKnitting.Serializable,
-            onPromise,
-            detail: ENVELOPE_HEADER_DETAIL,
-          });
-        }
-
-        const payloadBytes = new Uint8Array(payload);
-        const payloadLength = payloadBytes.byteLength;
-        const payloadReserveBytes = payloadLength > 0 ? payloadLength : 1;
-
-        const staticHeaderWritten = writeStaticUtf8(headerText, slotIndex);
-        if (staticHeaderWritten !== -1) {
-          if (
-            !ensureWithinDynamicLimit(
-              task,
-              payloadReserveBytes,
-              "EnvelopeStaticHeaderPayload",
-            )
-          ) return false;
-          reserveDynamicObject(task, payloadReserveBytes);
-          task[TaskIndex.Type] = PayloadBuffer.EnvelopeStaticHeader;
-          task[TaskIndex.PayloadLen] = staticHeaderWritten;
-          task[TaskIndex.End] = payloadLength;
-          if (payloadLength > 0) {
-            const payloadWritten = writeDynamicBinary(
-              payloadBytes,
-              task[TaskIndex.Start],
-            );
-            if (payloadWritten < 0) return failDynamicWriteAfterReserve(task);
-            setSlotLength(slotOf(task), payloadWritten);
-          }
-          task.value = null;
-          return true;
-        }
-
-        const dynamicPlan = dynamicUtf8PlanWithExtra(
-          task,
-          headerText,
-          payloadLength,
-          "EnvelopeDynamicHeader",
-        );
-        if (dynamicPlan === null) return false;
-        task[TaskIndex.Type] = PayloadBuffer.EnvelopeDynamicHeader;
-        reserveDynamicObject(task, dynamicPlan.totalBytes);
-        const baseStart = task[TaskIndex.Start];
-        const writtenHeaderBytes = writeDynamicUtf8(
-          headerText,
-          baseStart,
-          dynamicPlan.reserveBytes,
-        );
-        if (writtenHeaderBytes < 0) return failDynamicWriteAfterReserve(task);
-        if (payloadLength > 0) {
-          const payloadWritten = writeDynamicBinary(
-            payloadBytes,
-            baseStart + writtenHeaderBytes,
-          );
-          if (payloadWritten < 0) return failDynamicWriteAfterReserve(task);
-        }
-        task[TaskIndex.PayloadLen] = writtenHeaderBytes;
-        task[TaskIndex.End] = payloadLength;
-        setSlotLength(
-          slotOf(task),
-          writtenHeaderBytes + payloadLength,
-        );
-        task.value = null;
-        return true;
+        return encodeObjectEnvelope(task, slotIndex, objectValue);
       }
-
       if (objectValue instanceof Promise) {
-        const markedTask = task as Task & {
-          [PromisePayloadMarker]?: boolean;
-        };
-        if (markedTask[PromisePayloadMarker] !== true) {
-          markedTask[PromisePayloadMarker] = true;
-          objectValue.then(
-            (value) => {
-              markedTask[PromisePayloadMarker] = false;
-              task.value = value;
-              onPromise?.(task, { status: "fulfilled", value });
-            },
-            (reason) => {
-              markedTask[PromisePayloadMarker] = false;
-              task.value = reason;
-              onPromise?.(task, { status: "rejected", reason });
-            },
-          );
-        }
-        return false;
+        return encodeObjectPromise(task, objectValue);
       }
-
       if (objectValue instanceof Error) {
         return encodeErrorObject(task, objectValue);
       }
@@ -849,18 +866,19 @@ export const encodePayload = ({
         }
 
         task[TaskIndex.Type] = PayloadBuffer.String;
-        const plan = dynamicUtf8Plan(task, text, "String");
-        if (plan === null) return false;
-        if (!reserveDynamic(task, plan.reserveBytes)) return false;
+        const reserveBytes = dynamicUtf8ReserveBytes(task, text, "String");
+        if (reserveBytes < 0) return false;
+        const reservedSlot = reserveDynamic(task, reserveBytes);
+        if (reservedSlot < 0) return false;
 
         const written = writeDynamicUtf8(
           text,
           task[TaskIndex.Start],
-          plan.reserveBytes,
+          reserveBytes,
         );
-        if (written < 0) return failDynamicWriteAfterReserve(task);
+        if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
         task[TaskIndex.PayloadLen] = written;
-        setSlotLength(slotOf(task), written);
+        setSlotLength(reservedSlot, written);
         return true
       }
     case "symbol":
@@ -883,17 +901,18 @@ export const encodePayload = ({
         }
 
         task[TaskIndex.Type] = PayloadBuffer.Symbol;
-        const plan = dynamicUtf8Plan(task, key, "Symbol");
-        if (plan === null) return false;
-        if (!reserveDynamic(task, plan.reserveBytes)) return false;
+        const reserveBytes = dynamicUtf8ReserveBytes(task, key, "Symbol");
+        if (reserveBytes < 0) return false;
+        const reservedSlot = reserveDynamic(task, reserveBytes);
+        if (reservedSlot < 0) return false;
         const written = writeDynamicUtf8(
           key,
           task[TaskIndex.Start],
-          plan.reserveBytes,
+          reserveBytes,
         );
-        if (written < 0) return failDynamicWriteAfterReserve(task);
+        if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
         task[TaskIndex.PayloadLen] = written;
-        setSlotLength(slotOf(task), written);
+        setSlotLength(reservedSlot, written);
         return true;
       }
     case "undefined":

@@ -103,15 +103,15 @@ export const createSharedDynamicBufferIO = ({
   const readBytesCopy = (start:number, end:number) => u8.slice(start,end);
   const readBytesView = (start:number, end:number) => u8.subarray(start,end);
   const readBytesBufferCopy = (start: number, end: number) => {
-    const length = Math.max(0, (end - start) | 0);
-    const out = NodeBuffer.allocUnsafe(length);
+   
+    const out = NodeBuffer.allocUnsafe(end - start);
     if (length === 0) return out;
     buf.copy(out, 0, start, end);
     return out;
   };
   const readBytesArrayBufferCopy = (start: number, end: number) => {
-    const length = Math.max(0, (end - start) | 0);
-    const out = new Uint8Array(length);
+ 
+    const out = new Uint8Array(end - start);
     if (length === 0) return out.buffer;
     buf.copy(out, 0, start, end);
     return out.buffer;
@@ -229,15 +229,15 @@ export const createSharedStaticBufferIO = ({
   const readBytesView = (start:number, end:number, at:number) =>
     arrU8Sec[at].subarray(start,end);
   const readBytesBufferCopy = (start: number, end: number, at: number) => {
-    const length = Math.max(0, (end - start) | 0);
-    const out = NodeBuffer.allocUnsafe(length);
+
+    const out = NodeBuffer.allocUnsafe(end - start);
     if (length === 0) return out;
     arrBuffSec[at]!.copy(out, 0, start, end);
     return out;
   };
   const readBytesArrayBufferCopy = (start: number, end: number, at: number) => {
-    const length = Math.max(0, (end - start) | 0);
-    const out = new Uint8Array(length);
+
+    const out = new Uint8Array(end - start);
     if (length === 0) return out.buffer;
     arrBuffSec[at]!.copy(out, 0, start, end);
     return out.buffer;
