@@ -4,6 +4,7 @@ import {
   PayloadBuffer,
   PayloadSignal,
   PromisePayloadMarker,
+  TASK_SLOT_INDEX_MASK,
   type PromisePayloadHandler,
   type Task,
   TaskIndex,
@@ -245,7 +246,9 @@ export const encodePayload = ({
     write8Binary: writeStatic8Binary,
     writeUtf8: writeStaticUtf8,
   } = requireStaticIO(headersBuffer);
-  const slotOf = (task: Task) => getTaskSlotIndex(task);
+  // Inline getTaskSlotIndex — avoids a cross-closure wrapper call on every
+  // dynamic alloc. task[6] & 0x1F is what getTaskSlotIndex does.
+  const slotOf = (task: Task) => task[TaskIndex.slotBuffer] & TASK_SLOT_INDEX_MASK;
   const dynamicLimitError = (
     task: Task,
     actualBytes: number,
@@ -300,14 +303,13 @@ export const encodePayload = ({
 
   const reserveDynamic = (task: Task, bytes: number) => {
     task[TaskIndex.PayloadLen] = bytes;
-    if (allocTask(task) === -1) return -1;
-    return slotOf(task);
+    // allocTask returns slotIndex directly; use it to avoid redundant slotOf call
+    return allocTask(task);
   };
   let objectDynamicSlot = -1;
   const reserveDynamicObject = (task: Task, bytes: number) => {
     task[TaskIndex.PayloadLen] = bytes;
-    allocTask(task);
-    const reservedSlot = slotOf(task);
+    const reservedSlot = allocTask(task);
     objectDynamicSlot = reservedSlot;
     return reservedSlot;
   };
@@ -616,7 +618,10 @@ export const encodePayload = ({
     return false;
   };
 
-  return (task: Task, slotIndex: number) => {
+  // Named function so V8/TurboFan can compile it independently from the
+  // encodePayload factory closure. Anonymous returns prevent full optimization
+  // because the outer factory is too large for TurboFan's bytecode limit.
+  const encodeDispatch = (task: Task, slotIndex: number): boolean => {
   const args = task.value
   switch (typeof args) {
     case "bigint":
@@ -919,7 +924,10 @@ export const encodePayload = ({
       task[TaskIndex.Type]  = PayloadSignal.Undefined
       return true
   }
-}
+  return false;
+};
+
+  return encodeDispatch;
 }
 
 export const decodePayload = ({

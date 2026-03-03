@@ -409,9 +409,10 @@ export const spawnWorkerContext = ({
 
   const send = () => {
     if (check.isRunning === true) return;
+    check.isRunning = true;
     // Macro lane: dispatcher check is driven by the channel callback.
     Promise.resolve().then(check)
-    check.isRunning = true;
+
 
     // Use opView as a wake counter in lock2 mode to avoid lost wakeups.
     if (a_load(signalBox.rxStatus, 0) === 0) {
@@ -431,10 +432,10 @@ export const spawnWorkerContext = ({
     return (args: Uint8Array) => {
       const pending = enqueues(args);
       if (check.isRunning === false) {
-
+          check.isRunning = true;
         // Macro lane: dispatcher check is driven by the channel callback.
         Promise.resolve().then(check)
-        check.isRunning = true;
+
 
         // Use opView as a wake counter in lock2 mode to avoid lost wakeups.
         if (a_load(signalBox.rxStatus, 0) === 0) {

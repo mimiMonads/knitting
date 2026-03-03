@@ -363,9 +363,11 @@ export const lock2 = ({
     lockSector: payloadLockSAB,
   });
 
-  let LastLocal = 0 | 0;
-  let LastWorker = 0 | 0;
-  let lastTake = 32 | 0;
+  // Hot mutable state in typed arrays so V8 can unbox reads/writes as native
+  // int32/uint32 without JS number boxing. No "| 0" / ">>> 0" coercions needed.
+  // Int32: [0]=LastLocal [1]=LastWorker [2]=lastTake [3]=selectedSlotIndex
+  const _s32 = new Int32Array(4);
+  _s32[2] = 32; // lastTake init
 
   const toBeSent = toSentList ?? new RingQueue();
   const recyclecList = recycleList ?? new RingQueue()
@@ -385,13 +387,14 @@ export const lock2 = ({
   const recycleShift = () => recyclecList.shiftNoClear();
   const resolvedPush = (task: Task) => resolved.push(task);
 
-
 const SLOT_SIZE = HEADER_SLOT_STRIDE_U32;
 
+const clz32 = Math.clz32;
 
-const clz32 = Math.clz32
-const slotOffset = (at: number) =>
-  (at * SLOT_SIZE) +  LockBound.header ;
+// Precomputed slot offsets — avoid a multiply on every encode/decode hot path.
+// SLOT_SIZE = 128, LockBound.header = 0, so offset[i] = i * 128.
+const SLOT_OFFSETS = new Int32Array(LockBound.slots);
+for (let _i = 0; _i < LockBound.slots; _i++) SLOT_OFFSETS[_i] = _i * SLOT_SIZE + LockBound.header;
 
   const enlist = (task: Task) => toBeSentPush(task)
 
@@ -400,50 +403,46 @@ const slotOffset = (at: number) =>
     const free = ~state;
     if (free === 0) return 0;
 
-  
-    if (!encodeTask(task, selectedSlotIndex = 31 - clz32(free))) return 0;
+    const slotIndex = 31 - clz32(free);
+    if (!encodeTask(task, slotIndex)) return 0;
 
-    
-    encodeAt(
-      task,
-      selectedSlotIndex,
-      selectedSlotBit = 1 << selectedSlotIndex,
-    );
-    return selectedSlotBit;
+    _s32[3] = slotIndex;
+    const bit = 1 << slotIndex;
+    encodeAt(task, slotIndex, bit);
+    return bit;
   };
 
   const encodeManyFrom = (list: RingQueue<Task>): number => {
-   
-    let state = (LastLocal ^ a_load(workerBits, 0)) | 0;
-    let encoded = 0 | 0;
+    let state = _s32[0] ^ a_load(workerBits, 0);
+    let encoded = 0;
 
     if (list === toBeSent) {
       while (true) {
         const task = toBeSentShift();
         if (!task) break;
 
-        const bit = encodeWithState(task, state) | 0;
+        const bit = encodeWithState(task, state);
         if (bit === 0) {
           toBeSentUnshift(task);
           break;
         }
 
-        state = (state ^ bit) | 0;
-        encoded = (encoded + 1) | 0;
+        state ^= bit;
+        encoded++;
       }
     } else {
       while (true) {
         const task = list.shiftNoClear();
         if (!task) break;
 
-        const bit = encodeWithState(task, state) | 0;
+        const bit = encodeWithState(task, state);
         if (bit === 0) {
           list.unshift(task);
           break;
         }
 
-        state = (state ^ bit) | 0;
-        encoded = (encoded + 1) | 0;
+        state ^= bit;
+        encoded++;
       }
     }
 
@@ -456,89 +455,84 @@ const slotOffset = (at: number) =>
     return toBeSent.isEmpty;
   };
 
-  let selectedSlotIndex = 0 | 0, selectedSlotBit = 0 >>> 0
-
-  const storeHost = (bit: number) =>
-    a_store(hostBits, 0, LastLocal = (LastLocal ^ bit) | 0);
-  const storeWorker = (bit: number) =>
-    a_store(workerBits, 0, LastWorker = (LastWorker ^ bit) | 0);
+  const storeHost = (bit: number) => {
+    _s32[0] ^= bit;
+    a_store(hostBits, 0, _s32[0]);
+  };
+  const storeWorker = (bit: number) => {
+    _s32[1] ^= bit;
+    a_store(workerBits, 0, _s32[1]);
+  };
   const encode = (
     task: Task,
-    state: number = (LastLocal ^ a_load(workerBits, 0)) | 0,
+    state: number = _s32[0] ^ a_load(workerBits, 0),
   ): boolean => {
     const free = ~state;
     if (free === 0) return false;
 
+    const slotIndex = 31 - clz32(free);
+    if (!encodeTask(task, slotIndex)) return false;
 
-    if (!encodeTask(task, selectedSlotIndex = 31 - clz32(free))) return false;
-
-   
-    return encodeAt(
-      task,
-      selectedSlotIndex,
-      selectedSlotBit = 1 << selectedSlotIndex,
-    );
-
-  
+    _s32[3] = slotIndex;
+    return encodeAt(task, slotIndex, 1 << slotIndex);
   };
 
   const encodeAt = (task: Task, at: number, bit: number): boolean => {
-    // write headers for this slot
-    const off = slotOffset(at);
+    const off = SLOT_OFFSETS[at];
 
-  headersBuffer[off]     = task[0];
-  headersBuffer[off + 1] = task[1];
-  headersBuffer[off + 2] = task[2];
-  headersBuffer[off + 3] = task[3];
-  headersBuffer[off + 4] = task[4];
-  headersBuffer[off + 5] = task[5];
-  headersBuffer[off + 6] = task[6];
-  //headersBuffer[off + 7] = task[7];
-  
+    headersBuffer[off]     = task[0];
+    headersBuffer[off + 1] = task[1];
+    headersBuffer[off + 2] = task[2];
+    headersBuffer[off + 3] = task[3];
+    headersBuffer[off + 4] = task[4];
+    headersBuffer[off + 5] = task[5];
+    headersBuffer[off + 6] = task[6];
+    //headersBuffer[off + 7] = task[7];
 
-     storeHost(bit)
-
+    storeHost(bit);
     return true;
   };
 
-  const hasSpace = () => (hostBits[0] ^ LastWorker) !== 0
-  
+  const hasSpace = () => (hostBits[0] ^ _s32[1]) !== 0;
+
   /**
    * WORKER SIDE: decode
    */
   const decode = (): boolean => {
-    // bits that changed since last time on worker side
-    let diff = (a_load(hostBits, 0) ^ LastWorker) 
-   
+    let diff = a_load(hostBits, 0) ^ _s32[1];
     if (diff === 0) return false;
 
-    let last = lastTake;
-    let consumedBits = 0 | 0;
+    let last = _s32[2];
+    let consumedBits = 0;
 
     try {
       if (last === 32) {
-        
-        decodeAt(selectedSlotIndex = 31 - clz32(diff));
-        selectedSlotBit = 1 << (last = selectedSlotIndex);
-        diff ^= selectedSlotBit;
-        consumedBits = (consumedBits ^ selectedSlotBit) | 0;
+        const idx = 31 - clz32(diff);
+        _s32[3] = idx;
+        decodeAt(idx);
+        const bit = 1 << idx;
+        diff ^= bit;
+        consumedBits ^= bit;
+        last = idx;
       }
-  
+
       while (diff !== 0) {
-        let pick = diff & ((1 << last) - 1) ;
+        let pick = diff & ((1 << last) - 1);
         if (pick === 0) pick = diff;
-       
-        decodeAt(selectedSlotIndex = 31 - clz32(pick));
-        selectedSlotBit = 1 << (last = selectedSlotIndex);
-        diff ^= selectedSlotBit;
-        consumedBits = (consumedBits ^ selectedSlotBit) | 0;
+
+        const idx = 31 - clz32(pick);
+        _s32[3] = idx;
+        decodeAt(idx);
+        const bit = 1 << idx;
+        diff ^= bit;
+        consumedBits ^= bit;
+        last = idx;
       }
     } finally {
       if (consumedBits !== 0) storeWorker(consumedBits);
     }
 
-    lastTake = last;
-  
+    _s32[2] = last;
     return true;
   };
 
@@ -563,11 +557,11 @@ const slotOffset = (at: number) =>
 
 
     return (): number => {
-    let diff = (a_load(hostBits, 0) ^ LastWorker) | 0;
+    let diff = a_load(hostBits, 0) ^ _s32[1];
     if (diff === 0) return 0;
 
     let modified = 0;
-    let consumedBits = 0 | 0;
+    let consumedBits = 0;
     let last = lastResolved;
 
     if (last === 32) {
@@ -577,7 +571,7 @@ const slotOffset = (at: number) =>
       const task = getTask(headersBuffer, idx);
       decodeTask(task, idx);
 
-      consumedBits = (consumedBits ^ selectedBit) | 0;
+      consumedBits ^= selectedBit;
       settleTask(task);
       if(HAS_RESOLVE){
         onResolved!(task)
@@ -586,9 +580,9 @@ const slotOffset = (at: number) =>
       diff ^= selectedBit;
       modified++;
       if ((modified & 7) === 0 && consumedBits !== 0) {
-        LastWorker = (LastWorker ^ consumedBits) | 0;
-        a_store(workerBits, 0, LastWorker);
-        consumedBits = 0 | 0;
+        _s32[1] ^= consumedBits;
+        a_store(workerBits, 0, _s32[1]);
+        consumedBits = 0;
       }
       last = idx;
     }
@@ -603,7 +597,7 @@ const slotOffset = (at: number) =>
       const task = getTask(headersBuffer, idx);
       decodeTask(task, idx);
 
-      consumedBits = (consumedBits ^ selectedBit) | 0;
+      consumedBits ^= selectedBit;
       settleTask(task);
       if(HAS_RESOLVE){
         onResolved!(task)
@@ -612,20 +606,19 @@ const slotOffset = (at: number) =>
       diff ^= selectedBit;
       modified++;
       if ((modified & 7) === 0 && consumedBits !== 0) {
-        LastWorker = (LastWorker ^ consumedBits) | 0;
-        a_store(workerBits, 0, LastWorker);
-        consumedBits = 0 | 0;
+        _s32[1] ^= consumedBits;
+        a_store(workerBits, 0, _s32[1]);
+        consumedBits = 0;
       }
       last = idx;
     }
 
     if (consumedBits !== 0) {
-      LastWorker = (LastWorker ^ consumedBits) | 0;
-      a_store(workerBits, 0, LastWorker);
+      _s32[1] ^= consumedBits;
+      a_store(workerBits, 0, _s32[1]);
     }
 
     lastResolved = last;
-    //if (a_load(hostBits, 0) === LastWorker) lastResolved = 32;
     return modified;
   };
   }
@@ -635,16 +628,16 @@ const slotOffset = (at: number) =>
     const recycled = recycleShift() as Task | undefined;
     let task: Task;
     if (recycled) {
-      fillTaskFrom(recycled, headersBuffer, slotOffset(at));
+      fillTaskFrom(recycled, headersBuffer, SLOT_OFFSETS[at]);
       recycled.value = null;
       recycled.resolve = def;
       recycled.reject = def;
       task = recycled;
     } else {
-      task = makeTaskFrom(headersBuffer, slotOffset(at));
+      task = makeTaskFrom(headersBuffer, SLOT_OFFSETS[at]);
     }
 
-    decodeTask(task, at)
+    decodeTask(task, at);
     resolvedPush(task);
 
     return true;

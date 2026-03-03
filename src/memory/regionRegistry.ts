@@ -3,11 +3,14 @@ import {
   LOCK_HOST_BITS_OFFSET_BYTES,
   LOCK_SECTOR_BYTE_LENGTH,
   LOCK_WORKER_BITS_OFFSET_BYTES,
-  setTaskSlotIndex,
   TASK_SLOT_INDEX_MASK,
   TaskIndex,
 } from "./lock.ts";
 import type { Task } from "./lock.ts";
+
+// Low 5 bits = slot index, high 27 bits = caller meta.
+// Inlined from setTaskSlotIndex to avoid cross-closure call on hot path.
+const SLOT_META_PACKED_MASK = 0xFFFFFFE0; // (~0x1F) >>> 0
 
 
 export type RegisterMalloc = ReturnType<typeof register>;
@@ -22,12 +25,6 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
 
   const startAndIndex = new Uint32Array(LockBound.slots);
   const size64bit = new Uint32Array(LockBound.slots);
-
-  // Atomics aliases (hot path)
-  const a_load = Atomics.load;
-  const a_store = Atomics.store;
-  // Uint32Array method alias (hot path)
-  const saiCopyWithin = startAndIndex.copyWithin.bind(startAndIndex);
 
   const clz32 = Math.clz32;
 
@@ -79,7 +76,7 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
 
   const updateTable = () => {
     // state = which bits are currently "in use" under toggle-protocol
-    const w = a_load(workerBits, 0) | 0;
+    const w = Atomics.load(workerBits, 0) | 0;
     const state = (hostLast ^ w) >>> 0;
 
     // freeBits = bits where host/worker agree (toggle resolved)
@@ -114,111 +111,103 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
     tableLength = compactSectorStable(tableLength);
   };
 
-  const allocTask = (task: Task) => {
-    // update every 4 allocs, using bitmask counter
-    updateTableCounter = (updateTableCounter + 1) & 3;
-    if (updateTableCounter === 0) updateTable();
-
-    // align payload length to 64 bytes
-    const payloadLen = task[TaskIndex.PayloadLen] | 0;
-    const size = (payloadLen + 63) & ~63;
-
-    // inline loadFreeBit()
+  // Pure computation: find a slot and write task fields. No Atomics.
+  // Returns slotIndex on success, -1 on failure.
+  const findAndInsert = (task: Task, size: number): number => {
     const freeBits = (~usedBits) >>> 0;
     const freeBit = (freeBits & -freeBits) >>> 0;
 
     if (freeBit === 0) return -1;
-    if (tableLength >= LockBound.slots) return -1;
+
+    const tl = tableLength;
+    if (tl >= LockBound.slots) return -1;
 
     const slotIndex = 31 - clz32(freeBit);
-
     const sai = startAndIndex;
     const sz = size64bit;
-    const tl = tableLength;
+
+    // inlined setTaskSlotIndex: task[6] = (task[6] & ~0x1F) | slotIndex
+    // avoids cross-closure call on every hot path branch
 
     // ========= FAST PATH: empty table =========
     if (tl === 0) {
       sai[0] = slotIndex;
       sz[slotIndex] = size;
-
       task[TaskIndex.Start] = 0;
-      setTaskSlotIndex(task, slotIndex);
-
+      task[TaskIndex.slotBuffer] = ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>> 0;
       tableLength = 1;
       usedBits |= freeBit;
-
       hostLast ^= freeBit;
-      return a_store(hostBits, 0, hostLast);
+      return slotIndex;
     }
 
     // ========= gap at beginning =========
     const firstStart = sai[0] & START_MASK;
     if (firstStart >= (size >>> 0)) {
-      // shift right by 1 (native memmove)
-      saiCopyWithin(1, 0, tl);
-
+      sai.copyWithin(1, 0, tl);
       sai[0] = slotIndex;
       sz[slotIndex] = size;
-
       task[TaskIndex.Start] = 0;
-      setTaskSlotIndex(task, slotIndex);
-
+      task[TaskIndex.slotBuffer] = ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>> 0;
       tableLength = tl + 1;
       usedBits |= freeBit;
-
       hostLast ^= freeBit;
-      return a_store(hostBits, 0, hostLast);
+      return slotIndex;
     }
 
     // ========= search for a gap between entries =========
     for (let at = 0; at + 1 < tl; at++) {
       const cur = sai[at];
-
       const curStart = cur & START_MASK;
       const curEnd = (curStart + (sz[cur & SLOT_MASK] >>> 0)) >>> 0;
-
       const nextStart = sai[at + 1] & START_MASK;
 
-      // gap >= size ?
       if ((nextStart - curEnd) >>> 0 < (size >>> 0)) continue;
 
-      // shift right from (at+1) to insert at (at+1)
-      saiCopyWithin(at + 2, at + 1, tl);
-
+      sai.copyWithin(at + 2, at + 1, tl);
       sai[at + 1] = (curEnd | slotIndex) >>> 0;
       sz[slotIndex] = size;
-
       task[TaskIndex.Start] = curEnd;
-      setTaskSlotIndex(task, slotIndex);
-
+      task[TaskIndex.slotBuffer] = ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>> 0;
       tableLength = tl + 1;
       usedBits |= freeBit;
-
       hostLast ^= freeBit;
-      return a_store(hostBits, 0, hostLast);
+      return slotIndex;
     }
 
     // ========= append at end =========
     if (tl < LockBound.slots) {
       const last = sai[tl - 1];
-
       const lastStart = last & START_MASK;
       const newStart = (lastStart + (sz[last & SLOT_MASK] >>> 0)) >>> 0;
-
       sai[tl] = (newStart | slotIndex) >>> 0;
       sz[slotIndex] = size;
-
       task[TaskIndex.Start] = newStart;
-      setTaskSlotIndex(task, slotIndex);
-
+      task[TaskIndex.slotBuffer] = ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>> 0;
       tableLength = tl + 1;
       usedBits |= freeBit;
-
       hostLast ^= freeBit;
-      return a_store(hostBits, 0, hostLast);
+      return slotIndex;
     }
 
     return -1;
+  };
+
+  const allocTask = (task: Task) => {
+    // throttled table cleanup — kept outside findAndInsert so that
+    // function stays pure (no calls, stable type feedback for TurboFan)
+    updateTableCounter = (updateTableCounter + 1) & 3;
+    if (updateTableCounter === 0) updateTable();
+
+    const payloadLen = task[TaskIndex.PayloadLen] | 0;
+    const size = (payloadLen + 63) & ~63;
+
+    const slotIndex = findAndInsert(task, size);
+    if (slotIndex === -1) return -1;
+
+    // single Atomics.store commit point — monomorphic call site
+    Atomics.store(hostBits, 0, hostLast);
+    return slotIndex;
   };
 
   const setSlotLength = (slotIndex: number, payloadLen: number) => {
@@ -239,7 +228,7 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
   const free = (index: number) => {
     index = index & TASK_SLOT_INDEX_MASK;
     workerLast ^= 1 << index;
-    a_store(workerBits, 0, workerLast);
+    Atomics.store(workerBits, 0, workerLast);
   };
 
   return {
