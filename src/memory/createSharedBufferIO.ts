@@ -103,16 +103,18 @@ export const createSharedDynamicBufferIO = ({
   const readBytesCopy = (start:number, end:number) => u8.slice(start,end);
   const readBytesView = (start:number, end:number) => u8.subarray(start,end);
   const readBytesBufferCopy = (start: number, end: number) => {
-    const length = Math.max(0, (end - start) | 0)
+    const length = Math.max(0, (end - start) | 0);
     const out = NodeBuffer.allocUnsafe(length);
     if (length === 0) return out;
     buf.copy(out, 0, start, end);
     return out;
   };
-  const readBytesArrayBufferCopy = (start: number, end: number) => {
-    const length = Math.max(0, (end - start) | 0)
-    const out = new Uint8Array(length);
-    if (length === 0) return out.buffer;
+  const readBytesArrayBufferCopy = (start: number, end: number): ArrayBuffer => {
+    const length = Math.max(0, (end - start) | 0);
+    if (length === 0) return new ArrayBuffer(0);
+    // allocUnsafeSlow gives a dedicated ArrayBuffer (not pool slab), so
+    // returning .buffer is safe and avoids the zero-init cost of new Uint8Array.
+    const out = NodeBuffer.allocUnsafeSlow(length);
     buf.copy(out, 0, start, end);
     return out.buffer;
   };
@@ -235,10 +237,10 @@ export const createSharedStaticBufferIO = ({
     arrBuffSec[at]!.copy(out, 0, start, end);
     return out;
   };
-  const readBytesArrayBufferCopy = (start: number, end: number, at: number) => {
-    const length = Math.max(0, (end - start) | 0)
-    const out = new Uint8Array(length);
-    if (length === 0) return out.buffer;
+  const readBytesArrayBufferCopy = (start: number, end: number, at: number): ArrayBuffer => {
+    const length = Math.max(0, (end - start) | 0);
+    if (length === 0) return new ArrayBuffer(0);
+    const out = NodeBuffer.allocUnsafeSlow(length);
     arrBuffSec[at]!.copy(out, 0, start, end);
     return out.buffer;
   };

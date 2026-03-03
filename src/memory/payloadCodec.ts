@@ -1081,7 +1081,7 @@ export const decodePayload = ({
     }
     case PayloadBuffer.BigInt:
       task.value = decodeBigIntBinary(
-        readDynamicBytesCopy(
+        readDynamicBufferCopy(
           task[TaskIndex.Start],
           task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
         )
@@ -1090,7 +1090,7 @@ export const decodePayload = ({
     return
     case PayloadBuffer.StaticBigInt:
       task.value = decodeBigIntBinary(
-        readStaticBytesCopy(0, task[TaskIndex.PayloadLen], slotIndex)
+        readStaticBufferCopy(0, task[TaskIndex.PayloadLen], slotIndex)
       )
     return
     case PayloadBuffer.Symbol:
@@ -1108,7 +1108,7 @@ export const decodePayload = ({
       )
     return
     case PayloadBuffer.Int32Array: {
-      const bytes = readDynamicBytesCopy(
+      const bytes = readDynamicBufferCopy(
         task[TaskIndex.Start],
         task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
       )
@@ -1121,7 +1121,7 @@ export const decodePayload = ({
     return
     }
     case PayloadBuffer.StaticInt32Array: {
-      const bytes = readStaticBytesCopy(0, task[TaskIndex.PayloadLen], slotIndex)
+      const bytes = readStaticBufferCopy(0, task[TaskIndex.PayloadLen], slotIndex)
       task.value = new Int32Array(
         bytes.buffer,
         bytes.byteOffset,
@@ -1141,7 +1141,7 @@ export const decodePayload = ({
       task.value = readStatic8BytesFloatCopy(0, task[TaskIndex.PayloadLen], slotIndex)
     return
     case PayloadBuffer.BigInt64Array: {
-      const bytes = readDynamicBytesCopy(
+      const bytes = readDynamicBufferCopy(
         task[TaskIndex.Start],
         task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
       )
@@ -1154,7 +1154,7 @@ export const decodePayload = ({
     return
     }
     case PayloadBuffer.StaticBigInt64Array: {
-      const bytes = readStaticBytesCopy(0, task[TaskIndex.PayloadLen], slotIndex)
+      const bytes = readStaticBufferCopy(0, task[TaskIndex.PayloadLen], slotIndex)
       task.value = new BigInt64Array(
         bytes.buffer,
         bytes.byteOffset,
@@ -1163,7 +1163,7 @@ export const decodePayload = ({
     return
     }
     case PayloadBuffer.BigUint64Array: {
-      const bytes = readDynamicBytesCopy(
+      const bytes = readDynamicBufferCopy(
         task[TaskIndex.Start],
         task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
       )
@@ -1176,7 +1176,7 @@ export const decodePayload = ({
     return
     }
     case PayloadBuffer.StaticBigUint64Array: {
-      const bytes = readStaticBytesCopy(0, task[TaskIndex.PayloadLen], slotIndex)
+      const bytes = readStaticBufferCopy(0, task[TaskIndex.PayloadLen], slotIndex)
       task.value = new BigUint64Array(
         bytes.buffer,
         bytes.byteOffset,
@@ -1185,7 +1185,7 @@ export const decodePayload = ({
     return
     }
     case PayloadBuffer.DataView: {
-      const bytes = readDynamicBytesCopy(
+      const bytes = readDynamicBufferCopy(
         task[TaskIndex.Start],
         task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
       )
@@ -1194,7 +1194,7 @@ export const decodePayload = ({
     return
     }
     case PayloadBuffer.StaticDataView: {
-      const bytes = readStaticBytesCopy(0, task[TaskIndex.PayloadLen], slotIndex)
+      const bytes = readStaticBufferCopy(0, task[TaskIndex.PayloadLen], slotIndex)
       task.value = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
     return
     }
@@ -1227,7 +1227,7 @@ export const decodePayload = ({
       freeTaskSlot(task)
     return
     case PayloadBuffer.StaticBinary:
-      task.value = readStaticBytesCopy(0, task[TaskIndex.PayloadLen], slotIndex)
+      task.value = readStaticBufferCopy(0, task[TaskIndex.PayloadLen], slotIndex)
     return
     case PayloadBuffer.ArrayBuffer:
       task.value = readDynamicArrayBufferCopy(
