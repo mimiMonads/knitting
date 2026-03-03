@@ -2,7 +2,6 @@ import { type MultiQueue } from "./tx-queue.ts";
 import { type MainSignal } from "../ipc/transport/shared-memory.ts";
 import { MessageChannel, type MessagePort } from "node:worker_threads";
 import type { DispatcherSettings } from "../types.ts";
-import {  IS_NODE } from "../common/runtime.ts";
 
 enum Comment {
   thisIsAHint = 0,
@@ -27,7 +26,7 @@ export const hostDispatcherLoop = ({
   signalBox: MainSignal;
   channelHandler: ChannelHandler;
   dispatcherOptions?: DispatcherSettings;
-  }) => {
+}) => {
   const a_load = Atomics.load;
   const a_store = Atomics.store;
   const a_notify = Atomics.notify;
@@ -41,98 +40,98 @@ export const hostDispatcherLoop = ({
     0,
     (dispatcherOptions?.maxBackoffMs ?? 10) | 0,
   );
+  let inProgress = false;
+  let rerunRequested = false;
+  let backoffTimer: ReturnType<typeof setTimeout> | undefined;
 
-  let progressed = false;
-  let anyProgressed = false;
-
-  const check = () => {
-    
-    
-    txStatus[Comment.thisIsAHint] = 1;
-
- 
-
-    if (a_load(rxStatus, 0) === 0) {
-      a_store(opView, 0, 1);
-      a_notify(opView, 0, 1);
-      do{
-      progressed = false;
-      if (completeFrame() > 0) {
-        progressed = true;
-        anyProgressed = true;
-      }
-
-          while (hasPendingFrames()) {
-          if (!flushToWorker()) break;
-          progressed = true;
-          anyProgressed = true;
-        }
-
-    }while(progressed)
-    }
-
-    do{
-      progressed = false;
-          if (completeFrame() > 0) {
-            anyProgressed =  progressed = true
-          }
-          
-          while (hasPendingFrames()) {
-          if (!flushToWorker()) break;
-           anyProgressed =  progressed = true;
-        
-        }
-
-        
-    }while(progressed)
-
-
-       txStatus[Comment.thisIsAHint] = 0
-    if (!txIdle()) {
-      if (anyProgressed || hasPendingFrames()) {
-        stallCount = 0 | 0;
-      } else {
-        stallCount = (stallCount + 1) | 0;
-      }
-      scheduleNotify();
-      return;
-    }
-
-    // Best-effort hint only; non-atomic by design.
-    txStatus[Comment.thisIsAHint] = 0;
-    check.isRunning = false;
-    stallCount = 0 | 0;
-  };
-
-  // This is not the best way to do it but it should work for now
-  check.isRunning = false;
-
-  const scheduleNotify = () => {
+  const scheduleNotify = (check: CheckWithState) => {
     if (stallCount <= STALL_FREE_LOOPS) {
       notify();
       return;
     }
 
+    // Keep only one delayed wakeup at a time; fresh send() calls can still
+    // preempt this by scheduling check directly.
+    if (backoffTimer !== undefined) return;
+
     let delay = (stallCount - STALL_FREE_LOOPS - 1) | 0;
     if (delay < 0) delay = 0;
     else if (delay > MAX_BACKOFF_MS) delay = MAX_BACKOFF_MS;
-    setTimeout(check, delay);
-   
+    // Release the running latch while in backoff so fresh calls can kick
+    // the dispatcher without waiting for the timeout.
+    check.isRunning = false;
+    backoffTimer = setTimeout(() => {
+      backoffTimer = undefined;
+      if (check.isRunning === false) check.isRunning = true;
+      check();
+    }, delay);
   };
 
-  const fastCheck = () => {
-    txStatus[Comment.thisIsAHint] = 0
-    completeFrame() 
-    flushToWorker()
-    fastCheck.isRunning = false;
-  };
+  const check = (() => {
+    if (backoffTimer !== undefined) {
+      clearTimeout(backoffTimer);
+      backoffTimer = undefined;
+    }
+    if (inProgress) {
+      rerunRequested = true;
+      return;
+    }
+    inProgress = true;
 
-  fastCheck.isRunning = false;
+    try {
+      do {
+        rerunRequested = false;
+        let progressed = false;
+        let anyProgressed = false;
+        txStatus[Comment.thisIsAHint] = 1;
 
-  return {
-    check,
-    fastCheck,
-  };
+        if (a_load(rxStatus, 0) === 0) {
+          a_store(opView, 0, 1);
+          a_notify(opView, 0, 1);
+        }
+
+        do {
+          progressed = false;
+          if (completeFrame() > 0) {
+            progressed = true;
+            anyProgressed = true;
+          }
+
+          while (hasPendingFrames()) {
+            if (!flushToWorker()) break;
+            progressed = true;
+            anyProgressed = true;
+          }
+        } while (progressed);
+
+        // Best-effort hint only; non-atomic by design.
+        txStatus[Comment.thisIsAHint] = 0;
+        if (!txIdle()) {
+          if (anyProgressed || hasPendingFrames()) {
+            stallCount = 0 | 0;
+          } else {
+            stallCount = (stallCount + 1) | 0;
+          }
+          scheduleNotify(check);
+          return;
+        }
+
+        check.isRunning = false;
+        stallCount = 0 | 0;
+      } while (rerunRequested);
+    } finally {
+      txStatus[Comment.thisIsAHint] = 0;
+      inProgress = false;
+    }
+  }) as CheckWithState;
+
+  check.isRunning = false;
+
+  return { check };
+};
+
+type CheckWithState = (() => void) & {
+  isRunning: boolean;
 };
 
 export class ChannelHandler {

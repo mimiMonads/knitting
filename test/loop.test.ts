@@ -78,3 +78,30 @@ test("shutdown supports delayed termination timer", async () => {
   const elapsed = Date.now() - startedAt;
   assert.equal(elapsed >= 40, true);
 });
+
+test("dispatcher drains oversubscribed batches without stalling", async () => {
+  const { call, shutdown } = createPool({
+    threads: 1,
+    host: {
+      stallFreeLoops: 0,
+      maxBackoffMs: 2,
+    },
+  })({ addOne });
+
+  try {
+    const rounds = 80;
+    const batch = 100; // greater than lock slot count (32)
+
+    for (let round = 0; round < rounds; round++) {
+      const jobs = Array.from({ length: batch }, (_, index) =>
+        call.addOne(round + index)
+      );
+      const values = await withTimeout(Promise.all(jobs), 3000);
+      assert.equal(values.length, batch);
+      assert.equal(values[0], round + 1);
+      assert.equal(values[batch - 1], round + batch);
+    }
+  } finally {
+    await shutdown();
+  }
+});
