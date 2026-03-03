@@ -387,6 +387,7 @@ export const lock2 = ({
   const recycleShift = () => recyclecList.shiftNoClear();
   const resolvedPush = (task: Task) => resolved.push(task);
 
+
 const SLOT_SIZE = HEADER_SLOT_STRIDE_U32;
 
 const clz32 = Math.clz32;
@@ -625,16 +626,17 @@ for (let _i = 0; _i < LockBound.slots; _i++) SLOT_OFFSETS[_i] = _i * SLOT_SIZE +
 
 
   const decodeAt = (at: number): boolean => {
+    const off = SLOT_OFFSETS[at];
     const recycled = recycleShift() as Task | undefined;
     let task: Task;
     if (recycled) {
-      fillTaskFrom(recycled, headersBuffer, SLOT_OFFSETS[at]);
+      fillTaskFrom(recycled, headersBuffer, off);
       recycled.value = null;
       recycled.resolve = def;
       recycled.reject = def;
       task = recycled;
     } else {
-      task = makeTaskFrom(headersBuffer, SLOT_OFFSETS[at]);
+      task = makeTaskFrom(headersBuffer, off);
     }
 
     decodeTask(task, at);
