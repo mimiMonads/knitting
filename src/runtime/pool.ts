@@ -37,7 +37,6 @@ import {
 //const isBrowser = typeof window !== "undefined";
 
 let poliWorker = Worker;
-const TX_STATUS_HINT_INDEX = 0;
 
 type SpawnedWorker = {
   terminate: () => unknown;
@@ -278,7 +277,7 @@ export const spawnWorkerContext = ({
   } = queue;
   const channelHandler = new ChannelHandler();
 
-  const { check, fastCheck } = hostDispatcherLoop({
+  const { check } = hostDispatcherLoop({
     signalBox,
     queue,
     channelHandler,
@@ -410,8 +409,9 @@ export const spawnWorkerContext = ({
   const send = () => {
     if (check.isRunning === true) return;
     check.isRunning = true;
-    // Macro lane: dispatcher check is driven by the channel callback.
     Promise.resolve().then(check)
+    // Macro lane: dispatcher check is driven by the channel callback.
+    // channelHandler.notify();
 
 
     // Use opView as a wake counter in lock2 mode to avoid lost wakeups.
@@ -431,19 +431,7 @@ export const spawnWorkerContext = ({
 
     return (args: Uint8Array) => {
       const pending = enqueues(args);
-      if (check.isRunning === false) {
-          check.isRunning = true;
-        // Macro lane: dispatcher check is driven by the channel callback.
-        Promise.resolve().then(check)
-
-
-        // Use opView as a wake counter in lock2 mode to avoid lost wakeups.
-        if (a_load(signalBox.rxStatus, 0) === 0) {
-          a_add(thisSignal, 0, 1);
-          a_notify(thisSignal, 0, 1);
-        };
-      };
-
+      send();
       return pending;
     };
   };
