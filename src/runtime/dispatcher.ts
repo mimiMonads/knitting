@@ -42,6 +42,7 @@ export const hostDispatcherLoop = ({
   );
   let inProgress = false;
   let rerunRequested = false;
+  let backoffTimer: ReturnType<typeof setTimeout> | undefined;
 
   const scheduleNotify = (check: CheckWithState) => {
     if (stallCount <= STALL_FREE_LOOPS) {
@@ -49,19 +50,28 @@ export const hostDispatcherLoop = ({
       return;
     }
 
+    // Keep only one delayed wakeup at a time; fresh send() calls can still
+    // preempt this by scheduling check directly.
+    if (backoffTimer !== undefined) return;
+
     let delay = (stallCount - STALL_FREE_LOOPS - 1) | 0;
     if (delay < 0) delay = 0;
     else if (delay > MAX_BACKOFF_MS) delay = MAX_BACKOFF_MS;
     // Release the running latch while in backoff so fresh calls can kick
     // the dispatcher without waiting for the timeout.
     check.isRunning = false;
-    setTimeout(() => {
+    backoffTimer = setTimeout(() => {
+      backoffTimer = undefined;
       if (check.isRunning === false) check.isRunning = true;
       check();
     }, delay);
   };
 
   const check = (() => {
+    if (backoffTimer !== undefined) {
+      clearTimeout(backoffTimer);
+      backoffTimer = undefined;
+    }
     if (inProgress) {
       rerunRequested = true;
       return;
