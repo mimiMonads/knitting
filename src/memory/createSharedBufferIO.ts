@@ -103,14 +103,14 @@ export const createSharedDynamicBufferIO = ({
   const readBytesCopy = (start:number, end:number) => u8.slice(start,end);
   const readBytesView = (start:number, end:number) => u8.subarray(start,end);
   const readBytesBufferCopy = (start: number, end: number) => {
-    const length = Math.max(0, (end - start) | 0);
+    const length = Math.max(0, (end - start) | 0)
     const out = NodeBuffer.allocUnsafe(length);
     if (length === 0) return out;
     buf.copy(out, 0, start, end);
     return out;
   };
   const readBytesArrayBufferCopy = (start: number, end: number) => {
-    const length = Math.max(0, (end - start) | 0);
+    const length = Math.max(0, (end - start) | 0)
     const out = new Uint8Array(length);
     if (length === 0) return out.buffer;
     buf.copy(out, 0, start, end);
@@ -236,7 +236,7 @@ export const createSharedStaticBufferIO = ({
     return out;
   };
   const readBytesArrayBufferCopy = (start: number, end: number, at: number) => {
-    const length = Math.max(0, (end - start) | 0);
+    const length = Math.max(0, (end - start) | 0)
     const out = new Uint8Array(length);
     if (length === 0) return out.buffer;
     arrBuffSec[at]!.copy(out, 0, start, end);
