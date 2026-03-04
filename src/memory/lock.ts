@@ -240,19 +240,7 @@ const makeTaskFrom = (array: ArrayLike<number>, at: number) => {
 
 
 
-// To be inline in the future
-const takeTask = ({ queue }: {
-  queue: Task[];
-}) =>
-  (array: ArrayLike<number>, at: number) => {
- 
-    const slotOffset = (at * HEADER_SLOT_STRIDE_U32) + LockBound.header;
-  
-    const task = queue[array[slotOffset + TaskIndex["ID"]]]
-    fillTaskFrom(task, array, slotOffset);
-
-     return task;
-  };
+// takeTask is now inlined into resolveHost where SLOT_OFFSETS is available.
 
   // could be inlined 
 const settleTask = (task: Task) => {
@@ -365,8 +353,8 @@ export const lock2 = ({
 
   // Hot mutable state in typed arrays so V8 can unbox reads/writes as native
   // int32/uint32 without JS number boxing. No "| 0" / ">>> 0" coercions needed.
-  // Int32: [0]=LastLocal [1]=LastWorker [2]=lastTake [3]=selectedSlotIndex
-  const _s32 = new Int32Array(4);
+  // Int32: [0]=LastLocal [1]=LastWorker [2]=lastTake
+  const _s32 = new Int32Array(3);
   _s32[2] = 32; // lastTake init
 
   const toBeSent = toSentList ?? new RingQueue();
@@ -382,8 +370,6 @@ export const lock2 = ({
 
   // RingQueue method aliases (hot path)
   const toBeSentPush = (task: Task) => toBeSent.push(task);
-  const toBeSentShift = () => toBeSent.shiftNoClear();
-  const toBeSentUnshift = (task: Task) => toBeSent.unshift(task);
   const recycleShift = () => recyclecList.shiftNoClear();
   const resolvedPush = (task: Task) => resolved.push(task);
 
@@ -407,7 +393,6 @@ for (let _i = 0; _i < LockBound.slots; _i++) SLOT_OFFSETS[_i] = _i * SLOT_SIZE +
     const slotIndex = 31 - clz32(free);
     if (!encodeTask(task, slotIndex)) return 0;
 
-    _s32[3] = slotIndex;
     const bit = 1 << slotIndex;
     encodeAt(task, slotIndex, bit);
     return bit;
@@ -417,34 +402,18 @@ for (let _i = 0; _i < LockBound.slots; _i++) SLOT_OFFSETS[_i] = _i * SLOT_SIZE +
     let state = _s32[0] ^ a_load(workerBits, 0);
     let encoded = 0;
 
-    if (list === toBeSent) {
-      while (true) {
-        const task = toBeSentShift();
-        if (!task) break;
+    while (true) {
+      const task = list.shiftNoClear();
+      if (!task) break;
 
-        const bit = encodeWithState(task, state);
-        if (bit === 0) {
-          toBeSentUnshift(task);
-          break;
-        }
-
-        state ^= bit;
-        encoded++;
+      const bit = encodeWithState(task, state);
+      if (bit === 0) {
+        list.unshift(task);
+        break;
       }
-    } else {
-      while (true) {
-        const task = list.shiftNoClear();
-        if (!task) break;
 
-        const bit = encodeWithState(task, state);
-        if (bit === 0) {
-          list.unshift(task);
-          break;
-        }
-
-        state ^= bit;
-        encoded++;
-      }
+      state ^= bit;
+      encoded++;
     }
 
     return encoded;
@@ -474,7 +443,6 @@ for (let _i = 0; _i < LockBound.slots; _i++) SLOT_OFFSETS[_i] = _i * SLOT_SIZE +
     const slotIndex = 31 - clz32(free);
     if (!encodeTask(task, slotIndex)) return false;
 
-    _s32[3] = slotIndex;
     return encodeAt(task, slotIndex, 1 << slotIndex);
   };
 
@@ -499,7 +467,7 @@ for (let _i = 0; _i < LockBound.slots; _i++) SLOT_OFFSETS[_i] = _i * SLOT_SIZE +
   /**
    * WORKER SIDE: decode
    */
-  const decode = (): boolean => {
+   const decode = (): boolean => {
     let diff = a_load(hostBits, 0) ^ _s32[1];
     if (diff === 0) return false;
 
@@ -509,7 +477,6 @@ for (let _i = 0; _i < LockBound.slots; _i++) SLOT_OFFSETS[_i] = _i * SLOT_SIZE +
     try {
       if (last === 32) {
         const idx = 31 - clz32(diff);
-        _s32[3] = idx;
         decodeAt(idx);
         const bit = 1 << idx;
         diff ^= bit;
@@ -522,7 +489,6 @@ for (let _i = 0; _i < LockBound.slots; _i++) SLOT_OFFSETS[_i] = _i * SLOT_SIZE +
         if (pick === 0) pick = diff;
 
         const idx = 31 - clz32(pick);
-        _s32[3] = idx;
         decodeAt(idx);
         const bit = 1 << idx;
         diff ^= bit;
@@ -549,79 +515,59 @@ for (let _i = 0; _i < LockBound.slots; _i++) SLOT_OFFSETS[_i] = _i * SLOT_SIZE +
     onResolved?: (task: Task) => void,
   }) => {
 
-    const getTask = takeTask({
-      queue
-    })
+    const getTask = (array: Uint32Array, at: number): Task => {
+      const off = SLOT_OFFSETS[at];
+      const task = queue[array[off + TaskIndex.ID]];
+      fillTaskFrom(task, array, off);
+      return task;
+    };
 
-    const HAS_RESOLVE = onResolved ? true : false
+    const HAS_RESOLVE = onResolved !== undefined;
     let lastResolved = 32;
 
 
     return (): number => {
-    let diff = a_load(hostBits, 0) ^ _s32[1];
-    if (diff === 0) return 0;
+      let diff = a_load(hostBits, 0) ^ _s32[1];
+      if (diff === 0) return 0;
 
-    let modified = 0;
-    let consumedBits = 0;
-    let last = lastResolved;
+      let modified = 0;
+      let consumedBits = 0;
+      let last = lastResolved;
 
-    if (last === 32) {
-      const idx = 31 - clz32(diff);
-      const selectedBit = 1 << idx;
+      while (diff !== 0) {
 
-      const task = getTask(headersBuffer, idx);
-      decodeTask(task, idx);
+        let pick = last < 32 ? diff & ((1 << last) - 1) : 0;
+        if (pick === 0) pick = diff;
+        const idx = 31 - clz32(pick);
+        const selectedBit = 1 << idx;
 
-      consumedBits ^= selectedBit;
-      settleTask(task);
-      if(HAS_RESOLVE){
-        onResolved!(task)
+        const task = getTask(headersBuffer, idx);
+        decodeTask(task, idx);
+
+        consumedBits ^= selectedBit;
+        settleTask(task);
+        if (HAS_RESOLVE) onResolved!(task);
+
+        diff ^= selectedBit;
+        last = idx;
+        modified++;
+
+        // Batch Atomics.store every 8 completions to reduce SAB traffic.
+        if ((modified & 7) === 0 && consumedBits !== 0) {
+          _s32[1] ^= consumedBits;
+          a_store(workerBits, 0, _s32[1]);
+          consumedBits = 0;
+        }
       }
 
-      diff ^= selectedBit;
-      modified++;
-      if ((modified & 7) === 0 && consumedBits !== 0) {
+      if (consumedBits !== 0) {
         _s32[1] ^= consumedBits;
         a_store(workerBits, 0, _s32[1]);
-        consumedBits = 0;
-      }
-      last = idx;
-    }
-
-    while (diff !== 0) {
-      const lowerMask = last === 31 ? 0x7fffffff : ((1 << last) - 1);
-      let pick = diff & lowerMask;
-      if (pick === 0) pick = diff;
-      const idx = 31 - clz32(pick);
-      const selectedBit = 1 << idx;
-
-      const task = getTask(headersBuffer, idx);
-      decodeTask(task, idx);
-
-      consumedBits ^= selectedBit;
-      settleTask(task);
-      if(HAS_RESOLVE){
-        onResolved!(task)
       }
 
-      diff ^= selectedBit;
-      modified++;
-      if ((modified & 7) === 0 && consumedBits !== 0) {
-        _s32[1] ^= consumedBits;
-        a_store(workerBits, 0, _s32[1]);
-        consumedBits = 0;
-      }
-      last = idx;
-    }
-
-    if (consumedBits !== 0) {
-      _s32[1] ^= consumedBits;
-      a_store(workerBits, 0, _s32[1]);
-    }
-
-    lastResolved = last;
-    return modified;
-  };
+      lastResolved = last;
+      return modified;
+    };
   }
 
 

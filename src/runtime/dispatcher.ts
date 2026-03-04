@@ -3,10 +3,6 @@ import { type MainSignal } from "../ipc/transport/shared-memory.ts";
 import { MessageChannel, type MessagePort } from "node:worker_threads";
 import type { DispatcherSettings } from "../types.ts";
 
-enum Comment {
-  thisIsAHint = 0,
-}
-
 export const hostDispatcherLoop = ({
   signalBox: {
     opView,
@@ -40,98 +36,105 @@ export const hostDispatcherLoop = ({
     0,
     (dispatcherOptions?.maxBackoffMs ?? 10) | 0,
   );
-  let inProgress = false;
-  let rerunRequested = false;
   let backoffTimer: ReturnType<typeof setTimeout> | undefined;
+  // inFlight prevents re-entrancy when pool.ts fires check() concurrently
+  // from both send() and the channel callback. Cheaper than try/finally.
+  let inFlight = false;
 
-  const scheduleNotify = (check: CheckWithState) => {
+  const check = () => {
+    if (inFlight) {
+      // Another check() is already mid-drain; mark that a re-run is needed
+      // so the active invocation loops again before yielding.
+      check.rerun = true;
+      return;
+    }
+    inFlight = true;
+
+    if (backoffTimer !== undefined) {
+      clearTimeout(backoffTimer);
+      backoffTimer = undefined;
+    }
+
+    do {
+      check.rerun = false;
+
+      txStatus[0] = 1;
+
+      // Wake the worker before draining so it can start processing while we flush.
+      if (a_load(rxStatus, 0) === 0) {
+        a_store(opView, 0, 1);
+        a_notify(opView, 0, 1);
+      }
+
+      // Drain loop: local vars so V8 keeps them as unboxed int32.
+      let anyProgressed = false;
+      let progressed = true;
+      while (progressed) {
+        progressed = false;
+        if (completeFrame() > 0) {
+          progressed = true;
+          anyProgressed = true;
+        }
+        while (hasPendingFrames()) {
+          if (!flushToWorker()) break;
+          progressed = true;
+          anyProgressed = true;
+        }
+      }
+
+      txStatus[0] = 0;
+
+      if (!txIdle()) {
+        if (anyProgressed || hasPendingFrames()) {
+          stallCount = 0 | 0;
+        } else {
+          stallCount = (stallCount + 1) | 0;
+        }
+        inFlight = false;
+        scheduleNotify();
+        return;
+      }
+
+      // Queue is fully drained.
+      stallCount = 0 | 0;
+    } while (check.rerun);
+
+    check.isRunning = false;
+    inFlight = false;
+  };
+
+  check.isRunning = false;
+  check.rerun = false;
+
+  const scheduleNotify = () => {
     if (stallCount <= STALL_FREE_LOOPS) {
       notify();
       return;
     }
 
-    // Keep only one delayed wakeup at a time; fresh send() calls can still
-    // preempt this by scheduling check directly.
+    // One delayed wakeup at a time; fresh send() calls preempt via check directly.
     if (backoffTimer !== undefined) return;
 
     let delay = (stallCount - STALL_FREE_LOOPS - 1) | 0;
     if (delay < 0) delay = 0;
     else if (delay > MAX_BACKOFF_MS) delay = MAX_BACKOFF_MS;
-    // Release the running latch while in backoff so fresh calls can kick
-    // the dispatcher without waiting for the timeout.
+    // Release isRunning during backoff so pool.ts send() can restart the loop.
     check.isRunning = false;
     backoffTimer = setTimeout(() => {
       backoffTimer = undefined;
-      if (check.isRunning === false) check.isRunning = true;
-      check();
+      if (!check.isRunning) {
+        check.isRunning = true;
+        check();
+      }
     }, delay);
   };
-
-  const check = (() => {
-    if (backoffTimer !== undefined) {
-      clearTimeout(backoffTimer);
-      backoffTimer = undefined;
-    }
-    if (inProgress) {
-      rerunRequested = true;
-      return;
-    }
-    inProgress = true;
-
-    try {
-      do {
-        rerunRequested = false;
-        let progressed = false;
-        let anyProgressed = false;
-        txStatus[Comment.thisIsAHint] = 1;
-
-        if (a_load(rxStatus, 0) === 0) {
-          a_store(opView, 0, 1);
-          a_notify(opView, 0, 1);
-        }
-
-        do {
-          progressed = false;
-          if (completeFrame() > 0) {
-            progressed = true;
-            anyProgressed = true;
-          }
-
-          while (hasPendingFrames()) {
-            if (!flushToWorker()) break;
-            progressed = true;
-            anyProgressed = true;
-          }
-        } while (progressed);
-
-        // Best-effort hint only; non-atomic by design.
-        txStatus[Comment.thisIsAHint] = 0;
-        if (!txIdle()) {
-          if (anyProgressed || hasPendingFrames()) {
-            stallCount = 0 | 0;
-          } else {
-            stallCount = (stallCount + 1) | 0;
-          }
-          scheduleNotify(check);
-          return;
-        }
-
-        check.isRunning = false;
-        stallCount = 0 | 0;
-      } while (rerunRequested);
-    } finally {
-      txStatus[Comment.thisIsAHint] = 0;
-      inProgress = false;
-    }
-  }) as CheckWithState;
-
-  check.isRunning = false;
 
   return { check };
 };
 
 type CheckWithState = (() => void) & {
   isRunning: boolean;
+  rerun: boolean;
 };
 
 export class ChannelHandler {
