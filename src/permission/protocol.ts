@@ -82,9 +82,9 @@ type PermissionProtocol = {
    */
   denyNet?: string[];
   /**
-   * Allowed import hostnames.
+   * Allowed import hostnames. `true` means unrestricted import hosts.
    */
-  allowImport?: string[];
+  allowImport?: string[] | true;
   /**
    * Environment permission settings.
    */
@@ -153,6 +153,7 @@ type ResolvedPermissionProtocol = {
   netAll: boolean;
   denyNet: string[];
   allowImport: string[];
+  allowImportAll: boolean;
 
   env: {
     allow: string[];
@@ -561,6 +562,7 @@ const toDenoFlags = ({
   netAll,
   denyNet,
   allowImport,
+  allowImportAll,
   envAllow,
   envAllowAll,
   envDeny,
@@ -588,6 +590,7 @@ const toDenoFlags = ({
   netAll: boolean;
   denyNet: string[];
   allowImport: string[];
+  allowImportAll: boolean;
   envAllow: string[];
   envAllowAll: boolean;
   envDeny: string[];
@@ -636,7 +639,9 @@ const toDenoFlags = ({
     flags.push(`--deny-net=${denyNet.join(",")}`);
   }
 
-  if (allowImport.length > 0) {
+  if (allowImportAll) {
+    flags.push("--allow-import");
+  } else if (allowImport.length > 0) {
     flags.push(`--allow-import=${allowImport.join(",")}`);
   }
 
@@ -740,6 +745,7 @@ export const resolvePermissionProtocol = ({
       netAll: true,
       denyNet: [],
       allowImport: [],
+      allowImportAll: true,
 
       env: {
         allow: [],
@@ -837,9 +843,14 @@ export const resolvePermissionProtocol = ({
     : normalizeStringList(Array.isArray(input.net) ? input.net : []);
   const denyNet = normalizeStringList(input.denyNet);
 
-  const allowImport = normalizeStringList(
-    Array.isArray(input.allowImport) ? input.allowImport : [...DEFAULT_ALLOW_IMPORT_HOSTS],
-  );
+  const allowImportAll = input.allowImport === true;
+  const allowImport = allowImportAll
+    ? []
+    : normalizeStringList(
+      Array.isArray(input.allowImport)
+        ? input.allowImport
+        : [...DEFAULT_ALLOW_IMPORT_HOSTS],
+    );
 
   const envAllowAll = input.env?.allow === true;
   const envAllow = envAllowAll
@@ -909,6 +920,7 @@ export const resolvePermissionProtocol = ({
     netAll,
     denyNet,
     allowImport,
+    allowImportAll,
 
     env: {
       allow: envAllow,
@@ -960,6 +972,7 @@ export const resolvePermissionProtocol = ({
         netAll,
         denyNet,
         allowImport,
+        allowImportAll,
         envAllow,
         envAllowAll,
         envDeny,

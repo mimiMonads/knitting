@@ -1,14 +1,15 @@
-import { task } from "../../knitting.ts";
-import { fileURLToPath } from "node:url";
+import { importTask, task } from "../../knitting.ts";
 
 export const addOnePromise = task<Promise<number> | number, number>({
   f: async (value) => value + 1,
 });
 
-const runtimeTaskPath = fileURLToPath(import.meta.url);
+const importedFunctionsHref = new URL(
+  "./imported_functions.ts",
+  import.meta.url,
+).href;
 
-// Exercises filesystem-path href normalization (including Windows drive paths).
-export const addOnePromiseViaPath = task<Promise<number> | number, number>({
-  href: runtimeTaskPath,
-  f: async (value) => value + 1,
+export const addOneViaImportTask = importTask<number, number>({
+  href: importedFunctionsHref,
+  name: "addOne",
 });

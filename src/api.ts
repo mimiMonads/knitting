@@ -24,6 +24,8 @@ import type {
   TaskInput,
   SingleTaskPool,
   ReturnFixed,
+  ImportTaskOptions,
+  TaskFn,
   WorkerInvoke,
   tasks,
 } from "./types.ts";
@@ -162,7 +164,10 @@ export const createPool: CreatePoolFactory = ({
   const totalNumberOfThread = (threads ?? 1) +
     (usingInliner ? 1 : 0);
   const permissionProtocol = resolvePermissionProtocol({
-    permission,
+    permission: permission ?? {
+      mode: "strict",
+      allowImport: true,
+    },
     modules: list,
   });
   const permissionExecArgv = toRuntimePermissionFlags(permissionProtocol);
@@ -414,6 +419,7 @@ export const createPool: CreatePoolFactory = ({
 };
 
 const SINGLE_TASK_KEY = "__task__";
+const DEFAULT_IMPORT_EXPORT_NAME = "default";
 
 const createSingleTaskPool = <
   A extends TaskInput,
@@ -431,6 +437,94 @@ const createSingleTaskPool = <
     call: pool.call[SINGLE_TASK_KEY] as SingleTaskPool<A, B, AS>["call"],
     shutdown: pool.shutdown,
   };
+};
+
+const buildTaskDefinitionFromCaller = <
+  A extends TaskInput = void,
+  B extends Args = void,
+  AS extends true | AbortSignalConfig | undefined = undefined,
+>(
+  input: FixPoint<A, B, AS>,
+  callerHref: string,
+  at: number,
+): ReturnFixed<A, B, AS> => {
+  const importedFrom = new URL(callerHref).href;
+
+  const out = ({
+    ...input,
+    id: genTaskID(),
+    importedFrom,
+    at,
+    [endpointSymbol]: true,
+  }) as ReturnFixed<A, B, AS>;
+
+  out.createPool = (options?: CreatePool) => {
+    if (isMainThread === false) {
+      return out as unknown as SingleTaskPool<A, B, AS>;
+    }
+    return createSingleTaskPool(out, options);
+  };
+
+  return out;
+};
+
+const buildTaskDefinition = <
+  A extends TaskInput = void,
+  B extends Args = void,
+  AS extends true | AbortSignalConfig | undefined = undefined,
+>(
+  input: FixPoint<A, B, AS>,
+  callerOffset: number,
+): ReturnFixed<A, B, AS> => {
+  const [href, at] = getCallerFilePath(callerOffset);
+  return buildTaskDefinitionFromCaller(input, href, at);
+};
+
+const resolveImportHref = (href: string, callerHref: string): string => {
+  try {
+    return new URL(href, callerHref).href;
+  } catch {
+    return toModuleUrl(href);
+  }
+};
+
+const createImportedTaskFn = <
+  A extends TaskInput = void,
+  B extends Args = void,
+  AS extends true | AbortSignalConfig | undefined = undefined,
+>(
+  href: string,
+  exportName: string,
+): TaskFn<A, B, AS> => {
+  let cachedFn: ((...args: unknown[]) => unknown) | undefined;
+  let cachedLoad: Promise<(...args: unknown[]) => unknown> | undefined;
+
+  const loadFn = async (): Promise<(...args: unknown[]) => unknown> => {
+    if (cachedFn) return cachedFn;
+    if (!cachedLoad) {
+      cachedLoad = import(href).then((module) => {
+        const record = module as Record<string, unknown>;
+        const selected = exportName === DEFAULT_IMPORT_EXPORT_NAME
+          ? record.default
+          : record[exportName];
+        if (typeof selected !== "function") {
+          const available = Object.keys(record).join(", ");
+          throw new TypeError(
+            `importTask expected export "${exportName}" from "${href}" to be a function.` +
+              ` Available exports: ${available || "(none)"}`,
+          );
+        }
+        cachedFn = selected as (...args: unknown[]) => unknown;
+        return cachedFn;
+      });
+    }
+    return cachedLoad;
+  };
+
+  return (async (...args: unknown[]) => {
+    const fn = await loadFn();
+    return fn(...args);
+  }) as TaskFn<A, B, AS>;
 };
 
 /**
@@ -459,26 +553,45 @@ export function task<
 >(
   I: FixPoint<A, B, AS>,
 ): ReturnFixed<A, B, AS> {
-  const [ href , at] = getCallerFilePath()
+  return buildTaskDefinition(I, 4);
+}
 
-  const importedFrom = I?.href != null
-    ? toModuleUrl(I.href)
-    : new URL(href).href;
+/**
+ * Define a task whose worker-side function is imported dynamically from `href`.
+ *
+ * This keeps module import/evaluation inside the worker, so worker permission
+ * policies apply to that import path.
+ */
+export function importTask<A extends TaskInput = void, B extends Args = void>(
+  options: ImportTaskOptions<A, B, true>,
+): ReturnFixed<A, B, true>;
+export function importTask<
+  A extends TaskInput = void,
+  B extends Args = void,
+  AS extends AbortSignalConfig = AbortSignalConfig,
+>(
+  options: ImportTaskOptions<A, B, AS>,
+): ReturnFixed<A, B, AS>;
+export function importTask<A extends TaskInput = void, B extends Args = void>(
+  options: ImportTaskOptions<A, B, undefined>,
+): ReturnFixed<A, B, undefined>;
+export function importTask<
+  A extends TaskInput = void,
+  B extends Args = void,
+  AS extends true | AbortSignalConfig | undefined = undefined,
+>(
+  options: ImportTaskOptions<A, B, AS>,
+): ReturnFixed<A, B, AS> {
+  const [callerHref, at] = getCallerFilePath(3);
+  const {
+    href,
+    name = DEFAULT_IMPORT_EXPORT_NAME,
+    ...rest
+  } = options;
+  const resolvedHref = resolveImportHref(href, callerHref);
 
-  const out = ({
-    ...I,
-    id: genTaskID(),
-    importedFrom,
-    at,
-    [endpointSymbol]: true,
-  }) as ReturnFixed<A, B, AS>;
-
-  out.createPool = (options?: CreatePool) => {
-    if (isMainThread === false) {
-      return out as unknown as SingleTaskPool<A, B, AS>;
-    }
-    return createSingleTaskPool(out, options);
-  };
-
-  return out;
+  return buildTaskDefinitionFromCaller<A, B, AS>({
+    ...(rest as unknown as Omit<FixPoint<A, B, AS>, "f">),
+    f: createImportedTaskFn<A, B, AS>(resolvedHref, name),
+  } as FixPoint<A, B, AS>, callerHref, at);
 }

@@ -241,6 +241,216 @@ test("resolveHost decodes into queue and acks worker bits", () => {
   assertEquals(resolveHost(), 0);
 });
 
+test("resolveHost sees producer toggles in hostBits across instances", () => {
+  const lockSector = new SharedArrayBuffer(
+    LOCK_SECTOR_BYTE_LENGTH,
+  );
+  const headers = new SharedArrayBuffer(HEADER_BYTE_LENGTH);
+  const payloadSector = new SharedArrayBuffer(
+    LOCK_SECTOR_BYTE_LENGTH,
+  );
+  const payload = new SharedArrayBuffer(1024 * 64);
+
+  // Simulate worker/host by using two lock2() instances (separate local mirrors)
+  // that share the same SABs.
+  const producer = lock2({
+    headers,
+    LockBoundSector: lockSector,
+    payload,
+    payloadSector,
+  });
+  const consumer = lock2({
+    headers,
+    LockBoundSector: lockSector,
+    payload,
+    payloadSector,
+  });
+
+  const results: unknown[] = [];
+  const queue = Array.from({ length: 3 }, (_, i) => {
+    const task = makeTask();
+    task.resolve = (value) => {
+      results[i] = value;
+    };
+    task.reject = (reason) => {
+      results[i] = reason;
+    };
+    return task;
+  });
+
+  const responses = ["x".repeat(700), "ok", 123];
+  for (let i = 0; i < responses.length; i++) {
+    const task = makeTask();
+    task[TaskIndex.ID] = i;
+    task.value = responses[i];
+    assertEquals(producer.encode(task), true);
+  }
+
+  const resolveHost = consumer.resolveHost({ queue });
+  assertEquals(resolveHost(), responses.length);
+  assertEquals(results, responses);
+
+  assertEquals((consumer.hostBits[0] ^ consumer.workerBits[0]) >>> 0, 0);
+  assertEquals(resolveHost(), 0);
+});
+
+test("resolveHost ignores workerBits changes without producer toggles", () => {
+  const lockSector = new SharedArrayBuffer(
+    LOCK_SECTOR_BYTE_LENGTH,
+  );
+  const headers = new SharedArrayBuffer(HEADER_BYTE_LENGTH);
+  const payloadSector = new SharedArrayBuffer(
+    LOCK_SECTOR_BYTE_LENGTH,
+  );
+  const payload = new SharedArrayBuffer(1024 * 64);
+
+  const producer = lock2({
+    headers,
+    LockBoundSector: lockSector,
+    payload,
+    payloadSector,
+  });
+  const consumer = lock2({
+    headers,
+    LockBoundSector: lockSector,
+    payload,
+    payloadSector,
+  });
+
+  const resolved: unknown[] = [];
+  const queue = Array.from({ length: LockBound.slots }, (_, id) => {
+    const task = makeTask();
+    task.resolve = (value) => {
+      resolved.push({ id, value });
+    };
+    task.reject = (reason) => {
+      resolved.push({ id, reason });
+    };
+    return task;
+  });
+
+  const resolveHost = consumer.resolveHost({ queue });
+
+  // Mutate the consumer/ack word directly. resolveHost should only react to
+  // producer toggles in hostBits.
+  Atomics.xor(producer.workerBits, 0, 1);
+  assertEquals(resolveHost(), 0);
+  assertEquals(resolved.length, 0);
+});
+
+test("resolveHost random stress keeps toggle protocol consistent across instances", () => {
+  const lockSector = new SharedArrayBuffer(
+    LOCK_SECTOR_BYTE_LENGTH,
+  );
+  const headers = new SharedArrayBuffer(HEADER_BYTE_LENGTH);
+  const payloadSector = new SharedArrayBuffer(
+    LOCK_SECTOR_BYTE_LENGTH,
+  );
+  const payload = new SharedArrayBuffer(1024 * 64);
+
+  const producer = lock2({
+    headers,
+    LockBoundSector: lockSector,
+    payload,
+    payloadSector,
+  });
+  const consumer = lock2({
+    headers,
+    LockBoundSector: lockSector,
+    payload,
+    payloadSector,
+  });
+
+  const UNSET = -1;
+  const expected = Array.from({ length: LockBound.slots }, () => UNSET);
+  const available = Array.from({ length: LockBound.slots }, (_, i) => i);
+  let outstanding = 0;
+
+  const queue = Array.from({ length: LockBound.slots }, (_, id) => {
+    const task = makeTask();
+    task.resolve = (value) => {
+      assertEquals(expected[id] !== UNSET, true);
+      assertEquals(typeof value, "number");
+      assertEquals(value, expected[id]);
+      expected[id] = UNSET;
+    };
+    task.reject = (reason) => {
+      assert.fail(String(reason));
+    };
+    return task;
+  });
+
+  const resolveHost = consumer.resolveHost({
+    queue,
+    onResolved: (task) => {
+      const id = task[TaskIndex.ID] | 0;
+      available.push(id);
+      outstanding = (outstanding - 1) | 0;
+    },
+  });
+
+  const nextRandom = makeRng(0x03db10cc);
+  let nextValue = 1;
+
+  for (let step = 0; step < 3000; step++) {
+    const shouldProduce = available.length > 0 && ((nextRandom() & 3) !== 0);
+
+    if (shouldProduce) {
+      const id = available.pop()!;
+      expected[id] = nextValue;
+
+      const task = makeTask();
+      task[TaskIndex.ID] = id;
+      task.value = nextValue;
+
+      const hostBefore = Atomics.load(consumer.hostBits, 0) | 0;
+      const workerBefore = Atomics.load(consumer.workerBits, 0) | 0;
+      const pendingBefore = (hostBefore ^ workerBefore) >>> 0;
+
+      assertEquals(producer.encode(task), true);
+      outstanding = (outstanding + 1) | 0;
+      nextValue++;
+
+      const hostAfter = Atomics.load(consumer.hostBits, 0) | 0;
+      const toggled = (hostBefore ^ hostAfter) >>> 0;
+      assertEquals(isSingleBit(toggled), true);
+      assertEquals((pendingBefore & toggled) === 0, true);
+      continue;
+    }
+
+    const hostWord = Atomics.load(consumer.hostBits, 0) | 0;
+    const pendingBefore =
+      (hostWord ^ (Atomics.load(consumer.workerBits, 0) | 0)) >>> 0;
+    const modified = resolveHost() | 0;
+
+    if (pendingBefore === 0) {
+      assertEquals(modified, 0);
+      continue;
+    }
+
+    assertEquals(modified, popcount32(pendingBefore));
+    assertEquals(Atomics.load(consumer.hostBits, 0) | 0, hostWord);
+    assertEquals((consumer.hostBits[0] ^ consumer.workerBits[0]) >>> 0, 0);
+    assertEquals(outstanding, 0);
+  }
+
+  while (true) {
+    const pendingBefore =
+      (Atomics.load(consumer.hostBits, 0) ^ Atomics.load(consumer.workerBits, 0)) >>> 0;
+    const modified = resolveHost() | 0;
+    if (pendingBefore === 0) {
+      assertEquals(modified, 0);
+      break;
+    }
+    assertEquals(modified, popcount32(pendingBefore));
+  }
+
+  assertEquals(outstanding, 0);
+  for (let i = 0; i < expected.length; i++) {
+    assertEquals(expected[i], UNSET);
+  }
+});
+
 test("xor bit protocol random stress keeps slot toggles consistent", () => {
   const { lock } = makeLock();
   const nextRandom = makeRng(0x1badf00d);

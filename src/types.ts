@@ -224,12 +224,6 @@ interface FixPointBase<
   B extends Args,
   AS extends AbortSignalOption = undefined,
 > {
-  /**
-   * Optional module URL override for worker discovery.
-   * Unsafe/experimental: prefer default caller resolution.
-   * May be removed in a future major release.
-   */
-  readonly href?: string;
   readonly f: TaskFn<A, B, AS>;
   readonly timeout?: TaskTimeout;
 }
@@ -245,6 +239,16 @@ type FixPoint<
       ? { readonly abortSignal?: undefined }
       : { readonly abortSignal: AS }
   );
+
+type ImportTaskOptions<
+  A extends TaskInput = void,
+  B extends Args = void,
+  AS extends AbortSignalOption = undefined,
+> =
+  Omit<FixPoint<A, B, AS>, "f"> & {
+    readonly href: string;
+    readonly name?: string;
+  };
 
 type SecondPart = {
   readonly [endpointSymbol]: true;
@@ -419,8 +423,9 @@ type CreatePool = {
   workerExecArgv?: string[];
   /**
    * Runtime permission protocol.
+   * Omit to use strict defaults with `allowImport: true`.
    * Use `"strict"` (default for object mode) or `"unsafe"`.
-   * Accepts object form for fine-grained read/write deny lists.
+   * Accepts object form for fine-grained permission controls.
    */
   permission?: PermissionProtocolInput;
   /**
@@ -455,6 +460,7 @@ export type {
   ComposedWithKey as ComposedWithKey,
   FunctionMapType as FunctionMapType,
   FixPoint as FixPoint,
+  ImportTaskOptions as ImportTaskOptions,
   SecondPart as SecondPart,
   SingleTaskPool as SingleTaskPool,
   Pool as Pool,
