@@ -22,7 +22,7 @@
     "test": "npm run test:deno",
     "test:deno": "deno test -A --ignore=test/runtime.node.test.ts",
     "test:node": "node --no-warnings --experimental-transform-types --test \"./test/*.test.ts\"",
-    "test:bun": "bun test --timeout 10000 test",
+    "test:bun": "bun test --timeout 10000 test/abortSignal.test.ts test/api-cap.test.ts test/createSharedBufferIO.test.ts test/lock.test.ts test/moduleUrl.test.ts test/payload-config.test.ts test/payloadCodec.test.ts test/permission.test.ts test/regionRegistry.test.ts test/ringQueue.test.ts test/rx-queue.test.ts test/safety-coverage.test.ts test/tx-queue.test.ts",
     "test:runtimes": "npm run test:node && npm run test:bun",
     "test:all": "npm run test:deno && npm run test:runtimes",
     "coverage:node": "node --no-warnings --experimental-transform-types --experimental-test-coverage --test \"./test/*.test.ts\"",
