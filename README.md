@@ -72,7 +72,7 @@ const results = await Promise.all(jobs);
 
 ## API Overview
 
-### `task({ f, href?, timeout?, abortSignal? })`
+### `task({ f, timeout?, abortSignal? })`
 
 Wraps a function (sync or async) so it can be registered and executed in
 workers. `call.*()` always returns a promise. Inputs can also be native
@@ -119,26 +119,80 @@ What this means today:
   least one task uses `abortSignal`) and can be tuned with
   `createPool({ abortSignalCapacity })`.
 
-#### `href` override behavior (unsafe / experimental)
+### `importTask({ href, name?, timeout?, abortSignal? })`
 
-`task()` normally captures the caller module URL and uses that for worker-side
-task discovery. Passing `href` overrides that module URL and forces workers to
-import from your custom path/URL.
+Defines a task whose function is imported dynamically inside the worker.
 
-This is not considered safe as a public long-term contract and may be removed
-in a future major release.
+- `href`: module URL/path to import.
+- `name`: named export to call (defaults to `default`).
+- This keeps import/evaluation in worker context, so worker permission policy
+  applies to that import path.
 
-Rules for `href`:
+Example:
 
-- Prefer not using `href`; default caller resolution is the supported path.
-- If you use it, pass an absolute module URL (`file://...` or full URL).
-- Avoid remote URLs (`http(s)://...`) in production; runtime support and
-  security expectations vary across Node/Deno/Bun.
-- Ensure the target module exports top-level `task(...)` values discoverable by
-  workers.
-- Ensure `href` points to a stable module identity (do not use ad-hoc dynamic
-  URL variations for the same task module).
-- Treat this as compatibility-risky and pin versions if you depend on it.
+```ts
+import { createPool, importTask, isMain } from "@vixeny/knitting";
+
+const REMOTE_TASKS_URL = "https://knittingdocs.netlify.app/example-task.mjs";
+
+export const addFromWeb = importTask<[number, number], number>({
+  href: REMOTE_TASKS_URL,
+  name: "add",
+});
+
+export const wordStatsFromWeb = importTask<
+  { text: string },
+  { words: number; chars: number }
+>({
+  href: REMOTE_TASKS_URL,
+  name: "wordStats",
+});
+
+const pool = createPool({ threads: 2 })({
+  addFromWeb,
+  wordStatsFromWeb,
+});
+
+if (isMain) {
+  const [sum, stats] = await Promise.all([
+    pool.call.addFromWeb([8, 5]),
+    pool.call.wordStatsFromWeb({ text: "hello from remote tasks" }),
+  ]);
+
+  console.log("sum from web:", sum); // 13
+  console.log("word stats from web:", stats); // { words: 4, chars: 23 }
+  await pool.shutdown();
+}
+```
+
+#### Deno lockfile workflow (no `--no-lock`)
+
+When `href` points to a remote URL, keep `deno.lock` updated and run with
+frozen lock checks.
+
+`deno.json` example:
+
+```json
+{
+  "imports": {
+    "@vixeny/knitting": "jsr:@vixeny/knitting"
+  },
+  "tasks": {
+    "lock:update": "deno cache --config deno.json --lock=deno.lock --frozen=false --reload uwu.ts",
+    "run:frozen": "deno run -A --config deno.json --lock=deno.lock --frozen=true uwu.ts"
+  }
+}
+```
+
+Usage:
+
+```bash
+deno task lock:update
+deno task run:frozen
+```
+
+If the remote module content changes, rerun `lock:update` and commit the new
+`deno.lock`.
 
 Guidelines:
 
@@ -205,9 +259,9 @@ Key options:
 - `workerExecArgv?: string[]` extra worker `execArgv` flags.
 - `permission?: "strict" | "unsafe" | PermissionProtocol`
   for runtime permission flag policy:
+  - omitted `permission`: uses strict defaults plus `allowImport: true` (web imports allowed).
   - `"strict"` (default when passing an object): computes conservative defaults.
   - `"unsafe"`: disables permission flags and strips inherited Node permission flags.
-  - disable permission protocol entirely by omitting `permission`.
   Strict defaults include read/write rooted at current `cwd`, deny-write for
   `node_modules`, deny read/write for sensitive paths (`.env`, `.git`,
   `.npmrc`, `.docker`, `.secrets`, `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.azure`,
@@ -247,8 +301,8 @@ const pool = createPool({
 Permission examples:
 
 ```ts
-// Default permission profile
-createPool({ permission: {} })({ add });
+// Default profile (strict + web imports allowed)
+createPool({})({ add });
 
 // Shorthand full-access mode
 createPool({ permission: "unsafe" })({ add });
@@ -411,7 +465,6 @@ When omitted, strategy defaults to `"roundRobin"`.
 - Keep task definitions at top level (avoid conditional exports).
 - Batch many calls, then await with `Promise.all`.
 - Use a tuple or object when you need multiple arguments.
-- Avoid `href` override unless strictly necessary (experimental/unsafe).
 
 ## Benchmarks
 

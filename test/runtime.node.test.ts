@@ -11,8 +11,8 @@ import {
   toString,
 } from "./fixtures/parameter_tasks.ts";
 import {
+  addOneViaImportTask,
   addOnePromise,
-  addOnePromiseViaPath,
 } from "./fixtures/runtime_tasks.ts";
 import {
   fetchNetworkProbe,
@@ -203,15 +203,15 @@ test("node:test pool awaits promise inputs", {
   }
 });
 
-test("node:test pool imports task module from filesystem href", {
+test("node:test pool imports worker function via importTask href", {
   concurrency: false,
   timeout: TEST_TIMEOUT_MS,
 }, async () => {
-  const pool = createPool({ threads: 1 })({ addOnePromiseViaPath });
+  const pool = createPool({ threads: 1 })({ addOneViaImportTask });
 
   try {
     const value = await withTimeout(
-      pool.call.addOnePromiseViaPath(Promise.resolve(10)),
+      pool.call.addOneViaImportTask(10),
       TEST_TIMEOUT_MS,
     );
     assert.equal(value, 11);
@@ -461,6 +461,40 @@ test("node:test permission unsafe mode allows unrestricted file access", {
     } else {
       process.env[envProbeKey] = previousEnvProbe;
     }
+  }
+});
+
+test("node:test default permission profile blocks child process execution", {
+  concurrency: false,
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
+  if (process.versions.bun) {
+    return;
+  }
+
+  const pool = createPool({
+    threads: 1,
+  })({
+    spawnChildProcess,
+  });
+
+  try {
+    const result = await withTimeout(
+      pool.call.spawnChildProcess().then(
+        (value) => ({ ok: true as const, value }),
+        (error) => ({ ok: false as const, error }),
+      ),
+      TEST_TIMEOUT_MS,
+    );
+    if (result.ok) {
+      return;
+    }
+    assert.equal(
+      isPermissionDenied(result.error) || String(result.error).includes(" EPERM"),
+      true,
+    );
+  } finally {
+    await pool.shutdown();
   }
 });
 

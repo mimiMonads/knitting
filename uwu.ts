@@ -1,18 +1,35 @@
+import { createPool, importTask, isMain } from "./knitting.ts";
 
-import { createPool, isMain, task } from "./knitting.ts";
+const REMOTE_TASKS_URL = "https://knittingdocs.netlify.app/example-task.mjs";
 
-export const add = task({
-  f: (_ : [number,number]):number => 0,
-  href: "https://knittingdocs.netlify.app/example-task.mjs"
+export const addFromWeb = importTask<[number, number], number>({
+  href: REMOTE_TASKS_URL,
+  name: "add",
 });
 
-const pool = createPool({
- 
-})({
-  add
+export const wordStatsFromWeb = importTask<
+  { text: string },
+  { words: number; chars: number }
+>({
+  href: REMOTE_TASKS_URL,
+  name: "wordStats",
+});
+
+const pool = createPool({ threads: 2 })({
+  addFromWeb,
+  wordStatsFromWeb,
 });
 
 if (isMain) {
-  console.log("docs say :", await pool.call.add([3,4]));
-  await pool.shutdown();
+  try {
+    const [sum, stats] = await Promise.all([
+      pool.call.addFromWeb([8, 5]),
+      pool.call.wordStatsFromWeb({ text: "hello from remote tasks" }),
+    ]);
+
+    console.log("sum from web:", sum);
+    console.log("word stats from web:", stats);
+  } finally {
+    await pool.shutdown();
+  }
 }

@@ -24,8 +24,8 @@ const resolveCallerHref = (offset: number): string => {
 
 const linkingMap = new Map<string, number>();
 
-export const getCallerFilePath = () => {
-  const href = resolveCallerHref(3);
+export const getCallerFilePath = (offset = 3) => {
+  const href = resolveCallerHref(offset);
   const at = linkingMap.get(href) ?? 0;
   linkingMap.set(href, at + 1);
   return [href, at] as [string, number];

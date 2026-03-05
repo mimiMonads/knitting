@@ -426,3 +426,24 @@ test("resolvePermissionProtocol emits deno flags for unified categories", () => 
     true,
   );
 });
+
+test("resolvePermissionProtocol supports allowImport=true for unrestricted import hosts", () => {
+  const resolved = resolvePermissionProtocol({
+    permission: {
+      mode: "strict",
+      allowImport: true,
+    },
+  });
+
+  assert.ok(resolved);
+  assert.equal(resolved.allowImportAll, true);
+  assert.equal(resolved.allowImport.length, 0);
+  assert.equal(
+    resolved.deno.flags.some((flag) => flag === "--allow-import"),
+    true,
+  );
+  assert.equal(
+    resolved.deno.flags.some((flag) => flag.startsWith("--allow-import=")),
+    false,
+  );
+});
