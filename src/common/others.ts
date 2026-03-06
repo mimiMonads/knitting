@@ -21,9 +21,11 @@ const INTERNAL_CALLER_FUNCTIONS = new Set([
 
 type StackFrameInfo = {
   file: string;
-  functionName?: string;
-  methodName?: string;
+  functionName: string | undefined;
+  methodName: string | undefined;
 };
+
+const isDefined = <T>(value: T | undefined): value is T => value !== undefined;
 
 const isInternalCallerFrame = (file: string): boolean =>
   INTERNAL_CALLER_HINTS.some((hint) => file.includes(hint));
@@ -66,7 +68,7 @@ const collectStackFrames = (): StackFrameInfo[] => {
           return undefined;
         }
       })
-      .filter((frame): frame is StackFrameInfo => frame !== undefined);
+      .filter(isDefined);
 
     return frames;
   } finally {
