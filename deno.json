@@ -1,6 +1,6 @@
 {
   "name": "@vixeny/knitting",
-  "version": "0.1.18",
+  "version": "0.1.19",
   "nodeModulesDir": "auto",
   "exports": "./knitting.ts",
   "license": "Apache-2.0",
