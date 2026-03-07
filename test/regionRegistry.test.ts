@@ -7,8 +7,8 @@ const assertEquals: (actual: unknown, expected: unknown) => void =
 import { register } from "../src/memory/regionRegistry.ts";
 import {
   LockBound,
+  LOCK_SECTOR_BYTE_LENGTH,
   makeTask,
-  PAYLOAD_LOCK_SECTOR_BYTE_LENGTH,
   TaskIndex,
 } from "../src/memory/lock.ts";
 
@@ -18,7 +18,7 @@ const START_MASK = (~31) >>> 0;
 
 const makeRegistry = () =>
   register({
-    lockSector: new SharedArrayBuffer(PAYLOAD_LOCK_SECTOR_BYTE_LENGTH),
+    lockSector: new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH),
   });
 
 const track64andIndex = (startAndIndex: number) => [ startAndIndex >>> 6 , startAndIndex & 31 ]

@@ -1,8 +1,8 @@
 import {
   LockBound,
-  PAYLOAD_LOCK_HOST_BITS_OFFSET_BYTES,
-  PAYLOAD_LOCK_SECTOR_BYTE_LENGTH,
-  PAYLOAD_LOCK_WORKER_BITS_OFFSET_BYTES,
+  LOCK_HOST_BITS_OFFSET_BYTES,
+  LOCK_SECTOR_BYTE_LENGTH,
+  LOCK_WORKER_BITS_OFFSET_BYTES,
   TASK_SLOT_INDEX_MASK,
   TaskIndex,
 } from "./lock.ts";
@@ -11,10 +11,6 @@ import type { Task } from "./lock.ts";
 // Low 5 bits = slot index, high 27 bits = caller meta.
 // Inlined from setTaskSlotIndex to avoid cross-closure call on hot path.
 const SLOT_META_PACKED_MASK = 0xFFFFFFE0; // (~0x1F) >>> 0
-const REGION_RIGHT_PADDING_BYTES = 64;
-const REGION_RIGHT_PADDING_MASK = REGION_RIGHT_PADDING_BYTES - 1;
-const alignRegionLength = (length: number) =>
-  (length + REGION_RIGHT_PADDING_MASK) & ~REGION_RIGHT_PADDING_MASK;
 
 
 export type RegisterMalloc = ReturnType<typeof register>;
@@ -22,14 +18,10 @@ export type RegisterMalloc = ReturnType<typeof register>;
 export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => {
   const lockSAB =
     lockSector ??
-    new SharedArrayBuffer(PAYLOAD_LOCK_SECTOR_BYTE_LENGTH);
+    new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH);
 
-  const hostBits = new Int32Array(lockSAB, PAYLOAD_LOCK_HOST_BITS_OFFSET_BYTES, 1);
-  const workerBits = new Int32Array(
-    lockSAB,
-    PAYLOAD_LOCK_WORKER_BITS_OFFSET_BYTES,
-    1,
-  );
+  const hostBits = new Int32Array(lockSAB, LOCK_HOST_BITS_OFFSET_BYTES, 1);
+  const workerBits = new Int32Array(lockSAB, LOCK_WORKER_BITS_OFFSET_BYTES, 1);
 
   const startAndIndex = new Uint32Array(LockBound.slots);
   const size64bit = new Uint32Array(LockBound.slots);
@@ -38,7 +30,7 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
 
   const EMPTY = 0xFFFFFFFF >>> 0;
   const SLOT_MASK = TASK_SLOT_INDEX_MASK;
-  const U32_LIMIT = 0x1_0000_0000;
+  const START_MASK = (~SLOT_MASK) >>> 0;
 
   startAndIndex.fill(EMPTY);
 
@@ -48,6 +40,9 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
   // scalar state (faster than Uint32Array(1))
   let hostLast = 0 | 0;
   let workerLast = 0 | 0;
+
+  // cheaper modulo-8 counter
+  let updateTableCounter = 0;
 
   const startAndIndexToArray = (length: number) =>
     Array.from(startAndIndex.subarray(0, length));
@@ -130,7 +125,6 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
     const slotIndex = 31 - clz32(freeBit);
     const sai = startAndIndex;
     const sz = size64bit;
-    const sizeU32 = size >>> 0;
 
     // inlined setTaskSlotIndex: task[6] = (task[6] & ~0x1F) | slotIndex
     // avoids cross-closure call on every hot path branch
@@ -138,7 +132,7 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
     // ========= FAST PATH: empty table =========
     if (tl === 0) {
       sai[0] = slotIndex;
-      sz[slotIndex] = sizeU32;
+      sz[slotIndex] = size;
       task[TaskIndex.Start] = 0;
       task[TaskIndex.slotBuffer] = ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>> 0;
       tableLength = 1;
@@ -148,12 +142,11 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
     }
 
     // ========= gap at beginning =========
-    const first = sai[0];
-    const firstStart = first - (first & SLOT_MASK);
-    if (firstStart >= sizeU32) {
+    const firstStart = sai[0] & START_MASK;
+    if (firstStart >= (size >>> 0)) {
       sai.copyWithin(1, 0, tl);
       sai[0] = slotIndex;
-      sz[slotIndex] = sizeU32;
+      sz[slotIndex] = size;
       task[TaskIndex.Start] = 0;
       task[TaskIndex.slotBuffer] = ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>> 0;
       tableLength = tl + 1;
@@ -165,18 +158,15 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
     // ========= search for a gap between entries =========
     for (let at = 0; at + 1 < tl; at++) {
       const cur = sai[at];
-      const curSlot = cur & SLOT_MASK;
-      const curStart = cur - curSlot;
-      const curEndRaw = curStart + sz[curSlot];
-      const curEnd = curEndRaw < U32_LIMIT ? curEndRaw : curEndRaw - U32_LIMIT;
-      const next = sai[at + 1];
-      const nextStart = next - (next & SLOT_MASK);
+      const curStart = cur & START_MASK;
+      const curEnd = (curStart + (sz[cur & SLOT_MASK] >>> 0)) >>> 0;
+      const nextStart = sai[at + 1] & START_MASK;
 
-      if ((nextStart - curEnd) >>> 0 < sizeU32) continue;
+      if ((nextStart - curEnd) >>> 0 < (size >>> 0)) continue;
 
       sai.copyWithin(at + 2, at + 1, tl);
-      sai[at + 1] = curEnd + slotIndex;
-      sz[slotIndex] = sizeU32;
+      sai[at + 1] = (curEnd | slotIndex) >>> 0;
+      sz[slotIndex] = size;
       task[TaskIndex.Start] = curEnd;
       task[TaskIndex.slotBuffer] = ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>> 0;
       tableLength = tl + 1;
@@ -188,14 +178,10 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
     // ========= append at end =========
     if (tl < LockBound.slots) {
       const last = sai[tl - 1];
-      const lastSlot = last & SLOT_MASK;
-      const lastStart = last - lastSlot;
-      const newStartRaw = lastStart + sz[lastSlot];
-      const newStart = newStartRaw < U32_LIMIT
-        ? newStartRaw
-        : newStartRaw - U32_LIMIT;
-      sai[tl] = newStart + slotIndex;
-      sz[slotIndex] = sizeU32;
+      const lastStart = last & START_MASK;
+      const newStart = (lastStart + (sz[last & SLOT_MASK] >>> 0)) >>> 0;
+      sai[tl] = (newStart | slotIndex) >>> 0;
+      sz[slotIndex] = size;
       task[TaskIndex.Start] = newStart;
       task[TaskIndex.slotBuffer] = ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>> 0;
       tableLength = tl + 1;
@@ -208,40 +194,13 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
   };
 
   const allocTask = (task: Task) => {
-    // Inlined updateTable() on the hot path to remove the extra closure call.
-    {
-      const w = Atomics.load(workerBits, 0) | 0;
-      const state = (hostLast ^ w) >>> 0;
-      let freeBits = (~state) >>> 0;
-
-      if (tableLength !== 0 && freeBits !== 0) {
-        if (freeBits === EMPTY) {
-          tableLength = 0;
-          usedBits = 0 | 0;
-        } else {
-          freeBits &= usedBits;
-
-          if (freeBits !== 0) {
-            const sai = startAndIndex;
-
-            for (let i = 0; i < tableLength; i++) {
-              const v = sai[i];
-              if (v === EMPTY) continue;
-
-              if ((freeBits & (1 << (v & SLOT_MASK))) !== 0) {
-                sai[i] = EMPTY;
-              }
-            }
-
-            usedBits &= ~freeBits;
-            tableLength = compactSectorStable(tableLength);
-          }
-        }
-      }
-    }
+    // throttled table cleanup — kept outside findAndInsert so that
+    // function stays pure (no calls, stable type feedback for TurboFan)
+    updateTableCounter = (updateTableCounter + 1) & 3;
+    if (updateTableCounter === 0) updateTable();
 
     const payloadLen = task[TaskIndex.PayloadLen] | 0;
-    const size = alignRegionLength(payloadLen);
+    const size = (payloadLen + 63) & ~63;
 
     const slotIndex = findAndInsert(task, size);
     if (slotIndex === -1) return -1;
@@ -258,7 +217,7 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
     if ((usedBits & bit) === 0) return false;
 
     const current = size64bit[slotIndex] >>> 0;
-    const aligned = alignRegionLength(payloadLen | 0);
+    const aligned = ((payloadLen | 0) + 63) & ~63;
     if (aligned < 0) return false;
     if ((aligned >>> 0) > current) return false;
 
