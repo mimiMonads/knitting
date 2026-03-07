@@ -20,8 +20,7 @@ import {
   False = 4,
   Undefined = 5,
   NaN = 6,
-  Infinity = 7,
-  NegativeInfinity = 8,
+
   Float64 = 9,
   Null = 10,
 }
@@ -63,7 +62,7 @@ export enum PayloadBuffer {
 
 
 export enum LockBound {
-  padding = 64,
+  padding = 72,
   slots = 32,
   header = 0,
 }
@@ -116,7 +115,7 @@ export enum TaskIndex {
    */
   slotBuffer = 6,
   Size = 8,
-  TotalBuff = 128
+  TotalBuff = 136
 }
 
 export const TASK_SLOT_INDEX_BITS = 5;

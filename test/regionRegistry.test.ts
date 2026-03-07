@@ -264,7 +264,25 @@ test("check Start from Task", () => {
 
   assertEquals( values, result  );
 
- 
+
+});
+
+test("allocTask preserves append offsets past signed integer range", () => {
+  const registry = makeRegistry();
+  const payloadLen = 70_000_001;
+  const stride = align64(payloadLen);
+  const tasks = Array.from({ length: LockBound.slots }, () => {
+    const task = makeTask();
+    task[TaskIndex.PayloadLen] = payloadLen;
+    assertEquals(registry.allocTask(task) === -1, false);
+    return task;
+  });
+
+  for (let i = 0; i < tasks.length; i++) {
+    assertEquals(tasks[i]![TaskIndex.Start], stride * i);
+  }
+
+  assertEquals(tasks[tasks.length - 1]![TaskIndex.Start] > 0x7FFFFFFF, true);
 });
 
 test("packing boundary at payload size 63", () => {

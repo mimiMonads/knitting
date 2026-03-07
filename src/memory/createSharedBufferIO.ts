@@ -13,6 +13,10 @@ const DYNAMIC_HEADER_BYTES = 64;
 const DYNAMIC_SAFE_PADDING_BYTES = page;
 
 const alignUpto64 = (n: number) => (n + (64 - 1)) & ~(64 - 1);
+const canonicalUint8Array = (src: Uint8Array) =>
+  src.constructor === Uint8Array
+    ? src
+    : new Uint8Array(src.buffer, src.byteOffset, src.byteLength);
 
 export const createSharedDynamicBufferIO = ({
   sab,
@@ -84,11 +88,12 @@ export const createSharedDynamicBufferIO = ({
   };
 
   const writeBinary = (src: Uint8Array, start = 0) => {
-    if (!ensureCapacity(start + src.byteLength)) {
+    const bytes = canonicalUint8Array(src);
+    if (!ensureCapacity(start + bytes.byteLength)) {
       return -1;
     }
-    u8.set(src, start);
-    return src.byteLength;
+    u8.set(bytes, start);
+    return bytes.byteLength;
   };
 
   const write8Binary = (src: Float64Array, start = 0) => {
@@ -213,10 +218,11 @@ export const createSharedStaticBufferIO = ({
   };
 
   const writeBinary = (src: Uint8Array, at: number, start = 0) => {
-    if (!canWrite(start, src.byteLength)) return -1;
+    const bytes = canonicalUint8Array(src);
+    if (!canWrite(start, bytes.byteLength)) return -1;
     
-    arrU8Sec[at].set(src, start);
-    return src.byteLength;
+    arrU8Sec[at].set(bytes, start);
+    return bytes.byteLength;
   };
 
   const write8Binary = (src: Float64Array, at: number, start = 0) => {

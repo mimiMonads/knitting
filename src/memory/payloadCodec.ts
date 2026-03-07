@@ -679,14 +679,7 @@ export const encodePayload = ({
         task[TaskIndex.Type] = PayloadSignal.NaN;
         return true;
       }
-      switch (args) {
-      case Infinity:
-        task[TaskIndex.Type]  = PayloadSignal.Infinity;
-        return true;
-      case -Infinity:
-        task[TaskIndex.Type]  = PayloadSignal.NegativeInfinity;
-        return true;
-      }
+
 
       Float64View[0] = args;
       task[TaskIndex.Type] = PayloadSignal.Float64;
@@ -1006,14 +999,8 @@ export const decodePayload = ({
       Uint32View[1] = task[TaskIndex.End];
       task.value = Float64View[0];
       return
-    case PayloadSignal.Infinity:
-      task.value = Infinity
-      return
     case PayloadSignal.NaN:
       task.value = NaN
-      return
-    case PayloadSignal.NegativeInfinity:
-      task.value = -Infinity
       return
     case PayloadSignal.Null :
       task.value = null
