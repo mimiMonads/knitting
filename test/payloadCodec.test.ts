@@ -264,24 +264,27 @@ test("dynamic payload exceeding maxPayloadBytes rejects before reservation", asy
 });
 
 test("dynamic utf8 path uses exact byte count only near cap and still succeeds", () => {
+  const text = "é".repeat(STATIC_STRING_MAX_BYTES + 1);
+  const exactBytes = utf8Bytes(text);
+  const maxPayloadBytes = exactBytes + 64;
   const { encode, decode } = makeCodec(undefined, {
     payloadConfig: {
       mode: "fixed",
-      payloadMaxByteLength: 40000,
-      maxPayloadBytes: 1100,
+      payloadMaxByteLength: Math.max(40000, maxPayloadBytes << 3),
+      maxPayloadBytes,
     },
   });
   const task = makeTask();
-  const text = "é".repeat(500);
   task.value = text;
 
   assertEquals(text.length > STATIC_STRING_MAX_BYTES, true);
-  assertEquals(utf8Bytes(text), 1000);
-  assertEquals(text.length * 3 > 1100, true);
+  assertEquals(exactBytes, text.length * 2);
+  assertEquals(exactBytes <= maxPayloadBytes, true);
+  assertEquals(text.length * 3 > maxPayloadBytes, true);
 
   assertEquals(encode(task, 0), true);
   assertEquals(task[TaskIndex.Type], PayloadBuffer.String);
-  assertEquals(task[TaskIndex.PayloadLen], utf8Bytes(text));
+  assertEquals(task[TaskIndex.PayloadLen], exactBytes);
 
   decode(task, 0);
   assertEquals(task.value, text);

@@ -151,60 +151,60 @@ group("lock", () => {
     lock.resolved.clear();
   });
 
-  bench("roundtrip string (1)", () => {
-    ackAll(lock);
-    lock.encode(singleString);
-    lock.decode();
-    lock.resolved.clear();
-  });
-
-  bench("roundtrip large string (1)", () => {
-    ackAll(lock);
-    lock.encode(singleLargeString);
-    lock.decode();
-    lock.resolved.clear();
-  });
-
-  // bench("roundtrip string (16)", () => {
+  // bench("roundtrip string (1)", () => {
   //   ackAll(lock);
-  //   encodeBatch(lock, batch16Strings);
+  //   lock.encode(singleString);
   //   lock.decode();
   //   lock.resolved.clear();
   // });
 
-  bench("roundtrip object (1)", () => {
-    ackAll(lock);
-    singleObject.value = smallObject;
-    lock.encode(singleObject);
-    lock.decode();
-    lock.resolved.clear();
-  });
+  // bench("roundtrip large string (1)", () => {
+  //   ackAll(lock);
+  //   lock.encode(singleLargeString);
+  //   lock.decode();
+  //   lock.resolved.clear();
+  // });
 
-  bench("roundtrip object (32)", () => {
-    ackAll(lock);
-    for (let i = 0; i < batch32Objects.length; i++) {
-      batch32Objects[i]!.value = batch32ObjectValues[i]!;
-    }
-    encodeBatch(lock, batch32Objects);
-    lock.decode();
-    lock.resolved.clear();
-  });
+  // // bench("roundtrip string (16)", () => {
+  // //   ackAll(lock);
+  // //   encodeBatch(lock, batch16Strings);
+  // //   lock.decode();
+  // //   lock.resolved.clear();
+  // // });
 
-  bench("roundtrip large object (1)", () => {
-    ackAll(lock);
-    singleLargeObject.value = largeObject;
-    lock.encode(singleLargeObject);
-    lock.decode();
-    lock.resolved.clear();
-  });
+  // bench("roundtrip object (1)", () => {
+  //   ackAll(lock);
+  //   singleObject.value = smallObject;
+  //   lock.encode(singleObject);
+  //   lock.decode();
+  //   lock.resolved.clear();
+  // });
 
-  bench("roundtrip array (1)", () => {
-    ackAll(lock);
-    singleArray.value = smallArray;
-    lock.encode(singleArray);
-    lock.decode();
-    lock.resolved.clear();
-  });
+  // bench("roundtrip object (32)", () => {
+  //   ackAll(lock);
+  //   for (let i = 0; i < batch32Objects.length; i++) {
+  //     batch32Objects[i]!.value = batch32ObjectValues[i]!;
+  //   }
+  //   encodeBatch(lock, batch32Objects);
+  //   lock.decode();
+  //   lock.resolved.clear();
+  // });
+
+  // bench("roundtrip large object (1)", () => {
+  //   ackAll(lock);
+  //   singleLargeObject.value = largeObject;
+  //   lock.encode(singleLargeObject);
+  //   lock.decode();
+  //   lock.resolved.clear();
+  // });
+
+  // bench("roundtrip array (1)", () => {
+  //   ackAll(lock);
+  //   singleArray.value = smallArray;
+  //   lock.encode(singleArray);
+  //   lock.decode();
+  //   lock.resolved.clear();
+  // });
 
   bench("resolveHost (1)", () => {
     ackAll(resolveHostState.lock);
