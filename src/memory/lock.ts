@@ -62,6 +62,7 @@ export enum PayloadBuffer {
 
 
 export enum LockBound {
+  paddingLock = 64,
   padding = 72,
   slots = 32,
   header = 0,
@@ -179,13 +180,21 @@ export enum TaskFlag {
   Reject = 1 << 0,
 }
 
-// Lock-sector layout in bytes.
-// Keep host/worker words one cache-line apart to avoid false sharing.
+// Main queue lock layout in bytes.
+// Intentionally keep host/worker words adjacent to expose false sharing.
 export const LOCK_WORD_BYTES = Int32Array.BYTES_PER_ELEMENT;
-export const LOCK_HOST_BITS_OFFSET_BYTES = LockBound.padding;
-export const LOCK_WORKER_BITS_OFFSET_BYTES = LockBound.padding * 2;
+export const LOCK_HOST_BITS_OFFSET_BYTES = LockBound.paddingLock;
+export const LOCK_WORKER_BITS_OFFSET_BYTES =
+  LOCK_HOST_BITS_OFFSET_BYTES + LOCK_WORD_BYTES;
 export const LOCK_SECTOR_BYTE_LENGTH =
   LOCK_WORKER_BITS_OFFSET_BYTES + LOCK_WORD_BYTES;
+
+// Payload allocator lock layout in bytes.
+// Keep host/worker words one cache-line apart to avoid false sharing there.
+export const PAYLOAD_LOCK_HOST_BITS_OFFSET_BYTES = LockBound.paddingLock;
+export const PAYLOAD_LOCK_WORKER_BITS_OFFSET_BYTES = LockBound.paddingLock * 2;
+export const PAYLOAD_LOCK_SECTOR_BYTE_LENGTH =
+  PAYLOAD_LOCK_WORKER_BITS_OFFSET_BYTES + LOCK_WORD_BYTES;
 
 // Header layout in Uint32 units.
 export const HEADER_SLOT_STRIDE_U32 = LockBound.header + TaskIndex.TotalBuff;
@@ -298,10 +307,9 @@ export const lock2 = ({
 
 
   // Layout:
-  // [ padding (64 bytes) ]
-  // [ hostBits:Int32 (4 bytes) ]    (producer toggle word; name is historical)
-  // [ padding (64 bytes) ]
-  // [ workerBits:Int32 (4 bytes) ]  (consumer/ack toggle word; name is historical)
+  // - hostBits starts at byte `paddingLock`
+  // - workerBits starts immediately after hostBits
+  // This intentionally allows false sharing on the main queue lock.
   //
   // Important: encode() always toggles `hostBits` and decode/resolveHost always
   // toggles `workerBits`, regardless of which thread calls them. This is why
@@ -341,7 +349,7 @@ export const lock2 = ({
         : createSharedArrayBuffer(resolvedPayloadConfig.payloadInitialBytes)
     );
   const payloadLockSAB = payloadSector ??
-    new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH);
+    new SharedArrayBuffer(PAYLOAD_LOCK_SECTOR_BYTE_LENGTH);
 
   let promiseHandler: PromisePayloadHandler | undefined;
 

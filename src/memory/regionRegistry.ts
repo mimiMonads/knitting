@@ -1,8 +1,8 @@
 import {
   LockBound,
-  LOCK_HOST_BITS_OFFSET_BYTES,
-  LOCK_SECTOR_BYTE_LENGTH,
-  LOCK_WORKER_BITS_OFFSET_BYTES,
+  PAYLOAD_LOCK_HOST_BITS_OFFSET_BYTES,
+  PAYLOAD_LOCK_SECTOR_BYTE_LENGTH,
+  PAYLOAD_LOCK_WORKER_BITS_OFFSET_BYTES,
   TASK_SLOT_INDEX_MASK,
   TaskIndex,
 } from "./lock.ts";
@@ -11,6 +11,10 @@ import type { Task } from "./lock.ts";
 // Low 5 bits = slot index, high 27 bits = caller meta.
 // Inlined from setTaskSlotIndex to avoid cross-closure call on hot path.
 const SLOT_META_PACKED_MASK = 0xFFFFFFE0; // (~0x1F) >>> 0
+const REGION_RIGHT_PADDING_BYTES = 64;
+const REGION_RIGHT_PADDING_MASK = REGION_RIGHT_PADDING_BYTES - 1;
+const alignRegionLength = (length: number) =>
+  (length + REGION_RIGHT_PADDING_MASK) & ~REGION_RIGHT_PADDING_MASK;
 
 
 export type RegisterMalloc = ReturnType<typeof register>;
@@ -18,10 +22,14 @@ export type RegisterMalloc = ReturnType<typeof register>;
 export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => {
   const lockSAB =
     lockSector ??
-    new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH);
+    new SharedArrayBuffer(PAYLOAD_LOCK_SECTOR_BYTE_LENGTH);
 
-  const hostBits = new Int32Array(lockSAB, LOCK_HOST_BITS_OFFSET_BYTES, 1);
-  const workerBits = new Int32Array(lockSAB, LOCK_WORKER_BITS_OFFSET_BYTES, 1);
+  const hostBits = new Int32Array(lockSAB, PAYLOAD_LOCK_HOST_BITS_OFFSET_BYTES, 1);
+  const workerBits = new Int32Array(
+    lockSAB,
+    PAYLOAD_LOCK_WORKER_BITS_OFFSET_BYTES,
+    1,
+  );
 
   const startAndIndex = new Uint32Array(LockBound.slots);
   const size64bit = new Uint32Array(LockBound.slots);
@@ -233,7 +241,7 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
     }
 
     const payloadLen = task[TaskIndex.PayloadLen] | 0;
-    const size = (payloadLen + 63) & ~63;
+    const size = alignRegionLength(payloadLen);
 
     const slotIndex = findAndInsert(task, size);
     if (slotIndex === -1) return -1;
@@ -250,7 +258,7 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
     if ((usedBits & bit) === 0) return false;
 
     const current = size64bit[slotIndex] >>> 0;
-    const aligned = ((payloadLen | 0) + 63) & ~63;
+    const aligned = alignRegionLength(payloadLen | 0);
     if (aligned < 0) return false;
     if ((aligned >>> 0) > current) return false;
 

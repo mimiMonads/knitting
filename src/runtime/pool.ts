@@ -9,6 +9,7 @@ import { ChannelHandler, hostDispatcherLoop } from "./dispatcher.ts";
 import {
   HEADER_BYTE_LENGTH,
   LOCK_SECTOR_BYTE_LENGTH,
+  PAYLOAD_LOCK_SECTOR_BYTE_LENGTH,
   lock2,
   type PromisePayloadResult,
   type Task,
@@ -217,13 +218,13 @@ export const spawnWorkerContext = ({
 
   const lockBuffers: LockBuffers = {
     lockSector: new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH),
-    payloadSector: new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH),
+    payloadSector: new SharedArrayBuffer(PAYLOAD_LOCK_SECTOR_BYTE_LENGTH),
     headers: new SharedArrayBuffer(HEADER_BYTE_LENGTH),
     payload: makePayloadBuffer(),
   };
   const returnLockBuffers: LockBuffers = {
     lockSector: new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH),
-    payloadSector: new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH),
+    payloadSector: new SharedArrayBuffer(PAYLOAD_LOCK_SECTOR_BYTE_LENGTH),
     headers: new SharedArrayBuffer(HEADER_BYTE_LENGTH),
     payload: makePayloadBuffer(),
   };

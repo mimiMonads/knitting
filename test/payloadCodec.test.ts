@@ -9,8 +9,8 @@ import { decodePayload, encodePayload } from "../src/memory/payloadCodec.ts";
 import { Envelope } from "../src/common/envelope.ts";
 import {
   HEADER_U32_LENGTH,
-  LOCK_SECTOR_BYTE_LENGTH,
   makeTask,
+  PAYLOAD_LOCK_SECTOR_BYTE_LENGTH,
   PayloadBuffer,
   type PromisePayloadHandler,
   TaskIndex,
@@ -77,7 +77,7 @@ const makeCodec = (
   },
 ) => {
   const lockSector = new SharedArrayBuffer(
-    LOCK_SECTOR_BYTE_LENGTH,
+    PAYLOAD_LOCK_SECTOR_BYTE_LENGTH,
   );
   const payload = new SharedArrayBuffer(options?.payloadBytes ?? 40000);
   const headersBuffer = new Uint32Array(HEADER_U32_LENGTH);
