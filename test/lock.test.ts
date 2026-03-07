@@ -16,6 +16,7 @@ import {
   LockBound,
   lock2,
   makeTask,
+  PAYLOAD_LOCK_SECTOR_BYTE_LENGTH,
   PayloadSignal,
   setTaskFunctionID,
   setTaskFunctionMeta,
@@ -247,7 +248,7 @@ test("resolveHost sees producer toggles in hostBits across instances", () => {
   );
   const headers = new SharedArrayBuffer(HEADER_BYTE_LENGTH);
   const payloadSector = new SharedArrayBuffer(
-    LOCK_SECTOR_BYTE_LENGTH,
+    PAYLOAD_LOCK_SECTOR_BYTE_LENGTH,
   );
   const payload = new SharedArrayBuffer(1024 * 64);
 
@@ -300,7 +301,7 @@ test("resolveHost ignores workerBits changes without producer toggles", () => {
   );
   const headers = new SharedArrayBuffer(HEADER_BYTE_LENGTH);
   const payloadSector = new SharedArrayBuffer(
-    LOCK_SECTOR_BYTE_LENGTH,
+    PAYLOAD_LOCK_SECTOR_BYTE_LENGTH,
   );
   const payload = new SharedArrayBuffer(1024 * 64);
 
@@ -344,7 +345,7 @@ test("resolveHost random stress keeps toggle protocol consistent across instance
   );
   const headers = new SharedArrayBuffer(HEADER_BYTE_LENGTH);
   const payloadSector = new SharedArrayBuffer(
-    LOCK_SECTOR_BYTE_LENGTH,
+    PAYLOAD_LOCK_SECTOR_BYTE_LENGTH,
   );
   const payload = new SharedArrayBuffer(1024 * 64);
 
