@@ -1,8 +1,8 @@
 import {
   LockBound,
-  LOCK_HOST_BITS_OFFSET_BYTES,
   LOCK_SECTOR_BYTE_LENGTH,
-  LOCK_WORKER_BITS_OFFSET_BYTES,
+  PAYLOAD_LOCK_HOST_BITS_OFFSET_BYTES,
+  PAYLOAD_LOCK_WORKER_BITS_OFFSET_BYTES,
   TASK_SLOT_INDEX_MASK,
   TaskIndex,
 } from "./lock.ts";
@@ -20,8 +20,8 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
     lockSector ??
     new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH);
 
-  const hostBits = new Int32Array(lockSAB, LOCK_HOST_BITS_OFFSET_BYTES, 1);
-  const workerBits = new Int32Array(lockSAB, LOCK_WORKER_BITS_OFFSET_BYTES, 1);
+  const hostBits = new Int32Array(lockSAB, PAYLOAD_LOCK_HOST_BITS_OFFSET_BYTES, 1);
+  const workerBits = new Int32Array(lockSAB, PAYLOAD_LOCK_WORKER_BITS_OFFSET_BYTES, 1);
 
   const startAndIndex = new Uint32Array(LockBound.slots);
   const size64bit = new Uint32Array(LockBound.slots);

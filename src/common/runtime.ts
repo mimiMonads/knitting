@@ -20,16 +20,110 @@ export const RUNTIME = (
 export const SET_IMMEDIATE =
   typeof globals.setImmediate === "function" ? globals.setImmediate : undefined;
 
-export const HAS_SAB_GROW =
+const WASM_MEMORY_PAGE_BYTES = 64 * 1024;
+
+type SharedArrayBufferWithGrow = SharedArrayBuffer & {
+  grow?: (newByteLength: number) => void;
+  growable?: boolean;
+  maxByteLength?: number;
+};
+
+const wasmSharedBufferMemory = new WeakMap<SharedArrayBuffer, WebAssembly.Memory>();
+const wasmSharedBufferMaxByteLength = new WeakMap<SharedArrayBuffer, number>();
+
+const hasSharedWasmMemory = (() => {
+  if (typeof WebAssembly?.Memory !== "function") return false;
+  try {
+    void new WebAssembly.Memory({ initial: 0, maximum: 1, shared: true });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
+const roundupWasmPages = (byteLength: number) =>
+  Math.ceil(Math.max(0, byteLength) / WASM_MEMORY_PAGE_BYTES);
+
+const createSharedWasmBuffer = (
+  byteLength: number,
+  maxByteLength: number,
+) => {
+  const memory = new WebAssembly.Memory({
+    initial: roundupWasmPages(byteLength),
+    maximum: Math.max(roundupWasmPages(byteLength), roundupWasmPages(maxByteLength)),
+    shared: true,
+  });
+  const buffer = memory.buffer as SharedArrayBuffer;
+  wasmSharedBufferMemory.set(buffer, memory);
+  wasmSharedBufferMaxByteLength.set(buffer, maxByteLength);
+  return buffer;
+};
+
+const HAS_NATIVE_SAB_GROW =
   typeof SharedArrayBuffer === "function" &&
   typeof (SharedArrayBuffer.prototype as { grow?: unknown }).grow === "function";
+
+export const HAS_SAB_GROW = HAS_NATIVE_SAB_GROW || hasSharedWasmMemory;
 
 export const createSharedArrayBuffer = (
   byteLength: number,
   maxByteLength?: number,
 ) => {
-  if (HAS_SAB_GROW && typeof maxByteLength === "number") {
+  if (HAS_NATIVE_SAB_GROW && typeof maxByteLength === "number") {
     return new SharedArrayBuffer(byteLength, { maxByteLength });
   }
+  if (hasSharedWasmMemory && typeof maxByteLength === "number") {
+    return createSharedWasmBuffer(byteLength, maxByteLength);
+  }
   return new SharedArrayBuffer(byteLength);
+};
+
+export const isGrowableSharedArrayBuffer = (sab: SharedArrayBuffer) => {
+  const value = sab as SharedArrayBufferWithGrow;
+  return (HAS_NATIVE_SAB_GROW &&
+      typeof value.grow === "function" &&
+      value.growable === true) ||
+    wasmSharedBufferMemory.has(sab);
+};
+
+export const sharedArrayBufferMaxByteLength = (
+  sab: SharedArrayBuffer,
+): number => {
+  const value = sab as SharedArrayBufferWithGrow;
+  if (typeof value.maxByteLength === "number") {
+    return value.maxByteLength;
+  }
+  return wasmSharedBufferMaxByteLength.get(sab) ?? sab.byteLength;
+};
+
+export const growSharedArrayBuffer = (
+  sab: SharedArrayBuffer,
+  byteLength: number,
+): SharedArrayBuffer => {
+  const native = sab as SharedArrayBufferWithGrow;
+  if (typeof native.grow === "function") {
+    native.grow(byteLength);
+    return sab;
+  }
+
+  const memory = wasmSharedBufferMemory.get(sab);
+  if (memory == null) {
+    throw new TypeError("SharedArrayBuffer is not growable");
+  }
+
+  const currentBuffer = memory.buffer as SharedArrayBuffer;
+  if (currentBuffer.byteLength >= byteLength) {
+    return currentBuffer;
+  }
+
+  const targetPages = roundupWasmPages(byteLength);
+  const currentPages = roundupWasmPages(currentBuffer.byteLength);
+  memory.grow(targetPages - currentPages);
+
+  const nextBuffer = memory.buffer as SharedArrayBuffer;
+  const maxByteLength =
+    wasmSharedBufferMaxByteLength.get(sab) ?? currentBuffer.byteLength;
+  wasmSharedBufferMemory.set(nextBuffer, memory);
+  wasmSharedBufferMaxByteLength.set(nextBuffer, maxByteLength);
+  return nextBuffer;
 };

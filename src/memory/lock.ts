@@ -62,11 +62,14 @@ export enum PayloadBuffer {
 
 
 export enum LockBound {
-  paddingLock = 64,
-  padding = 72,
+  paddingLock = 0,
+  padding = 0,
   slots = 32,
   header = 0,
 }
+
+export const LOCK_CACHE_LINE_BYTES = 64;
+export const LOCK_SECTOR_BYTES = 256;
 
 export type Task = [
   number,
@@ -116,7 +119,10 @@ export enum TaskIndex {
    */
   slotBuffer = 6,
   Size = 8,
-  TotalBuff = 136
+  /**
+   * Total slot length in Uint32 words, including the task header.
+   */
+  TotalBuff = 144,
 }
 
 export const TASK_SLOT_INDEX_BITS = 5;
@@ -181,22 +187,20 @@ export enum TaskFlag {
 }
 
 // Main queue lock layout in bytes.
-// Intentionally keep host/worker words adjacent to expose false sharing.
+// Keep each lock word on its own cache line inside the first 256 bytes.
 export const LOCK_WORD_BYTES = Int32Array.BYTES_PER_ELEMENT;
 export const LOCK_HOST_BITS_OFFSET_BYTES = LockBound.paddingLock;
-export const LOCK_WORKER_BITS_OFFSET_BYTES =
-  LOCK_HOST_BITS_OFFSET_BYTES + LOCK_WORD_BYTES;
-export const LOCK_SECTOR_BYTE_LENGTH =
-  LOCK_WORKER_BITS_OFFSET_BYTES + LOCK_WORD_BYTES;
+export const LOCK_WORKER_BITS_OFFSET_BYTES = LOCK_CACHE_LINE_BYTES;
+export const LOCK_SECTOR_BYTE_LENGTH = LOCK_SECTOR_BYTES;
 
 // Payload allocator lock layout in bytes.
-// Keep host/worker words one cache-line apart to avoid false sharing there.
-export const PAYLOAD_LOCK_HOST_BITS_OFFSET_BYTES = LockBound.paddingLock;
-export const PAYLOAD_LOCK_WORKER_BITS_OFFSET_BYTES = LockBound.paddingLock * 2;
-export const PAYLOAD_LOCK_SECTOR_BYTE_LENGTH =
-  PAYLOAD_LOCK_WORKER_BITS_OFFSET_BYTES + LOCK_WORD_BYTES;
+// Share the same SAB as the main queue lock, but give each word its own line.
+export const PAYLOAD_LOCK_HOST_BITS_OFFSET_BYTES = LOCK_CACHE_LINE_BYTES * 2;
+export const PAYLOAD_LOCK_WORKER_BITS_OFFSET_BYTES = LOCK_CACHE_LINE_BYTES * 3;
+export const PAYLOAD_LOCK_SECTOR_BYTE_LENGTH = LOCK_SECTOR_BYTES;
 
 // Header layout in Uint32 units.
+// Each slot stores the task header first, followed by static payload bytes.
 export const HEADER_SLOT_STRIDE_U32 = LockBound.header + TaskIndex.TotalBuff;
 export const HEADER_U32_LENGTH =
   LockBound.header + (HEADER_SLOT_STRIDE_U32 * LockBound.slots);
@@ -240,24 +244,11 @@ const fillTaskFrom = (task: Task, array: ArrayLike<number>, at: number) => {
   //task[7] = array[at + 7];
 };
 
-const makeTaskFrom = (array: ArrayLike<number>, at: number) => {
+const makeTaskFrom = (array: Uint32Array, at: number) => {
   const task = createTaskShell();
   fillTaskFrom(task, array, at);
   return task;
 };
-
-
-
-// To be inline in the future
-const takeTask = ({ queue }: {
-  queue: Task[];
-}) =>
-  (array: ArrayLike<number>, at: number) => {
-    const slotOffset = (at * HEADER_SLOT_STRIDE_U32) + LockBound.header;
-    const task = queue[array[slotOffset + TaskIndex["ID"]]];
-    fillTaskFrom(task, array, slotOffset);
-    return task;
-  };
 
   // could be inlined 
 const settleTask = (task: Task) => {
@@ -348,8 +339,7 @@ export const lock2 = ({
         )
         : createSharedArrayBuffer(resolvedPayloadConfig.payloadInitialBytes)
     );
-  const payloadLockSAB = payloadSector ??
-    new SharedArrayBuffer(PAYLOAD_LOCK_SECTOR_BYTE_LENGTH);
+  const payloadLockSAB = payloadSector ?? LockBoundSAB;
 
   let promiseHandler: PromisePayloadHandler | undefined;
 
@@ -395,6 +385,13 @@ export const lock2 = ({
   const clz32 = Math.clz32;
   const slotOffset = (at: number) =>
     (at * SLOT_SIZE) + LockBound.header;
+  const takeTask = ({ queue }: { queue: Task[] }) =>
+    (at: number) => {
+      const off = slotOffset(at);
+      const task = queue[headersBuffer[off + TaskIndex.ID]!];
+      fillTaskFrom(task, headersBuffer, off);
+      return task;
+    };
 
   const enlist = (task: Task) => toBeSentPush(task);
   let selectedSlotIndex = 0 | 0, selectedSlotBit = 0 >>> 0;
@@ -477,15 +474,14 @@ export const lock2 = ({
 
   const encodeAt = (task: Task, at: number, bit: number): boolean => {
     const off = slotOffset(at);
-
-    headersBuffer[off]     = task[0];
+    headersBuffer[off] = task[0];
     headersBuffer[off + 1] = task[1];
     headersBuffer[off + 2] = task[2];
     headersBuffer[off + 3] = task[3];
     headersBuffer[off + 4] = task[4];
     headersBuffer[off + 5] = task[5];
     headersBuffer[off + 6] = task[6];
-    //headersBuffer[off + 7] = task[7];
+    headersBuffer[off + 7] = task[7];
 
     storeHost(bit);
     return true;
@@ -557,7 +553,7 @@ export const lock2 = ({
         const idx = 31 - clz32(diff);
         const selectedBit = 1 << idx;
 
-        const task = getTask(headersBuffer, idx);
+        const task = getTask(idx);
         decodeTask(task, idx);
 
         consumedBits = (consumedBits ^ selectedBit) | 0;
@@ -584,7 +580,7 @@ export const lock2 = ({
         const idx = 31 - clz32(pick);
         const selectedBit = 1 << idx;
 
-        const task = getTask(headersBuffer, idx);
+        const task = getTask(idx);
         decodeTask(task, idx);
 
         consumedBits = (consumedBits ^ selectedBit) | 0;

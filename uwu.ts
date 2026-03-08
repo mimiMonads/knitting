@@ -169,38 +169,38 @@ if (isMain) {
 
   try {
 
-    await runBench("knitting number f64 (8 bytes)", (n) => {
-      return async () => {
-        const jobs = Array.from({ length: n }, () => pool.call.echoF64(42));
-        const values = await Promise.all(jobs);
-        for (const value of values) sink ^= value | 0;
-      };
-    });
+    // await runBench("knitting number f64 (8 bytes)", (n) => {
+    //   return async () => {
+    //     const jobs = Array.from({ length: n }, () => pool.call.echoF64(42));
+    //     const values = await Promise.all(jobs);
+    //     for (const value of values) sink ^= value | 0;
+    //   };
+    // });
 
-    await runBench(`knitting large string (${PAYLOAD_BYTES} bytes)`, (n) => {
-      let turn = 0;
+    // await runBench(`knitting large string (${PAYLOAD_BYTES} bytes)`, (n) => {
+    //   let turn = 0;
 
-      return async () => {
-        const jobs = new Array<Promise<string>>(n);
-        for (let j = 0; j < n; j++) {
-          const index = (turn + j) % stringPayloads.length;
-          jobs[j] = pool.call.echoString(stringPayloads[index]!);
-        }
-        const values = await Promise.all(jobs);
-        for (const value of values) sink ^= value.length;
-        turn++;
-      };
-    });
+    //   return async () => {
+    //     const jobs = new Array<Promise<string>>(n);
+    //     for (let j = 0; j < n; j++) {
+    //       const index = (turn + j) % stringPayloads.length;
+    //       jobs[j] = pool.call.echoString(stringPayloads[index]!);
+    //     }
+    //     const values = await Promise.all(jobs);
+    //     for (const value of values) sink ^= value.length;
+    //     turn++;
+    //   };
+    // });
 
 
-    await runBench(`knitting Uint8Array (${PAYLOAD_BYTES} bytes)`, (n) =>
-      makeEchoBytesBatch(n, bytePayloads, (value) => pool.call.echoBytes(value)),
-    );
+    // await runBench(`knitting Uint8Array (${PAYLOAD_BYTES} bytes)`, (n) =>
+    //   makeEchoBytesBatch(n, bytePayloads, (value) => pool.call.echoBytes(value)),
+    // );
 
-    printHeader(
-      `knitting Uint8Array size sweep (batch=${UINT8ARRAY_SIZE_SWEEP_BATCH}, ${fmtBinaryBytes(UINT8ARRAY_SIZE_SWEEP_MIN_BYTES)} -> ${fmtBinaryBytes(UINT8ARRAY_SIZE_SWEEP_MAX_BYTES)})`,
-      "size",
-    );
+    // printHeader(
+    //   `knitting Uint8Array size sweep (batch=${UINT8ARRAY_SIZE_SWEEP_BATCH}, ${fmtBinaryBytes(UINT8ARRAY_SIZE_SWEEP_MIN_BYTES)} -> ${fmtBinaryBytes(UINT8ARRAY_SIZE_SWEEP_MAX_BYTES)})`,
+    //   "size",
+    // );
 
     const sizeSweepWarmup = warmupIters(UINT8ARRAY_SIZE_SWEEP_BATCH);
     for (const bytes of uint8ArraySizeSweepBytes) {

@@ -2,6 +2,7 @@ import { Buffer as NodeBuffer } from "node:buffer";
 import { LockBound, TaskIndex } from "./lock.ts";
 import {
   createSharedArrayBuffer,
+  growSharedArrayBuffer,
 } from "../common/runtime.ts";
 import {
   resolvePayloadBufferOptions,
@@ -30,7 +31,7 @@ export const createSharedDynamicBufferIO = ({
     options: payloadConfig,
   });
   const canGrow = resolvedPayload.mode === "growable";
-  const lockSAB =
+  let lockSAB =
     sab ??
     (
       canGrow
@@ -56,10 +57,11 @@ export const createSharedDynamicBufferIO = ({
 
   const ensureCapacity = (neededBytes: number) => {
     if (capacityBytes() >= neededBytes) return true;
-    if (!canGrow || typeof lockSAB.grow !== "function") return false;
+    if (!canGrow) return false;
 
     try {
-      lockSAB.grow(
+      lockSAB = growSharedArrayBuffer(
+        lockSAB,
         alignUpto64(
           DYNAMIC_HEADER_BYTES + neededBytes + DYNAMIC_SAFE_PADDING_BYTES,
         ),
