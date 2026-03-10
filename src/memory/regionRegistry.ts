@@ -47,33 +47,6 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
   const startAndIndexToArray = (length: number) =>
     Array.from(startAndIndex.subarray(0, length));
 
-  const compactSectorStable = (b: number) => {
-    const sai = startAndIndex;
-    let w = 0 | 0;
-    let r = 0 | 0;
-
-    b = b | 0;
-
-    for (; r + 3 < b; r += 4) {
-      const v0 = sai[r];
-      const v1 = sai[r + 1];
-      const v2 = sai[r + 2];
-      const v3 = sai[r + 3];
-
-      if (v0 !== EMPTY) sai[w++] = v0;
-      if (v1 !== EMPTY) sai[w++] = v1;
-      if (v2 !== EMPTY) sai[w++] = v2;
-      if (v3 !== EMPTY) sai[w++] = v3;
-    }
-
-    for (; r < b; r++) {
-      const v = sai[r];
-      if (v !== EMPTY) sai[w++] = v;
-    }
-
-    return w;
-  };
-
   const updateTable = () => {
     // state = which bits are currently "in use" under toggle-protocol
     const w = Atomics.load(workerBits, 0) | 0;
@@ -96,19 +69,16 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
     if (freeBits === 0) return;
 
     const sai = startAndIndex;
-
+    let nextLength = 0 | 0;
     for (let i = 0; i < tableLength; i++) {
       const v = sai[i];
       if (v === EMPTY) continue;
-
-      // if this slot is now free, clear entry
-      if ((freeBits & (1 << (v & SLOT_MASK))) !== 0) {
-        sai[i] = EMPTY;
-      }
+      if ((freeBits & (1 << (v & SLOT_MASK))) !== 0) continue;
+      sai[nextLength++] = v;
     }
 
     usedBits &= ~freeBits;
-    tableLength = compactSectorStable(tableLength);
+    tableLength = nextLength;
   };
 
   // Pure computation: find a slot and write task fields. No Atomics.
@@ -156,18 +126,21 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
     }
 
     // ========= search for a gap between entries =========
+    let prevEnd =
+      (firstStart + (sz[sai[0] & SLOT_MASK] >>> 0)) >>> 0;
     for (let at = 0; at + 1 < tl; at++) {
-      const cur = sai[at];
-      const curStart = cur & START_MASK;
-      const curEnd = (curStart + (sz[cur & SLOT_MASK] >>> 0)) >>> 0;
-      const nextStart = sai[at + 1] & START_MASK;
+      const next = sai[at + 1];
+      const nextStart = next & START_MASK;
 
-      if ((nextStart - curEnd) >>> 0 < (size >>> 0)) continue;
+      if ((nextStart - prevEnd) >>> 0 < (size >>> 0)) {
+        prevEnd = (nextStart + (sz[next & SLOT_MASK] >>> 0)) >>> 0;
+        continue;
+      }
 
       sai.copyWithin(at + 2, at + 1, tl);
-      sai[at + 1] = (curEnd | slotIndex) >>> 0;
+      sai[at + 1] = (prevEnd | slotIndex) >>> 0;
       sz[slotIndex] = size;
-      task[TaskIndex.Start] = curEnd;
+      task[TaskIndex.Start] = prevEnd;
       task[TaskIndex.slotBuffer] = ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>> 0;
       tableLength = tl + 1;
       usedBits |= freeBit;
@@ -176,28 +149,23 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
     }
 
     // ========= append at end =========
-    if (tl < LockBound.slots) {
-      const last = sai[tl - 1];
-      const lastStart = last & START_MASK;
-      const newStart = (lastStart + (sz[last & SLOT_MASK] >>> 0)) >>> 0;
-      sai[tl] = (newStart | slotIndex) >>> 0;
-      sz[slotIndex] = size;
-      task[TaskIndex.Start] = newStart;
-      task[TaskIndex.slotBuffer] = ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>> 0;
-      tableLength = tl + 1;
-      usedBits |= freeBit;
-      hostLast ^= freeBit;
-      return slotIndex;
-    }
-
-    return -1;
+    const last = sai[tl - 1];
+    const lastStart = last & START_MASK;
+    const newStart = (lastStart + (sz[last & SLOT_MASK] >>> 0)) >>> 0;
+    sai[tl] = (newStart | slotIndex) >>> 0;
+    sz[slotIndex] = size;
+    task[TaskIndex.Start] = newStart;
+    task[TaskIndex.slotBuffer] = ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>> 0;
+    tableLength = tl + 1;
+    usedBits |= freeBit;
+    hostLast ^= freeBit;
+    return slotIndex;
   };
 
   const allocTask = (task: Task) => {
     // throttled table cleanup — kept outside findAndInsert so that
     // function stays pure (no calls, stable type feedback for TurboFan)
-    updateTableCounter = (updateTableCounter + 1) & 3;
-    if (updateTableCounter === 0) updateTable();
+    updateTable();
 
     const payloadLen = task[TaskIndex.PayloadLen] | 0;
     const size = (payloadLen + 63) & ~63;
