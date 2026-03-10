@@ -1,6 +1,7 @@
 import RingQueue from "../ipc/tools/RingQueue.ts";
 import { decodePayload, encodePayload } from "./payloadCodec.ts";
 import { createSharedArrayBuffer } from "../common/runtime.ts";
+import { register } from "./regionRegistry.ts";
 import {
   resolvePayloadBufferOptions,
   type PayloadBufferOptions,
@@ -87,15 +88,48 @@ export type Task = [
 };
 
 export const PromisePayloadMarker = Symbol.for("knitting.promise.payload");
+export const PromisePayloadHandlerSymbol = Symbol.for(
+  "knitting.promise.payload.handler",
+);
+export const PromisePayloadStatusSymbol = Symbol.for(
+  "knitting.promise.payload.status",
+);
+export const PromisePayloadResultSymbol = Symbol.for(
+  "knitting.promise.payload.result",
+);
+export const PromisePayloadFulfillSymbol = Symbol.for(
+  "knitting.promise.payload.fulfill",
+);
+export const PromisePayloadRejectSymbol = Symbol.for(
+  "knitting.promise.payload.reject",
+);
 
-export type PromisePayloadResult =
-  | { status: "fulfilled"; value: unknown }
-  | { status: "rejected"; reason: unknown };
+export const enum PromisePayloadStatus {
+  Idle = 0,
+  Fulfilled = 1,
+  Rejected = 2,
+}
+
+export type PromisePayloadResult = {
+  status: "fulfilled" | "rejected";
+  value: unknown;
+  reason: unknown;
+};
 
 export type PromisePayloadHandler = (
   task: Task,
   result: PromisePayloadResult,
 ) => void;
+
+export const getPromisePayloadStatus = (task: Task): PromisePayloadStatus =>
+  (task as Task & {
+    [PromisePayloadStatusSymbol]?: PromisePayloadStatus;
+  })[PromisePayloadStatusSymbol] ?? PromisePayloadStatus.Idle;
+
+export const getPromisePayloadResult = (task: Task): PromisePayloadResult =>
+  (task as Task & {
+    [PromisePayloadResultSymbol]?: PromisePayloadResult;
+  })[PromisePayloadResultSymbol]!;
 
 export enum TaskIndex {
   /**
@@ -211,19 +245,49 @@ let INDEX_ID = 0;
 const INIT_VAL = PayloadSignal.UNREACHABLE;
 const def = (_?: unknown) => {};
 
+type TaskShell = Task & {
+  [PromisePayloadMarker]?: boolean;
+  [PromisePayloadHandlerSymbol]?: PromisePayloadHandler;
+  [PromisePayloadStatusSymbol]?: PromisePayloadStatus;
+  [PromisePayloadResultSymbol]?: PromisePayloadResult;
+  [PromisePayloadFulfillSymbol]?: (value: unknown) => void;
+  [PromisePayloadRejectSymbol]?: (reason: unknown) => void;
+};
+
 const createTaskShell = () => {
-  const task = new Uint32Array(TaskIndex.Size) as Uint32Array & {
-    value: unknown
-    resolve: (value?: unknown)=>void
-    reject:  (reason?: unknown)=>void
-  } as unknown as Task
+  const task = new Uint32Array(TaskIndex.Size) as unknown as TaskShell;
   task.value = null;
   task.resolve = def;
   task.reject = def;
   // Keep Promise marker shape stable across task lifecycle.
-  (task as Task & { [PromisePayloadMarker]?: boolean })[
-    PromisePayloadMarker
-  ] = false;
+  task[PromisePayloadMarker] = false;
+  task[PromisePayloadHandlerSymbol] = undefined;
+  task[PromisePayloadStatusSymbol] = PromisePayloadStatus.Idle;
+  task[PromisePayloadResultSymbol] = {
+    status: "fulfilled",
+    value: undefined,
+    reason: undefined,
+  };
+  task[PromisePayloadFulfillSymbol] = (value: unknown) => {
+    task[PromisePayloadMarker] = false;
+    task[PromisePayloadStatusSymbol] = PromisePayloadStatus.Fulfilled;
+    task.value = value;
+    const result = task[PromisePayloadResultSymbol]!;
+    result.status = "fulfilled";
+    result.value = value;
+    result.reason = undefined;
+    task[PromisePayloadHandlerSymbol]!(task, result);
+  };
+  task[PromisePayloadRejectSymbol] = (reason: unknown) => {
+    task[PromisePayloadMarker] = false;
+    task[PromisePayloadStatusSymbol] = PromisePayloadStatus.Rejected;
+    task.value = reason;
+    const result = task[PromisePayloadResultSymbol]!;
+    result.status = "rejected";
+    result.value = undefined;
+    result.reason = reason;
+    task[PromisePayloadHandlerSymbol]!(task, result);
+  };
   return task;
 };
 
@@ -274,7 +338,25 @@ const settleTask = (task: Task) => {
  *  - encode/decode are not re-entrant; payload codec uses a shared scratch buffer.
  */
 
-export type Lock2 = ReturnType<typeof lock2>
+export type ResolveHostOptions = {
+  queue: Task[];
+  onResolved?: (task: Task) => void;
+};
+
+export type Lock2 = {
+  enlist: (task: Task) => void;
+  encode: (task: Task, state?: number) => boolean;
+  encodeManyFrom: (list: RingQueue<Task>) => number;
+  encodeAll: () => boolean;
+  decode: () => boolean;
+  hasSpace: () => boolean;
+  resolved: RingQueue<Task>;
+  hostBits: Int32Array;
+  workerBits: Int32Array;
+  recyclecList: RingQueue<Task>;
+  resolveHost: (options: ResolveHostOptions) => () => number;
+  setPromiseHandler: (handler?: PromisePayloadHandler) => void;
+};
 
 export const lock2 = ({
   headers,
@@ -340,6 +422,9 @@ export const lock2 = ({
         : createSharedArrayBuffer(resolvedPayloadConfig.payloadInitialBytes)
     );
   const payloadLockSAB = payloadSector ?? LockBoundSAB;
+  const payloadRegister = register({
+    lockSector: payloadLockSAB,
+  });
 
   let promiseHandler: PromisePayloadHandler | undefined;
 
@@ -351,6 +436,7 @@ export const lock2 = ({
     headersBuffer,
     lockSector: payloadLockSAB,
     onPromise: (task, result) => promiseHandler?.(task, result),
+    sharedRegister: payloadRegister,
   });
   const decodeTask = decodePayload({
     payload: {
@@ -359,6 +445,7 @@ export const lock2 = ({
     },
     headersBuffer,
     lockSector: payloadLockSAB,
+    sharedRegister: payloadRegister,
   });
 
   let LastLocal = 0 | 0;
@@ -531,10 +618,7 @@ export const lock2 = ({
   const resolveHost = ({
     queue,
     onResolved,
-  }: {
-    queue: Task[],
-    onResolved?: (task: Task) => void,
-  }) => {
+  }: ResolveHostOptions) => {
 
     const getTask = takeTask({ queue });
     const HAS_RESOLVE = onResolved ? true : false;

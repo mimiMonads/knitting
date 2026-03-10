@@ -10,7 +10,7 @@ import {
   HEADER_BYTE_LENGTH,
   LOCK_SECTOR_BYTE_LENGTH,
   lock2,
-  type PromisePayloadResult,
+  type Lock2,
   type Task,
 } from "../memory/lock.ts";
 import type {
@@ -421,8 +421,8 @@ export const spawnWorkerContext = ({
     }
   };
 
-  lock.setPromiseHandler((task: Task, result: PromisePayloadResult) => {
-    queue.settlePromisePayload(task, result);
+  lock.setPromiseHandler((task: Task) => {
+    queue.settlePromisePayload(task);
     send();
   });
 
@@ -436,7 +436,7 @@ export const spawnWorkerContext = ({
     };
   };
 
-  const context: WorkerContext & { lock: ReturnType<typeof lock2> } = {
+  const context: WorkerContext & { lock: Lock2 } = {
     txIdle,
     call,
     kills: async () => {

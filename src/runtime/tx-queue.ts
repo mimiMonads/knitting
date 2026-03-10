@@ -2,7 +2,8 @@ import RingQueue from "../ipc/tools/RingQueue.ts";
 import {
   makeTask,
   PromisePayloadMarker,
-  type PromisePayloadResult,
+  PromisePayloadStatus,
+  PromisePayloadStatusSymbol,
   TaskIndex,
   type Task,
   type Lock2,
@@ -233,12 +234,18 @@ export function createHostTxQueue({
     },
     flushToWorker,
     enqueueKnown,
-    settlePromisePayload: (task: QueueTask, result: PromisePayloadResult) => {
+    settlePromisePayload: (task: QueueTask) => {
       if (task.reject === PLACE_HOLDER) return false;
       if (pendingPromises > 0) pendingPromises = (pendingPromises - 1) | 0;
-      if (result.status === "rejected") {
+      const promiseStatus = (task as QueueTask & {
+        [PromisePayloadStatusSymbol]?: PromisePayloadStatus;
+      })[PromisePayloadStatusSymbol];
+      (task as QueueTask & {
+        [PromisePayloadStatusSymbol]?: PromisePayloadStatus;
+      })[PromisePayloadStatusSymbol] = PromisePayloadStatus.Idle;
+      if (promiseStatus === PromisePayloadStatus.Rejected) {
         try {
-          task.reject(result.reason);
+          task.reject(task.value);
         } catch {
         }
         inUsed = (inUsed - 1) | 0;
@@ -246,7 +253,6 @@ export function createHostTxQueue({
         return false;
       }
 
-      task.value = result.value;
       return enqueueKnown(task);
     },
   };

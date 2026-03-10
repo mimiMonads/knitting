@@ -2,14 +2,18 @@ import {
   getTaskSlotIndex,
   LockBound,
   PayloadBuffer,
+  PromisePayloadFulfillSymbol,
+  PromisePayloadHandlerSymbol,
+  PromisePayloadStatus,
+  PromisePayloadStatusSymbol,
   PayloadSignal,
   PromisePayloadMarker,
-  TASK_SLOT_INDEX_MASK,
+  PromisePayloadRejectSymbol,
   type PromisePayloadHandler,
   type Task,
   TaskIndex,
 } from "./lock.ts";
-import { register } from "./regionRegistry.ts"
+import { register, type RegisterMalloc } from "./regionRegistry.ts"
 import { createSharedDynamicBufferIO, createSharedStaticBufferIO } from "./createSharedBufferIO.ts"
 import { Buffer as NodeBuffer } from "node:buffer";
 import { ErrorKnitting, encoderError } from "../error.ts";
@@ -205,6 +209,7 @@ export const encodePayload = ({
   payloadConfig,
   headersBuffer,
   onPromise,
+  sharedRegister,
 }: {
   lockSector?: SharedArrayBuffer;
   payload?: {
@@ -221,6 +226,7 @@ export const encodePayload = ({
   payloadConfig?: PayloadBufferOptions;
   headersBuffer: Uint32Array;
   onPromise?: PromisePayloadHandler;
+  sharedRegister?: RegisterMalloc;
 }  ) =>  { 
   const payloadSab = payload?.sab ?? sab;
   const resolvedPayloadConfig = resolvePayloadBufferOptions({
@@ -229,7 +235,7 @@ export const encodePayload = ({
   });
   const maxPayloadBytes = resolvedPayloadConfig.maxPayloadBytes;
 
-  const { allocTask, setSlotLength, free } = register({
+  const { allocTask, setSlotLength, free } = sharedRegister ?? register({
     lockSector,
   });
   const {
@@ -246,9 +252,6 @@ export const encodePayload = ({
     write8Binary: writeStatic8Binary,
     writeUtf8: writeStaticUtf8,
   } = requireStaticIO(headersBuffer);
-  // Inline getTaskSlotIndex — avoids a cross-closure wrapper call on every
-  // dynamic alloc. task[6] & 0x1F is what getTaskSlotIndex does.
-  const slotOf = (task: Task) => task[TaskIndex.slotBuffer] & TASK_SLOT_INDEX_MASK;
   const dynamicLimitError = (
     task: Task,
     actualBytes: number,
@@ -373,6 +376,7 @@ export const encodePayload = ({
     if (reserveBytes < 0) return false;
     task[TaskIndex.Type] = PayloadBuffer.Error;
     const reservedSlot = reserveDynamicObject(task, reserveBytes);
+    if (reservedSlot === -1) return false;
     const written = writeDynamicUtf8(
       text,
       task[TaskIndex.Start],
@@ -408,6 +412,7 @@ export const encodePayload = ({
       return false;
     }
     const reservedSlot = reserveDynamicObject(task, bytes);
+    if (reservedSlot === -1) return false;
     const written = writeDynamicBinary(bytesView, task[TaskIndex.Start]);
     if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
     task[TaskIndex.PayloadLen] = written;
@@ -435,6 +440,7 @@ export const encodePayload = ({
     task[TaskIndex.Type] = PayloadBuffer.Float64Array;
     if (!ensureWithinDynamicLimit(task, bytes, "Float64Array")) return false;
     const reservedSlot = reserveDynamicObject(task, bytes);
+    if (reservedSlot === -1) return false;
     const written = writeDynamic8Binary(float64, task[TaskIndex.Start]);
     if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
     task[TaskIndex.PayloadLen] = written;
@@ -463,6 +469,7 @@ export const encodePayload = ({
     task[TaskIndex.Type] = PayloadBuffer.ArrayBuffer;
     if (!ensureWithinDynamicLimit(task, bytes, "ArrayBuffer")) return false;
     const reservedSlot = reserveDynamicObject(task, bytes);
+    if (reservedSlot === -1) return false;
     const written = writeDynamicBinary(
       bytesView ?? new Uint8Array(arrayBuffer),
       task[TaskIndex.Start],
@@ -540,6 +547,7 @@ export const encodePayload = ({
         )
       ) return false;
       const reservedSlot = reserveDynamicObject(task, payloadReserveBytes);
+      if (reservedSlot === -1) return false;
       task[TaskIndex.Type] = PayloadBuffer.EnvelopeStaticHeader;
       task[TaskIndex.PayloadLen] = staticHeaderWritten;
       task[TaskIndex.End] = payloadLength;
@@ -569,6 +577,7 @@ export const encodePayload = ({
       task,
       headerReserveBytes + payloadLength,
     );
+    if (reservedSlot === -1) return false;
     const baseStart = task[TaskIndex.Start];
     const writtenHeaderBytes = writeDynamicUtf8(
       headerText,
@@ -599,20 +608,18 @@ export const encodePayload = ({
   const encodeObjectPromise = (task: Task, promise: Promise<unknown>) => {
     const markedTask = task as Task & {
       [PromisePayloadMarker]?: boolean;
+      [PromisePayloadHandlerSymbol]?: PromisePayloadHandler;
+      [PromisePayloadStatusSymbol]?: PromisePayloadStatus;
+      [PromisePayloadFulfillSymbol]?: (value: unknown) => void;
+      [PromisePayloadRejectSymbol]?: (reason: unknown) => void;
     };
+    markedTask[PromisePayloadHandlerSymbol] = onPromise;
     if (markedTask[PromisePayloadMarker] !== true) {
       markedTask[PromisePayloadMarker] = true;
+      markedTask[PromisePayloadStatusSymbol] = PromisePayloadStatus.Idle;
       promise.then(
-        (value) => {
-          markedTask[PromisePayloadMarker] = false;
-          task.value = value;
-          onPromise?.(task, { status: "fulfilled", value });
-        },
-        (reason) => {
-          markedTask[PromisePayloadMarker] = false;
-          task.value = reason;
-          onPromise?.(task, { status: "rejected", reason });
-        },
+        markedTask[PromisePayloadFulfillSymbol],
+        markedTask[PromisePayloadRejectSymbol],
       );
     }
     return false;
@@ -634,6 +641,7 @@ export const encodePayload = ({
             task[TaskIndex.Type] = PayloadBuffer.StaticBigInt;
             task[TaskIndex.PayloadLen] = written;
             clearBigIntScratch(binaryBytes);
+            task.value = null;
             return true;
           }
         }
@@ -656,12 +664,14 @@ export const encodePayload = ({
         task[TaskIndex.PayloadLen] = written;
         setSlotLength(reservedSlot, written);
         clearBigIntScratch(binaryBytes);
+        task.value = null;
         return true
       }
       BigInt64View[0] = args;
       task[TaskIndex.Type] = PayloadSignal.BigInt;
       task[TaskIndex.Start] = Uint32View[0];
       task[TaskIndex.End] = Uint32View[1];
+      task.value = null;
       return true;
     case "boolean":
       task[TaskIndex.Type] =
@@ -722,6 +732,7 @@ export const encodePayload = ({
         const reserveBytes = dynamicUtf8ReserveBytes(task, text, "Json");
         if (reserveBytes < 0) return false;
         const reservedSlot = reserveDynamicObject(task, reserveBytes);
+        if (reservedSlot === -1) return false;
         const written = writeDynamicUtf8(
           text,
           task[TaskIndex.Start],
@@ -858,8 +869,8 @@ export const encodePayload = ({
           if (written !== -1) {
             task[TaskIndex.Type] = PayloadBuffer.StaticString;
             task[TaskIndex.PayloadLen] = written;
+            task.value = null;
             return true;
-            
           }
         }
 
@@ -877,6 +888,7 @@ export const encodePayload = ({
         if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
         task[TaskIndex.PayloadLen] = written;
         setSlotLength(reservedSlot, written);
+        task.value = null;
         return true
       }
     case "symbol":
@@ -894,6 +906,7 @@ export const encodePayload = ({
           if (written !== -1) {
             task[TaskIndex.Type] = PayloadBuffer.StaticSymbol;
             task[TaskIndex.PayloadLen] = written;
+            task.value = null;
             return true;
           }
         }
@@ -911,6 +924,7 @@ export const encodePayload = ({
         if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
         task[TaskIndex.PayloadLen] = written;
         setSlotLength(reservedSlot, written);
+        task.value = null;
         return true;
       }
     case "undefined":
@@ -930,6 +944,7 @@ export const decodePayload = ({
   payloadConfig,
   headersBuffer,
   host,
+  sharedRegister,
 }: {
   lockSector?: SharedArrayBuffer;
   payload?: {
@@ -946,13 +961,14 @@ export const decodePayload = ({
   payloadConfig?: PayloadBufferOptions;
   headersBuffer: Uint32Array
   host?: true
+  sharedRegister?: RegisterMalloc;
 }  ) => {
   const payloadSab = payload?.sab ?? sab;
   const resolvedPayloadConfig = resolvePayloadBufferOptions({
     sab: payloadSab,
     options: payload?.config ?? payloadConfig,
   });
-  const { free } = register({
+  const { free } = sharedRegister ?? register({
     lockSector,
   });
   const freeTaskSlot = (task: Task) => free(getTaskSlotIndex(task));

@@ -8,13 +8,15 @@ import { Buffer as NodeBuffer } from "node:buffer";
 import { decodePayload, encodePayload } from "../src/memory/payloadCodec.ts";
 import { Envelope } from "../src/common/envelope.ts";
 import {
+  getPromisePayloadStatus,
   HEADER_U32_LENGTH,
   makeTask,
   PAYLOAD_LOCK_SECTOR_BYTE_LENGTH,
   PayloadBuffer,
-  type PromisePayloadHandler,
+  PromisePayloadStatus,
   TaskIndex,
 } from "../src/memory/lock.ts";
+import type { PromisePayloadHandler } from "../src/memory/lock.ts";
 import { register } from "../src/memory/regionRegistry.ts";
 import { withResolvers } from "../src/common/with-resolvers.ts";
 import type { PayloadBufferOptions } from "../src/memory/payload-config.ts";
@@ -82,6 +84,7 @@ const makeCodec = (
   const payload = new SharedArrayBuffer(options?.payloadBytes ?? 40000);
   const headersBuffer = new Uint32Array(HEADER_U32_LENGTH);
   const payloadConfig = options?.payloadConfig;
+  const registry = register({ lockSector });
 
   return {
     encode: encodePayload({
@@ -89,13 +92,15 @@ const makeCodec = (
       headersBuffer,
       onPromise,
       payload: { sab: payload, config: payloadConfig },
+      sharedRegister: registry,
     }),
     decode: decodePayload({
       lockSector,
       headersBuffer,
       payload: { sab: payload, config: payloadConfig },
+      sharedRegister: registry,
     }),
-    registry: register({ lockSector }),
+    registry,
   };
 };
 
@@ -238,7 +243,7 @@ test("dynamic error uses dedicated error path and preserves allocation", () => {
 });
 
 test("dynamic payload exceeding maxPayloadBytes rejects before reservation", async () => {
-  let result: Parameters<PromisePayloadHandler>[1] | undefined;
+  let result: { status: string; value: unknown; reason: unknown } | undefined;
   const { encode, registry } = makeCodec((_, payload) => {
     result = payload;
   }, {
@@ -291,7 +296,7 @@ test("dynamic utf8 path uses exact byte count only near cap and still succeeds",
 });
 
 test("fixed mode capacity overflow returns controlled encoder error", async () => {
-  let result: Parameters<PromisePayloadHandler>[1] | undefined;
+  let result: { status: string; value: unknown; reason: unknown } | undefined;
   const { encode, registry } = makeCodec((_, payload) => {
     result = payload;
   }, {
@@ -317,8 +322,40 @@ test("fixed mode capacity overflow returns controlled encoder error", async () =
   }
 });
 
+test("dynamic object slot exhaustion defers encoding until a slot is freed", () => {
+  let result: { status: string; value: unknown; reason: unknown } | undefined;
+  const { encode, decode } = makeCodec(
+    (_, payload) => {
+      result = payload;
+    },
+    { payloadBytes: 128000 },
+  );
+  const tasks = Array.from({ length: 32 }, () => makeTask());
+
+  for (let i = 0; i < tasks.length; i++) {
+    tasks[i]!.value = { msg: "x".repeat(700) };
+    assertEquals(encode(tasks[i]!, i), true);
+  }
+
+  const overflow = makeTask();
+  overflow.value = { msg: "z".repeat(700) };
+
+  assertEquals(encode(overflow, 0), false);
+  assertEquals(result, undefined);
+
+  for (let i = 0; i < 4; i++) decode(tasks[i]!, i);
+
+  let encoded = false;
+  for (let i = 0; i < 4; i++) {
+    encoded = encode(overflow, 0);
+    if (encoded) break;
+  }
+
+  assertEquals(encoded, true);
+});
+
 test("map payload is rejected by strict object policy", async () => {
-  let result: Parameters<PromisePayloadHandler>[1] | undefined;
+  let result: { status: string; value: unknown; reason: unknown } | undefined;
   const { encode } = makeCodec((_, payload) => {
     result = payload;
   });
@@ -337,7 +374,7 @@ test("map payload is rejected by strict object policy", async () => {
 });
 
 test("set payload is rejected by strict object policy", async () => {
-  let result: Parameters<PromisePayloadHandler>[1] | undefined;
+  let result: { status: string; value: unknown; reason: unknown } | undefined;
   const { encode } = makeCodec((_, payload) => {
     result = payload;
   });
