@@ -1,6 +1,6 @@
 import {
+  HEADER_BYTE_LENGTH,
   getTaskSlotIndex,
-  LockBound,
   PayloadBuffer,
   PromisePayloadFulfillSymbol,
   PromisePayloadHandlerSymbol,
@@ -173,15 +173,7 @@ const decodeBigIntBinary = (bytes: Uint8Array) => {
 };
 
 const initStaticIO = (headersBuffer: Uint32Array) => {
-  const u32Bytes = Uint32Array.BYTES_PER_ELEMENT;
-  const slotStride = LockBound.header + TaskIndex.TotalBuff;
-  const slotOffset = (at: number) => (at * slotStride) + LockBound.header;
-  const slotStartBytes = (at: number) =>
-    (slotOffset(at) + TaskIndex.Size) * u32Bytes;
-  const writableBytes = (TaskIndex.TotalBuff - TaskIndex.Size) * u32Bytes;
-  const requiredBytes = slotStartBytes(LockBound.slots - 1) + writableBytes;
-
-  if (headersBuffer.byteLength < requiredBytes) return null;
+  if (headersBuffer.byteLength < HEADER_BYTE_LENGTH) return null;
 
   return createSharedStaticBufferIO({
     headersBuffer: headersBuffer.buffer as SharedArrayBuffer,

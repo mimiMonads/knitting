@@ -99,6 +99,8 @@ export function createHostTxQueue({
     queue,
     onResolved: (task) => {
       inUsed = (inUsed - 1) | 0;
+      task.resolve = PLACE_HOLDER;
+      task.reject = PLACE_HOLDER;
       freePush(task[TaskIndex.ID]);
     },
   });
@@ -248,6 +250,8 @@ export function createHostTxQueue({
           task.reject(task.value);
         } catch {
         }
+        task.resolve = PLACE_HOLDER;
+        task.reject = PLACE_HOLDER;
         inUsed = (inUsed - 1) | 0;
         freePush(task[TaskIndex.ID]);
         return false;

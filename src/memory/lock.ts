@@ -234,8 +234,11 @@ export const PAYLOAD_LOCK_WORKER_BITS_OFFSET_BYTES = LOCK_CACHE_LINE_BYTES * 3;
 export const PAYLOAD_LOCK_SECTOR_BYTE_LENGTH = LOCK_SECTOR_BYTES;
 
 // Header layout in Uint32 units.
-// Each slot stores the task header first, followed by static payload bytes.
+// Each slot stores aligned static payload bytes first, with the task header
+// packed into the final words of the slot.
 export const HEADER_SLOT_STRIDE_U32 = LockBound.header + TaskIndex.TotalBuff;
+export const HEADER_STATIC_PAYLOAD_U32 = TaskIndex.TotalBuff - TaskIndex.Size;
+export const HEADER_TASK_OFFSET_IN_SLOT_U32 = HEADER_STATIC_PAYLOAD_U32;
 export const HEADER_U32_LENGTH =
   LockBound.header + (HEADER_SLOT_STRIDE_U32 * LockBound.slots);
 export const HEADER_BYTE_LENGTH = HEADER_U32_LENGTH * Uint32Array.BYTES_PER_ELEMENT;
@@ -471,7 +474,7 @@ export const lock2 = ({
   const SLOT_SIZE = HEADER_SLOT_STRIDE_U32;
   const clz32 = Math.clz32;
   const slotOffset = (at: number) =>
-    (at * SLOT_SIZE) + LockBound.header;
+    (at * SLOT_SIZE) + LockBound.header + HEADER_TASK_OFFSET_IN_SLOT_U32;
   const takeTask = ({ queue }: { queue: Task[] }) =>
     (at: number) => {
       const off = slotOffset(at);

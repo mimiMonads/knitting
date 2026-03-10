@@ -12,6 +12,7 @@ import {
   getTaskSlotMeta,
   HEADER_BYTE_LENGTH,
   HEADER_SLOT_STRIDE_U32,
+  HEADER_TASK_OFFSET_IN_SLOT_U32,
   LOCK_SECTOR_BYTE_LENGTH,
   LockBound,
   lock2,
@@ -525,7 +526,9 @@ test("xor decode keeps bit protocol consistent on unknown payload signal", () =>
   let nextValue = 1;
 
   const slotOffset = (at: number) =>
-    (at * HEADER_SLOT_STRIDE_U32) + LockBound.header;
+    (at * HEADER_SLOT_STRIDE_U32) +
+    LockBound.header +
+    HEADER_TASK_OFFSET_IN_SLOT_U32;
 
   for (let round = 0; round < 128; round++) {
     const lockSector = new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH);
