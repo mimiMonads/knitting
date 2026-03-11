@@ -41,9 +41,6 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
   let hostLast = 0 | 0;
   let workerLast = 0 | 0;
 
-  // cheaper modulo-8 counter
-  let updateTableCounter = 0;
-
   const startAndIndexToArray = (length: number) =>
     Array.from(startAndIndex.subarray(0, length));
 

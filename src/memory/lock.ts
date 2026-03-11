@@ -58,6 +58,8 @@ export enum PayloadBuffer {
   StaticBuffer = 39,
   EnvelopeStaticHeader = 40,
   EnvelopeDynamicHeader = 41,
+  EnvelopeStaticHeaderString = 42,
+  EnvelopeDynamicHeaderString = 43,
 }
 
 
