@@ -1,4 +1,5 @@
 import {
+  EncodeStatus,
   HEADER_BYTE_LENGTH,
   getTaskSlotIndex,
   PayloadBuffer,
@@ -190,8 +191,9 @@ const requireStaticIO = (headersBuffer: Uint32Array) => {
 
 
 /**
- * Returns `true` when the payload is encoded successfully.
- * Returns `false` when dynamic payload space could not be reserved.
+ * Returns `EncodeStatus.Sent` when the payload is encoded successfully.
+ * Returns `EncodeStatus.Full` when the caller should retry later.
+ * Returns `EncodeStatus.Deferred` when the payload will settle asynchronously.
  */
 
 export const encodePayload = ({
@@ -614,247 +616,302 @@ export const encodePayload = ({
         markedTask[PromisePayloadRejectSymbol],
       );
     }
-    return false;
+    return EncodeStatus.Deferred;
   };
+  const encodeFailureStatus = (task: Task): EncodeStatus =>
+    (task as Task & {
+      [PromisePayloadMarker]?: boolean;
+    })[PromisePayloadMarker] === true
+      ? EncodeStatus.Deferred
+      : EncodeStatus.Full;
 
   // Named function so V8/TurboFan can compile it independently from the
   // encodePayload factory closure. Anonymous returns prevent full optimization
   // because the outer factory is too large for TurboFan's bytecode limit.
-  const encodeDispatch = (task: Task, slotIndex: number): boolean => {
-  const args = task.value
-  switch (typeof args) {
-    case "bigint":
-      if (args < BIGINT64_MIN || args > BIGINT64_MAX) {
-        const binaryBytes = encodeBigIntIntoScratch(args);
-        const binary = bigintScratch.subarray(0, binaryBytes);
-        if (binaryBytes <= staticMaxBytes) {
-          const written = writeStaticBinary(binary, slotIndex);
-          if (written !== -1) {
-            task[TaskIndex.Type] = PayloadBuffer.StaticBigInt;
-            task[TaskIndex.PayloadLen] = written;
-            clearBigIntScratch(binaryBytes);
-            task.value = null;
-            return true;
+  const encodeDispatch = (task: Task, slotIndex: number): EncodeStatus => {
+    const args = task.value;
+    switch (typeof args) {
+      case "bigint":
+        if (args < BIGINT64_MIN || args > BIGINT64_MAX) {
+          const binaryBytes = encodeBigIntIntoScratch(args);
+          const binary = bigintScratch.subarray(0, binaryBytes);
+          if (binaryBytes <= staticMaxBytes) {
+            const written = writeStaticBinary(binary, slotIndex);
+            if (written !== -1) {
+              task[TaskIndex.Type] = PayloadBuffer.StaticBigInt;
+              task[TaskIndex.PayloadLen] = written;
+              clearBigIntScratch(binaryBytes);
+              task.value = null;
+              return EncodeStatus.Sent;
+            }
           }
-        }
 
-        task[TaskIndex.Type] = PayloadBuffer.BigInt;
-        if (!ensureWithinDynamicLimit(task, binaryBytes, "BigInt")) {
+          task[TaskIndex.Type] = PayloadBuffer.BigInt;
+          if (!ensureWithinDynamicLimit(task, binaryBytes, "BigInt")) {
+            clearBigIntScratch(binaryBytes);
+            return encodeFailureStatus(task);
+          }
+          const reservedSlot = reserveDynamic(task, binaryBytes);
+          if (reservedSlot < 0) {
+            clearBigIntScratch(binaryBytes);
+            return EncodeStatus.Full;
+          }
+          const written = writeDynamicBinary(binary, task[TaskIndex.Start]);
+          if (written < 0) {
+            clearBigIntScratch(binaryBytes);
+            failDynamicWriteAfterReserve(task, reservedSlot);
+            return encodeFailureStatus(task);
+          }
+          task[TaskIndex.PayloadLen] = written;
+          setSlotLength(reservedSlot, written);
           clearBigIntScratch(binaryBytes);
-          return false;
+          task.value = null;
+          return EncodeStatus.Sent;
         }
-        const reservedSlot = reserveDynamic(task, binaryBytes);
-        if (reservedSlot < 0) {
-          clearBigIntScratch(binaryBytes);
-          return false;
-        }
-        const written = writeDynamicBinary(binary, task[TaskIndex.Start]);
-        if (written < 0) {
-          clearBigIntScratch(binaryBytes);
-          return failDynamicWriteAfterReserve(task, reservedSlot);
-        }
-        task[TaskIndex.PayloadLen] = written;
-        setSlotLength(reservedSlot, written);
-        clearBigIntScratch(binaryBytes);
+        BigInt64View[0] = args;
+        task[TaskIndex.Type] = PayloadSignal.BigInt;
+        task[TaskIndex.Start] = Uint32View[0];
+        task[TaskIndex.End] = Uint32View[1];
         task.value = null;
-        return true
-      }
-      BigInt64View[0] = args;
-      task[TaskIndex.Type] = PayloadSignal.BigInt;
-      task[TaskIndex.Start] = Uint32View[0];
-      task[TaskIndex.End] = Uint32View[1];
-      task.value = null;
-      return true;
-    case "boolean":
-      task[TaskIndex.Type] =
-        task.value === true ? PayloadSignal.True : PayloadSignal.False;
-      return true;
-    case "function":
-      return encoderError({
-        task,
-        type: ErrorKnitting.Function,
-        onPromise,
-      });
-    case "number":
+        return EncodeStatus.Sent;
+      case "boolean":
+        task[TaskIndex.Type] =
+          task.value === true ? PayloadSignal.True : PayloadSignal.False;
+        return EncodeStatus.Sent;
+      case "function":
+        encoderError({
+          task,
+          type: ErrorKnitting.Function,
+          onPromise,
+        });
+        return encodeFailureStatus(task);
+      case "number":
+        if (args !== args) {
+          task[TaskIndex.Type] = PayloadSignal.NaN;
+          return EncodeStatus.Sent;
+        }
 
-      if (args !== args) {
-        task[TaskIndex.Type] = PayloadSignal.NaN;
-        return true;
-      }
+        Float64View[0] = args;
+        task[TaskIndex.Type] = PayloadSignal.Float64;
+        task[TaskIndex.Start] = Uint32View[0];
+        task[TaskIndex.End] = Uint32View[1];
+        return EncodeStatus.Sent;
+      case "object":
+        if (args === null) {
+          task[TaskIndex.Type] = PayloadSignal.Null;
+          return EncodeStatus.Sent;
+        }
+        objectDynamicSlot = -1;
 
-
-      Float64View[0] = args;
-      task[TaskIndex.Type] = PayloadSignal.Float64;
-      task[TaskIndex.Start] = Uint32View[0];
-      task[TaskIndex.End] = Uint32View[1];
-      return true
-    case "object" : 
-      if (args === null) {
-        task[TaskIndex.Type] = PayloadSignal.Null
-        return true
-      }
-      objectDynamicSlot = -1;
-
-      try {
-      const objectValue = args as object;
-      if (arrayIsArray(objectValue) || isPlainJsonObject(objectValue)) {
-        let text: string;
         try {
-          text = stringifyJSON(objectValue);
-        } catch (error) {
-          const detail = error instanceof Error ? error.message : String(error);
-          return encoderError({
+          const objectValue = args as object;
+          if (arrayIsArray(objectValue) || isPlainJsonObject(objectValue)) {
+            let text: string;
+            try {
+              text = stringifyJSON(objectValue);
+            } catch (error) {
+              const detail = error instanceof Error
+                ? error.message
+                : String(error);
+              encoderError({
+                task,
+                type: ErrorKnitting.Json,
+                onPromise,
+                detail,
+              });
+              return encodeFailureStatus(task);
+            }
+            if (text.length <= staticMaxBytes) {
+              const written = writeStaticUtf8(text, slotIndex);
+              if (written !== -1) {
+                task[TaskIndex.Type] = PayloadBuffer.StaticJson;
+                task[TaskIndex.PayloadLen] = written;
+                task.value = null;
+                return EncodeStatus.Sent;
+              }
+            }
+
+            task[TaskIndex.Type] = PayloadBuffer.Json;
+            const reserveBytes = dynamicUtf8ReserveBytes(task, text, "Json");
+            if (reserveBytes < 0) return encodeFailureStatus(task);
+            const reservedSlot = reserveDynamicObject(task, reserveBytes);
+            if (reservedSlot === -1) return EncodeStatus.Full;
+            const written = writeDynamicUtf8(
+              text,
+              task[TaskIndex.Start],
+              reserveBytes,
+            );
+            if (written < 0) {
+              failDynamicWriteAfterReserve(task, reservedSlot);
+              return encodeFailureStatus(task);
+            }
+            task[TaskIndex.PayloadLen] = written;
+            setSlotLength(reservedSlot, written);
+            task.value = null;
+            return EncodeStatus.Sent;
+          }
+
+          if (NodeBuffer.isBuffer(objectValue)) {
+            return encodeObjectBinary(
+              task,
+              slotIndex,
+              objectValue as NodeBuffer,
+              PayloadBuffer.Buffer,
+              PayloadBuffer.StaticBuffer,
+            )
+              ? EncodeStatus.Sent
+              : encodeFailureStatus(task);
+          }
+
+          switch ((objectValue as { constructor?: unknown }).constructor) {
+            case Uint8Array:
+              return encodeObjectBinary(
+                task,
+                slotIndex,
+                objectValue as Uint8Array,
+                PayloadBuffer.Binary,
+                PayloadBuffer.StaticBinary,
+              )
+                ? EncodeStatus.Sent
+                : encodeFailureStatus(task);
+            case ArrayBuffer:
+              return encodeObjectArrayBuffer(
+                task,
+                slotIndex,
+                objectValue as ArrayBuffer,
+              )
+                ? EncodeStatus.Sent
+                : encodeFailureStatus(task);
+            case Int32Array: {
+              const int32 = objectValue as Int32Array;
+              return encodeObjectBinary(
+                task,
+                slotIndex,
+                new Uint8Array(
+                  int32.buffer,
+                  int32.byteOffset,
+                  int32.byteLength,
+                ),
+                PayloadBuffer.Int32Array,
+                PayloadBuffer.StaticInt32Array,
+              )
+                ? EncodeStatus.Sent
+                : encodeFailureStatus(task);
+            }
+            case Float64Array:
+              return encodeObjectFloat64Array(
+                task,
+                slotIndex,
+                objectValue as Float64Array,
+              )
+                ? EncodeStatus.Sent
+                : encodeFailureStatus(task);
+            case BigInt64Array: {
+              const bigInt64 = objectValue as BigInt64Array;
+              return encodeObjectBinary(
+                task,
+                slotIndex,
+                new Uint8Array(
+                  bigInt64.buffer,
+                  bigInt64.byteOffset,
+                  bigInt64.byteLength,
+                ),
+                PayloadBuffer.BigInt64Array,
+                PayloadBuffer.StaticBigInt64Array,
+              )
+                ? EncodeStatus.Sent
+                : encodeFailureStatus(task);
+            }
+            case BigUint64Array: {
+              const bigUint64 = objectValue as BigUint64Array;
+              return encodeObjectBinary(
+                task,
+                slotIndex,
+                new Uint8Array(
+                  bigUint64.buffer,
+                  bigUint64.byteOffset,
+                  bigUint64.byteLength,
+                ),
+                PayloadBuffer.BigUint64Array,
+                PayloadBuffer.StaticBigUint64Array,
+              )
+                ? EncodeStatus.Sent
+                : encodeFailureStatus(task);
+            }
+            case DataView: {
+              const dataView = objectValue as DataView;
+              return encodeObjectBinary(
+                task,
+                slotIndex,
+                new Uint8Array(
+                  dataView.buffer,
+                  dataView.byteOffset,
+                  dataView.byteLength,
+                ),
+                PayloadBuffer.DataView,
+                PayloadBuffer.StaticDataView,
+              )
+                ? EncodeStatus.Sent
+                : encodeFailureStatus(task);
+            }
+            case Date:
+              return encodeObjectDate(task, objectValue as Date)
+                ? EncodeStatus.Sent
+                : encodeFailureStatus(task);
+            case Envelope:
+              return encodeObjectEnvelope(
+                task,
+                slotIndex,
+                objectValue as Envelope,
+              )
+                ? EncodeStatus.Sent
+                : encodeFailureStatus(task);
+            case Promise:
+              return encodeObjectPromise(task, objectValue as Promise<unknown>);
+            case Error:
+              return encodeErrorObject(task, objectValue as Error)
+                ? EncodeStatus.Sent
+                : encodeFailureStatus(task);
+          }
+
+          if (objectValue instanceof Date) {
+            return encodeObjectDate(task, objectValue)
+              ? EncodeStatus.Sent
+              : encodeFailureStatus(task);
+          }
+          if (objectValue instanceof Envelope) {
+            return encodeObjectEnvelope(task, slotIndex, objectValue)
+              ? EncodeStatus.Sent
+              : encodeFailureStatus(task);
+          }
+          if (objectValue instanceof Promise) {
+            return encodeObjectPromise(task, objectValue);
+          }
+          if (objectValue instanceof Error) {
+            return encodeErrorObject(task, objectValue)
+              ? EncodeStatus.Sent
+              : encodeFailureStatus(task);
+          }
+
+          encoderError({
             task,
-            type: ErrorKnitting.Json,
+            type: ErrorKnitting.Serializable,
+            onPromise,
+            detail: UNSUPPORTED_OBJECT_DETAIL,
+          });
+          return encodeFailureStatus(task);
+        } catch (error) {
+          rollbackObjectDynamic();
+          const detail = error instanceof Error ? error.message : String(error);
+          encoderError({
+            task,
+            type: ErrorKnitting.Serializable,
             onPromise,
             detail,
           });
+          return encodeFailureStatus(task);
         }
-        if (text.length <= staticMaxBytes) {
-          const written = writeStaticUtf8(text, slotIndex);
-          if (written !== -1) {
-            task[TaskIndex.Type] = PayloadBuffer.StaticJson;
-            task[TaskIndex.PayloadLen] = written;
-            task.value = null;
-            return true;
-          }
-        }
-
-        task[TaskIndex.Type] = PayloadBuffer.Json;
-        const reserveBytes = dynamicUtf8ReserveBytes(task, text, "Json");
-        if (reserveBytes < 0) return false;
-        const reservedSlot = reserveDynamicObject(task, reserveBytes);
-        if (reservedSlot === -1) return false;
-        const written = writeDynamicUtf8(
-          text,
-          task[TaskIndex.Start],
-          reserveBytes,
-        );
-        if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
-        task[TaskIndex.PayloadLen] = written;
-        setSlotLength(reservedSlot, written);
-        task.value = null;
-        return true;
-      }
-
-      if (NodeBuffer.isBuffer(objectValue)) {
-        return encodeObjectBinary(
-          task,
-          slotIndex,
-          objectValue as NodeBuffer,
-          PayloadBuffer.Buffer,
-          PayloadBuffer.StaticBuffer,
-        );
-      }
-
-      switch ((objectValue as { constructor?: unknown }).constructor) {
-        case Uint8Array:
-          return encodeObjectBinary(
-            task,
-            slotIndex,
-            objectValue as Uint8Array,
-            PayloadBuffer.Binary,
-            PayloadBuffer.StaticBinary,
-          );
-        case ArrayBuffer:
-          return encodeObjectArrayBuffer(task, slotIndex, objectValue as ArrayBuffer);
-        case Int32Array: {
-          const int32 = objectValue as Int32Array;
-          return encodeObjectBinary(
-            task,
-            slotIndex,
-            new Uint8Array(int32.buffer, int32.byteOffset, int32.byteLength),
-            PayloadBuffer.Int32Array,
-            PayloadBuffer.StaticInt32Array,
-          );
-        }
-        case Float64Array:
-          return encodeObjectFloat64Array(
-            task,
-            slotIndex,
-            objectValue as Float64Array,
-          );
-        case BigInt64Array: {
-          const bigInt64 = objectValue as BigInt64Array;
-          return encodeObjectBinary(
-            task,
-            slotIndex,
-            new Uint8Array(
-              bigInt64.buffer,
-              bigInt64.byteOffset,
-              bigInt64.byteLength,
-            ),
-            PayloadBuffer.BigInt64Array,
-            PayloadBuffer.StaticBigInt64Array,
-          );
-        }
-        case BigUint64Array: {
-          const bigUint64 = objectValue as BigUint64Array;
-          return encodeObjectBinary(
-            task,
-            slotIndex,
-            new Uint8Array(
-              bigUint64.buffer,
-              bigUint64.byteOffset,
-              bigUint64.byteLength,
-            ),
-            PayloadBuffer.BigUint64Array,
-            PayloadBuffer.StaticBigUint64Array,
-          );
-        }
-        case DataView: {
-          const dataView = objectValue as DataView;
-          return encodeObjectBinary(
-            task,
-            slotIndex,
-            new Uint8Array(
-              dataView.buffer,
-              dataView.byteOffset,
-              dataView.byteLength,
-            ),
-            PayloadBuffer.DataView,
-            PayloadBuffer.StaticDataView,
-          );
-        }
-        case Date:
-          return encodeObjectDate(task, objectValue as Date);
-        case Envelope:
-          return encodeObjectEnvelope(task, slotIndex, objectValue as Envelope);
-        case Promise:
-          return encodeObjectPromise(task, objectValue as Promise<unknown>);
-        case Error:
-          return encodeErrorObject(task, objectValue as Error);
-      }
-
-      if (objectValue instanceof Date) return encodeObjectDate(task, objectValue);
-      if (objectValue instanceof Envelope) {
-        return encodeObjectEnvelope(task, slotIndex, objectValue);
-      }
-      if (objectValue instanceof Promise) {
-        return encodeObjectPromise(task, objectValue);
-      }
-      if (objectValue instanceof Error) {
-        return encodeErrorObject(task, objectValue);
-      }
-
-      return encoderError({
-        task,
-        type: ErrorKnitting.Serializable,
-        onPromise,
-        detail: UNSUPPORTED_OBJECT_DETAIL,
-      });
-      } catch (error) {
-        rollbackObjectDynamic();
-        const detail = error instanceof Error ? error.message : String(error);
-        return encoderError({
-          task,
-          type: ErrorKnitting.Serializable,
-          onPromise,
-          detail,
-        });
-      }
-    case "string":
-      {
+      case "string": {
         const text = args as string;
         if (text.length <= staticMaxBytes) {
           const written = writeStaticUtf8(text, slotIndex);
@@ -862,36 +919,39 @@ export const encodePayload = ({
             task[TaskIndex.Type] = PayloadBuffer.StaticString;
             task[TaskIndex.PayloadLen] = written;
             task.value = null;
-            return true;
+            return EncodeStatus.Sent;
           }
         }
 
         task[TaskIndex.Type] = PayloadBuffer.String;
         const reserveBytes = dynamicUtf8ReserveBytes(task, text, "String");
-        if (reserveBytes < 0) return false;
+        if (reserveBytes < 0) return encodeFailureStatus(task);
         const reservedSlot = reserveDynamic(task, reserveBytes);
-        if (reservedSlot < 0) return false;
+        if (reservedSlot < 0) return EncodeStatus.Full;
 
         const written = writeDynamicUtf8(
           text,
           task[TaskIndex.Start],
           reserveBytes,
         );
-        if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
+        if (written < 0) {
+          failDynamicWriteAfterReserve(task, reservedSlot);
+          return encodeFailureStatus(task);
+        }
         task[TaskIndex.PayloadLen] = written;
         setSlotLength(reservedSlot, written);
         task.value = null;
-        return true
+        return EncodeStatus.Sent;
       }
-    case "symbol":
-      {
+      case "symbol": {
         const key = symbolKeyFor(args);
         if (key === undefined) {
-          return encoderError({
+          encoderError({
             task,
             type: ErrorKnitting.Symbol,
             onPromise,
           });
+          return encodeFailureStatus(task);
         }
         if (key.length * 3 <= staticMaxBytes) {
           const written = writeStaticUtf8(key, slotIndex);
@@ -899,32 +959,35 @@ export const encodePayload = ({
             task[TaskIndex.Type] = PayloadBuffer.StaticSymbol;
             task[TaskIndex.PayloadLen] = written;
             task.value = null;
-            return true;
+            return EncodeStatus.Sent;
           }
         }
 
         task[TaskIndex.Type] = PayloadBuffer.Symbol;
         const reserveBytes = dynamicUtf8ReserveBytes(task, key, "Symbol");
-        if (reserveBytes < 0) return false;
+        if (reserveBytes < 0) return encodeFailureStatus(task);
         const reservedSlot = reserveDynamic(task, reserveBytes);
-        if (reservedSlot < 0) return false;
+        if (reservedSlot < 0) return EncodeStatus.Full;
         const written = writeDynamicUtf8(
           key,
           task[TaskIndex.Start],
           reserveBytes,
         );
-        if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
+        if (written < 0) {
+          failDynamicWriteAfterReserve(task, reservedSlot);
+          return encodeFailureStatus(task);
+        }
         task[TaskIndex.PayloadLen] = written;
         setSlotLength(reservedSlot, written);
         task.value = null;
-        return true;
+        return EncodeStatus.Sent;
       }
-    case "undefined":
-      task[TaskIndex.Type]  = PayloadSignal.Undefined
-      return true
-  }
-  return false;
-};
+      case "undefined":
+        task[TaskIndex.Type] = PayloadSignal.Undefined;
+        return EncodeStatus.Sent;
+    }
+    return EncodeStatus.Full;
+  };
 
   return encodeDispatch;
 }

@@ -177,6 +177,13 @@ test("encode stops when full", () => {
   assertEquals(lock.hostBits[0] >>> 0, 0xFFFFFFFF);
 });
 
+test("encode returns deferred for promise payloads", () => {
+  const { lock } = makeLock();
+  const task = makeValueTask(Promise.resolve(1));
+
+  assertEquals(lock.encode(task), EncodeStatus.Deferred);
+});
+
 test("encodeAll leaves remaining task when full", () => {
   const { lock, toBeSent } = makeLock();
   const tasks = Array.from(

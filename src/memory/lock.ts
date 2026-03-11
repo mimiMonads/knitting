@@ -504,7 +504,10 @@ export const lock2 = ({
     const free = ~state;
     if (free === 0) return 0;
 
-    if (!encodeTask(task, selectedSlotIndex = 31 - clz32(free))) return 0;
+    if (
+      encodeTask(task, selectedSlotIndex = 31 - clz32(free)) !==
+        EncodeStatus.Sent
+    ) return 0;
     encodeAt(
       task,
       selectedSlotIndex,
@@ -567,11 +570,8 @@ export const lock2 = ({
     const free = ~state;
     if (free === 0) return EncodeStatus.Full;
 
-    if (!encodeTask(task, selectedSlotIndex = 31 - clz32(free))) {
-      return task[PromisePayloadMarker] === true
-        ? EncodeStatus.Deferred
-        : EncodeStatus.Full;
-    }
+    const status = encodeTask(task, selectedSlotIndex = 31 - clz32(free));
+    if (status !== EncodeStatus.Sent) return status;
     encodeAt(
       task,
       selectedSlotIndex,

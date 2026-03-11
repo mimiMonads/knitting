@@ -109,17 +109,19 @@ export function createHostTxQueue({
   const txIdle = () =>
     toBeSentCount === 0 && inUsed === pendingPromises;
 
+  const markPendingPromise = (): false => {
+    pendingPromises = (pendingPromises + 1) | 0;
+    return false;
+  };
+
   const handleEncodeStatus = (task: QueueTask, status: EncodeStatus) => {
-    if (status === EncodeStatus.Deferred) {
-      pendingPromises = (pendingPromises + 1) | 0;
-      return false;
-    }
-    if (status === EncodeStatus.Full) {
+    if (status > 0) return true;
+    if (status < 0) {
       toBeSentPush(task);
       toBeSentCount = (toBeSentCount + 1) | 0;
       return false;
     }
-    return true;
+    return markPendingPromise();
   };
 
   const rejectAll = (reason: string) => {
@@ -159,18 +161,19 @@ export function createHostTxQueue({
       toBeSentCount = (toBeSentCount - 1) | 0;
 
       const status = encode(task);
-      if (status === EncodeStatus.Sent) {
+      if (status > 0) {
         wrote = true;
         continue;
       }
-      if (status === EncodeStatus.Deferred) {
-        pendingPromises = (pendingPromises + 1) | 0;
-        continue;
+
+      if (status < 0) {
+        toBeSentUnshift(task);
+        toBeSentCount = (toBeSentCount + 1) | 0;
+        break;
       }
 
-      toBeSentUnshift(task);
-      toBeSentCount = (toBeSentCount + 1) | 0;
-      break;
+      markPendingPromise();
+      continue;
     }
 
     return wrote;
