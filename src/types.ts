@@ -1,4 +1,8 @@
 import { endpointSymbol } from "./common/task-symbol.ts";
+import type {
+  SharedBufferRegion,
+  SharedBufferSource,
+} from "./common/shared-buffer-region.ts";
 import type { Buffer as NodeBuffer } from "node:buffer";
 import type { Envelope } from "./common/envelope.ts";
 import type {
@@ -27,8 +31,8 @@ interface WorkerContext {
 type CreateContext = WorkerContext;
 
 type WorkerData = {
-  sab: SharedArrayBuffer;
-  abortSignalSAB?: SharedArrayBuffer;
+  sab: SharedBufferSource;
+  abortSignalSAB?: SharedBufferSource;
   abortSignalMax?: number;
   list: string[];
   ids: number[];
@@ -45,10 +49,10 @@ type WorkerData = {
 };
 
 type LockBuffers = {
-  headers: SharedArrayBuffer;
-  lockSector: SharedArrayBuffer;
+  headers: SharedBufferSource;
+  lockSector: SharedBufferSource;
   payload: SharedArrayBuffer;
-  payloadSector: SharedArrayBuffer;
+  payloadSector: SharedBufferSource;
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -439,6 +443,8 @@ type CreatePool = {
 // NOTE: Explicit export list with `as` keeps JSR type resolution stable,
 // especially for curried APIs like `createPool`.
 export type {
+  SharedBufferRegion as SharedBufferRegion,
+  SharedBufferSource as SharedBufferSource,
   WorkerCall as WorkerCall,
   WorkerInvoke as WorkerInvoke,
   WorkerContext as WorkerContext,

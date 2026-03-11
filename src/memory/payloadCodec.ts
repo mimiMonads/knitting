@@ -23,6 +23,7 @@ import {
   resolvePayloadBufferOptions,
   type PayloadBufferOptions,
 } from "./payload-config.ts";
+import type { SharedBufferSource } from "../common/shared-buffer-region.ts";
 
 const memory = new ArrayBuffer(8);
 const Float64View = new Float64Array(memory);
@@ -177,7 +178,7 @@ const initStaticIO = (headersBuffer: Uint32Array) => {
   if (headersBuffer.byteLength < HEADER_BYTE_LENGTH) return null;
 
   return createSharedStaticBufferIO({
-    headersBuffer: headersBuffer.buffer as SharedArrayBuffer,
+    headersBuffer,
   });
 };
 
@@ -205,7 +206,7 @@ export const encodePayload = ({
   onPromise,
   sharedRegister,
 }: {
-  lockSector?: SharedArrayBuffer;
+  lockSector?: SharedBufferSource;
   payload?: {
     sab?: SharedArrayBuffer;
     config?: PayloadBufferOptions;
@@ -488,6 +489,7 @@ export const encodePayload = ({
     envelope: Envelope,
   ) => {
     const header = envelope.header;
+    const headerIsString = typeof header === "string";
     const payload = envelope.payload;
     if (!(payload instanceof ArrayBuffer)) {
       return encoderError({
@@ -507,16 +509,20 @@ export const encodePayload = ({
     }
 
     let headerText: string | undefined;
-    try {
-      headerText = stringifyJSON(header);
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      return encoderError({
-        task,
-        type: ErrorKnitting.Json,
-        onPromise,
-        detail,
-      });
+    if (headerIsString) {
+      headerText = header;
+    } else {
+      try {
+        headerText = stringifyJSON(header);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        return encoderError({
+          task,
+          type: ErrorKnitting.Json,
+          onPromise,
+          detail,
+        });
+      }
     }
     if (typeof headerText !== "string") {
       return encoderError({
@@ -542,7 +548,9 @@ export const encodePayload = ({
       ) return false;
       const reservedSlot = reserveDynamicObject(task, payloadReserveBytes);
       if (reservedSlot === -1) return false;
-      task[TaskIndex.Type] = PayloadBuffer.EnvelopeStaticHeader;
+      task[TaskIndex.Type] = headerIsString
+        ? PayloadBuffer.EnvelopeStaticHeaderString
+        : PayloadBuffer.EnvelopeStaticHeader;
       task[TaskIndex.PayloadLen] = staticHeaderWritten;
       task[TaskIndex.End] = payloadLength;
       if (payloadLength > 0) {
@@ -563,10 +571,14 @@ export const encodePayload = ({
       task,
       headerText,
       payloadLength,
-      "EnvelopeDynamicHeader",
+      headerIsString
+        ? "EnvelopeDynamicHeaderString"
+        : "EnvelopeDynamicHeader",
     );
     if (headerReserveBytes < 0) return false;
-    task[TaskIndex.Type] = PayloadBuffer.EnvelopeDynamicHeader;
+    task[TaskIndex.Type] = headerIsString
+      ? PayloadBuffer.EnvelopeDynamicHeaderString
+      : PayloadBuffer.EnvelopeDynamicHeader;
     const reservedSlot = reserveDynamicObject(
       task,
       headerReserveBytes + payloadLength,
@@ -1001,7 +1013,7 @@ export const decodePayload = ({
   host,
   sharedRegister,
 }: {
-  lockSector?: SharedArrayBuffer;
+  lockSector?: SharedBufferSource;
   payload?: {
     sab?: SharedArrayBuffer;
     config?: PayloadBufferOptions;
@@ -1105,10 +1117,12 @@ export const decodePayload = ({
         readStaticUtf8(0, task[TaskIndex.PayloadLen], slotIndex)
       )
     return
-    case PayloadBuffer.EnvelopeStaticHeader: {
-      const header = parseJSON(
-        readStaticUtf8(0, task[TaskIndex.PayloadLen], slotIndex),
-      );
+    case PayloadBuffer.EnvelopeStaticHeader:
+    case PayloadBuffer.EnvelopeStaticHeaderString: {
+      const rawHeader = readStaticUtf8(0, task[TaskIndex.PayloadLen], slotIndex);
+      const header = task[TaskIndex.Type] === PayloadBuffer.EnvelopeStaticHeaderString
+        ? rawHeader
+        : parseJSON(rawHeader);
       const payloadLength = task[TaskIndex.End];
       const payload = payloadLength > 0
         ? readDynamicArrayBufferCopy(
@@ -1120,13 +1134,15 @@ export const decodePayload = ({
       freeTaskSlot(task);
     return
     }
-    case PayloadBuffer.EnvelopeDynamicHeader: {
+    case PayloadBuffer.EnvelopeDynamicHeader:
+    case PayloadBuffer.EnvelopeDynamicHeaderString: {
       const headerStart = task[TaskIndex.Start];
       const payloadStart = headerStart + task[TaskIndex.PayloadLen];
       const payloadLength = task[TaskIndex.End];
-      const header = parseJSON(
-        readDynamicUtf8(headerStart, payloadStart),
-      );
+      const rawHeader = readDynamicUtf8(headerStart, payloadStart);
+      const header = task[TaskIndex.Type] === PayloadBuffer.EnvelopeDynamicHeaderString
+        ? rawHeader
+        : parseJSON(rawHeader);
       const payload = payloadLength > 0
         ? readDynamicArrayBufferCopy(
           payloadStart,
