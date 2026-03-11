@@ -1,7 +1,7 @@
 import RingQueue from "../ipc/tools/RingQueue.ts";
 import {
+  EncodeStatus,
   makeTask,
-  PromisePayloadMarker,
   PromisePayloadStatus,
   PromisePayloadStatusSymbol,
   TaskIndex,
@@ -30,6 +30,7 @@ const FUNCTION_META_MASK = 0xffff;
 const FUNCTION_META_SHIFT = 16;
 const ABORT_SIGNAL_META_OFFSET = 1;
 const NO_ABORT_SIGNAL = -1;
+const ACTIVE_SLOT = 1;
 
 
 type CreateHostTxQueueArgs = {
@@ -57,6 +58,7 @@ export function createHostTxQueue({
     const task = makeTask() as QueueTask;
     task[TaskIndex.ID] = id;
     task[TaskIndex.FunctionID] = 0;
+    task[TaskIndex.LocalState] = 0;
     task.value = undefined;
     task.resolve = PLACE_HOLDER;
     task.reject = PLACE_HOLDER;
@@ -79,26 +81,23 @@ export function createHostTxQueue({
   const toBeSent = new RingQueue<QueueTask>();
   const toBeSentPush = (task: QueueTask) => toBeSent.push(task);
   const toBeSentShift = () => toBeSent.shiftNoClear();
+  const toBeSentUnshift = (task: QueueTask) => toBeSent.unshift(task);
   const freePush = (id: number) => freeSockets.push(id);
   const freePop = () => freeSockets.pop();
   const queuePush = (task: QueueTask) => queue.push(task);
-  const { encode, encodeManyFrom } = lock;
+  const { encode } = lock;
   let toBeSentCount = 0 | 0;
   let inUsed = 0 | 0;
   let pendingPromises = 0 | 0;
   const resetSignal = abortSignals?.resetSignal;
   const nowTime = now ?? p_now;
 
-
-  const isPromisePending = (task: QueueTask) =>
-    (task as QueueTask & { [PromisePayloadMarker]?: true })[
-      PromisePayloadMarker
-    ] === true;
-
   const resolveReturn = returnLock.resolveHost({
     queue,
+    skipInactive: true,
     onResolved: (task) => {
       inUsed = (inUsed - 1) | 0;
+      task[TaskIndex.LocalState] = 0;
       task.resolve = PLACE_HOLDER;
       task.reject = PLACE_HOLDER;
       freePush(task[TaskIndex.ID]);
@@ -110,13 +109,17 @@ export function createHostTxQueue({
   const txIdle = () =>
     toBeSentCount === 0 && inUsed === pendingPromises;
 
-  const handleEncodeFailure = (task: QueueTask) => {
-    if (isPromisePending(task)) {
+  const handleEncodeStatus = (task: QueueTask, status: EncodeStatus) => {
+    if (status === EncodeStatus.Deferred) {
       pendingPromises = (pendingPromises + 1) | 0;
-      return;
+      return false;
     }
-    toBeSentPush(task);
-    toBeSentCount = (toBeSentCount + 1) | 0;
+    if (status === EncodeStatus.Full) {
+      toBeSentPush(task);
+      toBeSentCount = (toBeSentCount + 1) | 0;
+      return false;
+    }
+    return true;
   };
 
   const rejectAll = (reason: string) => {
@@ -127,6 +130,7 @@ export function createHostTxQueue({
           slot.reject(reason);
         } catch {
         }
+        slot[TaskIndex.LocalState] = 0;
         slot.resolve = PLACE_HOLDER;
         slot.reject = PLACE_HOLDER;
 
@@ -144,18 +148,36 @@ export function createHostTxQueue({
 
   const flushToWorker = () => {
     if (toBeSentCount === 0) return false;
-    const encoded = encodeManyFrom(toBeSent) | 0;
-    if (encoded === 0) return false;
-    toBeSentCount = (toBeSentCount - encoded) | 0;
-    return true;
+    let wrote = false;
+    let remaining = toBeSentCount | 0;
+
+    while (remaining > 0) {
+      const task = toBeSentShift();
+      if (!task) break;
+
+      remaining = (remaining - 1) | 0;
+      toBeSentCount = (toBeSentCount - 1) | 0;
+
+      const status = encode(task);
+      if (status === EncodeStatus.Sent) {
+        wrote = true;
+        continue;
+      }
+      if (status === EncodeStatus.Deferred) {
+        pendingPromises = (pendingPromises + 1) | 0;
+        continue;
+      }
+
+      toBeSentUnshift(task);
+      toBeSentCount = (toBeSentCount + 1) | 0;
+      break;
+    }
+
+    return wrote;
   };
 
   const enqueueKnown = (task: QueueTask) => {
-    if (!encode(task)) {
-      handleEncodeFailure(task);
-      return false;
-    }
-    return true;
+    return handleEncodeStatus(task, encode(task));
   };
 
   return {
@@ -211,6 +233,7 @@ export function createHostTxQueue({
         slot.value = rawArgs;
  
         slot[TaskIndex.ID] = index;
+        slot[TaskIndex.LocalState] = ACTIVE_SLOT;
         slot.resolve = deferred.resolve;
         slot.reject = deferred.reject;
 
@@ -222,9 +245,7 @@ export function createHostTxQueue({
             ) >>> 0;
         }
 
-        if (!encode(slot)) {
-          handleEncodeFailure(slot);
-        }
+        handleEncodeStatus(slot, encode(slot));
 
         inUsed = (inUsed + 1) | 0;
 
@@ -250,6 +271,7 @@ export function createHostTxQueue({
           task.reject(task.value);
         } catch {
         }
+        task[TaskIndex.LocalState] = 0;
         task.resolve = PLACE_HOLDER;
         task.reject = PLACE_HOLDER;
         inUsed = (inUsed - 1) | 0;

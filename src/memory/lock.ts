@@ -152,6 +152,12 @@ export enum TaskIndex {
    * High 27 bits: reserved for caller metadata (e.g. enqueue timing).
    */
   slotBuffer = 6,
+  /**
+   * Local scratch/state word.
+   * Hot-path callers may use this for per-slot state that should not be loaded
+   * back from the shared header.
+   */
+  LocalState = 7,
   Size = 8,
   /**
    * Total slot length in Uint32 words, including the task header.
@@ -218,6 +224,12 @@ export const setTaskSlotMeta = (task: Task, value: number): void => {
 
 export enum TaskFlag {
   Reject = 1 << 0,
+}
+
+export const enum EncodeStatus {
+  Full = -1,
+  Deferred = 0,
+  Sent = 1,
 }
 
 // Main queue lock layout in bytes.
@@ -308,7 +320,7 @@ const fillTaskFrom = (task: Task, array: ArrayLike<number>, at: number) => {
   task[4] = array[at + 4];
   task[5] = array[at + 5];
   task[6] = array[at + 6];
-  //task[7] = array[at + 7];
+  // Keep TaskIndex.LocalState local to the current runtime instance.
 };
 
 const makeTaskFrom = (array: Uint32Array, at: number) => {
@@ -343,12 +355,13 @@ const settleTask = (task: Task) => {
 
 export type ResolveHostOptions = {
   queue: Task[];
+  skipInactive?: boolean;
   onResolved?: (task: Task) => void;
 };
 
 export type Lock2 = {
   enlist: (task: Task) => void;
-  encode: (task: Task, state?: number) => boolean;
+  encode: (task: Task, state?: number) => EncodeStatus;
   encodeManyFrom: (list: RingQueue<Task>) => number;
   encodeAll: () => boolean;
   decode: () => boolean;
@@ -550,16 +563,21 @@ export const lock2 = ({
   const encode = (
     task: Task,
     state: number = (LastLocal ^ a_load(workerBits, 0)) | 0,
-  ): boolean => {
+  ): EncodeStatus => {
     const free = ~state;
-    if (free === 0) return false;
+    if (free === 0) return EncodeStatus.Full;
 
-    if (!encodeTask(task, selectedSlotIndex = 31 - clz32(free))) return false;
-    return encodeAt(
+    if (!encodeTask(task, selectedSlotIndex = 31 - clz32(free))) {
+      return task[PromisePayloadMarker] === true
+        ? EncodeStatus.Deferred
+        : EncodeStatus.Full;
+    }
+    encodeAt(
       task,
       selectedSlotIndex,
       selectedSlotBit = 1 << selectedSlotIndex,
     );
+    return EncodeStatus.Sent;
   };
 
   const encodeAt = (task: Task, at: number, bit: number): boolean => {
@@ -571,7 +589,7 @@ export const lock2 = ({
     headersBuffer[off + 4] = task[4];
     headersBuffer[off + 5] = task[5];
     headersBuffer[off + 6] = task[6];
-    headersBuffer[off + 7] = task[7];
+    headersBuffer[off + TaskIndex.LocalState] = task[TaskIndex.LocalState];
 
     storeHost(bit);
     return true;
@@ -620,11 +638,13 @@ export const lock2 = ({
    */
   const resolveHost = ({
     queue,
+    skipInactive,
     onResolved,
   }: ResolveHostOptions) => {
 
     const getTask = takeTask({ queue });
     const HAS_RESOLVE = onResolved ? true : false;
+    const SKIP_INACTIVE = skipInactive === true;
     let lastResolved = 32;
 
 
@@ -644,8 +664,12 @@ export const lock2 = ({
         decodeTask(task, idx);
 
         consumedBits = (consumedBits ^ selectedBit) | 0;
-        settleTask(task);
-        if (HAS_RESOLVE) {
+        const canSettle =
+          !SKIP_INACTIVE || task[TaskIndex.LocalState] !== 0;
+        if (canSettle) {
+          settleTask(task);
+        }
+        if (canSettle && HAS_RESOLVE) {
           onResolved!(task);
         }
 
@@ -671,8 +695,12 @@ export const lock2 = ({
         decodeTask(task, idx);
 
         consumedBits = (consumedBits ^ selectedBit) | 0;
-        settleTask(task);
-        if (HAS_RESOLVE) {
+        const canSettle =
+          !SKIP_INACTIVE || task[TaskIndex.LocalState] !== 0;
+        if (canSettle) {
+          settleTask(task);
+        }
+        if (canSettle && HAS_RESOLVE) {
           onResolved!(task);
         }
 

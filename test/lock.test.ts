@@ -6,6 +6,7 @@ const assertEquals: (actual: unknown, expected: unknown) => void =
   };
 import RingQueue from "../src/ipc/tools/RingQueue.ts";
 import {
+  EncodeStatus,
   getTaskFunctionID,
   getTaskFunctionMeta,
   getTaskSlotIndex,
@@ -43,6 +44,10 @@ const makeValueTask = (value: unknown) => {
   return task;
 };
 
+const assertSent = (actual: unknown) => {
+  assertEquals(actual, EncodeStatus.Sent);
+};
+
 const isSingleBit = (value: number) =>
   value !== 0 && (value & (value - 1)) === 0;
 
@@ -71,7 +76,7 @@ test("encode/decode roundtrip values", () => {
   const values = [123, -45.5, true, false, 9n, Infinity, -Infinity, NaN, undefined];
 
   for (const value of values) {
-    assert(lock.encode(makeValueTask(value)));
+    assertSent(lock.encode(makeValueTask(value)));
   }
 
   assert(lock.decode());
@@ -93,7 +98,7 @@ test("encode/decode roundtrip string", () => {
   const { lock } = makeLock();
   const value = "hello from lock";
 
-  assert(lock.encode(makeValueTask(value)));
+  assertSent(lock.encode(makeValueTask(value)));
   assert(lock.decode());
 
   const decoded = lock.resolved.toArray()
@@ -165,10 +170,10 @@ test("encode stops when full", () => {
   const { lock } = makeLock();
 
   for (let i = 0; i < LockBound.slots; i++) {
-    assert(lock.encode(makeValueTask(i)));
+    assertSent(lock.encode(makeValueTask(i)));
   }
 
-  assertEquals(lock.encode(makeValueTask(999)), false);
+  assertEquals(lock.encode(makeValueTask(999)), EncodeStatus.Full);
   assertEquals(lock.hostBits[0] >>> 0, 0xFFFFFFFF);
 });
 
@@ -189,8 +194,8 @@ test("encodeAll leaves remaining task when full", () => {
 test("decode syncs worker bits", () => {
   const { lock } = makeLock();
 
-  lock.encode(makeValueTask(1));
-  lock.encode(makeValueTask(2));
+  assertSent(lock.encode(makeValueTask(1)));
+  assertSent(lock.encode(makeValueTask(2)));
 
   assert(lock.decode());
   assertEquals(lock.workerBits[0], lock.hostBits[0]);
@@ -232,7 +237,7 @@ test("resolveHost decodes into queue and acks worker bits", () => {
     const task = makeTask();
     task[TaskIndex.ID] = i;
     task.value = responses[i];
-    lock.encode(task);
+    assertSent(lock.encode(task));
   }
 
   const resolveHost = lock.resolveHost({ queue, });
@@ -285,7 +290,7 @@ test("resolveHost sees producer toggles in hostBits across instances", () => {
     const task = makeTask();
     task[TaskIndex.ID] = i;
     task.value = responses[i];
-    assertEquals(producer.encode(task), true);
+    assertSent(producer.encode(task));
   }
 
   const resolveHost = consumer.resolveHost({ queue });
@@ -338,6 +343,61 @@ test("resolveHost ignores workerBits changes without producer toggles", () => {
   Atomics.xor(producer.workerBits, 0, 1);
   assertEquals(resolveHost(), 0);
   assertEquals(resolved.length, 0);
+});
+
+test("resolveHost skips inactive queue slots while still acking frames", () => {
+  const lockSector = new SharedArrayBuffer(
+    LOCK_SECTOR_BYTE_LENGTH,
+  );
+  const headers = new SharedArrayBuffer(HEADER_BYTE_LENGTH);
+  const payloadSector = new SharedArrayBuffer(
+    PAYLOAD_LOCK_SECTOR_BYTE_LENGTH,
+  );
+  const payload = new SharedArrayBuffer(1024 * 64);
+
+  const producer = lock2({
+    headers,
+    LockBoundSector: lockSector,
+    payload,
+    payloadSector,
+  });
+  const consumer = lock2({
+    headers,
+    LockBoundSector: lockSector,
+    payload,
+    payloadSector,
+  });
+
+  let settled = 0;
+  let resolved = 0;
+  const queue = [makeTask()];
+  queue[0].resolve = () => {
+    settled++;
+    throw new Error("UNREACHABLE FROM PLACE HOLDER (main)");
+  };
+  queue[0].reject = () => {
+    settled++;
+    throw new Error("UNREACHABLE FROM PLACE HOLDER (main)");
+  };
+
+  const response = makeTask();
+  response[TaskIndex.ID] = 0;
+  response.value = "late";
+  assertSent(producer.encode(response));
+
+  const resolveHost = consumer.resolveHost({
+    queue,
+    skipInactive: true,
+    onResolved: () => {
+      resolved++;
+    },
+  });
+
+  assertEquals(resolveHost(), 1);
+  assertEquals(settled, 0);
+  assertEquals(resolved, 0);
+  assertEquals((consumer.hostBits[0] ^ consumer.workerBits[0]) >>> 0, 0);
+  assertEquals(resolveHost(), 0);
 });
 
 test("resolveHost random stress keeps toggle protocol consistent across instances", () => {
@@ -409,7 +469,7 @@ test("resolveHost random stress keeps toggle protocol consistent across instance
       const workerBefore = Atomics.load(consumer.workerBits, 0) | 0;
       const pendingBefore = (hostBefore ^ workerBefore) >>> 0;
 
-      assertEquals(producer.encode(task), true);
+      assertSent(producer.encode(task));
       outstanding = (outstanding + 1) | 0;
       nextValue++;
 
@@ -485,10 +545,11 @@ test("xor bit protocol random stress keeps slot toggles consistent", () => {
       const pendingBefore = (hostBefore ^ workerBefore) >>> 0;
 
       const encoded = lock.encode(task);
-      if (!encoded) {
+      if (encoded === EncodeStatus.Full) {
         assertEquals(pendingBefore, 0xFFFFFFFF);
         continue;
       }
+      assertSent(encoded);
 
       const hostAfter = lock.hostBits[0] | 0;
       const toggled = (hostBefore ^ hostAfter) >>> 0;
@@ -564,7 +625,7 @@ test("xor decode keeps bit protocol consistent on unknown payload signal", () =>
       const workerBefore = lock.workerBits[0] | 0;
       const pendingBefore = (hostBefore ^ workerBefore) >>> 0;
       const task = makeValueTask(nextValue++);
-      assertEquals(lock.encode(task), true);
+      assertSent(lock.encode(task));
 
       const hostAfter = lock.hostBits[0] | 0;
       const toggled = (hostBefore ^ hostAfter) >>> 0;
