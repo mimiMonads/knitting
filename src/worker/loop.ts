@@ -4,6 +4,7 @@ import {
   MessageChannel,
   parentPort,
 } from "node:worker_threads";
+import { isSharedBufferSource } from "../common/shared-buffer-region.ts";
 import { createWorkerRxQueue } from "./rx-queue.ts";
 import {
   createSharedMemoryTransport,
@@ -277,22 +278,26 @@ const isWebWorkerScope = (): boolean => {
 const isLockBuffers = (value: unknown): value is LockBuffers => {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<LockBuffers>;
-  return candidate.headers instanceof SharedArrayBuffer &&
-    candidate.lockSector instanceof SharedArrayBuffer &&
+  return isSharedBufferSource(candidate.headers) &&
+    isSharedBufferSource(candidate.lockSector) &&
     candidate.payload instanceof SharedArrayBuffer &&
-    candidate.payloadSector instanceof SharedArrayBuffer;
+    isSharedBufferSource(candidate.payloadSector);
 };
 
 const isWorkerBootPayload = (value: unknown): value is WorkerData => {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<WorkerData>;
-  return candidate.sab instanceof SharedArrayBuffer &&
+  return isSharedBufferSource(candidate.sab) &&
     Array.isArray(candidate.list) &&
     Array.isArray(candidate.ids) &&
     Array.isArray(candidate.at) &&
     typeof candidate.thread === "number" &&
     typeof candidate.totalNumberOfThread === "number" &&
     typeof candidate.startAt === "number" &&
+    (
+      candidate.abortSignalSAB === undefined ||
+      isSharedBufferSource(candidate.abortSignalSAB)
+    ) &&
     isLockBuffers(candidate.lock) &&
     isLockBuffers(candidate.returnLock);
 };

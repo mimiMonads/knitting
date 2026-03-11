@@ -9,6 +9,7 @@ import { decodePayload, encodePayload } from "../src/memory/payloadCodec.ts";
 import { Envelope } from "../src/common/envelope.ts";
 import {
   EncodeStatus,
+  HEADER_STATIC_PAYLOAD_U32,
   getPromisePayloadStatus,
   HEADER_U32_LENGTH,
   makeTask,
@@ -25,7 +26,7 @@ import type { PayloadBufferOptions } from "../src/memory/payload-config.ts";
 const align64 = (n: number) => (n + 63) & ~63;
 const textEncoder = new TextEncoder();
 const STATIC_STRING_MAX_BYTES =
-  (TaskIndex.TotalBuff - TaskIndex.Size) * Uint32Array.BYTES_PER_ELEMENT;
+  HEADER_STATIC_PAYLOAD_U32 * Uint32Array.BYTES_PER_ELEMENT;
 const utf8Bytes = (value: string) => NodeBuffer.byteLength(value, "utf8");
 
 const makeRng = (seed: number) => {

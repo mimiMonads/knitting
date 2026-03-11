@@ -1,4 +1,5 @@
 import { task } from "../../knitting.ts";
+import type { SharedBufferSource } from "../../src/common/shared-buffer-region.ts";
 import { workerData } from "node:worker_threads";
 
 export const passthroughNumber = task<number, number>({
@@ -48,26 +49,30 @@ export const attemptProcessKill = task<void, string>({
 
 export const corruptSharedMemoryViaWorkerData = task<void, string>({
   f: async () => {
+    const toBytes = (value: SharedBufferSource) =>
+      value instanceof SharedArrayBuffer
+        ? new Uint8Array(value)
+        : new Uint8Array(value.sab, value.byteOffset, value.byteLength);
     const data = workerData as {
       lock: {
-        headers: SharedArrayBuffer;
-        lockSector: SharedArrayBuffer;
-        payloadSector: SharedArrayBuffer;
+        headers: SharedBufferSource;
+        lockSector: SharedBufferSource;
+        payloadSector: SharedBufferSource;
       };
       returnLock: {
-        headers: SharedArrayBuffer;
-        lockSector: SharedArrayBuffer;
-        payloadSector: SharedArrayBuffer;
+        headers: SharedBufferSource;
+        lockSector: SharedBufferSource;
+        payloadSector: SharedBufferSource;
       };
     };
 
     const views = [
-      new Uint8Array(data.lock.lockSector),
-      new Uint8Array(data.lock.headers),
-      new Uint8Array(data.lock.payloadSector),
-      new Uint8Array(data.returnLock.lockSector),
-      new Uint8Array(data.returnLock.headers),
-      new Uint8Array(data.returnLock.payloadSector),
+      toBytes(data.lock.lockSector),
+      toBytes(data.lock.headers),
+      toBytes(data.lock.payloadSector),
+      toBytes(data.returnLock.lockSector),
+      toBytes(data.returnLock.headers),
+      toBytes(data.returnLock.payloadSector),
     ];
 
     let i = 0;

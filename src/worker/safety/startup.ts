@@ -1,7 +1,11 @@
+import {
+  isSharedBufferSource,
+  type SharedBufferSource,
+} from "../../common/shared-buffer-region.ts";
 import type { DebugOptions, LockBuffers } from "../../types.ts";
 
 type SharedMemoryBootData = {
-  sab: SharedArrayBuffer | undefined;
+  sab: SharedBufferSource | undefined;
   lock: LockBuffers | undefined;
   returnLock: LockBuffers | undefined;
 };
@@ -14,13 +18,15 @@ type ImportedFunctionsState = {
 };
 
 const hasLockBuffers = (value: LockBuffers | undefined): value is LockBuffers =>
-  !!value?.headers && !!value?.lockSector && !!value?.payload &&
-  !!value?.payloadSector;
+  isSharedBufferSource(value?.headers) &&
+  isSharedBufferSource(value?.lockSector) &&
+  value?.payload instanceof SharedArrayBuffer &&
+  isSharedBufferSource(value?.payloadSector);
 
 export const assertWorkerSharedMemoryBootData = (
   { sab, lock, returnLock }: SharedMemoryBootData,
 ): void => {
-  if (!sab) {
+  if (!isSharedBufferSource(sab)) {
     throw new Error("worker missing transport SAB");
   }
   if (!hasLockBuffers(lock)) {

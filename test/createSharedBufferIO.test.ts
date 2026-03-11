@@ -11,6 +11,7 @@ import {
 } from "../src/memory/createSharedBufferIO.ts";
 import {
   HEADER_BYTE_LENGTH,
+  HEADER_STATIC_PAYLOAD_U32,
   HEADER_SLOT_STRIDE_U32,
   HEADER_TASK_OFFSET_IN_SLOT_U32,
   LockBound,
@@ -19,7 +20,7 @@ import {
 
 const header = 64;
 const staticWritableBytes =
-  (TaskIndex.TotalBuff - TaskIndex.Size) * Uint32Array.BYTES_PER_ELEMENT;
+  HEADER_STATIC_PAYLOAD_U32 * Uint32Array.BYTES_PER_ELEMENT;
 const textEncode = new TextEncoder();
 const slotOffsetU32 = (at: number) =>
   (at * HEADER_SLOT_STRIDE_U32) + LockBound.header;
@@ -228,6 +229,16 @@ test("static writeUtf8 preserves task header and reads back", () => {
     assertEquals(headersU32[slotHeaderOffsetU32(slot) + i], marker);
   }
   assertEquals(io.readUtf8(0, written, slot), text);
+});
+
+test("static slot layout gives the task header its own cache line", () => {
+  const payloadEndBytes = staticWritableBytes;
+  const taskHeaderOffsetBytes =
+    HEADER_TASK_OFFSET_IN_SLOT_U32 * Uint32Array.BYTES_PER_ELEMENT;
+
+  assertEquals(payloadEndBytes % 64, 0);
+  assertEquals(taskHeaderOffsetBytes % 64, 0);
+  assertEquals(taskHeaderOffsetBytes, payloadEndBytes);
 });
 
 test("static writeUtf8 returns -1 when it does not fit", () => {
@@ -464,4 +475,24 @@ test("static writeBinary accepts Buffer and Uint8Array sources on the same path"
   assertEquals(io.writeBinary(first, 0, 0), first.byteLength);
   assertEquals(io.writeBinary(second, 0, 4), second.byteLength);
   assertEquals(Array.from(io.readBytesCopy(0, 8, 0)), [11, 12, 13, 14, 21, 22, 23, 24]);
+});
+
+test("static IO honors Uint32Array byte offsets", () => {
+  const prefixBytes = 64;
+  const backing = new SharedArrayBuffer(prefixBytes + HEADER_BYTE_LENGTH);
+  const headersBuffer = new Uint32Array(
+    backing,
+    prefixBytes,
+    HEADER_BYTE_LENGTH / Uint32Array.BYTES_PER_ELEMENT,
+  );
+  const io = createSharedStaticBufferIO({ headersBuffer });
+  const text = "offset-ok";
+
+  const written = io.writeUtf8(text, 0);
+
+  assertEquals(io.readUtf8(0, written, 0), text);
+  assertEquals(
+    Array.from(new Uint8Array(backing, 0, prefixBytes)),
+    Array.from(new Uint8Array(prefixBytes)),
+  );
 });

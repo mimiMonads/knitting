@@ -1,9 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  createWasmSharedArrayBuffer,
   createSharedArrayBuffer,
   growSharedArrayBuffer,
+  HAS_SHARED_WASM_MEMORY,
   isGrowableSharedArrayBuffer,
+  isWasmSharedArrayBuffer,
   sharedArrayBufferMaxByteLength,
 } from "../src/common/runtime.ts";
 
@@ -29,4 +32,13 @@ test("growSharedArrayBuffer expands wasm-backed shared buffers", () => {
   assert.equal(grown.byteLength >= targetBytes, true);
   assert.equal(isGrowableSharedArrayBuffer(grown), true);
   assert.equal(sharedArrayBufferMaxByteLength(grown), maxBytes);
+});
+
+test("createWasmSharedArrayBuffer prefers shared WebAssembly.Memory when available", () => {
+  const byteLength = 256;
+  const sab = createWasmSharedArrayBuffer(byteLength);
+
+  assert.equal(sab instanceof SharedArrayBuffer, true);
+  assert.equal(sab.byteLength >= byteLength, true);
+  assert.equal(isWasmSharedArrayBuffer(sab), HAS_SHARED_WASM_MEMORY);
 });

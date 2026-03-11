@@ -170,35 +170,42 @@ export const createSharedDynamicBufferIO = ({
 export const createSharedStaticBufferIO = ({
   headersBuffer,
 }: {
-  headersBuffer: SharedArrayBuffer 
+  headersBuffer: SharedArrayBuffer | Uint32Array
 }) => {
+  const buffer = headersBuffer instanceof Uint32Array
+    ? headersBuffer.buffer as SharedArrayBuffer
+    : headersBuffer;
+  const baseByteOffset = headersBuffer instanceof Uint32Array
+    ? headersBuffer.byteOffset
+    : 0;
   const u32Bytes = Uint32Array.BYTES_PER_ELEMENT;
   const slotStride = HEADER_SLOT_STRIDE_U32;
   const writableBytes = HEADER_STATIC_PAYLOAD_U32 * u32Bytes;
 
-  // Static payload starts at the aligned slot base; the task header sits at the tail.
+  // Static payload starts at the aligned slot base; the task header starts on
+  // its own cache line after the writable payload region.
   const slotOffset = (at: number) =>
     (at * slotStride) + LockBound.header;
   const slotStartBytes = (at: number) =>
-    slotOffset(at) * u32Bytes;
+    baseByteOffset + (slotOffset(at) * u32Bytes);
 
   
   
   const arrU8Sec = Array.from({
     length: LockBound.slots
   },
-  (_,i) => new Uint8Array(headersBuffer, slotStartBytes(i), writableBytes))
+  (_,i) => new Uint8Array(buffer, slotStartBytes(i), writableBytes))
 
   const arrBuffSec = Array.from(
     { length: LockBound.slots },
-    (_, i) => NodeBuffer.from(headersBuffer, slotStartBytes(i), writableBytes),
+    (_, i) => NodeBuffer.from(buffer, slotStartBytes(i), writableBytes),
   );
 
   const arrF64Sec = Array.from({
     length: LockBound.slots
   },
   (_,i) => new Float64Array(
-    headersBuffer,
+    buffer,
     slotStartBytes(i),
     writableBytes >>> 3
   ))

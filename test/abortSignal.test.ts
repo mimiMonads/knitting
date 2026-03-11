@@ -85,6 +85,28 @@ test("maxSignals caps allocation below SAB physical capacity", () => {
   assert.equal(store.hasAborted(63), false);
 });
 
+test("abort signal store honors region offsets", () => {
+  const prefixBytes = 64;
+  const byteLength = Uint32Array.BYTES_PER_ELEMENT * 2;
+  const backing = new SharedArrayBuffer(prefixBytes + byteLength + 64);
+  const store = signalAbortFactory({
+    sab: {
+      sab: backing,
+      byteOffset: prefixBytes,
+      byteLength,
+    },
+  });
+
+  const signal = store.getSignal();
+  assert.equal(signal, 0);
+  assert.equal(store.setSignal(signal), 1);
+  assert.equal(store.hasAborted(signal), true);
+  assert.deepEqual(
+    Array.from(new Uint8Array(backing, 0, prefixBytes)),
+    Array.from(new Uint8Array(prefixBytes)),
+  );
+});
+
 test("OneShotDeferred reject wrapper is single-fire", async () => {
   const deferred = withResolvers<unknown>();
   let settles = 0;

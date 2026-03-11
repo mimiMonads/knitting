@@ -3,6 +3,7 @@
 import { createHostTxQueue } from "./tx-queue.ts";
 import {
   createSharedMemoryTransport,
+  TRANSPORT_SIGNAL_BYTES,
   type Sab,
 } from "../ipc/transport/shared-memory.ts";
 import { ChannelHandler, hostDispatcherLoop } from "./dispatcher.ts";
@@ -17,6 +18,7 @@ import type {
   DebugOptions,
   DispatcherSettings,
   LockBuffers,
+  SharedBufferRegion,
   WorkerResourceLimits,
   WorkerCall,
   WorkerContext,
@@ -26,6 +28,7 @@ import type {
 import { jsrIsGreatAndWorkWithoutBugs } from "../worker/loop.ts";
 import {
   createSharedArrayBuffer,
+  createWasmSharedArrayBuffer,
 } from "../common/runtime.ts";
 import { signalAbortFactory } from "../shared/abortSignal.ts";
 import { Worker } from "node:worker_threads";
@@ -116,6 +119,20 @@ const toPositiveInteger = (value: number | undefined): number | undefined => {
   const int = Math.floor(value as number);
   return int > 0 ? int : undefined;
 };
+
+const CONTROL_LAYOUT_ALIGN_BYTES = 64;
+const alignControlBytes = (value: number): number =>
+  (value + (CONTROL_LAYOUT_ALIGN_BYTES - 1)) & ~(CONTROL_LAYOUT_ALIGN_BYTES - 1);
+
+const makeSharedBufferRegion = (
+  sab: SharedArrayBuffer,
+  byteOffset: number,
+  byteLength: number,
+): SharedBufferRegion => ({
+  sab,
+  byteOffset,
+  byteLength,
+});
 
 const toNodeWorkerResourceLimits = (
   limits: WorkerResourceLimits | undefined,
@@ -214,19 +231,86 @@ export const spawnWorkerContext = ({
   const requestedAbortSignalCapacity = sanitizeBytes(abortSignalCapacity);
   const resolvedAbortSignalCapacity =
     requestedAbortSignalCapacity ?? defaultAbortSignalCapacity;
+  const abortSignalWords = Math.max(
+    1,
+    Math.ceil(resolvedAbortSignalCapacity / 32),
+  );
+  const requestedSignalBytes = sanitizeBytes(sab?.size);
+  const externalSignalSab = sab?.sharedSab;
 
-  const makeLockBuffers = (): LockBuffers => {
-    const lockSector = new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH);
+  const makeLockControlLayout = () => {
+    const signalBytes = alignControlBytes(
+      Math.max(
+        TRANSPORT_SIGNAL_BYTES,
+        requestedSignalBytes ?? TRANSPORT_SIGNAL_BYTES,
+      ),
+    );
+    const lockSectorBytes = alignControlBytes(LOCK_SECTOR_BYTE_LENGTH);
+    const headerBytes = alignControlBytes(HEADER_BYTE_LENGTH);
+    const returnLockOffset = signalBytes + lockSectorBytes + headerBytes;
+    const returnHeaderOffset = returnLockOffset + lockSectorBytes;
+    const abortOffset = returnHeaderOffset + headerBytes;
+    const abortBytes = alignControlBytes(
+      abortSignalWords * Uint32Array.BYTES_PER_ELEMENT,
+    );
+    const controlSAB = createWasmSharedArrayBuffer(
+      abortOffset + abortBytes,
+    );
+    const signals = makeSharedBufferRegion(
+      controlSAB,
+      0,
+      signalBytes,
+    );
+    const lockSector = makeSharedBufferRegion(
+      controlSAB,
+      signalBytes,
+      LOCK_SECTOR_BYTE_LENGTH,
+    );
+    const headers = makeSharedBufferRegion(
+      controlSAB,
+      signalBytes + lockSectorBytes,
+      HEADER_BYTE_LENGTH,
+    );
+    const returnLockSector = makeSharedBufferRegion(
+      controlSAB,
+      returnLockOffset,
+      LOCK_SECTOR_BYTE_LENGTH,
+    );
+    const returnHeaders = makeSharedBufferRegion(
+      controlSAB,
+      returnHeaderOffset,
+      HEADER_BYTE_LENGTH,
+    );
+    const abortSignals = makeSharedBufferRegion(
+      controlSAB,
+      abortOffset,
+      abortSignalWords * Uint32Array.BYTES_PER_ELEMENT,
+    );
     return {
-      headers: new SharedArrayBuffer(HEADER_BYTE_LENGTH),
-      lockSector,
-      payload: makePayloadBuffer(),
-      payloadSector: lockSector,
+      signals,
+      abortSignals,
+      lock: {
+        headers,
+        lockSector,
+        payloadSector: lockSector,
+      },
+      returnLock: {
+        headers: returnHeaders,
+        lockSector: returnLockSector,
+        payloadSector: returnLockSector,
+      },
     };
   };
 
-  const lockBuffers: LockBuffers = makeLockBuffers();
-  const returnLockBuffers: LockBuffers = makeLockBuffers();
+  const controlLayout = makeLockControlLayout();
+  const lockBuffers: LockBuffers = {
+    ...controlLayout.lock,
+    payload: makePayloadBuffer(),
+  };
+  const returnLockBuffers: LockBuffers = {
+    ...controlLayout.returnLock,
+    payload: makePayloadBuffer(),
+  };
 
   const lock = lock2({
     headers: lockBuffers.headers,
@@ -242,12 +326,8 @@ export const spawnWorkerContext = ({
     payloadSector: returnLockBuffers.payloadSector,
     payloadConfig: resolvedPayloadConfig,
   });
-  const abortSignalWords = Math.max(
-    1,
-    Math.ceil(resolvedAbortSignalCapacity / 32),
-  );
   const abortSignalSAB = usesAbortSignal === true
-    ? new SharedArrayBuffer(Uint32Array.BYTES_PER_ELEMENT * abortSignalWords)
+    ? controlLayout.abortSignals
     : undefined;
   const abortSignals = abortSignalSAB
     ? signalAbortFactory({
@@ -257,7 +337,12 @@ export const spawnWorkerContext = ({
     : undefined;
 
   const signals = createSharedMemoryTransport({
-    sabObject: sab,
+    sabObject: externalSignalSab == null
+      ? {
+        size: requestedSignalBytes,
+        sharedSab: controlLayout.signals,
+      }
+      : sab,
     isMain: true,
     thread,
     debug,

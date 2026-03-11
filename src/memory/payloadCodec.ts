@@ -23,6 +23,7 @@ import {
   resolvePayloadBufferOptions,
   type PayloadBufferOptions,
 } from "./payload-config.ts";
+import type { SharedBufferSource } from "../common/shared-buffer-region.ts";
 
 const memory = new ArrayBuffer(8);
 const Float64View = new Float64Array(memory);
@@ -177,7 +178,7 @@ const initStaticIO = (headersBuffer: Uint32Array) => {
   if (headersBuffer.byteLength < HEADER_BYTE_LENGTH) return null;
 
   return createSharedStaticBufferIO({
-    headersBuffer: headersBuffer.buffer as SharedArrayBuffer,
+    headersBuffer,
   });
 };
 
@@ -205,7 +206,7 @@ export const encodePayload = ({
   onPromise,
   sharedRegister,
 }: {
-  lockSector?: SharedArrayBuffer;
+  lockSector?: SharedBufferSource;
   payload?: {
     sab?: SharedArrayBuffer;
     config?: PayloadBufferOptions;
@@ -1012,7 +1013,7 @@ export const decodePayload = ({
   host,
   sharedRegister,
 }: {
-  lockSector?: SharedArrayBuffer;
+  lockSector?: SharedBufferSource;
   payload?: {
     sab?: SharedArrayBuffer;
     config?: PayloadBufferOptions;

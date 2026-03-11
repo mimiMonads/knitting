@@ -1,6 +1,13 @@
 import RingQueue from "../ipc/tools/RingQueue.ts";
 import { decodePayload, encodePayload } from "./payloadCodec.ts";
-import { createSharedArrayBuffer } from "../common/runtime.ts";
+import {
+  createSharedArrayBuffer,
+  createWasmSharedArrayBuffer,
+} from "../common/runtime.ts";
+import {
+  toSharedBufferRegion,
+  type SharedBufferSource,
+} from "../common/shared-buffer-region.ts";
 import { register } from "./regionRegistry.ts";
 import {
   resolvePayloadBufferOptions,
@@ -248,10 +255,12 @@ export const PAYLOAD_LOCK_WORKER_BITS_OFFSET_BYTES = LOCK_CACHE_LINE_BYTES * 3;
 export const PAYLOAD_LOCK_SECTOR_BYTE_LENGTH = LOCK_SECTOR_BYTES;
 
 // Header layout in Uint32 units.
-// Each slot stores aligned static payload bytes first, with the task header
-// packed into the final words of the slot.
+// Each slot stores aligned static payload bytes first, then pads to the next
+// cache line so the task header has a dedicated 64-byte line.
 export const HEADER_SLOT_STRIDE_U32 = LockBound.header + TaskIndex.TotalBuff;
-export const HEADER_STATIC_PAYLOAD_U32 = TaskIndex.TotalBuff - TaskIndex.Size;
+export const HEADER_TASK_LINE_U32 = LOCK_CACHE_LINE_BYTES / Uint32Array.BYTES_PER_ELEMENT;
+export const HEADER_STATIC_PAYLOAD_U32 =
+  TaskIndex.TotalBuff - HEADER_TASK_LINE_U32;
 export const HEADER_TASK_OFFSET_IN_SLOT_U32 = HEADER_STATIC_PAYLOAD_U32;
 export const HEADER_U32_LENGTH =
   LockBound.header + (HEADER_SLOT_STRIDE_U32 * LockBound.slots);
@@ -386,11 +395,11 @@ export const lock2 = ({
   toSentList,
   recycleList
 }: {
-  headers?: SharedArrayBuffer;
-  LockBoundSector?: SharedArrayBuffer;
+  headers?: SharedBufferSource;
+  LockBoundSector?: SharedBufferSource;
   payload?: SharedArrayBuffer;
   payloadConfig?: PayloadBufferOptions;
-  payloadSector?: SharedArrayBuffer;
+  payloadSector?: SharedBufferSource;
   toSentList?: RingQueue<Task>;
   resultList?: RingQueue<Task>;
   recycleList?: RingQueue<Task>;
@@ -400,30 +409,36 @@ export const lock2 = ({
   // Layout:
   // - hostBits starts at byte `paddingLock`
   // - workerBits starts immediately after hostBits
-  // This intentionally allows false sharing on the main queue lock.
   //
   // Important: encode() always toggles `hostBits` and decode/resolveHost always
   // toggles `workerBits`, regardless of which thread calls them. This is why
   // the "return lock" (worker->host responses) still publishes into `hostBits`.
-  const LockBoundSAB =
-    LockBoundSector ??
-    new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH);
+  const lockSectorRegion = toSharedBufferRegion(
+    LockBoundSector ?? createWasmSharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH),
+  );
+  const LockBoundSAB = lockSectorRegion.sab;
 
-  const hostBits = new Int32Array(LockBoundSAB, LOCK_HOST_BITS_OFFSET_BYTES, 1);
+  const hostBits = new Int32Array(
+    LockBoundSAB,
+    lockSectorRegion.byteOffset + LOCK_HOST_BITS_OFFSET_BYTES,
+    1,
+  );
   const workerBits = new Int32Array(
     LockBoundSAB,
-    LOCK_WORKER_BITS_OFFSET_BYTES,
+    lockSectorRegion.byteOffset + LOCK_WORKER_BITS_OFFSET_BYTES,
     1,
   );
 
   // Logical positions for each slot payload in headersBuffer.
   // (Layout unchanged from your version.)
 
-  const bufferHeadersBuffer:SharedArrayBuffer =  headers ??
-      new SharedArrayBuffer(HEADER_BYTE_LENGTH)
-
+  const headersRegion = toSharedBufferRegion(
+    headers ?? createWasmSharedArrayBuffer(HEADER_BYTE_LENGTH),
+  );
   const headersBuffer = new Uint32Array(
-  bufferHeadersBuffer
+    headersRegion.sab,
+    headersRegion.byteOffset,
+    HEADER_U32_LENGTH,
   );
 
   const resolvedPayloadConfig = resolvePayloadBufferOptions({
@@ -439,9 +454,11 @@ export const lock2 = ({
         )
         : createSharedArrayBuffer(resolvedPayloadConfig.payloadInitialBytes)
     );
-  const payloadLockSAB = payloadSector ?? LockBoundSAB;
+  const payloadLockRegion = toSharedBufferRegion(
+    payloadSector ?? lockSectorRegion,
+  );
   const payloadRegister = register({
-    lockSector: payloadLockSAB,
+    lockSector: payloadLockRegion,
   });
 
   let promiseHandler: PromisePayloadHandler | undefined;
@@ -452,7 +469,7 @@ export const lock2 = ({
       config: resolvedPayloadConfig,
     },
     headersBuffer,
-    lockSector: payloadLockSAB,
+    lockSector: payloadLockRegion,
     onPromise: (task, result) => promiseHandler?.(task, result),
     sharedRegister: payloadRegister,
   });
@@ -462,7 +479,7 @@ export const lock2 = ({
       config: resolvedPayloadConfig,
     },
     headersBuffer,
-    lockSector: payloadLockSAB,
+    lockSector: payloadLockRegion,
     sharedRegister: payloadRegister,
   });
 

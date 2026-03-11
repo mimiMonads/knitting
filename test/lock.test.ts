@@ -6,6 +6,10 @@ const assertEquals: (actual: unknown, expected: unknown) => void =
   };
 import RingQueue from "../src/ipc/tools/RingQueue.ts";
 import {
+  HAS_SHARED_WASM_MEMORY,
+  isWasmSharedArrayBuffer,
+} from "../src/common/runtime.ts";
+import {
   EncodeStatus,
   getTaskFunctionID,
   getTaskFunctionMeta,
@@ -47,6 +51,8 @@ const makeValueTask = (value: unknown) => {
 const assertSent = (actual: unknown) => {
   assertEquals(actual, EncodeStatus.Sent);
 };
+
+const align64 = (n: number) => (n + 63) & ~63;
 
 const isSingleBit = (value: number) =>
   value !== 0 && (value & (value - 1)) === 0;
@@ -110,6 +116,47 @@ test("encode/decode roundtrip string", () => {
 test("decode is no-op with no new slots", () => {
   const { lock } = makeLock();
   assertEquals(lock.decode(), false);
+});
+
+test("default lock sector uses wasm-backed shared memory when available", () => {
+  const { lock } = makeLock();
+  assertEquals(
+    isWasmSharedArrayBuffer(lock.hostBits.buffer as SharedArrayBuffer),
+    HAS_SHARED_WASM_MEMORY,
+  );
+});
+
+test("two locks can share one control strip without interfering", () => {
+  const lockSectorBytes = align64(LOCK_SECTOR_BYTE_LENGTH);
+  const headerBytes = align64(HEADER_BYTE_LENGTH);
+  const returnLockOffset = lockSectorBytes + headerBytes;
+  const returnHeaderOffset = returnLockOffset + lockSectorBytes;
+  const controlSAB = new SharedArrayBuffer(returnHeaderOffset + headerBytes);
+  const region = (byteOffset: number, byteLength: number) => ({
+    sab: controlSAB,
+    byteOffset,
+    byteLength,
+  });
+  const request = lock2({
+    LockBoundSector: region(0, LOCK_SECTOR_BYTE_LENGTH),
+    headers: region(lockSectorBytes, HEADER_BYTE_LENGTH),
+    payload: new SharedArrayBuffer(4096),
+    payloadSector: region(0, LOCK_SECTOR_BYTE_LENGTH),
+  });
+  const response = lock2({
+    LockBoundSector: region(returnLockOffset, LOCK_SECTOR_BYTE_LENGTH),
+    headers: region(returnHeaderOffset, HEADER_BYTE_LENGTH),
+    payload: new SharedArrayBuffer(4096),
+    payloadSector: region(returnLockOffset, LOCK_SECTOR_BYTE_LENGTH),
+  });
+
+  assertSent(request.encode(makeValueTask("request")));
+  assertSent(response.encode(makeValueTask("response")));
+  assert(request.decode());
+  assert(response.decode());
+
+  assertEquals(request.resolved.toArray().map((task) => task.value), ["request"]);
+  assertEquals(response.resolved.toArray().map((task) => task.value), ["response"]);
 });
 
 test("slotBuffer helpers only mutate low 5 bits", () => {
