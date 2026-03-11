@@ -9,9 +9,8 @@ import { ChannelHandler, hostDispatcherLoop } from "./dispatcher.ts";
 import {
   HEADER_BYTE_LENGTH,
   LOCK_SECTOR_BYTE_LENGTH,
-  PAYLOAD_LOCK_SECTOR_BYTE_LENGTH,
   lock2,
-  type PromisePayloadResult,
+  type Lock2,
   type Task,
 } from "../memory/lock.ts";
 import type {
@@ -216,18 +215,18 @@ export const spawnWorkerContext = ({
   const resolvedAbortSignalCapacity =
     requestedAbortSignalCapacity ?? defaultAbortSignalCapacity;
 
-  const lockBuffers: LockBuffers = {
-    lockSector: new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH),
-    payloadSector: new SharedArrayBuffer(PAYLOAD_LOCK_SECTOR_BYTE_LENGTH),
-    headers: new SharedArrayBuffer(HEADER_BYTE_LENGTH),
-    payload: makePayloadBuffer(),
+  const makeLockBuffers = (): LockBuffers => {
+    const lockSector = new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH);
+    return {
+      headers: new SharedArrayBuffer(HEADER_BYTE_LENGTH),
+      lockSector,
+      payload: makePayloadBuffer(),
+      payloadSector: lockSector,
+    };
   };
-  const returnLockBuffers: LockBuffers = {
-    lockSector: new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH),
-    payloadSector: new SharedArrayBuffer(PAYLOAD_LOCK_SECTOR_BYTE_LENGTH),
-    headers: new SharedArrayBuffer(HEADER_BYTE_LENGTH),
-    payload: makePayloadBuffer(),
-  };
+
+  const lockBuffers: LockBuffers = makeLockBuffers();
+  const returnLockBuffers: LockBuffers = makeLockBuffers();
 
   const lock = lock2({
     headers: lockBuffers.headers,
@@ -422,8 +421,8 @@ export const spawnWorkerContext = ({
     }
   };
 
-  lock.setPromiseHandler((task: Task, result: PromisePayloadResult) => {
-    queue.settlePromisePayload(task, result);
+  lock.setPromiseHandler((task: Task) => {
+    queue.settlePromisePayload(task);
     send();
   });
 
@@ -437,7 +436,7 @@ export const spawnWorkerContext = ({
     };
   };
 
-  const context: WorkerContext & { lock: ReturnType<typeof lock2> } = {
+  const context: WorkerContext & { lock: Lock2 } = {
     txIdle,
     call,
     kills: async () => {

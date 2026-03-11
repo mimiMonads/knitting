@@ -1,7 +1,12 @@
 import { Buffer as NodeBuffer } from "node:buffer";
-import { LockBound, TaskIndex } from "./lock.ts";
+import {
+  HEADER_SLOT_STRIDE_U32,
+  HEADER_STATIC_PAYLOAD_U32,
+  LockBound,
+} from "./lock.ts";
 import {
   createSharedArrayBuffer,
+  growSharedArrayBuffer,
 } from "../common/runtime.ts";
 import {
   resolvePayloadBufferOptions,
@@ -30,7 +35,7 @@ export const createSharedDynamicBufferIO = ({
     options: payloadConfig,
   });
   const canGrow = resolvedPayload.mode === "growable";
-  const lockSAB =
+  let lockSAB =
     sab ??
     (
       canGrow
@@ -56,10 +61,11 @@ export const createSharedDynamicBufferIO = ({
 
   const ensureCapacity = (neededBytes: number) => {
     if (capacityBytes() >= neededBytes) return true;
-    if (!canGrow || typeof lockSAB.grow !== "function") return false;
+    if (!canGrow) return false;
 
     try {
-      lockSAB.grow(
+      lockSAB = growSharedArrayBuffer(
+        lockSAB,
         alignUpto64(
           DYNAMIC_HEADER_BYTES + neededBytes + DYNAMIC_SAFE_PADDING_BYTES,
         ),
@@ -166,18 +172,15 @@ export const createSharedStaticBufferIO = ({
 }: {
   headersBuffer: SharedArrayBuffer 
 }) => {
-
-
   const u32Bytes = Uint32Array.BYTES_PER_ELEMENT;
-  const slotStride = LockBound.header + TaskIndex.TotalBuff;
-  const writableBytes = (TaskIndex.TotalBuff - TaskIndex.Size) * u32Bytes;
+  const slotStride = HEADER_SLOT_STRIDE_U32;
+  const writableBytes = HEADER_STATIC_PAYLOAD_U32 * u32Bytes;
 
-
-  // Offsets are in Uint32 slots to match the header layout in lock.ts.
+  // Static payload starts at the aligned slot base; the task header sits at the tail.
   const slotOffset = (at: number) =>
     (at * slotStride) + LockBound.header;
   const slotStartBytes = (at: number) =>
-    (slotOffset(at) + TaskIndex.Size) * u32Bytes;
+    slotOffset(at) * u32Bytes;
 
   
   

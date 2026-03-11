@@ -7,8 +7,12 @@ const assertEquals: (actual: unknown, expected: unknown) => void =
 import { register } from "../src/memory/regionRegistry.ts";
 import {
   LockBound,
+  LOCK_HOST_BITS_OFFSET_BYTES,
+  LOCK_SECTOR_BYTE_LENGTH,
   makeTask,
-  PAYLOAD_LOCK_SECTOR_BYTE_LENGTH,
+  PAYLOAD_LOCK_HOST_BITS_OFFSET_BYTES,
+  PAYLOAD_LOCK_WORKER_BITS_OFFSET_BYTES,
+  LOCK_WORKER_BITS_OFFSET_BYTES,
   TaskIndex,
 } from "../src/memory/lock.ts";
 
@@ -18,8 +22,22 @@ const START_MASK = (~31) >>> 0;
 
 const makeRegistry = () =>
   register({
-    lockSector: new SharedArrayBuffer(PAYLOAD_LOCK_SECTOR_BYTE_LENGTH),
+    lockSector: new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH),
   });
+
+test("registry uses separate words inside the shared lock sector", () => {
+  const lockSector = new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH);
+  const registry = register({ lockSector });
+  const mainHostBits = new Int32Array(lockSector, LOCK_HOST_BITS_OFFSET_BYTES, 1);
+  const mainWorkerBits = new Int32Array(lockSector, LOCK_WORKER_BITS_OFFSET_BYTES, 1);
+
+  assert.equal(registry.hostBits.buffer, lockSector);
+  assert.equal(registry.workerBits.buffer, lockSector);
+  assert.equal(registry.hostBits.byteOffset, PAYLOAD_LOCK_HOST_BITS_OFFSET_BYTES);
+  assert.equal(registry.workerBits.byteOffset, PAYLOAD_LOCK_WORKER_BITS_OFFSET_BYTES);
+  assert.equal(mainHostBits.byteOffset, LOCK_HOST_BITS_OFFSET_BYTES);
+  assert.equal(mainWorkerBits.byteOffset, LOCK_WORKER_BITS_OFFSET_BYTES);
+});
 
 const track64andIndex = (startAndIndex: number) => [ startAndIndex >>> 6 , startAndIndex & 31 ]
 const allocNoSync = (registry: ReturnType<typeof makeRegistry>, size: number) => {

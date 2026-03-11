@@ -10,7 +10,9 @@ import {
   createSharedStaticBufferIO,
 } from "../src/memory/createSharedBufferIO.ts";
 import {
+  HEADER_BYTE_LENGTH,
   HEADER_SLOT_STRIDE_U32,
+  HEADER_TASK_OFFSET_IN_SLOT_U32,
   LockBound,
   TaskIndex,
 } from "../src/memory/lock.ts";
@@ -21,8 +23,10 @@ const staticWritableBytes =
 const textEncode = new TextEncoder();
 const slotOffsetU32 = (at: number) =>
   (at * HEADER_SLOT_STRIDE_U32) + LockBound.header;
+const slotHeaderOffsetU32 = (at: number) =>
+  slotOffsetU32(at) + HEADER_TASK_OFFSET_IN_SLOT_U32;
 const slotPayloadOffsetBytes = (at: number) =>
-  (slotOffsetU32(at) + TaskIndex.Size) * Uint32Array.BYTES_PER_ELEMENT;
+  slotOffsetU32(at) * Uint32Array.BYTES_PER_ELEMENT;
 
 const makeRng = (seed: number) => {
   let state = seed >>> 0;
@@ -40,10 +44,7 @@ const makeSab = (payloadBytes: number) =>
     { maxByteLength: header + 1024 * 1024 },
   );
 const makeHeaders = () =>
-  new SharedArrayBuffer(
-    LockBound.padding +
-      ((LockBound.slots * TaskIndex.TotalBuff)) * LockBound.slots,
-  );
+  new SharedArrayBuffer(HEADER_BYTE_LENGTH);
 
 test("writeBinary grows and reads back", () => {
   const sab = makeSab(8);
@@ -212,13 +213,11 @@ test("static writeUtf8 preserves task header and reads back", () => {
   const headersBuffer = makeHeaders();
   const io = createSharedStaticBufferIO({ headersBuffer });
   const headersU32 = new Uint32Array(headersBuffer);
-  const slotStride = LockBound.padding + TaskIndex.TotalBuff;
-  const slotOffset = (at: number) => (at * slotStride) + LockBound.padding;
   const slot = 0;
   const marker = 0xdeadbeef;
 
   for (let i = 0; i < TaskIndex.Size; i++) {
-    headersU32[slotOffset(slot) + i] = marker;
+    headersU32[slotHeaderOffsetU32(slot) + i] = marker;
   }
 
   const text = "hello";
@@ -226,7 +225,7 @@ test("static writeUtf8 preserves task header and reads back", () => {
 
   assertEquals(written, new TextEncoder().encode(text).byteLength);
   for (let i = 0; i < TaskIndex.Size; i++) {
-    assertEquals(headersU32[slotOffset(slot) + i], marker);
+    assertEquals(headersU32[slotHeaderOffsetU32(slot) + i], marker);
   }
   assertEquals(io.readUtf8(0, written, slot), text);
 });
@@ -362,7 +361,7 @@ test("static binary writes across all slots preserve headers and raw layout", ()
 
   for (const slot of slots) {
     for (let i = 0; i < TaskIndex.Size; i++) {
-      headersU32[slotOffsetU32(slot) + i] = headerMarkers[slot]![i]!;
+      headersU32[slotHeaderOffsetU32(slot) + i] = headerMarkers[slot]![i]!;
     }
     assertEquals(io.writeBinary(expected[slot]!, slot, 0), staticWritableBytes);
   }
@@ -388,11 +387,12 @@ test("static binary writes across all slots preserve headers and raw layout", ()
       staticWritableBytes,
     );
 
+    assertEquals(slotPayloadOffsetBytes(slot) % 64, 0);
     assertEquals(Array.from(rawSlot), Array.from(expected[slot]!));
 
     for (let i = 0; i < TaskIndex.Size; i++) {
       assertEquals(
-        headersU32[slotOffsetU32(slot) + i],
+        headersU32[slotHeaderOffsetU32(slot) + i],
         headerMarkers[slot]![i]!,
       );
     }

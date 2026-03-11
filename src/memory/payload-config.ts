@@ -1,4 +1,8 @@
-import { HAS_SAB_GROW } from "../common/runtime.ts";
+import {
+  HAS_SAB_GROW,
+  isGrowableSharedArrayBuffer,
+  sharedArrayBufferMaxByteLength,
+} from "../common/runtime.ts";
 
 export const PAYLOAD_DEFAULT_MAX_BYTE_LENGTH = 64 * 1024 * 1024;
 export const PAYLOAD_DEFAULT_INITIAL_BYTES = 4 * 1024 * 1024;
@@ -27,25 +31,14 @@ const toPositiveInteger = (value: number | undefined): number | undefined => {
 
 const canGrowSharedBuffer = (sab: SharedArrayBuffer | undefined): boolean => {
   if (sab == null) return false;
-  const value = sab as SharedArrayBuffer & { grow?: unknown; growable?: unknown };
-  return HAS_SAB_GROW &&
-    typeof value.grow === "function" &&
-    value.growable === true;
+  return HAS_SAB_GROW && isGrowableSharedArrayBuffer(sab);
 };
 
 const sharedBufferMaxByteLength = (
   sab: SharedArrayBuffer | undefined,
 ): number | undefined => {
   if (sab == null) return undefined;
-
-  const max = (sab as SharedArrayBuffer & { maxByteLength?: unknown })
-    .maxByteLength;
-  if (typeof max === "number") {
-    const sanitized = toPositiveInteger(max);
-    if (sanitized !== undefined) return sanitized;
-  }
-
-  return toPositiveInteger(sab.byteLength);
+  return toPositiveInteger(sharedArrayBufferMaxByteLength(sab));
 };
 
 export const resolvePayloadBufferOptions = ({
