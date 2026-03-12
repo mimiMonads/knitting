@@ -3,15 +3,15 @@
 import { createHostTxQueue } from "./tx-queue.ts";
 import {
   createSharedMemoryTransport,
-  TRANSPORT_SIGNAL_BYTES,
   type Sab,
+  TRANSPORT_SIGNAL_BYTES,
 } from "../ipc/transport/shared-memory.ts";
 import { ChannelHandler, hostDispatcherLoop } from "./dispatcher.ts";
 import {
   HEADER_BYTE_LENGTH,
-  LOCK_SECTOR_BYTE_LENGTH,
-  lock2,
   type Lock2,
+  lock2,
+  LOCK_SECTOR_BYTE_LENGTH,
   type Task,
 } from "../memory/lock.ts";
 import type {
@@ -19,22 +19,23 @@ import type {
   DispatcherSettings,
   LockBuffers,
   SharedBufferRegion,
-  WorkerResourceLimits,
   WorkerCall,
   WorkerContext,
   WorkerData,
+  WorkerResourceLimits,
   WorkerSettings,
 } from "../types.ts";
 import { jsrIsGreatAndWorkWithoutBugs } from "../worker/loop.ts";
 import {
   createSharedArrayBuffer,
   createWasmSharedArrayBuffer,
+  IS_DENO,
 } from "../common/runtime.ts";
 import { signalAbortFactory } from "../shared/abortSignal.ts";
 import { Worker } from "node:worker_threads";
 import {
-  resolvePayloadBufferOptions,
   type PayloadBufferOptions,
+  resolvePayloadBufferOptions,
 } from "../memory/payload-config.ts";
 
 //const isBrowser = typeof window !== "undefined";
@@ -70,6 +71,9 @@ const NODE_WORKER_SAFE_EXEC_FLAGS = new Set<string>([
   "--no-warnings",
   ...NODE_PERMISSION_EXEC_FLAGS,
 ]);
+const DENO_NODE_WORKER_PROTOCOLS = new Set<string>(["file:", "data:"]);
+const DENO_NODE_WORKER_URL_ERROR_SNIPPET =
+  "support only 'file:' and 'data:' URLs";
 
 const isWorkerFatalMessage = (
   value: unknown,
@@ -77,8 +81,8 @@ const isWorkerFatalMessage = (
   !!value &&
   typeof value === "object" &&
   typeof (value as { [WORKER_FATAL_MESSAGE_KEY]?: unknown })[
-    WORKER_FATAL_MESSAGE_KEY
-  ] === "string";
+      WORKER_FATAL_MESSAGE_KEY
+    ] === "string";
 
 const isNodeWorkerSafeExecFlag = (flag: string): boolean =>
   NODE_WORKER_SAFE_EXEC_FLAGS.has(execFlagKey(flag));
@@ -86,7 +90,9 @@ const isNodeWorkerSafeExecFlag = (flag: string): boolean =>
 const isNodePermissionExecFlag = (flag: string): boolean =>
   NODE_PERMISSION_EXEC_FLAGS.has(execFlagKey(flag));
 
-const toWorkerSafeExecArgv = (flags: string[] | undefined): string[] | undefined => {
+const toWorkerSafeExecArgv = (
+  flags: string[] | undefined,
+): string[] | undefined => {
   if (!flags || flags.length === 0) return undefined;
   const filtered = flags.filter(isNodeWorkerSafeExecFlag);
   if (filtered.length === 0) return undefined;
@@ -100,11 +106,99 @@ const toWorkerSafeExecArgv = (flags: string[] | undefined): string[] | undefined
   return deduped;
 };
 
-const toWorkerCompatExecArgv = (flags: string[] | undefined): string[] | undefined => {
+const toWorkerCompatExecArgv = (
+  flags: string[] | undefined,
+): string[] | undefined => {
   const safe = toWorkerSafeExecArgv(flags);
   if (!safe || safe.length === 0) return undefined;
   const compat = safe.filter((flag) => !isNodePermissionExecFlag(flag));
   return compat.length > 0 ? compat : undefined;
+};
+
+const toWorkerUrlText = (value: string | URL): string =>
+  value instanceof URL ? value.href : String(value);
+
+const getWorkerUrlProtocol = (value: string | URL): string | undefined => {
+  if (value instanceof URL) return value.protocol;
+  try {
+    return new URL(value).protocol;
+  } catch {
+    return undefined;
+  }
+};
+
+const summarizeResolvedTaskModules = (modules: string[]): string => {
+  if (modules.length === 0) return "(none)";
+  const shown = modules.slice(0, 4).map((moduleUrl) =>
+    JSON.stringify(moduleUrl)
+  );
+  const extra = modules.length - shown.length;
+  return extra > 0
+    ? `${shown.join(", ")}, ... (+${extra} more)`
+    : shown.join(", ");
+};
+
+const buildDenoWorkerUrlErrorMessage = ({
+  workerUrl,
+  source,
+  runtimeModuleUrl,
+  taskModules,
+  originalError,
+}: {
+  workerUrl: string | URL;
+  source?: string;
+  runtimeModuleUrl: string;
+  taskModules: string[];
+  originalError?: unknown;
+}): string => {
+  const resolvedWorkerUrl = toWorkerUrlText(workerUrl);
+  const protocol = getWorkerUrlProtocol(workerUrl) ?? "(unparsed)";
+  const sourceLabel = source === undefined
+    ? "(default worker entry)"
+    : JSON.stringify(source);
+  const original = originalError === undefined
+    ? ""
+    : ` Original runtime error: ${String(originalError)}`;
+
+  return `KNT_ERROR_DENO_WORKER_UNSUPPORTED_URL: ` +
+    `Deno's node:worker_threads only accepts "file:" and "data:" worker entry URLs, ` +
+    `but Knitting resolved ${
+      JSON.stringify(resolvedWorkerUrl)
+    } (${protocol}). ` +
+    `source=${sourceLabel}. runtime import.meta.url=${
+      JSON.stringify(runtimeModuleUrl)
+    }. ` +
+    `Task modules discovered from caller resolution: ${
+      summarizeResolvedTaskModules(taskModules)
+    }. ` +
+    `If those task module URLs are already local file URLs, caller resolution is working and only the worker entry URL is wrong. ` +
+    `This is Deno-specific and usually happens when Knitting is imported from JSR/https instead of a local file path. ` +
+    `Pass createPool({ source: "file:///..." }) or use a local file-based import of Knitting.` +
+    original;
+};
+
+const assertSupportedDenoWorkerUrl = ({
+  workerUrl,
+  source,
+  runtimeModuleUrl,
+  taskModules,
+}: {
+  workerUrl: string | URL;
+  source?: string;
+  runtimeModuleUrl: string;
+  taskModules: string[];
+}): void => {
+  if (!IS_DENO) return;
+  const protocol = getWorkerUrlProtocol(workerUrl);
+  if (!protocol || DENO_NODE_WORKER_PROTOCOLS.has(protocol)) return;
+  throw new TypeError(
+    buildDenoWorkerUrlErrorMessage({
+      workerUrl,
+      source,
+      runtimeModuleUrl,
+      taskModules,
+    }),
+  );
 };
 
 type NodeWorkerResourceLimits = {
@@ -122,7 +216,8 @@ const toPositiveInteger = (value: number | undefined): number | undefined => {
 
 const CONTROL_LAYOUT_ALIGN_BYTES = 64;
 const alignControlBytes = (value: number): number =>
-  (value + (CONTROL_LAYOUT_ALIGN_BYTES - 1)) & ~(CONTROL_LAYOUT_ALIGN_BYTES - 1);
+  (value + (CONTROL_LAYOUT_ALIGN_BYTES - 1)) &
+  ~(CONTROL_LAYOUT_ALIGN_BYTES - 1);
 
 const makeSharedBufferRegion = (
   sab: SharedArrayBuffer,
@@ -140,11 +235,15 @@ const toNodeWorkerResourceLimits = (
   if (!limits) return undefined;
   const out: NodeWorkerResourceLimits = {
     maxOldGenerationSizeMb: toPositiveInteger(limits.maxOldGenerationSizeMb),
-    maxYoungGenerationSizeMb: toPositiveInteger(limits.maxYoungGenerationSizeMb),
+    maxYoungGenerationSizeMb: toPositiveInteger(
+      limits.maxYoungGenerationSizeMb,
+    ),
     codeRangeSizeMb: toPositiveInteger(limits.codeRangeSizeMb),
     stackSizeMb: toPositiveInteger(limits.stackSizeMb),
   };
-  return Object.values(out).some((value) => value !== undefined) ? out : undefined;
+  return Object.values(out).some((value) => value !== undefined)
+    ? out
+    : undefined;
 };
 
 const terminateWorkerQuietly = (worker: SpawnedWorker): void => {
@@ -214,10 +313,10 @@ export const spawnWorkerContext = ({
       ...payload,
       mode: payload?.mode ?? bufferMode,
       maxPayloadBytes: payload?.maxPayloadBytes ?? maxPayloadBytes,
-      payloadInitialBytes:
-        payload?.payloadInitialBytes ?? sanitizeBytes(payloadInitialBytes),
-      payloadMaxByteLength:
-        payload?.payloadMaxByteLength ?? sanitizeBytes(payloadMaxBytes),
+      payloadInitialBytes: payload?.payloadInitialBytes ??
+        sanitizeBytes(payloadInitialBytes),
+      payloadMaxByteLength: payload?.payloadMaxByteLength ??
+        sanitizeBytes(payloadMaxBytes),
     },
   });
   const makePayloadBuffer = () =>
@@ -229,8 +328,8 @@ export const spawnWorkerContext = ({
       : createSharedArrayBuffer(resolvedPayloadConfig.payloadInitialBytes);
   const defaultAbortSignalCapacity = 258;
   const requestedAbortSignalCapacity = sanitizeBytes(abortSignalCapacity);
-  const resolvedAbortSignalCapacity =
-    requestedAbortSignalCapacity ?? defaultAbortSignalCapacity;
+  const resolvedAbortSignalCapacity = requestedAbortSignalCapacity ??
+    defaultAbortSignalCapacity;
   const abortSignalWords = Math.max(
     1,
     Math.ceil(resolvedAbortSignalCapacity / 32),
@@ -385,7 +484,9 @@ export const spawnWorkerContext = ({
   const workerDataPayload = {
     sab: signals.sab,
     abortSignalSAB,
-    abortSignalMax: usesAbortSignal === true ? resolvedAbortSignalCapacity : undefined,
+    abortSignalMax: usesAbortSignal === true
+      ? resolvedAbortSignalCapacity
+      : undefined,
     list,
     ids,
     at,
@@ -419,9 +520,26 @@ export const spawnWorkerContext = ({
   const withExecArgv = workerExecArgv && workerExecArgv.length > 0
     ? { ...baseNodeWorkerOptions, execArgv: workerExecArgv }
     : baseNodeWorkerOptions;
+  assertSupportedDenoWorkerUrl({
+    workerUrl,
+    source,
+    runtimeModuleUrl: tsFileUrl.href,
+    taskModules: list,
+  });
   try {
     worker = new poliWorker(workerUrl, withExecArgv) as Worker;
   } catch (error) {
+    if (IS_DENO && String(error).includes(DENO_NODE_WORKER_URL_ERROR_SNIPPET)) {
+      throw new TypeError(
+        buildDenoWorkerUrlErrorMessage({
+          workerUrl,
+          source,
+          runtimeModuleUrl: tsFileUrl.href,
+          taskModules: list,
+          originalError: error,
+        }),
+      );
+    }
     if ((error as { code?: string })?.code === "ERR_WORKER_INVALID_EXEC_ARGV") {
       const fallbackExecArgv = toWorkerSafeExecArgv(withExecArgv.execArgv);
       if (fallbackExecArgv && fallbackExecArgv.length > 0) {
@@ -432,7 +550,8 @@ export const spawnWorkerContext = ({
           ) as Worker;
         } catch (fallbackError) {
           if (
-            (fallbackError as { code?: string })?.code === "ERR_WORKER_INVALID_EXEC_ARGV"
+            (fallbackError as { code?: string })?.code ===
+              "ERR_WORKER_INVALID_EXEC_ARGV"
           ) {
             const compatExecArgv = toWorkerCompatExecArgv(fallbackExecArgv);
             if (compatExecArgv && compatExecArgv.length > 0) {
@@ -442,10 +561,16 @@ export const spawnWorkerContext = ({
                   { ...baseNodeWorkerOptions, execArgv: compatExecArgv },
                 ) as Worker;
               } catch {
-                worker = new poliWorker(workerUrl, baseNodeWorkerOptions) as Worker;
+                worker = new poliWorker(
+                  workerUrl,
+                  baseNodeWorkerOptions,
+                ) as Worker;
               }
             } else {
-              worker = new poliWorker(workerUrl, baseNodeWorkerOptions) as Worker;
+              worker = new poliWorker(
+                workerUrl,
+                baseNodeWorkerOptions,
+              ) as Worker;
             }
           } else {
             throw fallbackError;
@@ -494,10 +619,9 @@ export const spawnWorkerContext = ({
   const send = () => {
     if (check.isRunning === true) return;
     check.isRunning = true;
-    Promise.resolve().then(check)
+    Promise.resolve().then(check);
     // Macro lane: dispatcher check is driven by the channel callback.
     // channelHandler.notify();
-
 
     // Use opView as a wake counter in lock2 mode to avoid lost wakeups.
     if (a_load(signalBox.rxStatus, 0) === 0) {

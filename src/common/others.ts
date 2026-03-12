@@ -81,19 +81,31 @@ const isInternalFrame = (frame: StackFrameInfo): boolean =>
   isInternalCallerFrame(frame.file) ||
   isInternalCallerFunction(frame.functionName, frame.methodName);
 
+const summarizeFrames = (frames: StackFrameInfo[]): string => {
+  if (frames.length === 0) return "(no stack frames)";
+  return frames
+    .slice(0, 6)
+    .map((frame, index) => {
+      const label = frame.functionName ?? frame.methodName ?? "<anonymous>";
+      return `#${index} ${label} @ ${frame.file}`;
+    })
+    .join(" | ");
+};
+
 const resolveCallerHref = (offset: number): string => {
   const frames = collectStackFrames();
   const direct = frames[offset];
   const caller = (
-    direct && !isInternalFrame(direct)
-      ? direct.file
-      : undefined
+    direct && !isInternalFrame(direct) ? direct.file : undefined
   ) ??
     frames.find((frame) => !isInternalFrame(frame))?.file ??
     frames.find((frame) => !isRuntimeInternalFrame(frame.file))?.file;
 
   if (!caller) {
-    throw new Error("Unable to determine caller file.");
+    throw new Error(
+      `KNT_ERROR_CALLER_RESOLUTION: Unable to determine caller file. ` +
+        `offset=${offset}. frames=${summarizeFrames(frames)}`,
+    );
   }
 
   return toModuleUrl(caller);
