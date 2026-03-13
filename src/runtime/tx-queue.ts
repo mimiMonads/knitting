@@ -90,6 +90,7 @@ export function createHostTxQueue({
 
   const resolveReturn = returnLock.resolveHost({
     queue,
+    shouldSettle: (task) => task.reject !== PLACE_HOLDER,
     onResolved: (task) => {
       inUsed = (inUsed - 1) | 0;
       task.resolve = PLACE_HOLDER;

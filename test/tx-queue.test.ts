@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  HEADER_BYTE_LENGTH,
+  LOCK_SECTOR_BYTE_LENGTH,
+  lock2,
+  makeTask,
+  PAYLOAD_LOCK_SECTOR_BYTE_LENGTH,
   TASK_SLOT_META_VALUE_MASK,
   getTaskSlotMeta,
   type Lock2,
   type Task,
+  TaskIndex,
 } from "../src/memory/lock.ts";
 import { createHostTxQueue } from "../src/runtime/tx-queue.ts";
 
@@ -100,4 +106,69 @@ test("flushToWorker moves a backlogged task into deferred state", () => {
   assert.equal(tx.flushToWorker(), false);
   assert.equal(tx.hasPendingFrames(), false);
   assert.equal(tx.txIdle(), true);
+});
+
+test("late return frames are acked without settling inactive slots", async () => {
+  const requestLock = {
+    publish: () => true,
+    flushPending: () => false,
+    hasPendingFrames: () => false,
+    getPendingFrameCount: () => 0,
+    getPendingPromiseCount: () => 0,
+    resetPendingState: () => {},
+  } as unknown as Lock2;
+
+  const lockSector = new SharedArrayBuffer(
+    LOCK_SECTOR_BYTE_LENGTH,
+  );
+  const headers = new SharedArrayBuffer(HEADER_BYTE_LENGTH);
+  const payloadSector = new SharedArrayBuffer(
+    PAYLOAD_LOCK_SECTOR_BYTE_LENGTH,
+  );
+  const payload = new SharedArrayBuffer(1024 * 64);
+
+  const returnProducer = lock2({
+    headers,
+    LockBoundSector: lockSector,
+    payload,
+    payloadSector,
+  });
+  const returnConsumer = lock2({
+    headers,
+    LockBoundSector: lockSector,
+    payload,
+    payloadSector,
+  });
+
+  const tx = createHostTxQueue({
+    lock: requestLock,
+    returnLock: returnConsumer,
+    max: 1,
+  });
+
+  const firstCall = tx.enqueue(0);
+  const firstPromise = firstCall("first");
+
+  const firstResponse = makeTask();
+  firstResponse[TaskIndex.ID] = 0;
+  firstResponse.value = "first-result";
+  assert.equal(returnProducer.encode(firstResponse), true);
+  assert.equal(tx.completeFrame(), 1);
+  assert.equal(await firstPromise, "first-result");
+
+  const lateResponse = makeTask();
+  lateResponse[TaskIndex.ID] = 0;
+  lateResponse.value = "late-result";
+  assert.equal(returnProducer.encode(lateResponse), true);
+  assert.equal(tx.completeFrame(), 1);
+
+  const secondCall = tx.enqueue(0);
+  const secondPromise = secondCall("second");
+
+  const secondResponse = makeTask();
+  secondResponse[TaskIndex.ID] = 0;
+  secondResponse.value = "second-result";
+  assert.equal(returnProducer.encode(secondResponse), true);
+  assert.equal(tx.completeFrame(), 1);
+  assert.equal(await secondPromise, "second-result");
 });

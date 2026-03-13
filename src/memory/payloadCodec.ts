@@ -489,6 +489,7 @@ export const encodePayload = ({
   ) => {
     const header = envelope.header;
     const payload = envelope.payload;
+    const headerIsString = typeof header === "string";
     if (!(payload instanceof ArrayBuffer)) {
       return encoderError({
         task,
@@ -507,16 +508,20 @@ export const encodePayload = ({
     }
 
     let headerText: string | undefined;
-    try {
-      headerText = stringifyJSON(header);
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      return encoderError({
-        task,
-        type: ErrorKnitting.Json,
-        onPromise,
-        detail,
-      });
+    if (headerIsString) {
+      headerText = header;
+    } else {
+      try {
+        headerText = stringifyJSON(header);
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        return encoderError({
+          task,
+          type: ErrorKnitting.Json,
+          onPromise,
+          detail,
+        });
+      }
     }
     if (typeof headerText !== "string") {
       return encoderError({
@@ -541,7 +546,10 @@ export const encodePayload = ({
         )
       ) return false;
       const reservedSlot = reserveDynamicObject(task, payloadReserveBytes);
-      task[TaskIndex.Type] = PayloadBuffer.EnvelopeStaticHeader;
+      if (reservedSlot === -1) return false;
+      task[TaskIndex.Type] = headerIsString
+        ? PayloadBuffer.EnvelopeStaticHeaderString
+        : PayloadBuffer.EnvelopeStaticHeader;
       task[TaskIndex.PayloadLen] = staticHeaderWritten;
       task[TaskIndex.End] = payloadLength;
       if (payloadLength > 0) {
@@ -562,14 +570,17 @@ export const encodePayload = ({
       task,
       headerText,
       payloadLength,
-      "EnvelopeDynamicHeader",
+      headerIsString ? "EnvelopeDynamicHeaderString" : "EnvelopeDynamicHeader",
     );
     if (headerReserveBytes < 0) return false;
-    task[TaskIndex.Type] = PayloadBuffer.EnvelopeDynamicHeader;
+    task[TaskIndex.Type] = headerIsString
+      ? PayloadBuffer.EnvelopeDynamicHeaderString
+      : PayloadBuffer.EnvelopeDynamicHeader;
     const reservedSlot = reserveDynamicObject(
       task,
       headerReserveBytes + payloadLength,
     );
+    if (reservedSlot === -1) return false;
     const baseStart = task[TaskIndex.Start];
     const writtenHeaderBytes = writeDynamicUtf8(
       headerText,
@@ -1031,10 +1042,17 @@ export const decodePayload = ({
         readStaticUtf8(0, task[TaskIndex.PayloadLen], slotIndex)
       )
     return
-    case PayloadBuffer.EnvelopeStaticHeader: {
-      const header = parseJSON(
-        readStaticUtf8(0, task[TaskIndex.PayloadLen], slotIndex),
+    case PayloadBuffer.EnvelopeStaticHeader:
+    case PayloadBuffer.EnvelopeStaticHeaderString: {
+      const rawHeader = readStaticUtf8(
+        0,
+        task[TaskIndex.PayloadLen],
+        slotIndex,
       );
+      const header =
+        task[TaskIndex.Type] === PayloadBuffer.EnvelopeStaticHeaderString
+          ? rawHeader
+          : parseJSON(rawHeader);
       const payloadLength = task[TaskIndex.End];
       const payload = payloadLength > 0
         ? readDynamicArrayBufferCopy(
@@ -1046,13 +1064,16 @@ export const decodePayload = ({
       freeTaskSlot(task);
     return
     }
-    case PayloadBuffer.EnvelopeDynamicHeader: {
+    case PayloadBuffer.EnvelopeDynamicHeader:
+    case PayloadBuffer.EnvelopeDynamicHeaderString: {
       const headerStart = task[TaskIndex.Start];
       const payloadStart = headerStart + task[TaskIndex.PayloadLen];
       const payloadLength = task[TaskIndex.End];
-      const header = parseJSON(
-        readDynamicUtf8(headerStart, payloadStart),
-      );
+      const rawHeader = readDynamicUtf8(headerStart, payloadStart);
+      const header =
+        task[TaskIndex.Type] === PayloadBuffer.EnvelopeDynamicHeaderString
+          ? rawHeader
+          : parseJSON(rawHeader);
       const payload = payloadLength > 0
         ? readDynamicArrayBufferCopy(
           payloadStart,

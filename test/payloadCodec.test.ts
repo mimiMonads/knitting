@@ -511,6 +511,46 @@ test("envelope switches to dynamic header when static header limit is exceeded",
   assertEquals(registry.workerBits[0] & 1, 1);
 });
 
+test("string envelope header uses static string envelope tag", () => {
+  const { encode, decode } = makeCodec();
+  const task = makeTask();
+  task.value = new Envelope("ok", new Uint8Array([5]).buffer);
+
+  assertEquals(encode(task, 0), true);
+  assertEquals(task[TaskIndex.Type], PayloadBuffer.EnvelopeStaticHeaderString);
+
+  decode(task, 0);
+  assertEquals(task.value instanceof Envelope, true);
+  const out = task.value as Envelope;
+  assertEquals(out.header, "ok");
+  assertEquals(Array.from(new Uint8Array(out.payload)), [5]);
+});
+
+test("string envelope header uses dynamic string envelope tag when needed", () => {
+  const { encode, decode, registry } = makeCodec();
+  const task = makeTask();
+  const header = "😀".repeat((STATIC_STRING_MAX_BYTES >>> 2) + 1);
+  const headerBytes = utf8Bytes(header);
+  const payload = new Uint8Array([7, 8, 9]).buffer;
+
+  assertEquals(headerBytes > STATIC_STRING_MAX_BYTES, true);
+
+  task.value = new Envelope(header, payload);
+
+  assertEquals(encode(task, 0), true);
+  assertEquals(task[TaskIndex.Type], PayloadBuffer.EnvelopeDynamicHeaderString);
+  assertEquals(task[TaskIndex.PayloadLen], headerBytes);
+  assertEquals(task[TaskIndex.End], 3);
+  assertEquals(task[TaskIndex.slotBuffer], 0);
+
+  decode(task, 0);
+  assertEquals(task.value instanceof Envelope, true);
+  const out = task.value as Envelope;
+  assertEquals(out.header, header);
+  assertEquals(Array.from(new Uint8Array(out.payload)), [7, 8, 9]);
+  assertEquals(registry.workerBits[0] & 1, 1);
+});
+
 test("envelope subclass is accepted by codec via instanceof", () => {
   class SignedEnvelope extends Envelope {
     readonly signature = "knt";
@@ -521,7 +561,7 @@ test("envelope subclass is accepted by codec via instanceof", () => {
   task.value = new SignedEnvelope("ok", new Uint8Array([5]).buffer);
 
   assertEquals(encode(task, 0), true);
-  assertEquals(task[TaskIndex.Type], PayloadBuffer.EnvelopeStaticHeader);
+  assertEquals(task[TaskIndex.Type], PayloadBuffer.EnvelopeStaticHeaderString);
 
   decode(task, 0);
   assertEquals(task.value instanceof Envelope, true);

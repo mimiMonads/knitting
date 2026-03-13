@@ -57,6 +57,8 @@ export enum PayloadBuffer {
   StaticBuffer = 39,
   EnvelopeStaticHeader = 40,
   EnvelopeDynamicHeader = 41,
+  EnvelopeStaticHeaderString = 42,
+  EnvelopeDynamicHeaderString = 43,
 }
 
 
@@ -242,6 +244,12 @@ export const makeTask = () => {
   const task = createTaskShell();
   task[TaskIndex.ID] = INDEX_ID++;
   return task;
+};
+
+type ResolveHostOptions = {
+  queue: Task[];
+  onResolved?: (task: Task) => void;
+  shouldSettle?: (task: Task) => boolean;
 };
 
 const fillTaskFrom = (task: Task, array: ArrayLike<number>, at: number) => {
@@ -578,13 +586,12 @@ export const lock2 = ({
   const resolveHost = ({
     queue,
     onResolved,
-  }: {
-    queue: Task[],
-    onResolved?: (task: Task) => void,
-  }) => {
+    shouldSettle,
+  }: ResolveHostOptions) => {
 
     const getTask = takeTask({ queue });
     const HAS_RESOLVE = onResolved ? true : false;
+    const HAS_SHOULD_SETTLE = shouldSettle ? true : false;
     let lastResolved = 32;
 
 
@@ -604,8 +611,11 @@ export const lock2 = ({
         decodeTask(task, idx);
 
         consumedBits = (consumedBits ^ selectedBit) | 0;
-        settleTask(task);
-        if (HAS_RESOLVE) {
+        const CAN_SETTLE = !HAS_SHOULD_SETTLE || shouldSettle!(task);
+        if (CAN_SETTLE) {
+          settleTask(task);
+        }
+        if (CAN_SETTLE && HAS_RESOLVE) {
           onResolved!(task);
         }
 
@@ -631,8 +641,11 @@ export const lock2 = ({
         decodeTask(task, idx);
 
         consumedBits = (consumedBits ^ selectedBit) | 0;
-        settleTask(task);
-        if (HAS_RESOLVE) {
+        const CAN_SETTLE = !HAS_SHOULD_SETTLE || shouldSettle!(task);
+        if (CAN_SETTLE) {
+          settleTask(task);
+        }
+        if (CAN_SETTLE && HAS_RESOLVE) {
           onResolved!(task);
         }
 

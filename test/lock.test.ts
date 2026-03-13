@@ -330,6 +330,61 @@ test("resolveHost sees producer toggles in hostBits across instances", () => {
   assertEquals(resolveHost(), 0);
 });
 
+test("resolveHost can skip inactive queue slots while still acking frames", () => {
+  const lockSector = new SharedArrayBuffer(
+    LOCK_SECTOR_BYTE_LENGTH,
+  );
+  const headers = new SharedArrayBuffer(HEADER_BYTE_LENGTH);
+  const payloadSector = new SharedArrayBuffer(
+    PAYLOAD_LOCK_SECTOR_BYTE_LENGTH,
+  );
+  const payload = new SharedArrayBuffer(1024 * 64);
+
+  const producer = lock2({
+    headers,
+    LockBoundSector: lockSector,
+    payload,
+    payloadSector,
+  });
+  const consumer = lock2({
+    headers,
+    LockBoundSector: lockSector,
+    payload,
+    payloadSector,
+  });
+
+  let settled = 0;
+  let resolved = 0;
+  const queue = [makeTask()];
+  queue[0].resolve = () => {
+    settled++;
+    throw new Error("UNREACHABLE FROM PLACE HOLDER (main)");
+  };
+  queue[0].reject = () => {
+    settled++;
+    throw new Error("UNREACHABLE FROM PLACE HOLDER (main)");
+  };
+
+  const response = makeTask();
+  response[TaskIndex.ID] = 0;
+  response.value = "late";
+  assertEquals(producer.encode(response), true);
+
+  const resolveHost = consumer.resolveHost({
+    queue,
+    shouldSettle: () => false,
+    onResolved: () => {
+      resolved++;
+    },
+  });
+
+  assertEquals(resolveHost(), 1);
+  assertEquals(settled, 0);
+  assertEquals(resolved, 0);
+  assertEquals((consumer.hostBits[0] ^ consumer.workerBits[0]) >>> 0, 0);
+  assertEquals(resolveHost(), 0);
+});
+
 test("resolveHost ignores workerBits changes without producer toggles", () => {
   const lockSector = new SharedArrayBuffer(
     LOCK_SECTOR_BYTE_LENGTH,
