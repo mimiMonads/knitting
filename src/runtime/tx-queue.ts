@@ -85,7 +85,7 @@ export function createHostTxQueue({
   const freePush = (id: number) => freeSockets.push(id);
   const freePop = () => freeSockets.pop();
   const queuePush = (task: QueueTask) => queue.push(task);
-  const { encode } = lock;
+  const { encode, encodeManyFrom } = lock;
   let toBeSentCount = 0 | 0;
   let inUsed = 0 | 0;
   let pendingPromises = 0 | 0;
@@ -150,37 +150,24 @@ export function createHostTxQueue({
 
   const flushToWorker = () => {
     if (toBeSentCount === 0) return false;
-    let wrote = false;
-    let remaining = toBeSentCount | 0;
-
-    while (remaining > 0) {
-      const task = toBeSentShift();
-      if (!task) break;
-
-      remaining = (remaining - 1) | 0;
-      toBeSentCount = (toBeSentCount - 1) | 0;
-
-      const status = encode(task);
-      if (status > 0) {
-        wrote = true;
-        continue;
-      }
-
-      if (status < 0) {
-        toBeSentUnshift(task);
-        toBeSentCount = (toBeSentCount + 1) | 0;
-        break;
-      }
-
-      markPendingPromise();
-      continue;
-    }
-
-    return wrote;
+    const encoded = encodeManyFrom(toBeSent) | 0;
+    if (encoded === 0) return false;
+    toBeSentCount = (toBeSentCount - encoded) | 0;
+    return true;
   };
 
   const enqueueKnown = (task: QueueTask) => {
-    return handleEncodeStatus(task, encode(task));
+
+    
+    const status = encode(task);
+    if (status > 0) return true;
+    if (status < 0) {
+      toBeSentPush(task);
+      toBeSentCount = (toBeSentCount + 1) | 0;
+      return false;
+    }
+    pendingPromises = (pendingPromises + 1) | 0;
+    return false;
   };
 
   return {

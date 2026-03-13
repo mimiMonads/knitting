@@ -407,7 +407,6 @@ export const encodePayload = ({
       return false;
     }
     const reservedSlot = reserveDynamicObject(task, bytes);
-    if (reservedSlot === -1) return false;
     const written = writeDynamicBinary(bytesView, task[TaskIndex.Start]);
     if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
     task[TaskIndex.PayloadLen] = written;
@@ -640,6 +639,13 @@ export const encodePayload = ({
   // because the outer factory is too large for TurboFan's bytecode limit.
   const encodeDispatch = (task: Task, slotIndex: number): EncodeStatus => {
     const args = task.value;
+    
+    // Fast path for null
+    if (args === null) {
+      task[TaskIndex.Type] = PayloadSignal.Null;
+      return EncodeStatus.Sent;
+    }
+    
     switch (typeof args) {
       case "bigint":
         if (args < BIGINT64_MIN || args > BIGINT64_MAX) {
@@ -708,10 +714,6 @@ export const encodePayload = ({
         task[TaskIndex.End] = Uint32View[1];
         return EncodeStatus.Sent;
       case "object":
-        if (args === null) {
-          task[TaskIndex.Type] = PayloadSignal.Null;
-          return EncodeStatus.Sent;
-        }
         objectDynamicSlot = -1;
 
         try {
@@ -771,7 +773,7 @@ export const encodePayload = ({
                 PayloadBuffer.StaticBuffer,
               )
               ? EncodeStatus.Sent
-              : encodeFailureStatus(task);
+              : EncodeStatus.Full;
           }
 
           switch ((objectValue as { constructor?: unknown }).constructor) {
@@ -784,7 +786,7 @@ export const encodePayload = ({
                   PayloadBuffer.StaticBinary,
                 )
                 ? EncodeStatus.Sent
-                : encodeFailureStatus(task);
+                : EncodeStatus.Full;
             case ArrayBuffer:
               return encodeObjectArrayBuffer(
                   task,
