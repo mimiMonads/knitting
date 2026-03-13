@@ -1,7 +1,5 @@
-import RingQueue from "../ipc/tools/RingQueue.ts";
 import {
   makeTask,
-  PromisePayloadMarker,
   type PromisePayloadResult,
   TaskIndex,
   type Task,
@@ -75,46 +73,34 @@ export function createHostTxQueue({
 
 
   // Local count
-  const toBeSent = new RingQueue<QueueTask>();
-  const toBeSentPush = (task: QueueTask) => toBeSent.push(task);
-  const toBeSentShift = () => toBeSent.shiftNoClear();
   const freePush = (id: number) => freeSockets.push(id);
   const freePop = () => freeSockets.pop();
   const queuePush = (task: QueueTask) => queue.push(task);
-  const { encode, encodeManyFrom } = lock;
-  let toBeSentCount = 0 | 0;
+  const {
+    publish,
+    flushPending,
+    hasPendingFrames,
+    getPendingFrameCount,
+    getPendingPromiseCount,
+    resetPendingState,
+  } = lock;
   let inUsed = 0 | 0;
-  let pendingPromises = 0 | 0;
   const resetSignal = abortSignals?.resetSignal;
   const nowTime = now ?? p_now;
-
-
-  const isPromisePending = (task: QueueTask) =>
-    (task as QueueTask & { [PromisePayloadMarker]?: true })[
-      PromisePayloadMarker
-    ] === true;
 
   const resolveReturn = returnLock.resolveHost({
     queue,
     onResolved: (task) => {
       inUsed = (inUsed - 1) | 0;
+      task.resolve = PLACE_HOLDER;
+      task.reject = PLACE_HOLDER;
       freePush(task[TaskIndex.ID]);
     },
   });
 
   // Helpers
-  const hasPendingFrames = () => toBeSentCount > 0;
   const txIdle = () =>
-    toBeSentCount === 0 && inUsed === pendingPromises;
-
-  const handleEncodeFailure = (task: QueueTask) => {
-    if (isPromisePending(task)) {
-      pendingPromises = (pendingPromises + 1) | 0;
-      return;
-    }
-    toBeSentPush(task);
-    toBeSentCount = (toBeSentCount + 1) | 0;
-  };
+    getPendingFrameCount() === 0 && inUsed === getPendingPromiseCount();
 
   const rejectAll = (reason: string) => {
     for (let index = 0; index < queue.length; index++) {
@@ -131,28 +117,14 @@ export function createHostTxQueue({
       } 
     }
 
-    while (toBeSent.size > 0) {
-      toBeSentShift();
-    }
-    toBeSentCount = 0 | 0;
+    resetPendingState();
     inUsed = 0 | 0;
-    pendingPromises = 0 | 0;
   };
 
-  const flushToWorker = () => {
-    if (toBeSentCount === 0) return false;
-    const encoded = encodeManyFrom(toBeSent) | 0;
-    if (encoded === 0) return false;
-    toBeSentCount = (toBeSentCount - encoded) | 0;
-    return true;
-  };
+  const flushToWorker = () => flushPending();
 
   const enqueueKnown = (task: QueueTask) => {
-    if (!encode(task)) {
-      handleEncodeFailure(task);
-      return false;
-    }
-    return true;
+    return publish(task);
   };
 
   return {
@@ -219,9 +191,7 @@ export function createHostTxQueue({
             ) >>> 0;
         }
 
-        if (!encode(slot)) {
-          handleEncodeFailure(slot);
-        }
+        void publish(slot);
 
         inUsed = (inUsed + 1) | 0;
 
@@ -235,12 +205,13 @@ export function createHostTxQueue({
     enqueueKnown,
     settlePromisePayload: (task: QueueTask, result: PromisePayloadResult) => {
       if (task.reject === PLACE_HOLDER) return false;
-      if (pendingPromises > 0) pendingPromises = (pendingPromises - 1) | 0;
       if (result.status === "rejected") {
         try {
           task.reject(result.reason);
         } catch {
         }
+        task.resolve = PLACE_HOLDER;
+        task.reject = PLACE_HOLDER;
         inUsed = (inUsed - 1) | 0;
         freePush(task[TaskIndex.ID]);
         return false;

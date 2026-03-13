@@ -1,6 +1,12 @@
 import { isMainThread } from "node:worker_threads";
-import { TaskFlag, TaskIndex, type PromisePayloadHandler, type Task } from "./memory/lock.ts";
-const promisePayloadMarker = Symbol.for("knitting.promise.payload");
+import {
+  beginPromisePayload,
+  finishPromisePayload,
+  TaskFlag,
+  TaskIndex,
+  type PromisePayloadHandler,
+  type Task,
+} from "./memory/lock.ts";
 
 export enum ErrorKnitting {
   Function = 0,
@@ -60,12 +66,10 @@ export const encoderError = ({
     throw new TypeError(reason);
   }
 
-  const markedTask = task as Task & { [promisePayloadMarker]?: boolean };
-  if (markedTask[promisePayloadMarker] === true) return false;
-  markedTask[promisePayloadMarker] = true;
+  if (!beginPromisePayload(task)) return false;
 
   queueMicrotask(() => {
-    markedTask[promisePayloadMarker] = false;
+    finishPromisePayload(task);
     task.value = reason;
     onPromise(task, { status: "rejected", reason });
   });

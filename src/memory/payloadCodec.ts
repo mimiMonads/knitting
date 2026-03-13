@@ -1,9 +1,10 @@
 import {
+  beginPromisePayload,
+  finishPromisePayload,
   getTaskSlotIndex,
   LockBound,
   PayloadBuffer,
   PayloadSignal,
-  PromisePayloadMarker,
   TASK_SLOT_INDEX_MASK,
   type PromisePayloadHandler,
   type Task,
@@ -597,19 +598,15 @@ export const encodePayload = ({
     return true;
   };
   const encodeObjectPromise = (task: Task, promise: Promise<unknown>) => {
-    const markedTask = task as Task & {
-      [PromisePayloadMarker]?: boolean;
-    };
-    if (markedTask[PromisePayloadMarker] !== true) {
-      markedTask[PromisePayloadMarker] = true;
+    if (beginPromisePayload(task)) {
       promise.then(
         (value) => {
-          markedTask[PromisePayloadMarker] = false;
+          finishPromisePayload(task);
           task.value = value;
           onPromise?.(task, { status: "fulfilled", value });
         },
         (reason) => {
-          markedTask[PromisePayloadMarker] = false;
+          finishPromisePayload(task);
           task.value = reason;
           onPromise?.(task, { status: "rejected", reason });
         },

@@ -185,6 +185,41 @@ test("encodeAll leaves remaining task when full", () => {
   assertEquals(toBeSent.peek(), tasks[tasks.length - 1]);
 });
 
+test("publish backlogs when full and exposes pending frame count", () => {
+  const { lock } = makeLock();
+
+  for (let i = 0; i < LockBound.slots; i++) {
+    assert(lock.publish(makeValueTask(i)));
+  }
+
+  assertEquals(lock.publish(makeValueTask(999)), false);
+  assertEquals(lock.hasPendingFrames(), true);
+  assertEquals(lock.getPendingFrameCount(), 1);
+
+  assert(lock.decode());
+  assertEquals(lock.flushPending(), true);
+  assertEquals(lock.hasPendingFrames(), false);
+  assertEquals(lock.getPendingFrameCount(), 0);
+});
+
+test("publish tracks deferred promise count until settlement", async () => {
+  const { lock } = makeLock();
+  let settled = false;
+
+  lock.setPromiseHandler((_task, result) => {
+    settled = result.status === "fulfilled" && result.value === "later";
+  });
+
+  assertEquals(lock.publish(makeValueTask(Promise.resolve("later"))), false);
+  assertEquals(lock.hasPendingFrames(), false);
+  assertEquals(lock.getPendingPromiseCount(), 1);
+
+  await Promise.resolve();
+
+  assertEquals(settled, true);
+  assertEquals(lock.getPendingPromiseCount(), 0);
+});
+
 test("decode syncs worker bits", () => {
   const { lock } = makeLock();
 

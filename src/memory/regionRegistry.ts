@@ -206,7 +206,8 @@ export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => 
     if (slotIndex === -1) return -1;
 
     // single Atomics.store commit point — monomorphic call site
-    Atomics.store(hostBits, 0, hostLast);
+    //Atomics.store(hostBits, 0, hostLast);
+    hostBits[0] = hostLast
     return slotIndex;
   };
 

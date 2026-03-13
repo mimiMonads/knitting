@@ -97,6 +97,21 @@ export type PromisePayloadHandler = (
   result: PromisePayloadResult,
 ) => void;
 
+const pendingPromisePayloads = new WeakSet<Task>();
+
+export const beginPromisePayload = (task: Task): boolean => {
+  if (pendingPromisePayloads.has(task)) return false;
+  pendingPromisePayloads.add(task);
+  return true;
+};
+
+export const finishPromisePayload = (task: Task): void => {
+  pendingPromisePayloads.delete(task);
+};
+
+export const isPromisePayloadPending = (task: Task): boolean =>
+  pendingPromisePayloads.has(task);
+
 export enum TaskIndex {
   /**
    * Worker -> host response flags word.
@@ -220,10 +235,6 @@ const createTaskShell = () => {
   task.value = null;
   task.resolve = def;
   task.reject = def;
-  // Keep Promise marker shape stable across task lifecycle.
-  (task as Task & { [PromisePayloadMarker]?: boolean })[
-    PromisePayloadMarker
-  ] = false;
   return task;
 };
 
@@ -342,6 +353,7 @@ export const lock2 = ({
   const payloadLockSAB = payloadSector ?? LockBoundSAB;
 
   let promiseHandler: PromisePayloadHandler | undefined;
+  let trackedDeferredTasks = new WeakSet<Task>();
 
   const encodeTask = encodePayload({
     payload: {
@@ -350,7 +362,12 @@ export const lock2 = ({
     },
     headersBuffer,
     lockSector: payloadLockSAB,
-    onPromise: (task, result) => promiseHandler?.(task, result),
+    onPromise: (task, result) => {
+      if (trackedDeferredTasks.delete(task) && pendingPromiseCount > 0) {
+        pendingPromiseCount = (pendingPromiseCount - 1) | 0;
+      }
+      promiseHandler?.(task, result);
+    },
   });
   const decodeTask = decodePayload({
     payload: {
@@ -369,6 +386,8 @@ export const lock2 = ({
   const recyclecList = recycleList ?? new RingQueue();
 
   const resolved = resultList ?? new RingQueue<Task>();
+  let deferredCount = 0 | 0;
+  let pendingPromiseCount = 0 | 0;
 
   // Atomics aliases (hot path)
   const a_load = Atomics.load;
@@ -394,6 +413,11 @@ export const lock2 = ({
     };
 
   const enlist = (task: Task) => toBeSentPush(task);
+  const trackDeferredTask = (task: Task) => {
+    if (trackedDeferredTasks.has(task)) return;
+    trackedDeferredTasks.add(task);
+    pendingPromiseCount = (pendingPromiseCount + 1) | 0;
+  };
   let selectedSlotIndex = 0 | 0, selectedSlotBit = 0 >>> 0;
 
 
@@ -410,9 +434,13 @@ export const lock2 = ({
     return selectedSlotBit;
   };
 
-  const encodeManyFrom = (list: RingQueue<Task>): number => {
+  const encodeManyFrom = (
+    list: RingQueue<Task>,
+    trackDeferreds = false,
+  ): number => {
     let state = (LastLocal ^ a_load(workerBits, 0)) | 0;
     let encoded = 0 | 0;
+    deferredCount = 0 | 0;
 
     if (list === toBeSent) {
       while (true) {
@@ -421,6 +449,11 @@ export const lock2 = ({
 
         const bit = encodeWithState(task, state) | 0;
         if (bit === 0) {
+          if (isPromisePayloadPending(task)) {
+            deferredCount = (deferredCount + 1) | 0;
+            if (trackDeferreds) trackDeferredTask(task);
+            continue;
+          }
           toBeSentUnshift(task);
           break;
         }
@@ -435,6 +468,11 @@ export const lock2 = ({
 
         const bit = encodeWithState(task, state) | 0;
         if (bit === 0) {
+          if (isPromisePayloadPending(task)) {
+            deferredCount = (deferredCount + 1) | 0;
+            if (trackDeferreds) trackDeferredTask(task);
+            continue;
+          }
           list.unshift(task);
           break;
         }
@@ -449,7 +487,8 @@ export const lock2 = ({
 
   const encodeAll = (): boolean => {
     if (toBeSent.isEmpty) return true;
-    encodeManyFrom(toBeSent);
+    encodeManyFrom(toBeSent, true);
+    deferredCount = 0 | 0;
     return toBeSent.isEmpty;
   };
 
@@ -460,11 +499,19 @@ export const lock2 = ({
   const encode = (
     task: Task,
     state: number = (LastLocal ^ a_load(workerBits, 0)) | 0,
+    trackDeferreds = false,
   ): boolean => {
+    deferredCount = 0 | 0;
     const free = ~state;
     if (free === 0) return false;
 
-    if (!encodeTask(task, selectedSlotIndex = 31 - clz32(free))) return false;
+    if (!encodeTask(task, selectedSlotIndex = 31 - clz32(free))) {
+      if (isPromisePayloadPending(task)) {
+        deferredCount = 1;
+        if (trackDeferreds) trackDeferredTask(task);
+      }
+      return false;
+    }
     return encodeAt(
       task,
       selectedSlotIndex,
@@ -630,13 +677,37 @@ export const lock2 = ({
     return true;
   };
 
-  
+  const publish = (task: Task): boolean => {
+    if (encode(task, undefined, true)) return true;
+    if ((deferredCount | 0) !== 0) {
+      deferredCount = 0 | 0;
+      return false;
+    }
+    toBeSentPush(task);
+    return false;
+  };
+
+  const flushPending = (): boolean => {
+    if (toBeSent.isEmpty) return false;
+    const encoded = encodeManyFrom(toBeSent, true) | 0;
+    deferredCount = 0 | 0;
+    return encoded !== 0;
+  };
+
+  const resetPendingState = () => {
+    toBeSent.clear();
+    deferredCount = 0 | 0;
+    pendingPromiseCount = 0 | 0;
+    trackedDeferredTasks = new WeakSet<Task>();
+  };
 
   return {
     enlist,
     encode,
     encodeManyFrom,
     encodeAll,
+    publish,
+    flushPending,
     decode,
     hasSpace,
     resolved,
@@ -644,6 +715,15 @@ export const lock2 = ({
     workerBits,
     recyclecList,
     resolveHost,
+    hasPendingFrames: () => toBeSent.size !== 0,
+    getPendingFrameCount: () => toBeSent.size | 0,
+    getPendingPromiseCount: () => pendingPromiseCount | 0,
+    resetPendingState,
+    takeDeferredCount: () => {
+      const count = deferredCount | 0;
+      deferredCount = 0 | 0;
+      return count;
+    },
     setPromiseHandler: (handler?: PromisePayloadHandler) => {
       promiseHandler = handler;
     },
