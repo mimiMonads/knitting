@@ -29,7 +29,6 @@ import { jsrIsGreatAndWorkWithoutBugs } from "../worker/loop.ts";
 import {
   createSharedArrayBuffer,
   createWasmSharedArrayBuffer,
-  IS_DENO,
 } from "../common/runtime.ts";
 import { signalAbortFactory } from "../shared/abortSignal.ts";
 import { Worker } from "node:worker_threads";
@@ -71,9 +70,6 @@ const NODE_WORKER_SAFE_EXEC_FLAGS = new Set<string>([
   "--no-warnings",
   ...NODE_PERMISSION_EXEC_FLAGS,
 ]);
-const DENO_NODE_WORKER_PROTOCOLS = new Set<string>(["file:", "data:"]);
-const DENO_NODE_WORKER_URL_ERROR_SNIPPET =
-  "support only 'file:' and 'data:' URLs";
 
 const isWorkerFatalMessage = (
   value: unknown,
@@ -113,92 +109,6 @@ const toWorkerCompatExecArgv = (
   if (!safe || safe.length === 0) return undefined;
   const compat = safe.filter((flag) => !isNodePermissionExecFlag(flag));
   return compat.length > 0 ? compat : undefined;
-};
-
-const toWorkerUrlText = (value: string | URL): string =>
-  value instanceof URL ? value.href : String(value);
-
-const getWorkerUrlProtocol = (value: string | URL): string | undefined => {
-  if (value instanceof URL) return value.protocol;
-  try {
-    return new URL(value).protocol;
-  } catch {
-    return undefined;
-  }
-};
-
-const summarizeResolvedTaskModules = (modules: string[]): string => {
-  if (modules.length === 0) return "(none)";
-  const shown = modules.slice(0, 4).map((moduleUrl) =>
-    JSON.stringify(moduleUrl)
-  );
-  const extra = modules.length - shown.length;
-  return extra > 0
-    ? `${shown.join(", ")}, ... (+${extra} more)`
-    : shown.join(", ");
-};
-
-const buildDenoWorkerUrlErrorMessage = ({
-  workerUrl,
-  source,
-  runtimeModuleUrl,
-  taskModules,
-  originalError,
-}: {
-  workerUrl: string | URL;
-  source?: string;
-  runtimeModuleUrl: string;
-  taskModules: string[];
-  originalError?: unknown;
-}): string => {
-  const resolvedWorkerUrl = toWorkerUrlText(workerUrl);
-  const protocol = getWorkerUrlProtocol(workerUrl) ?? "(unparsed)";
-  const sourceLabel = source === undefined
-    ? "(default worker entry)"
-    : JSON.stringify(source);
-  const original = originalError === undefined
-    ? ""
-    : ` Original runtime error: ${String(originalError)}`;
-
-  return `KNT_ERROR_DENO_WORKER_UNSUPPORTED_URL: ` +
-    `Deno's node:worker_threads only accepts "file:" and "data:" worker entry URLs, ` +
-    `but Knitting resolved ${
-      JSON.stringify(resolvedWorkerUrl)
-    } (${protocol}). ` +
-    `source=${sourceLabel}. runtime import.meta.url=${
-      JSON.stringify(runtimeModuleUrl)
-    }. ` +
-    `Task modules discovered from caller resolution: ${
-      summarizeResolvedTaskModules(taskModules)
-    }. ` +
-    `If those task module URLs are already local file URLs, caller resolution is working and only the worker entry URL is wrong. ` +
-    `This is Deno-specific and usually happens when Knitting is imported from JSR/https instead of a local file path. ` +
-    `Pass createPool({ source: "file:///..." }) or use a local file-based import of Knitting.` +
-    original;
-};
-
-const assertSupportedDenoWorkerUrl = ({
-  workerUrl,
-  source,
-  runtimeModuleUrl,
-  taskModules,
-}: {
-  workerUrl: string | URL;
-  source?: string;
-  runtimeModuleUrl: string;
-  taskModules: string[];
-}): void => {
-  if (!IS_DENO) return;
-  const protocol = getWorkerUrlProtocol(workerUrl);
-  if (!protocol || DENO_NODE_WORKER_PROTOCOLS.has(protocol)) return;
-  throw new TypeError(
-    buildDenoWorkerUrlErrorMessage({
-      workerUrl,
-      source,
-      runtimeModuleUrl,
-      taskModules,
-    }),
-  );
 };
 
 type NodeWorkerResourceLimits = {
@@ -520,26 +430,9 @@ export const spawnWorkerContext = ({
   const withExecArgv = workerExecArgv && workerExecArgv.length > 0
     ? { ...baseNodeWorkerOptions, execArgv: workerExecArgv }
     : baseNodeWorkerOptions;
-  assertSupportedDenoWorkerUrl({
-    workerUrl,
-    source,
-    runtimeModuleUrl: tsFileUrl.href,
-    taskModules: list,
-  });
   try {
     worker = new poliWorker(workerUrl, withExecArgv) as Worker;
   } catch (error) {
-    if (IS_DENO && String(error).includes(DENO_NODE_WORKER_URL_ERROR_SNIPPET)) {
-      throw new TypeError(
-        buildDenoWorkerUrlErrorMessage({
-          workerUrl,
-          source,
-          runtimeModuleUrl: tsFileUrl.href,
-          taskModules: list,
-          originalError: error,
-        }),
-      );
-    }
     if ((error as { code?: string })?.code === "ERR_WORKER_INVALID_EXEC_ARGV") {
       const fallbackExecArgv = toWorkerSafeExecArgv(withExecArgv.execArgv);
       if (fallbackExecArgv && fallbackExecArgv.length > 0) {

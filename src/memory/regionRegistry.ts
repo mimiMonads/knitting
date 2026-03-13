@@ -1,6 +1,6 @@
 import {
-  LockBound,
   LOCK_SECTOR_BYTE_LENGTH,
+  LockBound,
   PAYLOAD_LOCK_HOST_BITS_OFFSET_BYTES,
   PAYLOAD_LOCK_WORKER_BITS_OFFSET_BYTES,
   TASK_SLOT_INDEX_MASK,
@@ -8,8 +8,8 @@ import {
 } from "./lock.ts";
 import { createWasmSharedArrayBuffer } from "../common/runtime.ts";
 import {
-  toSharedBufferRegion,
   type SharedBufferSource,
+  toSharedBufferRegion,
 } from "../common/shared-buffer-region.ts";
 import type { Task } from "./lock.ts";
 
@@ -17,10 +17,11 @@ import type { Task } from "./lock.ts";
 // Inlined from setTaskSlotIndex to avoid cross-closure call on hot path.
 const SLOT_META_PACKED_MASK = 0xFFFFFFE0; // (~0x1F) >>> 0
 
-
 export type RegisterMalloc = ReturnType<typeof register>;
 
-export const register = ({ lockSector }: { lockSector?: SharedBufferSource }) => {
+export const register = (
+  { lockSector }: { lockSector?: SharedBufferSource },
+) => {
   const lockRegion = toSharedBufferRegion(
     lockSector ?? createWasmSharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH),
   );
@@ -115,7 +116,9 @@ export const register = ({ lockSector }: { lockSector?: SharedBufferSource }) =>
       sai[0] = slotIndex;
       sz[slotIndex] = size;
       task[TaskIndex.Start] = 0;
-      task[TaskIndex.slotBuffer] = ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>> 0;
+      task[TaskIndex.slotBuffer] =
+        ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>>
+        0;
       tableLength = 1;
       usedBits |= freeBit;
       hostLast ^= freeBit;
@@ -129,7 +132,9 @@ export const register = ({ lockSector }: { lockSector?: SharedBufferSource }) =>
       sai[0] = slotIndex;
       sz[slotIndex] = size;
       task[TaskIndex.Start] = 0;
-      task[TaskIndex.slotBuffer] = ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>> 0;
+      task[TaskIndex.slotBuffer] =
+        ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>>
+        0;
       tableLength = tl + 1;
       usedBits |= freeBit;
       hostLast ^= freeBit;
@@ -137,8 +142,7 @@ export const register = ({ lockSector }: { lockSector?: SharedBufferSource }) =>
     }
 
     // ========= search for a gap between entries =========
-    let prevEnd =
-      (firstStart + (sz[sai[0] & SLOT_MASK] >>> 0)) >>> 0;
+    let prevEnd = (firstStart + (sz[sai[0] & SLOT_MASK] >>> 0)) >>> 0;
     for (let at = 0; at + 1 < tl; at++) {
       const next = sai[at + 1];
       const nextStart = next & START_MASK;
@@ -152,7 +156,9 @@ export const register = ({ lockSector }: { lockSector?: SharedBufferSource }) =>
       sai[at + 1] = (prevEnd | slotIndex) >>> 0;
       sz[slotIndex] = size;
       task[TaskIndex.Start] = prevEnd;
-      task[TaskIndex.slotBuffer] = ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>> 0;
+      task[TaskIndex.slotBuffer] =
+        ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>>
+        0;
       tableLength = tl + 1;
       usedBits |= freeBit;
       hostLast ^= freeBit;
@@ -166,7 +172,8 @@ export const register = ({ lockSector }: { lockSector?: SharedBufferSource }) =>
     sai[tl] = (newStart | slotIndex) >>> 0;
     sz[slotIndex] = size;
     task[TaskIndex.Start] = newStart;
-    task[TaskIndex.slotBuffer] = ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>> 0;
+    task[TaskIndex.slotBuffer] =
+      ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>> 0;
     tableLength = tl + 1;
     usedBits |= freeBit;
     hostLast ^= freeBit;
@@ -184,8 +191,9 @@ export const register = ({ lockSector }: { lockSector?: SharedBufferSource }) =>
     const slotIndex = findAndInsert(task, size);
     if (slotIndex === -1) return -1;
 
-    // single Atomics.store commit point — monomorphic call site
-    Atomics.store(hostBits, 0, hostLast);
+    // hostBits is only a local/debug mirror; cross-thread handoff happens
+    // through the main lock publish and workerBits acknowledgements.
+    hostBits[0] = hostLast;
     return slotIndex;
   };
 

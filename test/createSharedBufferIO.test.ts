@@ -1,26 +1,28 @@
 import assert from "node:assert/strict";
 import { Buffer as NodeBuffer } from "node:buffer";
 import test from "node:test";
-const assertEquals: (actual: unknown, expected: unknown) => void =
-  (actual, expected) => {
-    assert.deepStrictEqual(actual, expected);
-  };
+const assertEquals: (actual: unknown, expected: unknown) => void = (
+  actual,
+  expected,
+) => {
+  assert.deepStrictEqual(actual, expected);
+};
 import {
   createSharedDynamicBufferIO,
   createSharedStaticBufferIO,
 } from "../src/memory/createSharedBufferIO.ts";
 import {
   HEADER_BYTE_LENGTH,
-  HEADER_STATIC_PAYLOAD_U32,
   HEADER_SLOT_STRIDE_U32,
+  HEADER_STATIC_PAYLOAD_U32,
   HEADER_TASK_OFFSET_IN_SLOT_U32,
   LockBound,
   TaskIndex,
 } from "../src/memory/lock.ts";
 
 const header = 64;
-const staticWritableBytes =
-  HEADER_STATIC_PAYLOAD_U32 * Uint32Array.BYTES_PER_ELEMENT;
+const staticWritableBytes = HEADER_STATIC_PAYLOAD_U32 *
+  Uint32Array.BYTES_PER_ELEMENT;
 const textEncode = new TextEncoder();
 const slotOffsetU32 = (at: number) =>
   (at * HEADER_SLOT_STRIDE_U32) + LockBound.header;
@@ -44,8 +46,7 @@ const makeSab = (payloadBytes: number) =>
     header + payloadBytes,
     { maxByteLength: header + 1024 * 1024 },
   );
-const makeHeaders = () =>
-  new SharedArrayBuffer(HEADER_BYTE_LENGTH);
+const makeHeaders = () => new SharedArrayBuffer(HEADER_BYTE_LENGTH);
 
 test("writeBinary grows and reads back", () => {
   const sab = makeSab(8);
@@ -69,7 +70,7 @@ test("writeUtf8 grows when buffer is too small", () => {
   const text = "hello-world-hello-world-hello-world";
   const encoded = new TextEncoder().encode(text);
 
-  const written = io.writeUtf8(text,0);
+  const written = io.writeUtf8(text, 0);
 
   assertEquals(written, encoded.byteLength);
   assertEquals(io.readUtf8(0, written), text);
@@ -210,6 +211,19 @@ test("read8BytesFloat copy and view have expected semantics", () => {
   assertEquals(Array.from(view), [3.25, 4.5, -6]);
 });
 
+test("read4BytesInt copy has expected semantics", () => {
+  const sab = makeSab(64);
+  const io = createSharedDynamicBufferIO({ sab });
+  const initial = new Int32Array([7, -8, 99, 1024]);
+
+  io.writeBinary(new Uint8Array(initial.buffer), 0);
+  const copy = io.read4BytesIntCopy(0, initial.byteLength);
+
+  io.writeBinary(new Uint8Array(Int32Array.from([1, 2, 3, 4]).buffer), 0);
+
+  assertEquals(Array.from(copy), Array.from(initial));
+});
+
 test("static writeUtf8 preserves task header and reads back", () => {
   const headersBuffer = makeHeaders();
   const io = createSharedStaticBufferIO({ headersBuffer });
@@ -233,8 +247,8 @@ test("static writeUtf8 preserves task header and reads back", () => {
 
 test("static slot layout gives the task header its own cache line", () => {
   const payloadEndBytes = staticWritableBytes;
-  const taskHeaderOffsetBytes =
-    HEADER_TASK_OFFSET_IN_SLOT_U32 * Uint32Array.BYTES_PER_ELEMENT;
+  const taskHeaderOffsetBytes = HEADER_TASK_OFFSET_IN_SLOT_U32 *
+    Uint32Array.BYTES_PER_ELEMENT;
 
   assertEquals(payloadEndBytes % 64, 0);
   assertEquals(taskHeaderOffsetBytes % 64, 0);
@@ -280,7 +294,10 @@ test("static writeUtf8 can partially mutate slot on multibyte overflow (full bou
   const out = io.readBytesCopy(0, staticWritableBytes, slot);
 
   assertEquals(written, -1);
-  assertEquals(Array.from(out), Array.from(encoded.subarray(0, staticWritableBytes)));
+  assertEquals(
+    Array.from(out),
+    Array.from(encoded.subarray(0, staticWritableBytes)),
+  );
 });
 
 test("static writeUtf8 can partially mutate slot on multibyte overflow (below boundary fill)", () => {
@@ -290,8 +307,7 @@ test("static writeUtf8 can partially mutate slot on multibyte overflow (below bo
   const marker = 0x33;
   const initial = new Uint8Array(staticWritableBytes).fill(marker);
   const partialPrefixBytes = staticWritableBytes - 1;
-  const text =
-    "€".repeat(Math.floor(partialPrefixBytes / 3)) +
+  const text = "€".repeat(Math.floor(partialPrefixBytes / 3)) +
     "a".repeat(partialPrefixBytes % 3) +
     "é";
   const encoded = new TextEncoder().encode(text);
@@ -325,7 +341,10 @@ test("static writeUtf8 can partially mutate slot on ASCII overflow", () => {
   const out = io.readBytesCopy(0, staticWritableBytes, slot);
 
   assertEquals(written, -1);
-  assertEquals(Array.from(out), Array.from(textEncode.encode("q".repeat(staticWritableBytes))));
+  assertEquals(
+    Array.from(out),
+    Array.from(textEncode.encode("q".repeat(staticWritableBytes))),
+  );
 });
 
 test("static writeUtf8 recovers after overflow by accepting subsequent fitting writes", () => {
@@ -333,7 +352,10 @@ test("static writeUtf8 recovers after overflow by accepting subsequent fitting w
   const io = createSharedStaticBufferIO({ headersBuffer });
   const slot = 3;
 
-  assertEquals(io.writeUtf8("😀".repeat((staticWritableBytes >>> 2) + 1), slot), -1);
+  assertEquals(
+    io.writeUtf8("😀".repeat((staticWritableBytes >>> 2) + 1), slot),
+    -1,
+  );
 
   const next = "ok-😀-post-overflow";
   const expected = textEncode.encode(next);
@@ -354,7 +376,10 @@ test("static writeUtf8 writes are isolated per slot", () => {
   const written = io.writeUtf8(text, 1);
 
   assertEquals(io.readUtf8(0, written, 1), text);
-  assertEquals(Array.from(io.readBytesCopy(0, staticWritableBytes, 0)), Array.from(untouched));
+  assertEquals(
+    Array.from(io.readBytesCopy(0, staticWritableBytes, 0)),
+    Array.from(untouched),
+  );
 });
 
 test("static binary writes across all slots preserve headers and raw layout", () => {
@@ -364,11 +389,14 @@ test("static binary writes across all slots preserve headers and raw layout", ()
   const nextRandom = makeRng(0x4c3a2f11);
   const slots = Array.from({ length: LockBound.slots }, (_, i) => i);
   const headerMarkers = slots.map((slot) =>
-    Array.from({ length: TaskIndex.Size }, (_, i) =>
-      ((((slot + 1) << 24) ^ ((i + 1) << 16) ^ 0x5a3c) >>> 0)
+    Array.from(
+      { length: TaskIndex.Size },
+      (_, i) => ((((slot + 1) << 24) ^ ((i + 1) << 16) ^ 0x5a3c) >>> 0),
     )
   );
-  const expected = slots.map((slot) => new Uint8Array(staticWritableBytes).fill(slot));
+  const expected = slots.map((slot) =>
+    new Uint8Array(staticWritableBytes).fill(slot)
+  );
 
   for (const slot of slots) {
     for (let i = 0; i < TaskIndex.Size; i++) {
@@ -464,6 +492,14 @@ test("static binary and float IO roundtrip", () => {
     Array.from(io.read8BytesFloatView(16, 16 + floats.byteLength, slot)),
     Array.from(floats),
   );
+
+  const ints = new Int32Array([11, -12, 13, -14]);
+  const writtenInts = io.writeBinary(new Uint8Array(ints.buffer), slot, 40);
+  assertEquals(writtenInts, ints.byteLength);
+  assertEquals(
+    Array.from(io.read4BytesIntCopy(40, 40 + ints.byteLength, slot)),
+    Array.from(ints),
+  );
 });
 
 test("static writeBinary accepts Buffer and Uint8Array sources on the same path", () => {
@@ -474,7 +510,16 @@ test("static writeBinary accepts Buffer and Uint8Array sources on the same path"
 
   assertEquals(io.writeBinary(first, 0, 0), first.byteLength);
   assertEquals(io.writeBinary(second, 0, 4), second.byteLength);
-  assertEquals(Array.from(io.readBytesCopy(0, 8, 0)), [11, 12, 13, 14, 21, 22, 23, 24]);
+  assertEquals(Array.from(io.readBytesCopy(0, 8, 0)), [
+    11,
+    12,
+    13,
+    14,
+    21,
+    22,
+    23,
+    24,
+  ]);
 });
 
 test("static IO honors Uint32Array byte offsets", () => {

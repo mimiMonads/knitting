@@ -21,7 +21,7 @@ call them from the main thread with a small, typed API.
 This package is published on JSR:
 
 ```bash
-deno add jsr:@vixeny/knitting
+deno add --npm jsr:@vixeny/knitting
 ```
 
 

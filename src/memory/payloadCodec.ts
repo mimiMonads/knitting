@@ -1,27 +1,30 @@
 import {
   EncodeStatus,
-  HEADER_BYTE_LENGTH,
   getTaskSlotIndex,
+  HEADER_BYTE_LENGTH,
   PayloadBuffer,
-  PromisePayloadFulfillSymbol,
-  PromisePayloadHandlerSymbol,
-  PromisePayloadStatus,
-  PromisePayloadStatusSymbol,
   PayloadSignal,
+  PromisePayloadFulfillSymbol,
+  type PromisePayloadHandler,
+  PromisePayloadHandlerSymbol,
   PromisePayloadMarker,
   PromisePayloadRejectSymbol,
-  type PromisePayloadHandler,
+  PromisePayloadStatus,
+  PromisePayloadStatusSymbol,
   type Task,
   TaskIndex,
 } from "./lock.ts";
-import { register, type RegisterMalloc } from "./regionRegistry.ts"
-import { createSharedDynamicBufferIO, createSharedStaticBufferIO } from "./createSharedBufferIO.ts"
+import { register, type RegisterMalloc } from "./regionRegistry.ts";
+import {
+  createSharedDynamicBufferIO,
+  createSharedStaticBufferIO,
+} from "./createSharedBufferIO.ts";
 import { Buffer as NodeBuffer } from "node:buffer";
-import { ErrorKnitting, encoderError } from "../error.ts";
+import { encoderError, ErrorKnitting } from "../error.ts";
 import { Envelope } from "../common/envelope.ts";
 import {
-  resolvePayloadBufferOptions,
   type PayloadBufferOptions,
+  resolvePayloadBufferOptions,
 } from "./payload-config.ts";
 import type { SharedBufferSource } from "../common/shared-buffer-region.ts";
 
@@ -39,8 +42,7 @@ const arrayIsArray = Array.isArray;
 const objectPrototype = Object.prototype;
 const UNSUPPORTED_OBJECT_DETAIL =
   "Unsupported object type. Allowed: plain object, array, Error, Date, Envelope, Buffer, ArrayBuffer, DataView, and typed arrays. Serialize it yourself.";
-const ENVELOPE_PAYLOAD_DETAIL =
-  "Envelope payload must be an ArrayBuffer.";
+const ENVELOPE_PAYLOAD_DETAIL = "Envelope payload must be an ArrayBuffer.";
 const ENVELOPE_HEADER_DETAIL =
   "Envelope header must be a JSON-like value or string.";
 const ENVELOPE_PROMISE_DETAIL =
@@ -190,7 +192,6 @@ const requireStaticIO = (headersBuffer: Uint32Array) => {
   return staticIO;
 };
 
-
 /**
  * Returns `EncodeStatus.Sent` when the payload is encoded successfully.
  * Returns `EncodeStatus.Full` when the caller should retry later.
@@ -222,7 +223,7 @@ export const encodePayload = ({
   headersBuffer: Uint32Array;
   onPromise?: PromisePayloadHandler;
   sharedRegister?: RegisterMalloc;
-}  ) =>  { 
+}) => {
   const payloadSab = payload?.sab ?? sab;
   const resolvedPayloadConfig = resolvePayloadBufferOptions({
     sab: payloadSab,
@@ -256,8 +257,7 @@ export const encodePayload = ({
       task,
       type: ErrorKnitting.Serializable,
       onPromise,
-      detail:
-        `${DYNAMIC_PAYLOAD_LIMIT_DETAIL} limit=${maxPayloadBytes}; ` +
+      detail: `${DYNAMIC_PAYLOAD_LIMIT_DETAIL} limit=${maxPayloadBytes}; ` +
         `actual=${actualBytes}; type=${label}.`,
     });
   const dynamicCapacityError = (task: Task) =>
@@ -571,9 +571,7 @@ export const encodePayload = ({
       task,
       headerText,
       payloadLength,
-      headerIsString
-        ? "EnvelopeDynamicHeaderString"
-        : "EnvelopeDynamicHeader",
+      headerIsString ? "EnvelopeDynamicHeaderString" : "EnvelopeDynamicHeader",
     );
     if (headerReserveBytes < 0) return false;
     task[TaskIndex.Type] = headerIsString
@@ -632,8 +630,8 @@ export const encodePayload = ({
   };
   const encodeFailureStatus = (task: Task): EncodeStatus =>
     (task as Task & {
-      [PromisePayloadMarker]?: boolean;
-    })[PromisePayloadMarker] === true
+        [PromisePayloadMarker]?: boolean;
+      })[PromisePayloadMarker] === true
       ? EncodeStatus.Deferred
       : EncodeStatus.Full;
 
@@ -687,8 +685,9 @@ export const encodePayload = ({
         task.value = null;
         return EncodeStatus.Sent;
       case "boolean":
-        task[TaskIndex.Type] =
-          task.value === true ? PayloadSignal.True : PayloadSignal.False;
+        task[TaskIndex.Type] = task.value === true
+          ? PayloadSignal.True
+          : PayloadSignal.False;
         return EncodeStatus.Sent;
       case "function":
         encoderError({
@@ -765,12 +764,12 @@ export const encodePayload = ({
 
           if (NodeBuffer.isBuffer(objectValue)) {
             return encodeObjectBinary(
-              task,
-              slotIndex,
-              objectValue as NodeBuffer,
-              PayloadBuffer.Buffer,
-              PayloadBuffer.StaticBuffer,
-            )
+                task,
+                slotIndex,
+                objectValue as NodeBuffer,
+                PayloadBuffer.Buffer,
+                PayloadBuffer.StaticBuffer,
+              )
               ? EncodeStatus.Sent
               : encodeFailureStatus(task);
           }
@@ -778,91 +777,91 @@ export const encodePayload = ({
           switch ((objectValue as { constructor?: unknown }).constructor) {
             case Uint8Array:
               return encodeObjectBinary(
-                task,
-                slotIndex,
-                objectValue as Uint8Array,
-                PayloadBuffer.Binary,
-                PayloadBuffer.StaticBinary,
-              )
+                  task,
+                  slotIndex,
+                  objectValue as Uint8Array,
+                  PayloadBuffer.Binary,
+                  PayloadBuffer.StaticBinary,
+                )
                 ? EncodeStatus.Sent
                 : encodeFailureStatus(task);
             case ArrayBuffer:
               return encodeObjectArrayBuffer(
-                task,
-                slotIndex,
-                objectValue as ArrayBuffer,
-              )
+                  task,
+                  slotIndex,
+                  objectValue as ArrayBuffer,
+                )
                 ? EncodeStatus.Sent
                 : encodeFailureStatus(task);
             case Int32Array: {
               const int32 = objectValue as Int32Array;
               return encodeObjectBinary(
-                task,
-                slotIndex,
-                new Uint8Array(
-                  int32.buffer,
-                  int32.byteOffset,
-                  int32.byteLength,
-                ),
-                PayloadBuffer.Int32Array,
-                PayloadBuffer.StaticInt32Array,
-              )
+                  task,
+                  slotIndex,
+                  new Uint8Array(
+                    int32.buffer,
+                    int32.byteOffset,
+                    int32.byteLength,
+                  ),
+                  PayloadBuffer.Int32Array,
+                  PayloadBuffer.StaticInt32Array,
+                )
                 ? EncodeStatus.Sent
                 : encodeFailureStatus(task);
             }
             case Float64Array:
               return encodeObjectFloat64Array(
-                task,
-                slotIndex,
-                objectValue as Float64Array,
-              )
+                  task,
+                  slotIndex,
+                  objectValue as Float64Array,
+                )
                 ? EncodeStatus.Sent
                 : encodeFailureStatus(task);
             case BigInt64Array: {
               const bigInt64 = objectValue as BigInt64Array;
               return encodeObjectBinary(
-                task,
-                slotIndex,
-                new Uint8Array(
-                  bigInt64.buffer,
-                  bigInt64.byteOffset,
-                  bigInt64.byteLength,
-                ),
-                PayloadBuffer.BigInt64Array,
-                PayloadBuffer.StaticBigInt64Array,
-              )
+                  task,
+                  slotIndex,
+                  new Uint8Array(
+                    bigInt64.buffer,
+                    bigInt64.byteOffset,
+                    bigInt64.byteLength,
+                  ),
+                  PayloadBuffer.BigInt64Array,
+                  PayloadBuffer.StaticBigInt64Array,
+                )
                 ? EncodeStatus.Sent
                 : encodeFailureStatus(task);
             }
             case BigUint64Array: {
               const bigUint64 = objectValue as BigUint64Array;
               return encodeObjectBinary(
-                task,
-                slotIndex,
-                new Uint8Array(
-                  bigUint64.buffer,
-                  bigUint64.byteOffset,
-                  bigUint64.byteLength,
-                ),
-                PayloadBuffer.BigUint64Array,
-                PayloadBuffer.StaticBigUint64Array,
-              )
+                  task,
+                  slotIndex,
+                  new Uint8Array(
+                    bigUint64.buffer,
+                    bigUint64.byteOffset,
+                    bigUint64.byteLength,
+                  ),
+                  PayloadBuffer.BigUint64Array,
+                  PayloadBuffer.StaticBigUint64Array,
+                )
                 ? EncodeStatus.Sent
                 : encodeFailureStatus(task);
             }
             case DataView: {
               const dataView = objectValue as DataView;
               return encodeObjectBinary(
-                task,
-                slotIndex,
-                new Uint8Array(
-                  dataView.buffer,
-                  dataView.byteOffset,
-                  dataView.byteLength,
-                ),
-                PayloadBuffer.DataView,
-                PayloadBuffer.StaticDataView,
-              )
+                  task,
+                  slotIndex,
+                  new Uint8Array(
+                    dataView.buffer,
+                    dataView.byteOffset,
+                    dataView.byteLength,
+                  ),
+                  PayloadBuffer.DataView,
+                  PayloadBuffer.StaticDataView,
+                )
                 ? EncodeStatus.Sent
                 : encodeFailureStatus(task);
             }
@@ -872,10 +871,10 @@ export const encodePayload = ({
                 : encodeFailureStatus(task);
             case Envelope:
               return encodeObjectEnvelope(
-                task,
-                slotIndex,
-                objectValue as Envelope,
-              )
+                  task,
+                  slotIndex,
+                  objectValue as Envelope,
+                )
                 ? EncodeStatus.Sent
                 : encodeFailureStatus(task);
             case Promise:
@@ -1002,7 +1001,7 @@ export const encodePayload = ({
   };
 
   return encodeDispatch;
-}
+};
 
 export const decodePayload = ({
   lockSector,
@@ -1026,10 +1025,10 @@ export const decodePayload = ({
    * @deprecated Use `payload.config`.
    */
   payloadConfig?: PayloadBufferOptions;
-  headersBuffer: Uint32Array
-  host?: true
+  headersBuffer: Uint32Array;
+  host?: true;
   sharedRegister?: RegisterMalloc;
-}  ) => {
+}) => {
   const payloadSab = payload?.sab ?? sab;
   const resolvedPayloadConfig = resolvePayloadBufferOptions({
     sab: payloadSab,
@@ -1044,6 +1043,7 @@ export const decodePayload = ({
     readBytesCopy: readDynamicBytesCopy,
     readBytesBufferCopy: readDynamicBufferCopy,
     readBytesArrayBufferCopy: readDynamicArrayBufferCopy,
+    read4BytesIntCopy: readDynamic4BytesIntCopy,
     read8BytesFloatCopy: readDynamic8BytesFloatCopy,
     read8BytesFloatView: readDynamic8BytesFloatView,
   } = createSharedDynamicBufferIO({
@@ -1055,278 +1055,300 @@ export const decodePayload = ({
     readBytesCopy: readStaticBytesCopy,
     readBytesBufferCopy: readStaticBufferCopy,
     readBytesArrayBufferCopy: readStaticArrayBufferCopy,
+    read4BytesIntCopy: readStatic4BytesIntCopy,
     read8BytesFloatCopy: readStatic8BytesFloatCopy,
   } = requireStaticIO(headersBuffer);
-  
+
   // TODO: remove slotIndex and make that all their callers
-  // store the slot in their Task, to just get it when it comes 
+  // store the slot in their Task, to just get it when it comes
   // to the static versions of decoding
-  return (task: Task, slotIndex: number , specialFlags?: number)=>  {
-
-
-
-  switch (task[TaskIndex.Type]) {
-    case PayloadSignal.BigInt:
-      Uint32View[0] = task[TaskIndex.Start];
-      Uint32View[1] = task[TaskIndex.End];
-      task.value = BigInt64View[0];
-      return;
-    case PayloadSignal.True:
-      task.value = true;
-      return;
-    case PayloadSignal.False:
-      task.value = false;
-      return;
-    case PayloadSignal.Float64:
-      Uint32View[0] = task[TaskIndex.Start];
-      Uint32View[1] = task[TaskIndex.End];
-      task.value = Float64View[0];
-      return
-    case PayloadSignal.NaN:
-      task.value = NaN
-      return
-    case PayloadSignal.Null :
-      task.value = null
-      return
-    case PayloadSignal.Undefined:
-      task.value = undefined
-      return
-    case PayloadBuffer.String:
-      task.value = readDynamicUtf8(
-        task[TaskIndex.Start],
-        task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
-      )
-      freeTaskSlot(task)
-    return
-    case PayloadBuffer.StaticString:
-  
-      task.value = readStaticUtf8(0, task[TaskIndex.PayloadLen], slotIndex)
-    return
-    case PayloadBuffer.Json:
-      task.value = parseJSON(
-        readDynamicUtf8(
-          task[TaskIndex.Start],
-          task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
-        )
-      )
-      freeTaskSlot(task)
-    return
-    case PayloadBuffer.StaticJson:
-
-      task.value = parseJSON(
-        readStaticUtf8(0, task[TaskIndex.PayloadLen], slotIndex)
-      )
-    return
-    case PayloadBuffer.EnvelopeStaticHeader:
-    case PayloadBuffer.EnvelopeStaticHeaderString: {
-      const rawHeader = readStaticUtf8(0, task[TaskIndex.PayloadLen], slotIndex);
-      const header = task[TaskIndex.Type] === PayloadBuffer.EnvelopeStaticHeaderString
-        ? rawHeader
-        : parseJSON(rawHeader);
-      const payloadLength = task[TaskIndex.End];
-      const payload = payloadLength > 0
-        ? readDynamicArrayBufferCopy(
-          task[TaskIndex.Start],
-          task[TaskIndex.Start] + payloadLength,
-        )
-        : new ArrayBuffer(0);
-      task.value = new Envelope(header as any, payload);
-      freeTaskSlot(task);
-    return
-    }
-    case PayloadBuffer.EnvelopeDynamicHeader:
-    case PayloadBuffer.EnvelopeDynamicHeaderString: {
-      const headerStart = task[TaskIndex.Start];
-      const payloadStart = headerStart + task[TaskIndex.PayloadLen];
-      const payloadLength = task[TaskIndex.End];
-      const rawHeader = readDynamicUtf8(headerStart, payloadStart);
-      const header = task[TaskIndex.Type] === PayloadBuffer.EnvelopeDynamicHeaderString
-        ? rawHeader
-        : parseJSON(rawHeader);
-      const payload = payloadLength > 0
-        ? readDynamicArrayBufferCopy(
-          payloadStart,
-          payloadStart + payloadLength,
-        )
-        : new ArrayBuffer(0);
-      task.value = new Envelope(header as any, payload);
-      freeTaskSlot(task);
-    return
-    }
-    case PayloadBuffer.BigInt:
-      task.value = decodeBigIntBinary(
-        readDynamicBufferCopy(
-          task[TaskIndex.Start],
-          task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
-        )
-      )
-      freeTaskSlot(task)
-    return
-    case PayloadBuffer.StaticBigInt:
-      task.value = decodeBigIntBinary(
-        readStaticBufferCopy(0, task[TaskIndex.PayloadLen], slotIndex)
-      )
-    return
-    case PayloadBuffer.Symbol:
-      task.value = symbolFor(
-        readDynamicUtf8(
-          task[TaskIndex.Start],
-          task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
-        )
-      )
-      freeTaskSlot(task)
-    return
-    case PayloadBuffer.StaticSymbol:
-      task.value = symbolFor(
-        readStaticUtf8(0, task[TaskIndex.PayloadLen], slotIndex)
-      )
-    return
-    case PayloadBuffer.Int32Array: {
-      const bytes = readDynamicBufferCopy(
-        task[TaskIndex.Start],
-        task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
-      )
-      task.value = new Int32Array(
-        bytes.buffer,
-        bytes.byteOffset,
-        bytes.byteLength >>> 2
-      )
-      freeTaskSlot(task)
-    return
-    }
-    case PayloadBuffer.StaticInt32Array: {
-      const bytes = readStaticBufferCopy(0, task[TaskIndex.PayloadLen], slotIndex)
-      task.value = new Int32Array(
-        bytes.buffer,
-        bytes.byteOffset,
-        bytes.byteLength >>> 2
-      )
-    return
-    }
-    case PayloadBuffer.Float64Array: {
-      task.value = readDynamic8BytesFloatCopy(
-        task[TaskIndex.Start],
-        task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
-      )
-      freeTaskSlot(task)
-    return
-    }
-    case PayloadBuffer.StaticFloat64Array:
-      task.value = readStatic8BytesFloatCopy(0, task[TaskIndex.PayloadLen], slotIndex)
-    return
-    case PayloadBuffer.BigInt64Array: {
-      const bytes = readDynamicBufferCopy(
-        task[TaskIndex.Start],
-        task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
-      )
-      task.value = new BigInt64Array(
-        bytes.buffer,
-        bytes.byteOffset,
-        bytes.byteLength >>> 3
-      )
-      freeTaskSlot(task)
-    return
-    }
-    case PayloadBuffer.StaticBigInt64Array: {
-      const bytes = readStaticBufferCopy(0, task[TaskIndex.PayloadLen], slotIndex)
-      task.value = new BigInt64Array(
-        bytes.buffer,
-        bytes.byteOffset,
-        bytes.byteLength >>> 3
-      )
-    return
-    }
-    case PayloadBuffer.BigUint64Array: {
-      const bytes = readDynamicBufferCopy(
-        task[TaskIndex.Start],
-        task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
-      )
-      task.value = new BigUint64Array(
-        bytes.buffer,
-        bytes.byteOffset,
-        bytes.byteLength >>> 3
-      )
-      freeTaskSlot(task)
-    return
-    }
-    case PayloadBuffer.StaticBigUint64Array: {
-      const bytes = readStaticBufferCopy(0, task[TaskIndex.PayloadLen], slotIndex)
-      task.value = new BigUint64Array(
-        bytes.buffer,
-        bytes.byteOffset,
-        bytes.byteLength >>> 3
-      )
-    return
-    }
-    case PayloadBuffer.DataView: {
-      const bytes = readDynamicBufferCopy(
-        task[TaskIndex.Start],
-        task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
-      )
-      task.value = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-      freeTaskSlot(task)
-    return
-    }
-    case PayloadBuffer.StaticDataView: {
-      const bytes = readStaticBufferCopy(0, task[TaskIndex.PayloadLen], slotIndex)
-      task.value = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-    return
-    }
-    case PayloadBuffer.Date:
-      Uint32View[0] = task[TaskIndex.Start]
-      Uint32View[1] = task[TaskIndex.End]
-      task.value = new Date(Float64View[0])
-    return
-    case PayloadBuffer.Error:
-      task.value = parseErrorPayload(
-        readDynamicUtf8(
+  return (task: Task, slotIndex: number, specialFlags?: number) => {
+    switch (task[TaskIndex.Type]) {
+      case PayloadSignal.BigInt:
+        Uint32View[0] = task[TaskIndex.Start];
+        Uint32View[1] = task[TaskIndex.End];
+        task.value = BigInt64View[0];
+        return;
+      case PayloadSignal.True:
+        task.value = true;
+        return;
+      case PayloadSignal.False:
+        task.value = false;
+        return;
+      case PayloadSignal.Float64:
+        Uint32View[0] = task[TaskIndex.Start];
+        Uint32View[1] = task[TaskIndex.End];
+        task.value = Float64View[0];
+        return;
+      case PayloadSignal.NaN:
+        task.value = NaN;
+        return;
+      case PayloadSignal.Null:
+        task.value = null;
+        return;
+      case PayloadSignal.Undefined:
+        task.value = undefined;
+        return;
+      case PayloadBuffer.String:
+        task.value = readDynamicUtf8(
           task[TaskIndex.Start],
           task[TaskIndex.Start] + task[TaskIndex.PayloadLen],
-        ),
-      );
-      freeTaskSlot(task);
-    return
-    case PayloadBuffer.Binary:
-      {
-        const buffer = readDynamicBufferCopy(
-          task[TaskIndex.Start],
-          task[TaskIndex.Start] + task[TaskIndex.PayloadLen],
-        )
-        task.value = new Uint8Array(
-          buffer.buffer,
-          buffer.byteOffset,
-          buffer.byteLength,
-        )
+        );
+        freeTaskSlot(task);
+        return;
+      case PayloadBuffer.StaticString:
+        task.value = readStaticUtf8(0, task[TaskIndex.PayloadLen], slotIndex);
+        return;
+      case PayloadBuffer.Json:
+        task.value = parseJSON(
+          readDynamicUtf8(
+            task[TaskIndex.Start],
+            task[TaskIndex.Start] + task[TaskIndex.PayloadLen],
+          ),
+        );
+        freeTaskSlot(task);
+        return;
+      case PayloadBuffer.StaticJson:
+        task.value = parseJSON(
+          readStaticUtf8(0, task[TaskIndex.PayloadLen], slotIndex),
+        );
+        return;
+      case PayloadBuffer.EnvelopeStaticHeader:
+      case PayloadBuffer.EnvelopeStaticHeaderString: {
+        const rawHeader = readStaticUtf8(
+          0,
+          task[TaskIndex.PayloadLen],
+          slotIndex,
+        );
+        const header =
+          task[TaskIndex.Type] === PayloadBuffer.EnvelopeStaticHeaderString
+            ? rawHeader
+            : parseJSON(rawHeader);
+        const payloadLength = task[TaskIndex.End];
+        const payload = payloadLength > 0
+          ? readDynamicBytesCopy(
+            task[TaskIndex.Start],
+            task[TaskIndex.Start] + payloadLength,
+          ).buffer
+          : new ArrayBuffer(0);
+        task.value = new Envelope(header as any, payload);
+        freeTaskSlot(task);
+        return;
       }
-      freeTaskSlot(task)
-    return
-    case PayloadBuffer.StaticBinary:
-      task.value = readStaticBufferCopy(0, task[TaskIndex.PayloadLen], slotIndex)
-    return
-    case PayloadBuffer.ArrayBuffer:
-      task.value = readDynamicArrayBufferCopy(
-        task[TaskIndex.Start],
-        task[TaskIndex.Start] + task[TaskIndex.PayloadLen],
-      )
-      freeTaskSlot(task)
-    return
-    case PayloadBuffer.StaticArrayBuffer:
-      task.value = readStaticArrayBufferCopy(
-        0,
-        task[TaskIndex.PayloadLen],
-        slotIndex,
-      )
-    return
-    case PayloadBuffer.Buffer:
-      task.value = readDynamicBufferCopy(
-        task[TaskIndex.Start],
-        task[TaskIndex.Start] + task[TaskIndex.PayloadLen]
-      )
-      freeTaskSlot(task)
-    return
-    case PayloadBuffer.StaticBuffer:
-      task.value = readStaticBufferCopy(0, task[TaskIndex.PayloadLen], slotIndex)
-    return
-  }
-} 
-}
+      case PayloadBuffer.EnvelopeDynamicHeader:
+      case PayloadBuffer.EnvelopeDynamicHeaderString: {
+        const headerStart = task[TaskIndex.Start];
+        const payloadStart = headerStart + task[TaskIndex.PayloadLen];
+        const payloadLength = task[TaskIndex.End];
+        const rawHeader = readDynamicUtf8(headerStart, payloadStart);
+        const header =
+          task[TaskIndex.Type] === PayloadBuffer.EnvelopeDynamicHeaderString
+            ? rawHeader
+            : parseJSON(rawHeader);
+        const payload = payloadLength > 0
+          ? readDynamicBytesCopy(
+            payloadStart,
+            payloadStart + payloadLength,
+          ).buffer
+          : new ArrayBuffer(0);
+        task.value = new Envelope(header as any, payload);
+        freeTaskSlot(task);
+        return;
+      }
+      case PayloadBuffer.BigInt:
+        task.value = decodeBigIntBinary(
+          readDynamicBufferCopy(
+            task[TaskIndex.Start],
+            task[TaskIndex.Start] + task[TaskIndex.PayloadLen],
+          ),
+        );
+        freeTaskSlot(task);
+        return;
+      case PayloadBuffer.StaticBigInt:
+        task.value = decodeBigIntBinary(
+          readStaticBufferCopy(0, task[TaskIndex.PayloadLen], slotIndex),
+        );
+        return;
+      case PayloadBuffer.Symbol:
+        task.value = symbolFor(
+          readDynamicUtf8(
+            task[TaskIndex.Start],
+            task[TaskIndex.Start] + task[TaskIndex.PayloadLen],
+          ),
+        );
+        freeTaskSlot(task);
+        return;
+      case PayloadBuffer.StaticSymbol:
+        task.value = symbolFor(
+          readStaticUtf8(0, task[TaskIndex.PayloadLen], slotIndex),
+        );
+        return;
+      case PayloadBuffer.Int32Array: {
+        task.value = readDynamic4BytesIntCopy(
+          task[TaskIndex.Start],
+          task[TaskIndex.Start] + task[TaskIndex.PayloadLen],
+        );
+        freeTaskSlot(task);
+        return;
+      }
+      case PayloadBuffer.StaticInt32Array:
+        task.value = readStatic4BytesIntCopy(
+          0,
+          task[TaskIndex.PayloadLen],
+          slotIndex,
+        );
+        return;
+      case PayloadBuffer.Float64Array: {
+        task.value = readDynamic8BytesFloatCopy(
+          task[TaskIndex.Start],
+          task[TaskIndex.Start] + task[TaskIndex.PayloadLen],
+        );
+        freeTaskSlot(task);
+        return;
+      }
+      case PayloadBuffer.StaticFloat64Array:
+        task.value = readStatic8BytesFloatCopy(
+          0,
+          task[TaskIndex.PayloadLen],
+          slotIndex,
+        );
+        return;
+      case PayloadBuffer.BigInt64Array: {
+        const bytes = readDynamicBytesCopy(
+          task[TaskIndex.Start],
+          task[TaskIndex.Start] + task[TaskIndex.PayloadLen],
+        );
+        task.value = new BigInt64Array(
+          bytes.buffer,
+          bytes.byteOffset,
+          bytes.byteLength >>> 3,
+        );
+        freeTaskSlot(task);
+        return;
+      }
+      case PayloadBuffer.StaticBigInt64Array: {
+        const bytes = readStaticBufferCopy(
+          0,
+          task[TaskIndex.PayloadLen],
+          slotIndex,
+        );
+        task.value = new BigInt64Array(
+          bytes.buffer,
+          bytes.byteOffset,
+          bytes.byteLength >>> 3,
+        );
+        return;
+      }
+      case PayloadBuffer.BigUint64Array: {
+        const bytes = readDynamicBytesCopy(
+          task[TaskIndex.Start],
+          task[TaskIndex.Start] + task[TaskIndex.PayloadLen],
+        );
+        task.value = new BigUint64Array(
+          bytes.buffer,
+          bytes.byteOffset,
+          bytes.byteLength >>> 3,
+        );
+        freeTaskSlot(task);
+        return;
+      }
+      case PayloadBuffer.StaticBigUint64Array: {
+        const bytes = readStaticBufferCopy(
+          0,
+          task[TaskIndex.PayloadLen],
+          slotIndex,
+        );
+        task.value = new BigUint64Array(
+          bytes.buffer,
+          bytes.byteOffset,
+          bytes.byteLength >>> 3,
+        );
+        return;
+      }
+      case PayloadBuffer.DataView: {
+        const bytes = readDynamicBytesCopy(
+          task[TaskIndex.Start],
+          task[TaskIndex.Start] + task[TaskIndex.PayloadLen],
+        );
+        task.value = new DataView(
+          bytes.buffer,
+          bytes.byteOffset,
+          bytes.byteLength,
+        );
+        freeTaskSlot(task);
+        return;
+      }
+      case PayloadBuffer.StaticDataView: {
+        const bytes = readStaticBufferCopy(
+          0,
+          task[TaskIndex.PayloadLen],
+          slotIndex,
+        );
+        task.value = new DataView(
+          bytes.buffer,
+          bytes.byteOffset,
+          bytes.byteLength,
+        );
+        return;
+      }
+      case PayloadBuffer.Date:
+        Uint32View[0] = task[TaskIndex.Start];
+        Uint32View[1] = task[TaskIndex.End];
+        task.value = new Date(Float64View[0]);
+        return;
+      case PayloadBuffer.Error:
+        task.value = parseErrorPayload(
+          readDynamicUtf8(
+            task[TaskIndex.Start],
+            task[TaskIndex.Start] + task[TaskIndex.PayloadLen],
+          ),
+        );
+        freeTaskSlot(task);
+        return;
+      case PayloadBuffer.Binary:
+        {
+          task.value = readDynamicBytesCopy(
+            task[TaskIndex.Start],
+            task[TaskIndex.Start] + task[TaskIndex.PayloadLen],
+          );
+        }
+        freeTaskSlot(task);
+        return;
+      case PayloadBuffer.StaticBinary:
+        task.value = readStaticBufferCopy(
+          0,
+          task[TaskIndex.PayloadLen],
+          slotIndex,
+        );
+        return;
+      case PayloadBuffer.ArrayBuffer:
+        task.value = readDynamicBytesCopy(
+          task[TaskIndex.Start],
+          task[TaskIndex.Start] + task[TaskIndex.PayloadLen],
+        ).buffer;
+        freeTaskSlot(task);
+        return;
+      case PayloadBuffer.StaticArrayBuffer:
+        task.value = readStaticArrayBufferCopy(
+          0,
+          task[TaskIndex.PayloadLen],
+          slotIndex,
+        );
+        return;
+      case PayloadBuffer.Buffer:
+        task.value = readDynamicBufferCopy(
+          task[TaskIndex.Start],
+          task[TaskIndex.Start] + task[TaskIndex.PayloadLen],
+        );
+        freeTaskSlot(task);
+        return;
+      case PayloadBuffer.StaticBuffer:
+        task.value = readStaticBufferCopy(
+          0,
+          task[TaskIndex.PayloadLen],
+          slotIndex,
+        );
+        return;
+    }
+  };
+};

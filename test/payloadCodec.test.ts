@@ -1,16 +1,18 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-const assertEquals: (actual: unknown, expected: unknown) => void =
-  (actual, expected) => {
-    assert.deepStrictEqual(actual, expected);
-  };
+const assertEquals: (actual: unknown, expected: unknown) => void = (
+  actual,
+  expected,
+) => {
+  assert.deepStrictEqual(actual, expected);
+};
 import { Buffer as NodeBuffer } from "node:buffer";
 import { decodePayload, encodePayload } from "../src/memory/payloadCodec.ts";
 import { Envelope } from "../src/common/envelope.ts";
 import {
   EncodeStatus,
-  HEADER_STATIC_PAYLOAD_U32,
   getPromisePayloadStatus,
+  HEADER_STATIC_PAYLOAD_U32,
   HEADER_U32_LENGTH,
   makeTask,
   PAYLOAD_LOCK_SECTOR_BYTE_LENGTH,
@@ -25,8 +27,8 @@ import type { PayloadBufferOptions } from "../src/memory/payload-config.ts";
 
 const align64 = (n: number) => (n + 63) & ~63;
 const textEncoder = new TextEncoder();
-const STATIC_STRING_MAX_BYTES =
-  HEADER_STATIC_PAYLOAD_U32 * Uint32Array.BYTES_PER_ELEMENT;
+const STATIC_STRING_MAX_BYTES = HEADER_STATIC_PAYLOAD_U32 *
+  Uint32Array.BYTES_PER_ELEMENT;
 const utf8Bytes = (value: string) => NodeBuffer.byteLength(value, "utf8");
 
 const makeRng = (seed: number) => {
@@ -232,7 +234,10 @@ test("dynamic error uses dedicated error path and preserves allocation", () => {
 
   assertEquals(encode(second, 1), EncodeStatus.Sent);
   assertEquals(second[TaskIndex.Type], PayloadBuffer.Error);
-  assertEquals(second[TaskIndex.Start] >= align64(first[TaskIndex.PayloadLen]), true);
+  assertEquals(
+    second[TaskIndex.Start] >= align64(first[TaskIndex.PayloadLen]),
+    true,
+  );
 
   decode(first, 0);
   decode(second, 1);
@@ -405,7 +410,13 @@ test("static ArrayBuffer payload round-trips with ArrayBuffer type", () => {
   decode(task, 0);
 
   assertEquals(task.value instanceof ArrayBuffer, true);
-  assertEquals(Array.from(new Uint8Array(task.value as ArrayBuffer)), [1, 2, 3, 4, 5]);
+  assertEquals(Array.from(new Uint8Array(task.value as ArrayBuffer)), [
+    1,
+    2,
+    3,
+    4,
+    5,
+  ]);
 });
 
 test("dynamic ArrayBuffer payload stores slotBuffer and frees slot 0", () => {
@@ -423,6 +434,108 @@ test("dynamic ArrayBuffer payload stores slotBuffer and frees slot 0", () => {
 
   assertEquals(task.value instanceof ArrayBuffer, true);
   const out = new Uint8Array(task.value as ArrayBuffer);
+  assertEquals(out[0], 0);
+  assertEquals(out[699], 699 & 0xff);
+  assertEquals(registry.workerBits[0] & 1, 1);
+});
+
+test("dynamic generic typed-array payloads round-trip with their native types", () => {
+  const cases = [
+    {
+      value: Int32Array.from({ length: 160 }, (_, i) => i - 40),
+      check: (out: unknown) => {
+        assertEquals(out instanceof Int32Array, true);
+        assertEquals(Array.from(out as Int32Array).slice(0, 4), [
+          -40,
+          -39,
+          -38,
+          -37,
+        ]);
+      },
+    },
+    {
+      value: BigInt64Array.from({ length: 96 }, (_, i) => BigInt(i) - 12n),
+      check: (out: unknown) => {
+        assertEquals(out instanceof BigInt64Array, true);
+        assertEquals(Array.from(out as BigInt64Array).slice(0, 4), [
+          -12n,
+          -11n,
+          -10n,
+          -9n,
+        ]);
+      },
+    },
+    {
+      value: BigUint64Array.from({ length: 96 }, (_, i) => BigInt(i) + 7n),
+      check: (out: unknown) => {
+        assertEquals(out instanceof BigUint64Array, true);
+        assertEquals(Array.from(out as BigUint64Array).slice(0, 4), [
+          7n,
+          8n,
+          9n,
+          10n,
+        ]);
+      },
+    },
+    {
+      value: (() => {
+        const buffer = new ArrayBuffer(640);
+        const view = new DataView(buffer);
+        for (let i = 0; i < 80; i++) view.setInt32(i * 4, i * 3);
+        return view;
+      })(),
+      check: (out: unknown) => {
+        assertEquals(out instanceof DataView, true);
+        const view = out as DataView;
+        assertEquals(view.getInt32(0), 0);
+        assertEquals(view.getInt32(4 * 7), 21);
+      },
+    },
+  ] as const;
+
+  for (const { value, check } of cases) {
+    const { encode, decode, registry } = makeCodec();
+    const task = makeTask();
+    task.value = value;
+
+    assertEquals(encode(task, 0), EncodeStatus.Sent);
+
+    decode(task, 0);
+    check(task.value);
+    assertEquals(registry.workerBits[0] & 1, 1);
+  }
+});
+
+test("static Uint8Array payload round-trips with Buffer type", () => {
+  const { encode, decode } = makeCodec();
+  const task = makeTask();
+  task.value = new Uint8Array([1, 2, 3, 4, 5]);
+
+  assertEquals(encode(task, 0), EncodeStatus.Sent);
+  assertEquals(task[TaskIndex.Type], PayloadBuffer.StaticBinary);
+
+  decode(task, 0);
+
+  assertEquals(NodeBuffer.isBuffer(task.value), true);
+  assertEquals(Array.from(task.value as NodeBuffer), [1, 2, 3, 4, 5]);
+});
+
+test("dynamic Uint8Array payload stores slotBuffer and frees slot 0", () => {
+  const { encode, decode, registry } = makeCodec();
+  const task = makeTask();
+  const src = new Uint8Array(700);
+  for (let i = 0; i < src.length; i++) src[i] = i & 0xff;
+  task.value = src;
+
+  assertEquals(encode(task, 0), EncodeStatus.Sent);
+  assertEquals(task[TaskIndex.Type], PayloadBuffer.Binary);
+  assertEquals(task[TaskIndex.slotBuffer], 0);
+
+  decode(task, 0);
+
+  assertEquals(task.value instanceof Uint8Array, true);
+  assertEquals(NodeBuffer.isBuffer(task.value), false);
+  const out = task.value as Uint8Array;
   assertEquals(out[0], 0);
   assertEquals(out[699], 699 & 0xff);
   assertEquals(registry.workerBits[0] & 1, 1);
@@ -1005,7 +1118,10 @@ test("randomized unicode boundary stress preserves string integrity", () => {
   const nextRandom = makeRng(0xdecafbad);
 
   for (let i = 0; i < 200; i++) {
-    const firstValue = makeBoundaryOverflowUnicode(nextRandom, STATIC_STRING_MAX_BYTES);
+    const firstValue = makeBoundaryOverflowUnicode(
+      nextRandom,
+      STATIC_STRING_MAX_BYTES,
+    );
     if (
       firstValue.length > STATIC_STRING_MAX_BYTES ||
       utf8Bytes(firstValue) <= STATIC_STRING_MAX_BYTES
@@ -1042,7 +1158,10 @@ test("randomized unicode JSON boundary stress preserves integrity and layout", (
   const nextRandom = makeRng(0x0f1cebad);
 
   for (let i = 0; i < 160; i++) {
-    const message = makeBoundaryOverflowUnicode(nextRandom, STATIC_STRING_MAX_BYTES - 12);
+    const message = makeBoundaryOverflowUnicode(
+      nextRandom,
+      STATIC_STRING_MAX_BYTES - 12,
+    );
     const value = { msg: message };
     const text = JSON.stringify(value);
     if (
