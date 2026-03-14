@@ -219,9 +219,8 @@ export const register = ({ lockSector }: { lockSector?: SharedBufferSource }) =>
     const slotIndex = findAndInsert(task, size);
     if (slotIndex === -1) return -1;
 
-    // single Atomics.store commit point — monomorphic call site
-    //Atomics.store(hostBits, 0, hostLast);
-    hostBits[0] = hostLast
+    // Publish slot ownership changes with atomic visibility for the peer.
+    Atomics.store(hostBits, 0, hostLast);
     return slotIndex;
   };
 
@@ -243,8 +242,10 @@ export const register = ({ lockSector }: { lockSector?: SharedBufferSource }) =>
   const free = (index: number) => {
     index = index & TASK_SLOT_INDEX_MASK;
     workerLast ^= 1 << index;
-    //Atomics.store(workerBits, 0, workerLast);
-    workerBits[0] = workerLast
+    // Publish frees atomically so the allocator sees the updated toggle state.
+    // The reason why we can not skip this one is for the load
+    // And the batching on the host, this could corrupt the whole thing underpresure
+    Atomics.store(workerBits, 0, workerLast);
   };
 
   return {
