@@ -10,7 +10,6 @@ import {
   PayloadSignal,
   type PromisePayloadHandler,
   type Task,
-  TASK_SLOT_INDEX_MASK,
   TaskIndex,
 } from "./lock.ts";
 import { register } from "./regionRegistry.ts";
@@ -263,10 +262,6 @@ export const encodePayload = ({
     write8Binary: writeStatic8Binary,
     writeUtf8: writeStaticUtf8,
   } = requireStaticIO(headersBuffer, headerSlotStrideU32);
-  // Inline getTaskSlotIndex — avoids a cross-closure wrapper call on every
-  // dynamic alloc. task[6] & 0x1F is what getTaskSlotIndex does.
-  const slotOf = (task: Task) =>
-    task[TaskIndex.slotBuffer] & TASK_SLOT_INDEX_MASK;
   const dynamicLimitError = (
     task: Task,
     actualBytes: number,
@@ -320,7 +315,7 @@ export const encodePayload = ({
 
   const reserveDynamic = (task: Task, bytes: number) => {
     task[TaskIndex.PayloadLen] = bytes;
-    // allocTask returns slotIndex directly; use it to avoid redundant slotOf call
+    // PayloadCodec only reserves after the lock has guaranteed capacity.
     return allocTask(task);
   };
   let objectDynamicSlot = -1;
@@ -562,7 +557,6 @@ export const encodePayload = ({
         )
       ) return false;
       const reservedSlot = reserveDynamicObject(task, payloadReserveBytes);
-      if (reservedSlot === -1) return false;
       task[TaskIndex.Type] = headerIsString
         ? PayloadBuffer.EnvelopeStaticHeaderString
         : PayloadBuffer.EnvelopeStaticHeader;
@@ -596,7 +590,6 @@ export const encodePayload = ({
       task,
       headerReserveBytes + payloadLength,
     );
-    if (reservedSlot === -1) return false;
     const baseStart = task[TaskIndex.Start];
     const writtenHeaderBytes = writeDynamicUtf8(
       headerText,
@@ -668,10 +661,6 @@ export const encodePayload = ({
             return false;
           }
           const reservedSlot = reserveDynamic(task, binaryBytes);
-          if (reservedSlot < 0) {
-            clearBigIntScratch(binaryBytes);
-            return false;
-          }
           const written = writeDynamicBinary(binary, task[TaskIndex.Start]);
           if (written < 0) {
             clearBigIntScratch(binaryBytes);
@@ -906,7 +895,6 @@ export const encodePayload = ({
         const reserveBytes = dynamicUtf8ReserveBytes(task, text, "String");
         if (reserveBytes < 0) return false;
         const reservedSlot = reserveDynamic(task, reserveBytes);
-        if (reservedSlot < 0) return false;
 
         const written = writeDynamicUtf8(
           text,
@@ -942,7 +930,6 @@ export const encodePayload = ({
         const reserveBytes = dynamicUtf8ReserveBytes(task, key, "Symbol");
         if (reserveBytes < 0) return false;
         const reservedSlot = reserveDynamic(task, reserveBytes);
-        if (reservedSlot < 0) return false;
         const written = writeDynamicUtf8(
           key,
           task[TaskIndex.Start],

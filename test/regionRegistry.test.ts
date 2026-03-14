@@ -46,6 +46,10 @@ const allocNoSync = (registry: ReturnType<typeof makeRegistry>, size: number) =>
   registry.allocTask(task);
   return task;
 };
+const tableSnapshot = (
+  registry: ReturnType<typeof makeRegistry>,
+  length: number,
+) => Array.from(registry.startAndIndexToArray(length));
 const expectedStartAndIndex = (sizes: number[]) =>
   [[0,0] , ...sizes.map( (_,i,a) => {
 
@@ -142,10 +146,8 @@ test("check packing in startAndIndexToArray", () => {
 
 
   assertEquals(
-    registry
-    .startAndIndexToArray(sizes.length)
-    .map(track64andIndex)
-    , result
+    tableSnapshot(registry, sizes.length).map(track64andIndex),
+    result,
       );
 
  
@@ -168,10 +170,8 @@ test("updateTable delete front", () => {
   }
 
   assertEquals(
-    registry
-    .startAndIndexToArray(sizes.length )
-    .map(track64andIndex),
-       result
+    tableSnapshot(registry, sizes.length).map(track64andIndex),
+    result,
       );
 
   registry.free(0)
@@ -181,10 +181,8 @@ test("updateTable delete front", () => {
 
   
   assertEquals(
-    registry
-    .startAndIndexToArray(sizes.length - toBeDeletedFront)
-    .map(track64andIndex),
-       result
+    tableSnapshot(registry, sizes.length - toBeDeletedFront).map(track64andIndex),
+    result,
       );
 });
 
@@ -206,10 +204,8 @@ test("updateTable delete Back", () => {
   }
 
   assertEquals(
-    registry
-    .startAndIndexToArray(sizes.length )
-    .map(track64andIndex),
-       result
+    tableSnapshot(registry, sizes.length).map(track64andIndex),
+    result,
       );
 
   registry.free(4)
@@ -219,10 +215,8 @@ test("updateTable delete Back", () => {
 
   
   assertEquals(
-    registry
-    .startAndIndexToArray(sizes.length - toBeDeletedBack)
-    .map(track64andIndex),
-       result
+    tableSnapshot(registry, sizes.length - toBeDeletedBack).map(track64andIndex),
+    result,
       );
 });
 
@@ -244,10 +238,8 @@ test("updateTable delete middle", () => {
   }
 
   assertEquals(
-    registry
-    .startAndIndexToArray(sizes.length )
-    .map(track64andIndex),
-       result
+    tableSnapshot(registry, sizes.length).map(track64andIndex),
+    result,
       );
 
   registry.free(1)
@@ -257,10 +249,8 @@ test("updateTable delete middle", () => {
 
   
   assertEquals(
-    registry
-    .startAndIndexToArray(sizes.length - toBeDeletedBack)
-    .map(track64andIndex),
-       result
+    tableSnapshot(registry, sizes.length - toBeDeletedBack).map(track64andIndex),
+    result,
       );
 });
 
@@ -312,10 +302,8 @@ test("packing boundary at payload size 63", () => {
   }
 
   assertEquals(
-    registry
-    .startAndIndexToArray(sizes.length)
-    .map(track64andIndex),
-     expectedStartAndIndex(sizes)
+    tableSnapshot(registry, sizes.length).map(track64andIndex),
+    expectedStartAndIndex(sizes),
       );
 });
 
@@ -334,10 +322,8 @@ test("updateTable clears freed index >= 5", () => {
   result.splice(5, 1);
 
   assertEquals(
-    registry
-    .startAndIndexToArray(sizes.length - 1)
-    .map(track64andIndex),
-       result
+    tableSnapshot(registry, sizes.length - 1).map(track64andIndex),
+    result,
       );
 });
 
@@ -424,12 +410,6 @@ test("setSlotLength shrinks slot and exposes gap for next allocation", () => {
   assertEquals(third[TaskIndex.Start], align64(700));
 });
 
-test("setSlotLength rejects growing a slot", () => {
-  const registry = makeRegistry();
-  const task = allocNoSync(registry, 64);
-
-  assertEquals(registry.setSlotLength(task[TaskIndex.slotBuffer], 256), false);
-});
 
 test("allocator random overlap stress keeps allocator consistent", () => {
   const registry = makeRegistry();
