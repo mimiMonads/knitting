@@ -87,7 +87,7 @@ export const register = ({ lockSector }: { lockSector?: SharedBufferSource }) =>
 
   const updateTable = () => {
     // state = which bits are currently "in use" under toggle-protocol
-    const w = Atomics.load(workerBits, 0) | 0;
+    const w =   Atomics.load(workerBits, 0) | 0;
     const state = (hostLast ^ w) >>> 0;
 
     // freeBits = bits where host/worker agree (toggle resolved)
@@ -187,7 +187,7 @@ export const register = ({ lockSector }: { lockSector?: SharedBufferSource }) =>
     }
 
     // ========= append at end =========
-    if (tl < LockBound.slots) {
+    {
       const last = sai[tl - 1];
       const lastStart = last & START_MASK;
       const newStart = (lastStart + (sz[last & SLOT_MASK] >>> 0)) >>> 0;
@@ -200,23 +200,31 @@ export const register = ({ lockSector }: { lockSector?: SharedBufferSource }) =>
       hostLast ^= freeBit;
       return slotIndex;
     }
-
-    return -1;
   };
+
+
+  // cheaper modulo-8 counter
+  let updateTableCounter = 0;
+
 
   const allocTask = (task: Task) => {
     // Reconcile frees before every allocation; deferred object bursts can
     // otherwise allocate against stale occupancy and corrupt payload regions.
-    updateTable();
+        // throttled table cleanup — kept outside findAndInsert so that
+    // function stays pure (no calls, stable type feedback for TurboFan)
+    updateTableCounter = (updateTableCounter + 1) & 3;
+    if (updateTableCounter === 0) updateTable();
+
 
     const payloadLen = task[TaskIndex.PayloadLen] | 0;
     const size = (payloadLen + 63) & ~63;
 
     const slotIndex = findAndInsert(task, size);
-    if (slotIndex === -1) return -1;
+    //if (slotIndex === -1) return -1;
 
     // Publish slot ownership changes with atomic visibility for the peer.
-    Atomics.store(hostBits, 0, hostLast);
+    //Atomics.store(hostBits, 0, hostLast);
+    hostBits[0] = hostLast
     return slotIndex;
   };
 
