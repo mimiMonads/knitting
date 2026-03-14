@@ -9,6 +9,7 @@ import { createPool } from "../knitting.ts";
 import {
   toBigInt,
   toNumber,
+  toObject,
   toString,
 } from "./fixtures/parameter_tasks.ts";
 import {
@@ -89,6 +90,16 @@ const withTimeout = async <T>(promise: Promise<T>, ms: number): Promise<T> => {
       clearTimeout(timeoutId);
     }
   }
+};
+
+const createDeferred = <T>() => {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
 };
 
 const runProbe = (scriptPath: string, timeoutMs = 4_000): Promise<ChildResult> =>
@@ -199,6 +210,32 @@ test("node:test pool awaits promise inputs", {
       TEST_TIMEOUT_MS,
     );
     assert.equal(value, 42);
+  } finally {
+    await pool.shutdown();
+  }
+});
+
+test("node:test pool handles batched deferred object promise inputs", {
+  concurrency: false,
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
+  const pool = createPool({ threads: 1 })({ toObject });
+
+  try {
+    const inputs = Array.from({ length: 96 }, (_, i) => ({
+      id: i,
+      payload: "x".repeat(900 + (i % 5)),
+      nested: { ok: true, value: i * 3 },
+    }));
+    const deferredInputs = inputs.map(() => createDeferred<typeof inputs[number]>());
+    const pending = deferredInputs.map((item) => pool.call.toObject(item.promise));
+
+    for (let i = deferredInputs.length - 1; i >= 0; i--) {
+      deferredInputs[i]!.resolve(inputs[i]!);
+    }
+
+    const values = await withTimeout(Promise.all(pending), TEST_TIMEOUT_MS);
+    assert.deepStrictEqual(values, inputs);
   } finally {
     await pool.shutdown();
   }

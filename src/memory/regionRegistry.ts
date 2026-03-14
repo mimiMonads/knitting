@@ -55,9 +55,6 @@ export const register = ({ lockSector }: { lockSector?: SharedBufferSource }) =>
   let hostLast = 0 | 0;
   let workerLast = 0 | 0;
 
-  // cheaper modulo-8 counter
-  let updateTableCounter = 0;
-
   const startAndIndexToArray = (length: number) =>
     Array.from(startAndIndex.subarray(0, length));
 
@@ -208,10 +205,9 @@ export const register = ({ lockSector }: { lockSector?: SharedBufferSource }) =>
   };
 
   const allocTask = (task: Task) => {
-    // throttled table cleanup — kept outside findAndInsert so that
-    // function stays pure (no calls, stable type feedback for TurboFan)
-    updateTableCounter = (updateTableCounter + 1) & 3;
-    if (updateTableCounter === 0) updateTable();
+    // Reconcile frees before every allocation; deferred object bursts can
+    // otherwise allocate against stale occupancy and corrupt payload regions.
+    updateTable();
 
     const payloadLen = task[TaskIndex.PayloadLen] | 0;
     const size = (payloadLen + 63) & ~63;
@@ -243,8 +239,6 @@ export const register = ({ lockSector }: { lockSector?: SharedBufferSource }) =>
     index = index & TASK_SLOT_INDEX_MASK;
     workerLast ^= 1 << index;
     // Publish frees atomically so the allocator sees the updated toggle state.
-    // The reason why we can not skip this one is for the load
-    // And the batching on the host, this could corrupt the whole thing underpresure
     Atomics.store(workerBits, 0, workerLast);
   };
 
