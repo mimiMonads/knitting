@@ -243,7 +243,8 @@ export const register = ({ lockSector }: { lockSector?: SharedBufferSource }) =>
   const free = (index: number) => {
     index = index & TASK_SLOT_INDEX_MASK;
     workerLast ^= 1 << index;
-    Atomics.store(workerBits, 0, workerLast);
+    //Atomics.store(workerBits, 0, workerLast);
+    workerBits[0] = workerLast
   };
 
   return {

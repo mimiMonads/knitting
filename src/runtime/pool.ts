@@ -242,7 +242,8 @@ export const spawnWorkerContext = ({
     const abortBytes = abortSignalWords * Uint32Array.BYTES_PER_ELEMENT;
     // Keep the hottest control words in one compact front strip:
     // transport signals -> request lock -> return lock.
-    // Request/return headers are physically interleaved one slot at a time.
+    // Request/return headers stay in separate contiguous slabs to preserve
+    // sequential batching locality.
     // Abort bitmap stays at the tail.
     return createLockControlCarpet({
       signalBytes,
@@ -250,7 +251,7 @@ export const spawnWorkerContext = ({
       lockSectorBytes: LOCK_SECTOR_BYTE_LENGTH,
       headerSlotStrideU32: HEADER_SLOT_STRIDE_U32,
       slotCount: LockBound.slots,
-      headerLayout: "interleaved",
+      headerLayout: "split",
       createBuffer: createWasmSharedArrayBuffer,
     });
   };
