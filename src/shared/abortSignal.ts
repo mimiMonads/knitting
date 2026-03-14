@@ -1,4 +1,8 @@
 import { withResolvers } from "../common/with-resolvers.ts";
+import {
+  toSharedBufferRegion,
+  type SharedBufferSource,
+} from "../common/shared-buffer-region.ts";
 
 const SLOT_BITS = 32;
 const SLOT_MASK = SLOT_BITS - 1;
@@ -16,10 +20,15 @@ export const signalAbortFactory = ({
   sab,
   maxSignals,
 }: {
-  sab: SharedArrayBuffer;
+  sab: SharedBufferSource;
   maxSignals?: number;
 }) => {
-  const atomicView = new Uint32Array(sab);
+  const sabRegion = toSharedBufferRegion(sab);
+  const atomicView = new Uint32Array(
+    sabRegion.sab,
+    sabRegion.byteOffset,
+    sabRegion.byteLength / Uint32Array.BYTES_PER_ELEMENT,
+  );
   const size = atomicView.length;
   const inUse = new Uint32Array(size);
   const physicalMax = size * SLOT_BITS;

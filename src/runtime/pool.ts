@@ -4,12 +4,14 @@ import { createHostTxQueue } from "./tx-queue.ts";
 import {
   createSharedMemoryTransport,
   type Sab,
+  TRANSPORT_SIGNAL_BYTES,
 } from "../ipc/transport/shared-memory.ts";
 import { ChannelHandler, hostDispatcherLoop } from "./dispatcher.ts";
 import {
-  HEADER_BYTE_LENGTH,
-  LOCK_SECTOR_BYTE_LENGTH,
+  HEADER_SLOT_STRIDE_U32,
   lock2,
+  LOCK_SECTOR_BYTE_LENGTH,
+  LockBound,
   type PromisePayloadResult,
   type Task,
 } from "../memory/lock.ts";
@@ -17,21 +19,24 @@ import type {
   DebugOptions,
   DispatcherSettings,
   LockBuffers,
-  WorkerResourceLimits,
   WorkerCall,
   WorkerContext,
   WorkerData,
+  WorkerResourceLimits,
   WorkerSettings,
 } from "../types.ts";
 import { jsrIsGreatAndWorkWithoutBugs } from "../worker/loop.ts";
 import {
   createSharedArrayBuffer,
+  createWasmSharedArrayBuffer,
 } from "../common/runtime.ts";
+import type { SharedBufferSource } from "../common/shared-buffer-region.ts";
 import { signalAbortFactory } from "../shared/abortSignal.ts";
+import { createLockControlCarpet } from "../memory/byte-carpet.ts";
 import { Worker } from "node:worker_threads";
 import {
-  resolvePayloadBufferOptions,
   type PayloadBufferOptions,
+  resolvePayloadBufferOptions,
 } from "../memory/payload-config.ts";
 
 //const isBrowser = typeof window !== "undefined";
@@ -74,8 +79,8 @@ const isWorkerFatalMessage = (
   !!value &&
   typeof value === "object" &&
   typeof (value as { [WORKER_FATAL_MESSAGE_KEY]?: unknown })[
-    WORKER_FATAL_MESSAGE_KEY
-  ] === "string";
+      WORKER_FATAL_MESSAGE_KEY
+    ] === "string";
 
 const isNodeWorkerSafeExecFlag = (flag: string): boolean =>
   NODE_WORKER_SAFE_EXEC_FLAGS.has(execFlagKey(flag));
@@ -83,7 +88,9 @@ const isNodeWorkerSafeExecFlag = (flag: string): boolean =>
 const isNodePermissionExecFlag = (flag: string): boolean =>
   NODE_PERMISSION_EXEC_FLAGS.has(execFlagKey(flag));
 
-const toWorkerSafeExecArgv = (flags: string[] | undefined): string[] | undefined => {
+const toWorkerSafeExecArgv = (
+  flags: string[] | undefined,
+): string[] | undefined => {
   if (!flags || flags.length === 0) return undefined;
   const filtered = flags.filter(isNodeWorkerSafeExecFlag);
   if (filtered.length === 0) return undefined;
@@ -97,7 +104,9 @@ const toWorkerSafeExecArgv = (flags: string[] | undefined): string[] | undefined
   return deduped;
 };
 
-const toWorkerCompatExecArgv = (flags: string[] | undefined): string[] | undefined => {
+const toWorkerCompatExecArgv = (
+  flags: string[] | undefined,
+): string[] | undefined => {
   const safe = toWorkerSafeExecArgv(flags);
   if (!safe || safe.length === 0) return undefined;
   const compat = safe.filter((flag) => !isNodePermissionExecFlag(flag));
@@ -123,11 +132,15 @@ const toNodeWorkerResourceLimits = (
   if (!limits) return undefined;
   const out: NodeWorkerResourceLimits = {
     maxOldGenerationSizeMb: toPositiveInteger(limits.maxOldGenerationSizeMb),
-    maxYoungGenerationSizeMb: toPositiveInteger(limits.maxYoungGenerationSizeMb),
+    maxYoungGenerationSizeMb: toPositiveInteger(
+      limits.maxYoungGenerationSizeMb,
+    ),
     codeRangeSizeMb: toPositiveInteger(limits.codeRangeSizeMb),
     stackSizeMb: toPositiveInteger(limits.stackSizeMb),
   };
-  return Object.values(out).some((value) => value !== undefined) ? out : undefined;
+  return Object.values(out).some((value) => value !== undefined)
+    ? out
+    : undefined;
 };
 
 const terminateWorkerQuietly = (worker: SpawnedWorker): void => {
@@ -197,10 +210,10 @@ export const spawnWorkerContext = ({
       ...payload,
       mode: payload?.mode ?? bufferMode,
       maxPayloadBytes: payload?.maxPayloadBytes ?? maxPayloadBytes,
-      payloadInitialBytes:
-        payload?.payloadInitialBytes ?? sanitizeBytes(payloadInitialBytes),
-      payloadMaxByteLength:
-        payload?.payloadMaxByteLength ?? sanitizeBytes(payloadMaxBytes),
+      payloadInitialBytes: payload?.payloadInitialBytes ??
+        sanitizeBytes(payloadInitialBytes),
+      payloadMaxByteLength: payload?.payloadMaxByteLength ??
+        sanitizeBytes(payloadMaxBytes),
     },
   });
   const makePayloadBuffer = () =>
@@ -212,24 +225,49 @@ export const spawnWorkerContext = ({
       : createSharedArrayBuffer(resolvedPayloadConfig.payloadInitialBytes);
   const defaultAbortSignalCapacity = 258;
   const requestedAbortSignalCapacity = sanitizeBytes(abortSignalCapacity);
-  const resolvedAbortSignalCapacity =
-    requestedAbortSignalCapacity ?? defaultAbortSignalCapacity;
+  const resolvedAbortSignalCapacity = requestedAbortSignalCapacity ??
+    defaultAbortSignalCapacity;
+  const abortSignalWords = Math.max(
+    1,
+    Math.ceil(resolvedAbortSignalCapacity / 32),
+  );
+  const requestedSignalBytes = sanitizeBytes(sab?.size);
+  const externalSignalSab = sab?.sharedSab;
 
-  const makeLockBuffers = (): LockBuffers => {
-    const lockSector = new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH);
-    return {
-      headers: new SharedArrayBuffer(HEADER_BYTE_LENGTH),
-      lockSector,
-      payload: makePayloadBuffer(),
-      payloadSector: lockSector,
-    };
+  const makeLockControlLayout = () => {
+    const signalBytes = Math.max(
+      TRANSPORT_SIGNAL_BYTES,
+      requestedSignalBytes ?? TRANSPORT_SIGNAL_BYTES,
+    );
+    const abortBytes = abortSignalWords * Uint32Array.BYTES_PER_ELEMENT;
+    // Keep the hottest control words in one compact front strip:
+    // transport signals -> request lock -> return lock.
+    // Request/return headers are physically interleaved one slot at a time.
+    // Abort bitmap stays at the tail.
+    return createLockControlCarpet({
+      signalBytes,
+      abortBytes,
+      lockSectorBytes: LOCK_SECTOR_BYTE_LENGTH,
+      headerSlotStrideU32: HEADER_SLOT_STRIDE_U32,
+      slotCount: LockBound.slots,
+      headerLayout: "interleaved",
+      createBuffer: createWasmSharedArrayBuffer,
+    });
   };
 
-  const lockBuffers: LockBuffers = makeLockBuffers();
-  const returnLockBuffers: LockBuffers = makeLockBuffers();
+  const controlLayout = makeLockControlLayout();
+  const lockBuffers: LockBuffers = {
+    ...controlLayout.lock,
+    payload: makePayloadBuffer(),
+  };
+  const returnLockBuffers: LockBuffers = {
+    ...controlLayout.returnLock,
+    payload: makePayloadBuffer(),
+  };
 
   const lock = lock2({
     headers: lockBuffers.headers,
+    headerSlotStrideU32: lockBuffers.headerSlotStrideU32,
     LockBoundSector: lockBuffers.lockSector,
     payload: lockBuffers.payload,
     payloadSector: lockBuffers.payloadSector,
@@ -237,17 +275,14 @@ export const spawnWorkerContext = ({
   });
   const returnLock = lock2({
     headers: returnLockBuffers.headers,
+    headerSlotStrideU32: returnLockBuffers.headerSlotStrideU32,
     LockBoundSector: returnLockBuffers.lockSector,
     payload: returnLockBuffers.payload,
     payloadSector: returnLockBuffers.payloadSector,
     payloadConfig: resolvedPayloadConfig,
   });
-  const abortSignalWords = Math.max(
-    1,
-    Math.ceil(resolvedAbortSignalCapacity / 32),
-  );
   const abortSignalSAB = usesAbortSignal === true
-    ? new SharedArrayBuffer(Uint32Array.BYTES_PER_ELEMENT * abortSignalWords)
+    ? controlLayout.abortSignals
     : undefined;
   const abortSignals = abortSignalSAB
     ? signalAbortFactory({
@@ -257,7 +292,12 @@ export const spawnWorkerContext = ({
     : undefined;
 
   const signals = createSharedMemoryTransport({
-    sabObject: sab,
+    sabObject: externalSignalSab == null
+      ? {
+        size: requestedSignalBytes,
+        sharedSab: controlLayout.signals,
+      }
+      : sab,
     isMain: true,
     thread,
     debug,
@@ -300,7 +340,9 @@ export const spawnWorkerContext = ({
   const workerDataPayload = {
     sab: signals.sab,
     abortSignalSAB,
-    abortSignalMax: usesAbortSignal === true ? resolvedAbortSignalCapacity : undefined,
+    abortSignalMax: usesAbortSignal === true
+      ? resolvedAbortSignalCapacity
+      : undefined,
     list,
     ids,
     at,
@@ -347,7 +389,8 @@ export const spawnWorkerContext = ({
           ) as Worker;
         } catch (fallbackError) {
           if (
-            (fallbackError as { code?: string })?.code === "ERR_WORKER_INVALID_EXEC_ARGV"
+            (fallbackError as { code?: string })?.code ===
+              "ERR_WORKER_INVALID_EXEC_ARGV"
           ) {
             const compatExecArgv = toWorkerCompatExecArgv(fallbackExecArgv);
             if (compatExecArgv && compatExecArgv.length > 0) {
@@ -357,10 +400,16 @@ export const spawnWorkerContext = ({
                   { ...baseNodeWorkerOptions, execArgv: compatExecArgv },
                 ) as Worker;
               } catch {
-                worker = new poliWorker(workerUrl, baseNodeWorkerOptions) as Worker;
+                worker = new poliWorker(
+                  workerUrl,
+                  baseNodeWorkerOptions,
+                ) as Worker;
               }
             } else {
-              worker = new poliWorker(workerUrl, baseNodeWorkerOptions) as Worker;
+              worker = new poliWorker(
+                workerUrl,
+                baseNodeWorkerOptions,
+              ) as Worker;
             }
           } else {
             throw fallbackError;
@@ -409,10 +458,9 @@ export const spawnWorkerContext = ({
   const send = () => {
     if (check.isRunning === true) return;
     check.isRunning = true;
-    Promise.resolve().then(check)
+    Promise.resolve().then(check);
     // Macro lane: dispatcher check is driven by the channel callback.
     // channelHandler.notify();
-
 
     // Use opView as a wake counter in lock2 mode to avoid lost wakeups.
     if (a_load(signalBox.rxStatus, 0) === 0) {

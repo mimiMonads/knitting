@@ -7,6 +7,11 @@ import {
   TaskIndex,
 } from "./lock.ts";
 import type { Task } from "./lock.ts";
+import { createWasmSharedArrayBuffer } from "../common/runtime.ts";
+import {
+  toSharedBufferRegion,
+  type SharedBufferSource,
+} from "../common/shared-buffer-region.ts";
 
 // Low 5 bits = slot index, high 27 bits = caller meta.
 // Inlined from setTaskSlotIndex to avoid cross-closure call on hot path.
@@ -15,13 +20,22 @@ const SLOT_META_PACKED_MASK = 0xFFFFFFE0; // (~0x1F) >>> 0
 
 export type RegisterMalloc = ReturnType<typeof register>;
 
-export const register = ({ lockSector }: { lockSector?: SharedArrayBuffer }) => {
-  const lockSAB =
-    lockSector ??
-    new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH);
+export const register = ({ lockSector }: { lockSector?: SharedBufferSource }) => {
+  const lockRegion = toSharedBufferRegion(
+    lockSector ?? createWasmSharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH),
+  );
+  const lockSAB = lockRegion.sab;
 
-  const hostBits = new Int32Array(lockSAB, PAYLOAD_LOCK_HOST_BITS_OFFSET_BYTES, 1);
-  const workerBits = new Int32Array(lockSAB, PAYLOAD_LOCK_WORKER_BITS_OFFSET_BYTES, 1);
+  const hostBits = new Int32Array(
+    lockSAB,
+    lockRegion.byteOffset + PAYLOAD_LOCK_HOST_BITS_OFFSET_BYTES,
+    1,
+  );
+  const workerBits = new Int32Array(
+    lockSAB,
+    lockRegion.byteOffset + PAYLOAD_LOCK_WORKER_BITS_OFFSET_BYTES,
+    1,
+  );
 
   const startAndIndex = new Uint32Array(LockBound.slots);
   const size64bit = new Uint32Array(LockBound.slots);

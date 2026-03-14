@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
+import type { Buffer as NodeBuffer } from "node:buffer";
 import { existsSync, mkdirSync, rmSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
@@ -105,10 +106,10 @@ const runProbe = (scriptPath: string, timeoutMs = 4_000): Promise<ChildResult> =
     let stderr = "";
     let done = false;
 
-    child.stdout.on("data", (chunk: Buffer | string) => {
+    child.stdout.on("data", (chunk: NodeBuffer | string) => {
       stdout += chunk.toString();
     });
-    child.stderr.on("data", (chunk: Buffer | string) => {
+    child.stderr.on("data", (chunk: NodeBuffer | string) => {
       stderr += chunk.toString();
     });
 

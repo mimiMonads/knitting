@@ -1,19 +1,24 @@
 import RingQueue from "../ipc/tools/RingQueue.ts";
 import { decodePayload, encodePayload } from "./payloadCodec.ts";
-import { createSharedArrayBuffer } from "../common/runtime.ts";
 import {
-  resolvePayloadBufferOptions,
+  createSharedArrayBuffer,
+  createWasmSharedArrayBuffer,
+} from "../common/runtime.ts";
+import {
+  type SharedBufferSource,
+  toSharedBufferRegion,
+} from "../common/shared-buffer-region.ts";
+import { getStridedSlotOffsetU32 } from "./byte-carpet.ts";
+import {
   type PayloadBufferOptions,
+  resolvePayloadBufferOptions,
 } from "./payload-config.ts";
-
 
 /**
  * TODO: Compose all the instance where the array is passed as argument
- * 
- * 
  */
 
- export enum PayloadSignal {
+export enum PayloadSignal {
   UNREACHABLE = 0,
   BigInt = 2,
   True = 3,
@@ -24,8 +29,6 @@ import {
   Float64 = 9,
   Null = 10,
 }
-
-
 
 export enum PayloadBuffer {
   BORDER_SIGNAL_BUFFER = 11,
@@ -61,8 +64,6 @@ export enum PayloadBuffer {
   EnvelopeDynamicHeaderString = 43,
 }
 
-
-
 export enum LockBound {
   paddingLock = 0,
   padding = 0,
@@ -79,7 +80,7 @@ export type Task = [
   PayloadSignal | PayloadBuffer,
   number,
   number,
-  number, 
+  number,
   number,
   number,
 ] & {
@@ -151,19 +152,18 @@ const TASK_SLOT_META_PACKED_MASK = (~TASK_SLOT_INDEX_MASK) >>> 0;
 export const TASK_FUNCTION_ID_BITS = 16;
 export const TASK_FUNCTION_ID_MASK = (1 << TASK_FUNCTION_ID_BITS) - 1;
 export const TASK_FUNCTION_META_BITS = 32 - TASK_FUNCTION_ID_BITS;
-export const TASK_FUNCTION_META_VALUE_MASK =
-  0xFFFFFFFF >>> TASK_FUNCTION_ID_BITS;
+export const TASK_FUNCTION_META_VALUE_MASK = 0xFFFFFFFF >>>
+  TASK_FUNCTION_ID_BITS;
 const TASK_FUNCTION_META_PACKED_MASK = (~TASK_FUNCTION_ID_MASK) >>> 0;
 
 export const getTaskFunctionID = (task: ArrayLike<number>): number =>
   task[TaskIndex.FunctionID] & TASK_FUNCTION_ID_MASK;
 
 export const setTaskFunctionID = (task: Task, functionID: number): void => {
-  task[TaskIndex.FunctionID] =
-    (
-      (task[TaskIndex.FunctionID] & TASK_FUNCTION_META_PACKED_MASK) |
-      (functionID & TASK_FUNCTION_ID_MASK)
-    ) >>> 0;
+  task[TaskIndex.FunctionID] = (
+    (task[TaskIndex.FunctionID] & TASK_FUNCTION_META_PACKED_MASK) |
+    (functionID & TASK_FUNCTION_ID_MASK)
+  ) >>> 0;
 };
 
 export const getTaskFunctionMeta = (task: ArrayLike<number>): number =>
@@ -181,11 +181,10 @@ export const getTaskSlotIndex = (task: ArrayLike<number>): number =>
   task[TaskIndex.slotBuffer] & TASK_SLOT_INDEX_MASK;
 
 export const setTaskSlotIndex = (task: Task, slotIndex: number): void => {
-  task[TaskIndex.slotBuffer] =
-    (
-      (task[TaskIndex.slotBuffer] & TASK_SLOT_META_PACKED_MASK) |
-      (slotIndex & TASK_SLOT_INDEX_MASK)
-    ) >>> 0;
+  task[TaskIndex.slotBuffer] = (
+    (task[TaskIndex.slotBuffer] & TASK_SLOT_META_PACKED_MASK) |
+    (slotIndex & TASK_SLOT_INDEX_MASK)
+  ) >>> 0;
 };
 
 export const getTaskSlotMeta = (task: ArrayLike<number>): number =>
@@ -217,12 +216,20 @@ export const PAYLOAD_LOCK_WORKER_BITS_OFFSET_BYTES = LOCK_CACHE_LINE_BYTES * 3;
 export const PAYLOAD_LOCK_SECTOR_BYTE_LENGTH = LOCK_SECTOR_BYTES;
 
 // Header layout in Uint32 units.
-// Each slot stores the task header first, followed by static payload bytes.
+// Each slot stores aligned static payload bytes first, then pads to the next
+// cache line so the task header has a dedicated 64-byte line.
 export const HEADER_SLOT_STRIDE_U32 = LockBound.header + TaskIndex.TotalBuff;
-export const HEADER_U32_LENGTH =
-  LockBound.header + (HEADER_SLOT_STRIDE_U32 * LockBound.slots);
-export const HEADER_BYTE_LENGTH = HEADER_U32_LENGTH * Uint32Array.BYTES_PER_ELEMENT;
-
+export const HEADER_SLOT_STRIDE_BYTES = HEADER_SLOT_STRIDE_U32 *
+  Uint32Array.BYTES_PER_ELEMENT;
+export const HEADER_TASK_LINE_U32 = LOCK_CACHE_LINE_BYTES /
+  Uint32Array.BYTES_PER_ELEMENT;
+export const HEADER_STATIC_PAYLOAD_U32 = TaskIndex.TotalBuff -
+  HEADER_TASK_LINE_U32;
+export const HEADER_TASK_OFFSET_IN_SLOT_U32 = HEADER_STATIC_PAYLOAD_U32;
+export const HEADER_U32_LENGTH = LockBound.header +
+  (HEADER_SLOT_STRIDE_U32 * LockBound.slots);
+export const HEADER_BYTE_LENGTH = HEADER_U32_LENGTH *
+  Uint32Array.BYTES_PER_ELEMENT;
 
 let INDEX_ID = 0;
 const INIT_VAL = PayloadSignal.UNREACHABLE;
@@ -230,10 +237,10 @@ const def = (_?: unknown) => {};
 
 const createTaskShell = () => {
   const task = new Uint32Array(TaskIndex.Size) as Uint32Array & {
-    value: unknown
-    resolve: (value?: unknown)=>void
-    reject:  (reason?: unknown)=>void
-  } as unknown as Task
+    value: unknown;
+    resolve: (value?: unknown) => void;
+    reject: (reason?: unknown) => void;
+  } as unknown as Task;
   task.value = null;
   task.resolve = def;
   task.reject = def;
@@ -269,22 +276,18 @@ const makeTaskFrom = (array: Uint32Array, at: number) => {
   return task;
 };
 
-  // could be inlined 
+// could be inlined
 const settleTask = (task: Task) => {
-
-  if( task[TaskIndex["FlagsToHost"]] === 0){
-    task.resolve(task.value)
-  }else{
-    task.reject(task.value)
+  if (task[TaskIndex["FlagsToHost"]] === 0) {
+    task.resolve(task.value);
+  } else {
+    task.reject(task.value);
     // restarting the flag
-    task[TaskIndex["FlagsToHost"]] = 0
+    task[TaskIndex["FlagsToHost"]] = 0;
   }
-
-
-}
+};
 
 /**
- *
  * Complexity: 7 / 10
  *
  * SAFETY:
@@ -293,29 +296,29 @@ const settleTask = (task: Task) => {
  *  - encode/decode are not re-entrant; payload codec uses a shared scratch buffer.
  */
 
-export type Lock2 = ReturnType<typeof lock2>
+export type Lock2 = ReturnType<typeof lock2>;
 
 export const lock2 = ({
   headers,
+  headerSlotStrideU32,
   LockBoundSector,
   payload,
   payloadConfig,
   payloadSector,
   resultList,
   toSentList,
-  recycleList
+  recycleList,
 }: {
-  headers?: SharedArrayBuffer;
-  LockBoundSector?: SharedArrayBuffer;
+  headers?: SharedBufferSource;
+  headerSlotStrideU32?: number;
+  LockBoundSector?: SharedBufferSource;
   payload?: SharedArrayBuffer;
   payloadConfig?: PayloadBufferOptions;
-  payloadSector?: SharedArrayBuffer;
+  payloadSector?: SharedBufferSource;
   toSentList?: RingQueue<Task>;
   resultList?: RingQueue<Task>;
   recycleList?: RingQueue<Task>;
 }) => {
-
-
   // Layout:
   // - hostBits starts at byte `paddingLock`
   // - workerBits starts immediately after hostBits
@@ -324,26 +327,33 @@ export const lock2 = ({
   // Important: encode() always toggles `hostBits` and decode/resolveHost always
   // toggles `workerBits`, regardless of which thread calls them. This is why
   // the "return lock" (worker->host responses) still publishes into `hostBits`.
-  const LockBoundSAB =
+  const lockSectorRegion = toSharedBufferRegion(
     LockBoundSector ??
-    new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH);
+      createWasmSharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH),
+  );
+  const LockBoundSAB = lockSectorRegion.sab;
 
-  const hostBits = new Int32Array(LockBoundSAB, LOCK_HOST_BITS_OFFSET_BYTES, 1);
+  const hostBits = new Int32Array(
+    LockBoundSAB,
+    lockSectorRegion.byteOffset + LOCK_HOST_BITS_OFFSET_BYTES,
+    1,
+  );
   const workerBits = new Int32Array(
     LockBoundSAB,
-    LOCK_WORKER_BITS_OFFSET_BYTES,
+    lockSectorRegion.byteOffset + LOCK_WORKER_BITS_OFFSET_BYTES,
     1,
   );
 
-  // Logical positions for each slot payload in headersBuffer.
-  // (Layout unchanged from your version.)
-
-  const bufferHeadersBuffer:SharedArrayBuffer =  headers ??
-      new SharedArrayBuffer(HEADER_BYTE_LENGTH)
+  const headersRegion = toSharedBufferRegion(
+    headers ?? createWasmSharedArrayBuffer(HEADER_BYTE_LENGTH),
+  );
 
   const headersBuffer = new Uint32Array(
-  bufferHeadersBuffer
+    headersRegion.sab,
+    headersRegion.byteOffset,
+    headersRegion.byteLength >>> 2,
   );
+  const headersSlotStride = headerSlotStrideU32 ?? HEADER_SLOT_STRIDE_U32;
 
   const resolvedPayloadConfig = resolvePayloadBufferOptions({
     sab: payload,
@@ -358,7 +368,9 @@ export const lock2 = ({
         )
         : createSharedArrayBuffer(resolvedPayloadConfig.payloadInitialBytes)
     );
-  const payloadLockSAB = payloadSector ?? LockBoundSAB;
+  const payloadLockRegion = toSharedBufferRegion(
+    payloadSector ?? lockSectorRegion,
+  );
 
   let promiseHandler: PromisePayloadHandler | undefined;
   let trackedDeferredTasks = new WeakSet<Task>();
@@ -369,7 +381,8 @@ export const lock2 = ({
       config: resolvedPayloadConfig,
     },
     headersBuffer,
-    lockSector: payloadLockSAB,
+    headerSlotStrideU32: headersSlotStride,
+    lockSector: payloadLockRegion,
     onPromise: (task, result) => {
       if (trackedDeferredTasks.delete(task) && pendingPromiseCount > 0) {
         pendingPromiseCount = (pendingPromiseCount - 1) | 0;
@@ -383,7 +396,8 @@ export const lock2 = ({
       config: resolvedPayloadConfig,
     },
     headersBuffer,
-    lockSector: payloadLockSAB,
+    headerSlotStrideU32: headersSlotStride,
+    lockSector: payloadLockRegion,
   });
 
   let LastLocal = 0 | 0;
@@ -408,17 +422,20 @@ export const lock2 = ({
   const recycleShift = () => recyclecList.shiftNoClear();
   const resolvedPush = (task: Task) => resolved.push(task);
 
-  const SLOT_SIZE = HEADER_SLOT_STRIDE_U32;
   const clz32 = Math.clz32;
   const slotOffset = (at: number) =>
-    (at * SLOT_SIZE) + LockBound.header;
-  const takeTask = ({ queue }: { queue: Task[] }) =>
-    (at: number) => {
-      const off = slotOffset(at);
-      const task = queue[headersBuffer[off + TaskIndex.ID]!];
-      fillTaskFrom(task, headersBuffer, off);
-      return task;
-    };
+    getStridedSlotOffsetU32({
+      slotIndex: at,
+      slotStrideU32: headersSlotStride,
+      baseU32: LockBound.header,
+      extraU32: HEADER_TASK_OFFSET_IN_SLOT_U32,
+    });
+  const takeTask = ({ queue }: { queue: Task[] }) => (at: number) => {
+    const off = slotOffset(at);
+    const task = queue[headersBuffer[off + TaskIndex.ID]!];
+    fillTaskFrom(task, headersBuffer, off);
+    return task;
+  };
 
   const enlist = (task: Task) => toBeSentPush(task);
   const trackDeferredTask = (task: Task) => {
@@ -427,7 +444,6 @@ export const lock2 = ({
     pendingPromiseCount = (pendingPromiseCount + 1) | 0;
   };
   let selectedSlotIndex = 0 | 0, selectedSlotBit = 0 >>> 0;
-
 
   const encodeWithState = (task: Task, state: number): number => {
     const free = ~state;
@@ -579,7 +595,6 @@ export const lock2 = ({
     return true;
   };
 
-
   /**
    * HOST SIDE: decode version
    */
@@ -588,12 +603,10 @@ export const lock2 = ({
     onResolved,
     shouldSettle,
   }: ResolveHostOptions) => {
-
     const getTask = takeTask({ queue });
     const HAS_RESOLVE = onResolved ? true : false;
     const HAS_SHOULD_SETTLE = shouldSettle ? true : false;
     let lastResolved = 32;
-
 
     return (): number => {
       let diff = (a_load(hostBits, 0) ^ LastWorker) | 0;
@@ -667,8 +680,7 @@ export const lock2 = ({
       lastResolved = last;
       return modified;
     };
-  }
-
+  };
 
   const decodeAt = (at: number): boolean => {
     const off = slotOffset(at);

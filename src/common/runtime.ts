@@ -41,6 +41,8 @@ const hasSharedWasmMemory = (() => {
   }
 })();
 
+export const HAS_SHARED_WASM_MEMORY = hasSharedWasmMemory;
+
 const roundupWasmPages = (byteLength: number) =>
   Math.ceil(Math.max(0, byteLength) / WASM_MEMORY_PAGE_BYTES);
 
@@ -57,6 +59,16 @@ const createSharedWasmBuffer = (
   wasmSharedBufferMemory.set(buffer, memory);
   wasmSharedBufferMaxByteLength.set(buffer, maxByteLength);
   return buffer;
+};
+
+export const createWasmSharedArrayBuffer = (
+  byteLength: number,
+  maxByteLength = byteLength,
+) => {
+  if (hasSharedWasmMemory) {
+    return createSharedWasmBuffer(byteLength, maxByteLength);
+  }
+  return new SharedArrayBuffer(byteLength);
 };
 
 const HAS_NATIVE_SAB_GROW =
@@ -77,6 +89,9 @@ export const createSharedArrayBuffer = (
   }
   return new SharedArrayBuffer(byteLength);
 };
+
+export const isWasmSharedArrayBuffer = (sab: SharedArrayBuffer) =>
+  wasmSharedBufferMemory.has(sab);
 
 export const isGrowableSharedArrayBuffer = (sab: SharedArrayBuffer) => {
   const value = sab as SharedArrayBufferWithGrow;

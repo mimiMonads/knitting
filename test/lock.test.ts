@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-const assertEquals: (actual: unknown, expected: unknown) => void =
-  (actual, expected) => {
-    assert.deepStrictEqual(actual, expected);
-  };
+const assertEquals: (actual: unknown, expected: unknown) => void = (
+  actual,
+  expected,
+) => {
+  assert.deepStrictEqual(actual, expected);
+};
 import RingQueue from "../src/ipc/tools/RingQueue.ts";
+import {
+  HAS_SHARED_WASM_MEMORY,
+  isWasmSharedArrayBuffer,
+} from "../src/common/runtime.ts";
+import { createLockControlCarpet } from "../src/memory/byte-carpet.ts";
 import {
   getTaskFunctionID,
   getTaskFunctionMeta,
@@ -12,9 +19,10 @@ import {
   getTaskSlotMeta,
   HEADER_BYTE_LENGTH,
   HEADER_SLOT_STRIDE_U32,
+  HEADER_TASK_OFFSET_IN_SLOT_U32,
+  lock2,
   LOCK_SECTOR_BYTE_LENGTH,
   LockBound,
-  lock2,
   makeTask,
   PAYLOAD_LOCK_SECTOR_BYTE_LENGTH,
   PayloadSignal,
@@ -67,7 +75,17 @@ const makeRng = (seed: number) => {
 
 test("encode/decode roundtrip values", () => {
   const { lock } = makeLock();
-  const values = [123, -45.5, true, false, 9n, Infinity, -Infinity, NaN, undefined];
+  const values = [
+    123,
+    -45.5,
+    true,
+    false,
+    9n,
+    Infinity,
+    -Infinity,
+    NaN,
+    undefined,
+  ];
 
   for (const value of values) {
     assert(lock.encode(makeValueTask(value)));
@@ -96,7 +114,7 @@ test("encode/decode roundtrip string", () => {
   assert(lock.decode());
 
   const decoded = lock.resolved.toArray()
-  .filter((task) =>  typeof task.value === "string") ;
+    .filter((task) => typeof task.value === "string");
   assertEquals(decoded.length, 1);
   assertEquals(decoded[0].value, value);
 });
@@ -104,6 +122,86 @@ test("encode/decode roundtrip string", () => {
 test("decode is no-op with no new slots", () => {
   const { lock } = makeLock();
   assertEquals(lock.decode(), false);
+});
+
+test("default lock sector uses wasm-backed shared memory when available", () => {
+  const { lock } = makeLock();
+  assertEquals(
+    isWasmSharedArrayBuffer(lock.hostBits.buffer as SharedArrayBuffer),
+    HAS_SHARED_WASM_MEMORY,
+  );
+});
+
+test("two locks can share one control strip without interfering", () => {
+  const controlLayout = createLockControlCarpet({
+    signalBytes: 0,
+    abortBytes: 0,
+    lockSectorBytes: LOCK_SECTOR_BYTE_LENGTH,
+    headerSlotStrideU32: HEADER_SLOT_STRIDE_U32,
+    slotCount: LockBound.slots,
+    headerLayout: "split",
+  });
+  const request = lock2({
+    LockBoundSector: controlLayout.lock.lockSector,
+    headers: controlLayout.lock.headers,
+    payload: new SharedArrayBuffer(4096),
+    payloadSector: controlLayout.lock.payloadSector,
+  });
+  const response = lock2({
+    LockBoundSector: controlLayout.returnLock.lockSector,
+    headers: controlLayout.returnLock.headers,
+    payload: new SharedArrayBuffer(4096),
+    payloadSector: controlLayout.returnLock.payloadSector,
+  });
+
+  assertEquals(request.encode(makeValueTask("request")), true);
+  assertEquals(response.encode(makeValueTask("response")), true);
+  assert(request.decode());
+  assert(response.decode());
+
+  assertEquals(request.resolved.toArray().map((task) => task.value), [
+    "request",
+  ]);
+  assertEquals(response.resolved.toArray().map((task) => task.value), [
+    "response",
+  ]);
+});
+
+test("two locks can use interleaved request/return headers without interfering", () => {
+  const controlLayout = createLockControlCarpet({
+    signalBytes: 0,
+    abortBytes: 0,
+    lockSectorBytes: LOCK_SECTOR_BYTE_LENGTH,
+    headerSlotStrideU32: HEADER_SLOT_STRIDE_U32,
+    slotCount: LockBound.slots,
+    headerLayout: "interleaved",
+  });
+  const request = lock2({
+    LockBoundSector: controlLayout.lock.lockSector,
+    headers: controlLayout.lock.headers,
+    headerSlotStrideU32: controlLayout.lock.headerSlotStrideU32,
+    payload: new SharedArrayBuffer(4096),
+    payloadSector: controlLayout.lock.payloadSector,
+  });
+  const response = lock2({
+    LockBoundSector: controlLayout.returnLock.lockSector,
+    headers: controlLayout.returnLock.headers,
+    headerSlotStrideU32: controlLayout.returnLock.headerSlotStrideU32,
+    payload: new SharedArrayBuffer(4096),
+    payloadSector: controlLayout.returnLock.payloadSector,
+  });
+
+  assertEquals(request.encode(makeValueTask("request")), true);
+  assertEquals(response.encode(makeValueTask("response")), true);
+  assert(request.decode());
+  assert(response.decode());
+
+  assertEquals(request.resolved.toArray().map((task) => task.value), [
+    "request",
+  ]);
+  assertEquals(response.resolved.toArray().map((task) => task.value), [
+    "response",
+  ]);
 });
 
 test("slotBuffer helpers only mutate low 5 bits", () => {
@@ -115,7 +213,7 @@ test("slotBuffer helpers only mutate low 5 bits", () => {
   assertEquals(getTaskSlotIndex(task), 17);
   assertEquals(
     task[TaskIndex.slotBuffer] >>> 5,
-    (0xabcdefe0 >>> 5),
+    0xabcdefe0 >>> 5,
   );
   assertEquals(task[TaskIndex.slotBuffer] & TASK_SLOT_INDEX_MASK, 17);
 });
@@ -269,7 +367,7 @@ test("resolveHost decodes into queue and acks worker bits", () => {
     lock.encode(task);
   }
 
-  const resolveHost = lock.resolveHost({ queue, });
+  const resolveHost = lock.resolveHost({ queue });
 
   assert(resolveHost());
   assertEquals(results, responses);
@@ -526,8 +624,8 @@ test("resolveHost random stress keeps toggle protocol consistent across instance
   }
 
   while (true) {
-    const pendingBefore =
-      (Atomics.load(consumer.hostBits, 0) ^ Atomics.load(consumer.workerBits, 0)) >>> 0;
+    const pendingBefore = (Atomics.load(consumer.hostBits, 0) ^
+      Atomics.load(consumer.workerBits, 0)) >>> 0;
     const modified = resolveHost() | 0;
     if (pendingBefore === 0) {
       assertEquals(modified, 0);
@@ -615,7 +713,9 @@ test("xor decode keeps bit protocol consistent on unknown payload signal", () =>
   let nextValue = 1;
 
   const slotOffset = (at: number) =>
-    (at * HEADER_SLOT_STRIDE_U32) + LockBound.header;
+    (at * HEADER_SLOT_STRIDE_U32) +
+    LockBound.header +
+    HEADER_TASK_OFFSET_IN_SLOT_U32;
 
   for (let round = 0; round < 128; round++) {
     const lockSector = new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH);

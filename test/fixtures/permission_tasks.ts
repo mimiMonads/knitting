@@ -1,5 +1,5 @@
 import path from "node:path";
-import { spawnSync as spawnSyncLegacy } from "child_process";
+import { Buffer as NodeBuffer } from "node:buffer";
 import { spawnSync } from "node:child_process";
 import { cp as cpPromise } from "node:fs/promises";
 import { get as httpGet } from "node:http";
@@ -82,7 +82,7 @@ export const spawnChildProcess = task<void, string>({
 });
 
 export const spawnChildProcessLegacySpecifier = task<void, string>({
-  f: () => runNodeVersionProbe(spawnSyncLegacy, "spawn-legacy-ok"),
+  f: () => runNodeVersionProbe(spawnSync, "spawn-legacy-ok"),
 });
 
 export const readEnvVar = task<string, string | undefined>({
@@ -218,7 +218,7 @@ export const spawnViaProcessBinding = task<void, string>({
     const text = typeof raw === "string"
       ? raw
       : raw instanceof Uint8Array
-        ? Buffer.from(raw).toString("utf8")
+        ? NodeBuffer.from(raw).toString("utf8")
         : "";
     return text.trim();
   },

@@ -1,5 +1,9 @@
 export type SignalArguments = ReturnType<typeof createSharedMemoryTransport>;
 import { createSharedArrayBuffer } from "../../common/runtime.ts";
+import {
+  toSharedBufferRegion,
+  type SharedBufferSource,
+} from "../../common/shared-buffer-region.ts";
 import { type DebugOptions } from "../../types.ts";
 
 const page = 1024 * 4;
@@ -11,12 +15,13 @@ const SIGNAL_OFFSETS = {
   rxStatus: CACHE_LINE_BYTES,
   txStatus: CACHE_LINE_BYTES * 2,
 } as const;
+export const TRANSPORT_SIGNAL_BYTES = CACHE_LINE_BYTES * 3;
 
 const a_store = Atomics.store;
 
 export type Sab = {
   size?: number;
-  sharedSab?: SharedArrayBuffer;
+  sharedSab?: SharedBufferSource;
 };
 
 type SignalForWorker = {
@@ -32,27 +37,35 @@ export const createSharedMemoryTransport = (
 ) => {
   const toGrow = sabObject?.size ?? page;
   const roundedSize = toGrow + ((page - (toGrow % page)) % page);
-  const sab = sabObject?.sharedSab
-    ? sabObject.sharedSab
+  const signalRegion = toSharedBufferRegion(
+    sabObject?.sharedSab
+      ? sabObject.sharedSab
     : createSharedArrayBuffer(
       roundedSize,
       page * page,
-    );
+    ),
+  );
+  const sab = signalRegion.sab;
+  const baseByteOffset = signalRegion.byteOffset;
 
   const startAt = startTime ?? performance.now();
-  const opView = new Int32Array(sab, SIGNAL_OFFSETS.op, 1);
+  const opView = new Int32Array(sab, baseByteOffset + SIGNAL_OFFSETS.op, 1);
   if (isMain) a_store(opView, 0, 0);
 
-  const rxStatus = new Int32Array(sab, SIGNAL_OFFSETS.rxStatus, 1);
+  const rxStatus = new Int32Array(
+    sab,
+    baseByteOffset + SIGNAL_OFFSETS.rxStatus,
+    1,
+  );
 
   a_store(rxStatus, 0, 1);
   return {
-    sab,
+    sab: signalRegion,
     op: opView,
     startAt,
     opView,
     rxStatus,
-    txStatus: new Int32Array(sab, SIGNAL_OFFSETS.txStatus, 1),
+    txStatus: new Int32Array(sab, baseByteOffset + SIGNAL_OFFSETS.txStatus, 1),
   };
 };
 export type MainSignal = Pick<

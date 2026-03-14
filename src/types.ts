@@ -2,6 +2,10 @@ import { endpointSymbol } from "./common/task-symbol.ts";
 import type { Buffer as NodeBuffer } from "node:buffer";
 import type { Envelope } from "./common/envelope.ts";
 import type {
+  SharedBufferRegion,
+  SharedBufferSource,
+} from "./common/shared-buffer-region.ts";
+import type {
   PayloadBufferMode,
   PayloadBufferOptions,
 } from "./memory/payload-config.ts";
@@ -27,8 +31,8 @@ interface WorkerContext {
 type CreateContext = WorkerContext;
 
 type WorkerData = {
-  sab: SharedArrayBuffer;
-  abortSignalSAB?: SharedArrayBuffer;
+  sab: SharedBufferSource;
+  abortSignalSAB?: SharedBufferSource;
   abortSignalMax?: number;
   list: string[];
   ids: number[];
@@ -45,10 +49,11 @@ type WorkerData = {
 };
 
 type LockBuffers = {
-  headers: SharedArrayBuffer;
-  lockSector: SharedArrayBuffer;
+  headers: SharedBufferSource;
+  headerSlotStrideU32?: number;
+  lockSector: SharedBufferSource;
   payload: SharedArrayBuffer;
-  payloadSector: SharedArrayBuffer;
+  payloadSector: SharedBufferSource;
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -481,6 +486,8 @@ export type {
   PermissionProtocolInput as PermissionProtocolInput,
   ResolvedPermissionProtocol as ResolvedPermissionProtocol,
   Envelope as Envelope,
+  SharedBufferRegion as SharedBufferRegion,
+  SharedBufferSource as SharedBufferSource,
 };
 export type { Task as Task } from "./memory/lock.ts";
 export {
