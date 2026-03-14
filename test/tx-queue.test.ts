@@ -20,7 +20,7 @@ const makeQueue = () => {
   const lock = {
     publish: (task: Task) => {
       seen.push(getTaskSlotMeta(task));
-      return true;
+      return EncodeStatus.Sent;
     },
     flushPending: () => false,
     hasPendingFrames: () => false,

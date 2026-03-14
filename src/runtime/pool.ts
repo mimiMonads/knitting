@@ -3,6 +3,7 @@
 import { createHostTxQueue } from "./tx-queue.ts";
 import {
   createSharedMemoryTransport,
+  TRANSPORT_SIGNAL_BYTES,
   type Sab,
   TRANSPORT_SIGNAL_BYTES,
 } from "../ipc/transport/shared-memory.ts";
@@ -125,6 +126,20 @@ const toPositiveInteger = (value: number | undefined): number | undefined => {
   const int = Math.floor(value as number);
   return int > 0 ? int : undefined;
 };
+
+const CONTROL_LAYOUT_ALIGN_BYTES = 64;
+const alignControlBytes = (value: number): number =>
+  (value + (CONTROL_LAYOUT_ALIGN_BYTES - 1)) & ~(CONTROL_LAYOUT_ALIGN_BYTES - 1);
+
+const makeSharedBufferRegion = (
+  sab: SharedArrayBuffer,
+  byteOffset: number,
+  byteLength: number,
+): SharedBufferRegion => ({
+  sab,
+  byteOffset,
+  byteLength,
+});
 
 const toNodeWorkerResourceLimits = (
   limits: WorkerResourceLimits | undefined,
@@ -470,8 +485,8 @@ export const spawnWorkerContext = ({
     }
   };
 
-  lock.setPromiseHandler((task: Task, result: PromisePayloadResult) => {
-    queue.settlePromisePayload(task, result);
+  lock.setPromiseHandler((task: Task) => {
+    queue.settlePromisePayload(task);
     send();
   });
 
@@ -485,7 +500,7 @@ export const spawnWorkerContext = ({
     };
   };
 
-  const context: WorkerContext & { lock: ReturnType<typeof lock2> } = {
+  const context: WorkerContext & { lock: Lock2 } = {
     txIdle,
     call,
     kills: async () => {

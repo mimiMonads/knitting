@@ -7,6 +7,10 @@ import {
   HEADER_STATIC_PAYLOAD_U32,
   LockBound,
   PayloadBuffer,
+  PromisePayloadFulfillSymbol,
+  PromisePayloadHandlerSymbol,
+  PromisePayloadStatus,
+  PromisePayloadStatusSymbol,
   PayloadSignal,
   type PromisePayloadHandler,
   type Task,
@@ -209,8 +213,9 @@ const requireStaticIO = (
 };
 
 /**
- * Returns `true` when the payload is encoded successfully.
- * Returns `false` when dynamic payload space could not be reserved.
+ * Returns `EncodeStatus.Sent` when the payload is encoded successfully.
+ * Returns `EncodeStatus.Full` when the caller should retry later.
+ * Returns `EncodeStatus.Deferred` when the payload will settle asynchronously.
  */
 
 export const encodePayload = ({
@@ -221,6 +226,7 @@ export const encodePayload = ({
   headersBuffer,
   headerSlotStrideU32,
   onPromise,
+  sharedRegister,
 }: {
   lockSector?: SharedBufferSource;
   payload?: {
@@ -246,7 +252,7 @@ export const encodePayload = ({
   });
   const maxPayloadBytes = resolvedPayloadConfig.maxPayloadBytes;
 
-  const { allocTask, setSlotLength, free } = register({
+  const { allocTask, setSlotLength, free } = sharedRegister ?? register({
     lockSector,
   });
   const {
@@ -390,6 +396,7 @@ export const encodePayload = ({
     if (reserveBytes < 0) return false;
     task[TaskIndex.Type] = PayloadBuffer.Error;
     const reservedSlot = reserveDynamicObject(task, reserveBytes);
+    if (reservedSlot === -1) return false;
     const written = writeDynamicUtf8(
       text,
       task[TaskIndex.Start],
@@ -425,6 +432,7 @@ export const encodePayload = ({
       return false;
     }
     const reservedSlot = reserveDynamicObject(task, bytes);
+    if (reservedSlot === -1) return false;
     const written = writeDynamicBinary(bytesView, task[TaskIndex.Start]);
     if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
     task[TaskIndex.PayloadLen] = written;
@@ -452,6 +460,7 @@ export const encodePayload = ({
     task[TaskIndex.Type] = PayloadBuffer.Float64Array;
     if (!ensureWithinDynamicLimit(task, bytes, "Float64Array")) return false;
     const reservedSlot = reserveDynamicObject(task, bytes);
+    if (reservedSlot === -1) return false;
     const written = writeDynamic8Binary(float64, task[TaskIndex.Start]);
     if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
     task[TaskIndex.PayloadLen] = written;
@@ -480,6 +489,7 @@ export const encodePayload = ({
     task[TaskIndex.Type] = PayloadBuffer.ArrayBuffer;
     if (!ensureWithinDynamicLimit(task, bytes, "ArrayBuffer")) return false;
     const reservedSlot = reserveDynamicObject(task, bytes);
+    if (reservedSlot === -1) return false;
     const written = writeDynamicBinary(
       bytesView ?? new Uint8Array(arrayBuffer),
       task[TaskIndex.Start],
@@ -504,6 +514,7 @@ export const encodePayload = ({
     envelope: Envelope,
   ) => {
     const header = envelope.header;
+    const headerIsString = typeof header === "string";
     const payload = envelope.payload;
     const headerIsString = typeof header === "string";
     if (!(payload instanceof ArrayBuffer)) {
@@ -639,8 +650,14 @@ export const encodePayload = ({
         },
       );
     }
-    return false;
+    return EncodeStatus.Deferred;
   };
+  const encodeFailureStatus = (task: Task): EncodeStatus =>
+    (task as Task & {
+      [PromisePayloadMarker]?: boolean;
+    })[PromisePayloadMarker] === true
+      ? EncodeStatus.Deferred
+      : EncodeStatus.Full;
 
   // Named function so V8/TurboFan can compile it independently from the
   // encodePayload factory closure. Anonymous returns prevent full optimization
@@ -758,7 +775,7 @@ export const encodePayload = ({
             task[TaskIndex.PayloadLen] = written;
             setSlotLength(reservedSlot, written);
             task.value = null;
-            return true;
+            return EncodeStatus.Sent;
           }
 
           if (NodeBuffer.isBuffer(objectValue)) {
@@ -904,9 +921,9 @@ export const encodePayload = ({
 
         task[TaskIndex.Type] = PayloadBuffer.String;
         const reserveBytes = dynamicUtf8ReserveBytes(task, text, "String");
-        if (reserveBytes < 0) return false;
+        if (reserveBytes < 0) return encodeFailureStatus(task);
         const reservedSlot = reserveDynamic(task, reserveBytes);
-        if (reservedSlot < 0) return false;
+        if (reservedSlot < 0) return EncodeStatus.Full;
 
         const written = writeDynamicUtf8(
           text,
@@ -923,26 +940,28 @@ export const encodePayload = ({
       case "symbol": {
         const key = symbolKeyFor(args);
         if (key === undefined) {
-          return encoderError({
+          encoderError({
             task,
             type: ErrorKnitting.Symbol,
             onPromise,
           });
+          return encodeFailureStatus(task);
         }
         if (key.length * 3 <= staticMaxBytes) {
           const written = writeStaticUtf8(key, slotIndex);
           if (written !== -1) {
             task[TaskIndex.Type] = PayloadBuffer.StaticSymbol;
             task[TaskIndex.PayloadLen] = written;
-            return true;
+            task.value = null;
+            return EncodeStatus.Sent;
           }
         }
 
         task[TaskIndex.Type] = PayloadBuffer.Symbol;
         const reserveBytes = dynamicUtf8ReserveBytes(task, key, "Symbol");
-        if (reserveBytes < 0) return false;
+        if (reserveBytes < 0) return encodeFailureStatus(task);
         const reservedSlot = reserveDynamic(task, reserveBytes);
-        if (reservedSlot < 0) return false;
+        if (reservedSlot < 0) return EncodeStatus.Full;
         const written = writeDynamicUtf8(
           key,
           task[TaskIndex.Start],
@@ -953,7 +972,8 @@ export const encodePayload = ({
         }
         task[TaskIndex.PayloadLen] = written;
         setSlotLength(reservedSlot, written);
-        return true;
+        task.value = null;
+        return EncodeStatus.Sent;
       }
       case "undefined":
         task[TaskIndex.Type] = PayloadSignal.Undefined;
@@ -973,6 +993,7 @@ export const decodePayload = ({
   headersBuffer,
   headerSlotStrideU32,
   host,
+  sharedRegister,
 }: {
   lockSector?: SharedBufferSource;
   payload?: {
@@ -996,7 +1017,7 @@ export const decodePayload = ({
     sab: payloadSab,
     options: payload?.config ?? payloadConfig,
   });
-  const { free } = register({
+  const { free } = sharedRegister ?? register({
     lockSector,
   });
   const freeTaskSlot = (task: Task) => free(getTaskSlotIndex(task));

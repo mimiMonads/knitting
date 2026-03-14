@@ -1,4 +1,5 @@
 import {
+  EncodeStatus,
   makeTask,
   type PromisePayloadResult,
   TaskIndex,
@@ -27,6 +28,7 @@ const FUNCTION_META_MASK = 0xffff;
 const FUNCTION_META_SHIFT = 16;
 const ABORT_SIGNAL_META_OFFSET = 1;
 const NO_ABORT_SIGNAL = -1;
+const ACTIVE_SLOT = 1;
 
 
 type CreateHostTxQueueArgs = {
@@ -54,6 +56,7 @@ export function createHostTxQueue({
     const task = makeTask() as QueueTask;
     task[TaskIndex.ID] = id;
     task[TaskIndex.FunctionID] = 0;
+    task[TaskIndex.LocalState] = 0;
     task.value = undefined;
     task.resolve = PLACE_HOLDER;
     task.reject = PLACE_HOLDER;
@@ -111,6 +114,7 @@ export function createHostTxQueue({
           slot.reject(reason);
         } catch {
         }
+        slot[TaskIndex.LocalState] = 0;
         slot.resolve = PLACE_HOLDER;
         slot.reject = PLACE_HOLDER;
 
@@ -181,6 +185,7 @@ export function createHostTxQueue({
         slot.value = rawArgs;
  
         slot[TaskIndex.ID] = index;
+        slot[TaskIndex.LocalState] = ACTIVE_SLOT;
         slot.resolve = deferred.resolve;
         slot.reject = deferred.reject;
 
@@ -204,11 +209,11 @@ export function createHostTxQueue({
     },
     flushToWorker,
     enqueueKnown,
-    settlePromisePayload: (task: QueueTask, result: PromisePayloadResult) => {
+    settlePromisePayload: (task: QueueTask) => {
       if (task.reject === PLACE_HOLDER) return false;
       if (result.status === "rejected") {
         try {
-          task.reject(result.reason);
+          task.reject(task.value);
         } catch {
         }
         task.resolve = PLACE_HOLDER;
@@ -218,7 +223,6 @@ export function createHostTxQueue({
         return false;
       }
 
-      task.value = result.value;
       return enqueueKnown(task);
     },
   };

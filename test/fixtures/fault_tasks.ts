@@ -1,4 +1,5 @@
 import { task } from "../../knitting.ts";
+import type { SharedBufferSource } from "../../src/common/shared-buffer-region.ts";
 import { workerData } from "node:worker_threads";
 import {
   toSharedBufferRegion,
@@ -52,6 +53,10 @@ export const attemptProcessKill = task<void, string>({
 
 export const corruptSharedMemoryViaWorkerData = task<void, string>({
   f: async () => {
+    const toBytes = (value: SharedBufferSource) =>
+      value instanceof SharedArrayBuffer
+        ? new Uint8Array(value)
+        : new Uint8Array(value.sab, value.byteOffset, value.byteLength);
     const data = workerData as {
       lock: {
         headers: SharedBufferSource;

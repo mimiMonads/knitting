@@ -1,5 +1,6 @@
 import RingQueue from "../ipc/tools/RingQueue.ts";
 import {
+  EncodeStatus,
   TaskFlag,
   TaskIndex,
   type Task,
@@ -89,10 +90,7 @@ const enqueueLock = () => {
 };
 
   const encodeReturnSafe = (slot: Task) => {
-  
-      if (!returnLock.encode(slot)) return false;
-
-    return true;
+    return returnLock.encode(slot) === EncodeStatus.Sent;
   };
 
   const sendReturn = (slot: Task, shouldReject: boolean) => {

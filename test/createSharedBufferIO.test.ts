@@ -546,3 +546,23 @@ test("static writeBinary accepts Buffer and Uint8Array sources on the same path"
     24,
   ]);
 });
+
+test("static IO honors Uint32Array byte offsets", () => {
+  const prefixBytes = 64;
+  const backing = new SharedArrayBuffer(prefixBytes + HEADER_BYTE_LENGTH);
+  const headersBuffer = new Uint32Array(
+    backing,
+    prefixBytes,
+    HEADER_BYTE_LENGTH / Uint32Array.BYTES_PER_ELEMENT,
+  );
+  const io = createSharedStaticBufferIO({ headersBuffer });
+  const text = "offset-ok";
+
+  const written = io.writeUtf8(text, 0);
+
+  assertEquals(io.readUtf8(0, written, 0), text);
+  assertEquals(
+    Array.from(new Uint8Array(backing, 0, prefixBytes)),
+    Array.from(new Uint8Array(prefixBytes)),
+  );
+});

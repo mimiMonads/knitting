@@ -13,9 +13,10 @@ import {
   makeTask,
   PAYLOAD_LOCK_SECTOR_BYTE_LENGTH,
   PayloadBuffer,
-  type PromisePayloadHandler,
+  PromisePayloadStatus,
   TaskIndex,
 } from "../src/memory/lock.ts";
+import type { PromisePayloadHandler } from "../src/memory/lock.ts";
 import { register } from "../src/memory/regionRegistry.ts";
 import { withResolvers } from "../src/common/with-resolvers.ts";
 import type { PayloadBufferOptions } from "../src/memory/payload-config.ts";
@@ -83,6 +84,7 @@ const makeCodec = (
   const payload = new SharedArrayBuffer(options?.payloadBytes ?? 40000);
   const headersBuffer = new Uint32Array(HEADER_U32_LENGTH);
   const payloadConfig = options?.payloadConfig;
+  const registry = register({ lockSector });
 
   return {
     encode: encodePayload({
@@ -90,13 +92,15 @@ const makeCodec = (
       headersBuffer,
       onPromise,
       payload: { sab: payload, config: payloadConfig },
+      sharedRegister: registry,
     }),
     decode: decodePayload({
       lockSector,
       headersBuffer,
       payload: { sab: payload, config: payloadConfig },
+      sharedRegister: registry,
     }),
-    registry: register({ lockSector }),
+    registry,
   };
 };
 
@@ -105,7 +109,7 @@ test("dynamic string payload stores slotBuffer and frees slot 0", () => {
   const task = makeTask();
   task.value = "x".repeat(700);
 
-  assertEquals(encode(task, 0), true);
+  assertEquals(encode(task, 0), EncodeStatus.Sent);
   assertEquals(task[TaskIndex.slotBuffer], 0);
 
   decode(task, 0);
@@ -122,8 +126,8 @@ test("dynamic string payloads use distinct slotBuffer values", () => {
   first.value = "a".repeat(700);
   second.value = "b".repeat(900);
 
-  assertEquals(encode(first, 0), true);
-  assertEquals(encode(second, 1), true);
+  assertEquals(encode(first, 0), EncodeStatus.Sent);
+  assertEquals(encode(second, 1), EncodeStatus.Sent);
 
   assertEquals(first[TaskIndex.slotBuffer], 0);
   assertEquals(second[TaskIndex.slotBuffer], 1);
@@ -142,11 +146,11 @@ test("dynamic string uses written bytes for next dynamic allocation", () => {
   first.value = "x".repeat(700);
   second.value = "y".repeat(700);
 
-  assertEquals(encode(first, 0), true);
+  assertEquals(encode(first, 0), EncodeStatus.Sent);
   assertEquals(first[TaskIndex.Start], 0);
   assertEquals(first[TaskIndex.PayloadLen], 700);
 
-  assertEquals(encode(second, 1), true);
+  assertEquals(encode(second, 1), EncodeStatus.Sent);
   assertEquals(second[TaskIndex.Start], align64(700));
 });
 
@@ -161,13 +165,13 @@ test("dynamic object JSON uses written bytes for next dynamic allocation", () =>
   first.value = firstValue;
   second.value = secondValue;
 
-  assertEquals(encode(first, 0), true);
+  assertEquals(encode(first, 0), EncodeStatus.Sent);
   assertEquals(
     first[TaskIndex.PayloadLen],
     textEncoder.encode(firstJson).byteLength,
   );
 
-  assertEquals(encode(second, 1), true);
+  assertEquals(encode(second, 1), EncodeStatus.Sent);
   assertEquals(second[TaskIndex.Start], align64(first[TaskIndex.PayloadLen]));
 });
 
@@ -182,13 +186,13 @@ test("dynamic array JSON uses written bytes for next dynamic allocation", () => 
   first.value = firstValue;
   second.value = secondValue;
 
-  assertEquals(encode(first, 0), true);
+  assertEquals(encode(first, 0), EncodeStatus.Sent);
   assertEquals(
     first[TaskIndex.PayloadLen],
     textEncoder.encode(firstJson).byteLength,
   );
 
-  assertEquals(encode(second, 1), true);
+  assertEquals(encode(second, 1), EncodeStatus.Sent);
   assertEquals(second[TaskIndex.Start], align64(first[TaskIndex.PayloadLen]));
 });
 
@@ -202,10 +206,10 @@ test("dynamic symbol uses written bytes for next dynamic allocation", () => {
   first.value = Symbol.for(firstKey);
   second.value = Symbol.for(secondKey);
 
-  assertEquals(encode(first, 0), true);
+  assertEquals(encode(first, 0), EncodeStatus.Sent);
   assertEquals(first[TaskIndex.PayloadLen], firstKey.length);
 
-  assertEquals(encode(second, 1), true);
+  assertEquals(encode(second, 1), EncodeStatus.Sent);
   assertEquals(second[TaskIndex.Start], align64(first[TaskIndex.PayloadLen]));
 });
 
@@ -220,11 +224,11 @@ test("dynamic error uses dedicated error path and preserves allocation", () => {
   first.value = firstError;
   second.value = secondError;
 
-  assertEquals(encode(first, 0), true);
+  assertEquals(encode(first, 0), EncodeStatus.Sent);
   assertEquals(first[TaskIndex.Type], PayloadBuffer.Error);
   assertEquals(first[TaskIndex.PayloadLen] > 0, true);
 
-  assertEquals(encode(second, 1), true);
+  assertEquals(encode(second, 1), EncodeStatus.Sent);
   assertEquals(second[TaskIndex.Type], PayloadBuffer.Error);
   assertEquals(second[TaskIndex.Start] >= align64(first[TaskIndex.PayloadLen]), true);
 
@@ -239,7 +243,7 @@ test("dynamic error uses dedicated error path and preserves allocation", () => {
 });
 
 test("dynamic payload exceeding maxPayloadBytes rejects before reservation", async () => {
-  let result: Parameters<PromisePayloadHandler>[1] | undefined;
+  let result: { status: string; value: unknown; reason: unknown } | undefined;
   const { encode, registry } = makeCodec((_, payload) => {
     result = payload;
   }, {
@@ -252,7 +256,7 @@ test("dynamic payload exceeding maxPayloadBytes rejects before reservation", asy
   const task = makeTask();
   task.value = "x".repeat(700);
 
-  assertEquals(encode(task, 0), false);
+  assertEquals(encode(task, 0), EncodeStatus.Deferred);
   await Promise.resolve();
 
   assertEquals(registry.hostBits[0] >>> 0, 0);
@@ -283,7 +287,7 @@ test("dynamic utf8 path uses exact byte count only near cap and still succeeds",
   assertEquals(exactBytes <= maxPayloadBytes, true);
   assertEquals(text.length * 3 > maxPayloadBytes, true);
 
-  assertEquals(encode(task, 0), true);
+  assertEquals(encode(task, 0), EncodeStatus.Sent);
   assertEquals(task[TaskIndex.Type], PayloadBuffer.String);
   assertEquals(task[TaskIndex.PayloadLen], exactBytes);
 
@@ -292,7 +296,7 @@ test("dynamic utf8 path uses exact byte count only near cap and still succeeds",
 });
 
 test("fixed mode capacity overflow returns controlled encoder error", async () => {
-  let result: Parameters<PromisePayloadHandler>[1] | undefined;
+  let result: { status: string; value: unknown; reason: unknown } | undefined;
   const { encode, registry } = makeCodec((_, payload) => {
     result = payload;
   }, {
@@ -306,7 +310,7 @@ test("fixed mode capacity overflow returns controlled encoder error", async () =
   const task = makeTask();
   task.value = "a".repeat(1200);
 
-  assertEquals(encode(task, 0), false);
+  assertEquals(encode(task, 0), EncodeStatus.Deferred);
   await Promise.resolve();
 
   assertEquals((registry.hostBits[0] ^ registry.workerBits[0]) >>> 0, 0);
@@ -318,15 +322,47 @@ test("fixed mode capacity overflow returns controlled encoder error", async () =
   }
 });
 
+test("dynamic object slot exhaustion returns full until a slot is freed", () => {
+  let result: { status: string; value: unknown; reason: unknown } | undefined;
+  const { encode, decode } = makeCodec(
+    (_, payload) => {
+      result = payload;
+    },
+    { payloadBytes: 128000 },
+  );
+  const tasks = Array.from({ length: 32 }, () => makeTask());
+
+  for (let i = 0; i < tasks.length; i++) {
+    tasks[i]!.value = { msg: "x".repeat(700) };
+    assertEquals(encode(tasks[i]!, i), EncodeStatus.Sent);
+  }
+
+  const overflow = makeTask();
+  overflow.value = { msg: "z".repeat(700) };
+
+  assertEquals(encode(overflow, 0), EncodeStatus.Full);
+  assertEquals(result, undefined);
+
+  for (let i = 0; i < 4; i++) decode(tasks[i]!, i);
+
+  let encoded: EncodeStatus = EncodeStatus.Full;
+  for (let i = 0; i < 4; i++) {
+    encoded = encode(overflow, 0);
+    if (encoded === EncodeStatus.Sent) break;
+  }
+
+  assertEquals(encoded, EncodeStatus.Sent);
+});
+
 test("map payload is rejected by strict object policy", async () => {
-  let result: Parameters<PromisePayloadHandler>[1] | undefined;
+  let result: { status: string; value: unknown; reason: unknown } | undefined;
   const { encode } = makeCodec((_, payload) => {
     result = payload;
   });
   const task = makeTask();
   task.value = new Map([["x".repeat(700), 1]]);
 
-  assertEquals(encode(task, 0), false);
+  assertEquals(encode(task, 0), EncodeStatus.Deferred);
   await Promise.resolve();
 
   assertEquals(result?.status, "rejected");
@@ -338,14 +374,14 @@ test("map payload is rejected by strict object policy", async () => {
 });
 
 test("set payload is rejected by strict object policy", async () => {
-  let result: Parameters<PromisePayloadHandler>[1] | undefined;
+  let result: { status: string; value: unknown; reason: unknown } | undefined;
   const { encode } = makeCodec((_, payload) => {
     result = payload;
   });
   const task = makeTask();
   task.value = new Set(["x".repeat(700)]);
 
-  assertEquals(encode(task, 0), false);
+  assertEquals(encode(task, 0), EncodeStatus.Deferred);
   await Promise.resolve();
 
   assertEquals(result?.status, "rejected");
@@ -361,7 +397,7 @@ test("static ArrayBuffer payload round-trips with ArrayBuffer type", () => {
   const task = makeTask();
   task.value = new Uint8Array([1, 2, 3, 4, 5]).buffer;
 
-  assertEquals(encode(task, 0), true);
+  assertEquals(encode(task, 0), EncodeStatus.Sent);
   assertEquals(task[TaskIndex.Type], PayloadBuffer.StaticArrayBuffer);
 
   decode(task, 0);
@@ -377,7 +413,7 @@ test("dynamic ArrayBuffer payload stores slotBuffer and frees slot 0", () => {
   for (let i = 0; i < src.length; i++) src[i] = i & 0xff;
   task.value = src.buffer;
 
-  assertEquals(encode(task, 0), true);
+  assertEquals(encode(task, 0), EncodeStatus.Sent);
   assertEquals(task[TaskIndex.Type], PayloadBuffer.ArrayBuffer);
   assertEquals(task[TaskIndex.slotBuffer], 0);
 
@@ -395,7 +431,7 @@ test("static Buffer payload round-trips with Buffer type", () => {
   const task = makeTask();
   task.value = NodeBuffer.from([1, 2, 3, 4, 5]);
 
-  assertEquals(encode(task, 0), true);
+  assertEquals(encode(task, 0), EncodeStatus.Sent);
   assertEquals(task[TaskIndex.Type], PayloadBuffer.StaticBuffer);
 
   decode(task, 0);
@@ -411,7 +447,7 @@ test("dynamic Buffer payload stores slotBuffer and frees slot 0", () => {
   for (let i = 0; i < src.length; i++) src[i] = i & 0xff;
   task.value = src;
 
-  assertEquals(encode(task, 0), true);
+  assertEquals(encode(task, 0), EncodeStatus.Sent);
   assertEquals(task[TaskIndex.Type], PayloadBuffer.Buffer);
   assertEquals(task[TaskIndex.slotBuffer], 0);
 
@@ -431,7 +467,7 @@ test("non-buffer payloads do not modify slotBuffer", () => {
   task[TaskIndex.slotBuffer] = 7;
   task.value = 123;
 
-  assertEquals(encode(task, 0), true);
+  assertEquals(encode(task, 0), EncodeStatus.Sent);
   assertEquals(task[TaskIndex.slotBuffer], 7);
 });
 
@@ -448,7 +484,7 @@ test("poisoned constructor getter does not break plain object JSON path", () => 
   });
 
   task.value = payload;
-  assertEquals(encode(task, 0), true);
+  assertEquals(encode(task, 0), EncodeStatus.Sent);
   assertEquals(
     task[TaskIndex.Type] === PayloadBuffer.Json ||
       task[TaskIndex.Type] === PayloadBuffer.StaticJson,
@@ -468,7 +504,7 @@ test("envelope uses static header plus dynamic payload when header fits", () => 
 
   task.value = new Envelope(header, payload);
 
-  assertEquals(encode(task, 0), true);
+  assertEquals(encode(task, 0), EncodeStatus.Sent);
   assertEquals(task[TaskIndex.Type], PayloadBuffer.EnvelopeStaticHeader);
   assertEquals(task[TaskIndex.PayloadLen], headerBytes);
   assertEquals(task[TaskIndex.End], 4);
@@ -497,7 +533,7 @@ test("envelope switches to dynamic header when static header limit is exceeded",
 
   task.value = new Envelope(header, payload);
 
-  assertEquals(encode(task, 0), true);
+  assertEquals(encode(task, 0), EncodeStatus.Sent);
   assertEquals(task[TaskIndex.Type], PayloadBuffer.EnvelopeDynamicHeader);
   assertEquals(task[TaskIndex.PayloadLen], headerBytes);
   assertEquals(task[TaskIndex.End], 3);
@@ -582,7 +618,7 @@ test("envelope rejects promise values inside header", async () => {
     new Uint8Array([1]).buffer,
   );
 
-  assertEquals(encode(task, 0), false);
+  assertEquals(encode(task, 0), EncodeStatus.Deferred);
   await Promise.resolve();
 
   assertEquals(result?.status, "rejected");
@@ -604,7 +640,7 @@ test("envelope rejects non-ArrayBuffer payloads", async () => {
     new Uint8Array([1, 2, 3]) as unknown as ArrayBuffer,
   );
 
-  assertEquals(encode(task, 0), false);
+  assertEquals(encode(task, 0), EncodeStatus.Deferred);
   await Promise.resolve();
 
   assertEquals(result?.status, "rejected");
@@ -626,7 +662,7 @@ test("custom class payload is rejected by strict object policy", async () => {
   const task = makeTask();
   task.value = new SerializableCarrier();
 
-  assertEquals(encode(task, 0), false);
+  assertEquals(encode(task, 0), EncodeStatus.Deferred);
   await Promise.resolve();
 
   assertEquals(result?.status, "rejected");
@@ -648,7 +684,7 @@ test("thenable object is encoded as a normal object payload", () => {
     then: () => undefined,
   };
 
-  assertEquals(encode(task, 0), true);
+  assertEquals(encode(task, 0), EncodeStatus.Sent);
   assertEquals(called, false);
 
   decode(task, 0);
@@ -665,7 +701,7 @@ test("promise payload resolves before encoding", async () => {
   const { promise, resolve } = withResolvers<number>();
 
   task.value = promise;
-  assertEquals(encode(task, 0), false);
+  assertEquals(encode(task, 0), EncodeStatus.Deferred);
 
   resolve(42);
   await promise;
@@ -687,7 +723,7 @@ test("promise payload rejects before encoding", async () => {
   const err = new Error("boom");
 
   task.value = promise;
-  assertEquals(encode(task, 0), false);
+  assertEquals(encode(task, 0), EncodeStatus.Deferred);
 
   reject(err);
   await promise.catch(() => undefined);
@@ -707,7 +743,7 @@ test("function payload is rejected through promise handler", async () => {
   const task = makeTask();
 
   task.value = function badArg() {};
-  assertEquals(encode(task, 0), false);
+  assertEquals(encode(task, 0), EncodeStatus.Deferred);
 
   await Promise.resolve();
 
@@ -738,7 +774,7 @@ test("non-global symbol payload is rejected through promise handler", async () =
   const task = makeTask();
 
   task.value = Symbol("local");
-  assertEquals(encode(task, 0), false);
+  assertEquals(encode(task, 0), EncodeStatus.Deferred);
 
   await Promise.resolve();
 
@@ -768,7 +804,7 @@ test("json payload with bigint is rejected through promise handler", async () =>
   const task = makeTask();
 
   task.value = { n: 1n };
-  assertEquals(encode(task, 0), false);
+  assertEquals(encode(task, 0), EncodeStatus.Deferred);
 
   await Promise.resolve();
 
@@ -803,7 +839,7 @@ test("non-serializable payload is rejected through promise handler", async () =>
   const task = makeTask();
 
   task.value = new WeakMap();
-  assertEquals(encode(task, 0), false);
+  assertEquals(encode(task, 0), EncodeStatus.Deferred);
 
   await Promise.resolve();
 
@@ -857,7 +893,7 @@ test("string static/dynamic boundary is safe for ASCII and Unicode payloads", ()
     const task = makeTask();
     task.value = c.value;
 
-    assertEquals(encode(task, index), true);
+    assertEquals(encode(task, index), EncodeStatus.Sent);
     assertEquals(task[TaskIndex.Type], c.expectedType);
     assertEquals(task[TaskIndex.PayloadLen], utf8Bytes(c.value));
 
@@ -883,11 +919,11 @@ test("unicode strings that cross static boundary do not overlap next dynamic str
     assertEquals(utf8Bytes(firstValue) > STATIC_STRING_MAX_BYTES, true);
     assertEquals(firstValue.length <= STATIC_STRING_MAX_BYTES, true);
 
-    assertEquals(encode(first, 0), true);
+    assertEquals(encode(first, 0), EncodeStatus.Sent);
     assertEquals(first[TaskIndex.Type], PayloadBuffer.String);
     assertEquals(first[TaskIndex.PayloadLen], utf8Bytes(firstValue));
 
-    assertEquals(encode(second, 1), true);
+    assertEquals(encode(second, 1), EncodeStatus.Sent);
     assertEquals(second[TaskIndex.Type], PayloadBuffer.String);
     assertEquals(
       second[TaskIndex.Start] >= align64(first[TaskIndex.PayloadLen]),
@@ -910,11 +946,11 @@ test("unicode symbol payload uses dynamic layout and preserves next dynamic allo
   first.value = Symbol.for(key);
   second.value = "S".repeat(700);
 
-  assertEquals(encode(first, 0), true);
+  assertEquals(encode(first, 0), EncodeStatus.Sent);
   assertEquals(first[TaskIndex.Type], PayloadBuffer.Symbol);
   assertEquals(first[TaskIndex.PayloadLen], utf8Bytes(key));
 
-  assertEquals(encode(second, 1), true);
+  assertEquals(encode(second, 1), EncodeStatus.Sent);
   assertEquals(second[TaskIndex.Type], PayloadBuffer.String);
   assertEquals(
     second[TaskIndex.Start] >= align64(first[TaskIndex.PayloadLen]),
@@ -940,11 +976,11 @@ test("unicode JSON crossing static boundary uses dynamic layout without overlap"
   assertEquals(text.length <= STATIC_STRING_MAX_BYTES, true);
   assertEquals(utf8Bytes(text) > STATIC_STRING_MAX_BYTES, true);
 
-  assertEquals(encode(first, 0), true);
+  assertEquals(encode(first, 0), EncodeStatus.Sent);
   assertEquals(first[TaskIndex.Type], PayloadBuffer.Json);
   assertEquals(first[TaskIndex.PayloadLen], utf8Bytes(text));
 
-  assertEquals(encode(second, 1), true);
+  assertEquals(encode(second, 1), EncodeStatus.Sent);
   assertEquals(second[TaskIndex.Type], PayloadBuffer.String);
   assertEquals(
     second[TaskIndex.Start] >= align64(first[TaskIndex.PayloadLen]),
@@ -982,11 +1018,11 @@ test("randomized unicode boundary stress preserves string integrity", () => {
     first.value = firstValue;
     second.value = secondValue;
 
-    assertEquals(encode(first, 0), true);
+    assertEquals(encode(first, 0), EncodeStatus.Sent);
     assertEquals(first[TaskIndex.Type], PayloadBuffer.String);
     assertEquals(first[TaskIndex.PayloadLen], utf8Bytes(firstValue));
 
-    assertEquals(encode(second, 1), true);
+    assertEquals(encode(second, 1), EncodeStatus.Sent);
     assertEquals(
       second[TaskIndex.Start] >= align64(first[TaskIndex.PayloadLen]),
       true,
@@ -1021,11 +1057,11 @@ test("randomized unicode JSON boundary stress preserves integrity and layout", (
     first.value = value;
     second.value = secondValue;
 
-    assertEquals(encode(first, 0), true);
+    assertEquals(encode(first, 0), EncodeStatus.Sent);
     assertEquals(first[TaskIndex.Type], PayloadBuffer.Json);
     assertEquals(first[TaskIndex.PayloadLen], utf8Bytes(text));
 
-    assertEquals(encode(second, 1), true);
+    assertEquals(encode(second, 1), EncodeStatus.Sent);
     assertEquals(
       second[TaskIndex.Start] >= align64(first[TaskIndex.PayloadLen]),
       true,

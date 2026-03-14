@@ -90,10 +90,33 @@ export type Task = [
 };
 
 export const PromisePayloadMarker = Symbol.for("knitting.promise.payload");
+export const PromisePayloadHandlerSymbol = Symbol.for(
+  "knitting.promise.payload.handler",
+);
+export const PromisePayloadStatusSymbol = Symbol.for(
+  "knitting.promise.payload.status",
+);
+export const PromisePayloadResultSymbol = Symbol.for(
+  "knitting.promise.payload.result",
+);
+export const PromisePayloadFulfillSymbol = Symbol.for(
+  "knitting.promise.payload.fulfill",
+);
+export const PromisePayloadRejectSymbol = Symbol.for(
+  "knitting.promise.payload.reject",
+);
 
-export type PromisePayloadResult =
-  | { status: "fulfilled"; value: unknown }
-  | { status: "rejected"; reason: unknown };
+export const enum PromisePayloadStatus {
+  Idle = 0,
+  Fulfilled = 1,
+  Rejected = 2,
+}
+
+export type PromisePayloadResult = {
+  status: "fulfilled" | "rejected";
+  value: unknown;
+  reason: unknown;
+};
 
 export type PromisePayloadHandler = (
   task: Task,
@@ -136,6 +159,12 @@ export enum TaskIndex {
    * High 27 bits: reserved for caller metadata (e.g. enqueue timing).
    */
   slotBuffer = 6,
+  /**
+   * Local scratch/state word.
+   * Hot-path callers may use this for per-slot state that should not be loaded
+   * back from the shared header.
+   */
+  LocalState = 7,
   Size = 8,
   /**
    * Total slot length in Uint32 words, including the task header.
@@ -202,6 +231,12 @@ export enum TaskFlag {
   Reject = 1 << 0,
 }
 
+export const enum EncodeStatus {
+  Full = -1,
+  Deferred = 0,
+  Sent = 1,
+}
+
 // Main queue lock layout in bytes.
 // Keep each lock word on its own cache line inside the first 256 bytes.
 export const LOCK_WORD_BYTES = Int32Array.BYTES_PER_ELEMENT;
@@ -235,6 +270,15 @@ let INDEX_ID = 0;
 const INIT_VAL = PayloadSignal.UNREACHABLE;
 const def = (_?: unknown) => {};
 
+type TaskShell = Task & {
+  [PromisePayloadMarker]?: boolean;
+  [PromisePayloadHandlerSymbol]?: PromisePayloadHandler;
+  [PromisePayloadStatusSymbol]?: PromisePayloadStatus;
+  [PromisePayloadResultSymbol]?: PromisePayloadResult;
+  [PromisePayloadFulfillSymbol]?: (value: unknown) => void;
+  [PromisePayloadRejectSymbol]?: (reason: unknown) => void;
+};
+
 const createTaskShell = () => {
   const task = new Uint32Array(TaskIndex.Size) as Uint32Array & {
     value: unknown;
@@ -267,7 +311,7 @@ const fillTaskFrom = (task: Task, array: ArrayLike<number>, at: number) => {
   task[4] = array[at + 4];
   task[5] = array[at + 5];
   task[6] = array[at + 6];
-  //task[7] = array[at + 7];
+  // Keep TaskIndex.LocalState local to the current runtime instance.
 };
 
 const makeTaskFrom = (array: Uint32Array, at: number) => {
@@ -322,7 +366,6 @@ export const lock2 = ({
   // Layout:
   // - hostBits starts at byte `paddingLock`
   // - workerBits starts immediately after hostBits
-  // This intentionally allows false sharing on the main queue lock.
   //
   // Important: encode() always toggles `hostBits` and decode/resolveHost always
   // toggles `workerBits`, regardless of which thread calls them. This is why
@@ -449,7 +492,10 @@ export const lock2 = ({
     const free = ~state;
     if (free === 0) return 0;
 
-    if (!encodeTask(task, selectedSlotIndex = 31 - clz32(free))) return 0;
+    if (
+      encodeTask(task, selectedSlotIndex = 31 - clz32(free)) !==
+        EncodeStatus.Sent
+    ) return 0;
     encodeAt(
       task,
       selectedSlotIndex,
@@ -527,7 +573,7 @@ export const lock2 = ({
   ): boolean => {
     deferredCount = 0 | 0;
     const free = ~state;
-    if (free === 0) return false;
+    if (free === 0) return EncodeStatus.Full;
 
     if (!encodeTask(task, selectedSlotIndex = 31 - clz32(free))) {
       if (isPromisePayloadPending(task)) {
@@ -541,6 +587,7 @@ export const lock2 = ({
       selectedSlotIndex,
       selectedSlotBit = 1 << selectedSlotIndex,
     );
+    return EncodeStatus.Sent;
   };
 
   const encodeAt = (task: Task, at: number, bit: number): boolean => {
@@ -552,7 +599,7 @@ export const lock2 = ({
     headersBuffer[off + 4] = task[4];
     headersBuffer[off + 5] = task[5];
     headersBuffer[off + 6] = task[6];
-    headersBuffer[off + 7] = task[7];
+    headersBuffer[off + TaskIndex.LocalState] = task[TaskIndex.LocalState];
 
     storeHost(bit);
     return true;
@@ -600,6 +647,7 @@ export const lock2 = ({
    */
   const resolveHost = ({
     queue,
+    skipInactive,
     onResolved,
     shouldSettle,
   }: ResolveHostOptions) => {

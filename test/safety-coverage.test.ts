@@ -129,6 +129,38 @@ test("startup guard accepts valid shared memory boot data", () => {
   });
 });
 
+test("startup guard accepts region-based lock buffers", () => {
+  const control = new SharedArrayBuffer(32);
+  const makeRegionLockBuffers = (): LockBuffers => ({
+    headers: { sab: control, byteOffset: 0, byteLength: 8 },
+    lockSector: { sab: control, byteOffset: 8, byteLength: 8 },
+    payload: new SharedArrayBuffer(8),
+    payloadSector: { sab: control, byteOffset: 16, byteLength: 8 },
+  });
+
+  assert.doesNotThrow(() => {
+    assertWorkerSharedMemoryBootData({
+      sab: new SharedArrayBuffer(8),
+      lock: makeRegionLockBuffers(),
+      returnLock: makeRegionLockBuffers(),
+    });
+  });
+});
+
+test("startup guard accepts region-based transport SAB", () => {
+  assert.doesNotThrow(() => {
+    assertWorkerSharedMemoryBootData({
+      sab: {
+        sab: new SharedArrayBuffer(64),
+        byteOffset: 0,
+        byteLength: 64,
+      },
+      lock: makeLockBuffers(),
+      returnLock: makeLockBuffers(),
+    });
+  });
+});
+
 test("startup guard rejects missing shared memory boot buffers", () => {
   assert.throws(() => {
     assertWorkerSharedMemoryBootData({

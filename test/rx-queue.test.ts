@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import RingQueue from "../src/ipc/tools/RingQueue.ts";
-import { TaskFlag, TaskIndex, TASK_SLOT_META_VALUE_MASK, makeTask, setTaskSlotMeta, type Task } from "../src/memory/lock.ts";
+import {
+  EncodeStatus,
+  TaskFlag,
+  TaskIndex,
+  TASK_SLOT_META_VALUE_MASK,
+  makeTask,
+  setTaskSlotMeta,
+  type Task,
+} from "../src/memory/lock.ts";
 import { createWorkerRxQueue } from "../src/worker/rx-queue.ts";
 
 test("worker queue async settle handles encode backpressure without unhandledRejection", async () => {
@@ -21,10 +29,10 @@ test("worker queue async settle handles encode backpressure without unhandledRej
   const returnLock = {
     encode: () => {
       encodeCalls++;
-      return encodeCalls > 1;
+      return encodeCalls > 1 ? EncodeStatus.Sent : EncodeStatus.Full;
     },
   } as unknown as {
-    encode: (task: Task) => boolean;
+    encode: (task: Task) => EncodeStatus;
   };
 
   const queue = createWorkerRxQueue({
@@ -79,10 +87,10 @@ test("worker timeout subtracts queue wait using enqueue timestamp", async () => 
   const returnLock = {
     encode: (task: Task) => {
       sent = task;
-      return true;
+      return EncodeStatus.Sent;
     },
   } as unknown as {
-    encode: (task: Task) => boolean;
+    encode: (task: Task) => EncodeStatus;
   };
   let nowValue = 1000;
 
@@ -132,10 +140,10 @@ test("worker abort check rejects before invoking task function", () => {
   const returnLock = {
     encode: (task: Task) => {
       sent = task;
-      return true;
+      return EncodeStatus.Sent;
     },
   } as unknown as {
-    encode: (task: Task) => boolean;
+    encode: (task: Task) => EncodeStatus;
   };
 
   let called = 0;
@@ -183,10 +191,10 @@ test("worker abort toolkit exposes shorthand hasAborted accessor", () => {
   const returnLock = {
     encode: (task: Task) => {
       sent = task;
-      return true;
+      return EncodeStatus.Sent;
     },
   } as unknown as {
-    encode: (task: Task) => boolean;
+    encode: (task: Task) => EncodeStatus;
   };
 
   const seenSignals: number[] = [];

@@ -71,7 +71,11 @@ export const encoderError = ({
   queueMicrotask(() => {
     finishPromisePayload(task);
     task.value = reason;
-    onPromise(task, { status: "rejected", reason });
+    const result = getPromisePayloadResult(task);
+    result.status = "rejected";
+    result.value = undefined;
+    result.reason = reason;
+    onPromise(task, result);
   });
 
   return false;
