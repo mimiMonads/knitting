@@ -1,24 +1,26 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-const assertEquals: (actual: unknown, expected: unknown) => void =
-  (actual, expected) => {
-    assert.deepStrictEqual(actual, expected);
-  };
+const assertEquals: (actual: unknown, expected: unknown) => void = (
+  actual,
+  expected,
+) => {
+  assert.deepStrictEqual(actual, expected);
+};
 import { register } from "../src/memory/regionRegistry.ts";
 import {
-  LockBound,
   LOCK_HOST_BITS_OFFSET_BYTES,
   LOCK_SECTOR_BYTE_LENGTH,
+  LOCK_WORKER_BITS_OFFSET_BYTES,
+  LockBound,
   makeTask,
   PAYLOAD_LOCK_HOST_BITS_OFFSET_BYTES,
   PAYLOAD_LOCK_WORKER_BITS_OFFSET_BYTES,
-  LOCK_WORKER_BITS_OFFSET_BYTES,
   TaskIndex,
 } from "../src/memory/lock.ts";
 
-
 const align64 = (n: number) => (n + 63) & ~63;
 const START_MASK = (~31) >>> 0;
+const EMPTY = 0xFFFFFFFF >>> 0;
 
 const makeRegistry = () =>
   register({
@@ -28,19 +30,38 @@ const makeRegistry = () =>
 test("registry uses separate words inside the shared lock sector", () => {
   const lockSector = new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH);
   const registry = register({ lockSector });
-  const mainHostBits = new Int32Array(lockSector, LOCK_HOST_BITS_OFFSET_BYTES, 1);
-  const mainWorkerBits = new Int32Array(lockSector, LOCK_WORKER_BITS_OFFSET_BYTES, 1);
+  const mainHostBits = new Int32Array(
+    lockSector,
+    LOCK_HOST_BITS_OFFSET_BYTES,
+    1,
+  );
+  const mainWorkerBits = new Int32Array(
+    lockSector,
+    LOCK_WORKER_BITS_OFFSET_BYTES,
+    1,
+  );
 
   assert.equal(registry.hostBits.buffer, lockSector);
   assert.equal(registry.workerBits.buffer, lockSector);
-  assert.equal(registry.hostBits.byteOffset, PAYLOAD_LOCK_HOST_BITS_OFFSET_BYTES);
-  assert.equal(registry.workerBits.byteOffset, PAYLOAD_LOCK_WORKER_BITS_OFFSET_BYTES);
+  assert.equal(
+    registry.hostBits.byteOffset,
+    PAYLOAD_LOCK_HOST_BITS_OFFSET_BYTES,
+  );
+  assert.equal(
+    registry.workerBits.byteOffset,
+    PAYLOAD_LOCK_WORKER_BITS_OFFSET_BYTES,
+  );
   assert.equal(mainHostBits.byteOffset, LOCK_HOST_BITS_OFFSET_BYTES);
   assert.equal(mainWorkerBits.byteOffset, LOCK_WORKER_BITS_OFFSET_BYTES);
 });
 
-const track64andIndex = (startAndIndex: number) => [ startAndIndex >>> 6 , startAndIndex & 31 ]
-const allocNoSync = (registry: ReturnType<typeof makeRegistry>, size: number) => {
+const track64andIndex = (
+  startAndIndex: number,
+) => [startAndIndex >>> 6, startAndIndex & 31];
+const allocNoSync = (
+  registry: ReturnType<typeof makeRegistry>,
+  size: number,
+) => {
   const task = makeTask();
   task[TaskIndex.PayloadLen] = size;
   registry.allocTask(task);
@@ -50,12 +71,18 @@ const tableSnapshot = (
   registry: ReturnType<typeof makeRegistry>,
   length: number,
 ) => Array.from(registry.startAndIndexToArray(length));
-const expectedStartAndIndex = (sizes: number[]) =>
-  [[0,0] , ...sizes.map( (_,i,a) => {
-
-    const  val = a.slice(0,i + 1).reduce((acc,c) => acc+ (align64(c) >>> 6), 0)
-    return [val, ++i]
-  }).slice(0,-1)]
+const expectedStartAndIndex = (
+  sizes: number[],
+) => [
+  [0, 0],
+  ...sizes.map((_, i, a) => {
+    const val = a.slice(0, i + 1).reduce(
+      (acc, c) => acc + (align64(c) >>> 6),
+      0,
+    );
+    return [val, ++i];
+  }).slice(0, -1),
+];
 
 const isSingleBit = (value: number) =>
   value !== 0 && (value & (value - 1)) === 0;
@@ -127,43 +154,48 @@ const assertAllocatorInvariants = (
   assertNoOverlap(live);
 };
 
-
-
 test("check packing in startAndIndexToArray", () => {
   const registry = makeRegistry();
-  const sizes = [634, 43 , 152 , 54];
+  const sizes = [634, 43, 152, 54];
 
-  const result = [[0,0] , ...sizes.map( (_,i,a) => {
-
-    // add them together and index [position + padding , index]
-    const  val = a.slice(0,i + 1).reduce((acc,c) => acc+ (align64(c) >>> 6), 0) 
-    return [val, ++i]
-  }).slice(0,-1)] 
+  const result = [
+    [0, 0],
+    ...sizes.map((_, i, a) => {
+      // add them together and index [position + padding , index]
+      const val = a.slice(0, i + 1).reduce(
+        (acc, c) => acc + (align64(c) >>> 6),
+        0,
+      );
+      return [val, ++i];
+    }).slice(0, -1),
+  ];
 
   for (const size of sizes) {
     allocNoSync(registry, size);
   }
 
-
   assertEquals(
     tableSnapshot(registry, sizes.length).map(track64andIndex),
     result,
-      );
-
- 
+  );
 });
 
 test("updateTable delete front", () => {
   const registry = makeRegistry();
-  const sizes = [634, 64 , 64 , 64, 64 , 64];
-  const toBeDeletedFront = 2
+  const sizes = [634, 64, 64, 64, 64, 64];
+  const toBeDeletedFront = 2;
 
-  const result = [[0,0] , ...sizes.map( (_,i,a) => {
-
-    // add them together and index [position + padding , index]
-    const  val = a.slice(0,i + 1).reduce((acc,c) => acc+ (align64(c) >>> 6), 0) 
-    return [val, ++i]
-  }).slice(0,-1)] 
+  const result = [
+    [0, 0],
+    ...sizes.map((_, i, a) => {
+      // add them together and index [position + padding , index]
+      const val = a.slice(0, i + 1).reduce(
+        (acc, c) => acc + (align64(c) >>> 6),
+        0,
+      );
+      return [val, ++i];
+    }).slice(0, -1),
+  ];
 
   for (const size of sizes) {
     allocNoSync(registry, size);
@@ -172,32 +204,37 @@ test("updateTable delete front", () => {
   assertEquals(
     tableSnapshot(registry, sizes.length).map(track64andIndex),
     result,
-      );
+  );
 
-  registry.free(0)
-  registry.free(1)
-  registry.updateTable()
-  result.splice(0,toBeDeletedFront)
+  registry.free(0);
+  registry.free(1);
+  registry.updateTable();
+  result.splice(0, toBeDeletedFront);
 
-  
   assertEquals(
-    tableSnapshot(registry, sizes.length - toBeDeletedFront).map(track64andIndex),
+    tableSnapshot(registry, sizes.length - toBeDeletedFront).map(
+      track64andIndex,
+    ),
     result,
-      );
+  );
 });
-
 
 test("updateTable delete Back", () => {
   const registry = makeRegistry();
-  const sizes = [64, 64 , 64 , 64, 64 , 64];
-  const toBeDeletedBack = 2
+  const sizes = [64, 64, 64, 64, 64, 64];
+  const toBeDeletedBack = 2;
 
-  const result = [[0,0] , ...sizes.map( (_,i,a) => {
-
-    // add them together and index [position + padding , index]
-    const  val = a.slice(0,i + 1).reduce((acc,c) => acc+ (align64(c) >>> 6), 0) 
-    return [val, ++i]
-  }).slice(0,-1)] 
+  const result = [
+    [0, 0],
+    ...sizes.map((_, i, a) => {
+      // add them together and index [position + padding , index]
+      const val = a.slice(0, i + 1).reduce(
+        (acc, c) => acc + (align64(c) >>> 6),
+        0,
+      );
+      return [val, ++i];
+    }).slice(0, -1),
+  ];
 
   for (const size of sizes) {
     allocNoSync(registry, size);
@@ -206,32 +243,37 @@ test("updateTable delete Back", () => {
   assertEquals(
     tableSnapshot(registry, sizes.length).map(track64andIndex),
     result,
-      );
+  );
 
-  registry.free(4)
-  registry.free(5)
-  registry.updateTable()
-  result.splice(-toBeDeletedBack)
+  registry.free(4);
+  registry.free(5);
+  registry.updateTable();
+  result.splice(-toBeDeletedBack);
 
-  
   assertEquals(
-    tableSnapshot(registry, sizes.length - toBeDeletedBack).map(track64andIndex),
+    tableSnapshot(registry, sizes.length - toBeDeletedBack).map(
+      track64andIndex,
+    ),
     result,
-      );
+  );
 });
-
 
 test("updateTable delete middle", () => {
   const registry = makeRegistry();
-  const sizes = [64, 64 , 64 , 64, 64 , 64];
-  const toBeDeletedBack = 2
+  const sizes = [64, 64, 64, 64, 64, 64];
+  const toBeDeletedBack = 2;
 
-  const result = [[0,0] , ...sizes.map( (_,i,a) => {
-
-    // add them together and index [position + padding , index]
-    const  val = a.slice(0,i + 1).reduce((acc,c) => acc+ (align64(c) >>> 6), 0) 
-    return [val, ++i]
-  }).slice(0,-1)] 
+  const result = [
+    [0, 0],
+    ...sizes.map((_, i, a) => {
+      // add them together and index [position + padding , index]
+      const val = a.slice(0, i + 1).reduce(
+        (acc, c) => acc + (align64(c) >>> 6),
+        0,
+      );
+      return [val, ++i];
+    }).slice(0, -1),
+  ];
 
   for (const size of sizes) {
     allocNoSync(registry, size);
@@ -240,39 +282,36 @@ test("updateTable delete middle", () => {
   assertEquals(
     tableSnapshot(registry, sizes.length).map(track64andIndex),
     result,
-      );
+  );
 
-  registry.free(1)
-  registry.free(2)
-  registry.updateTable()
-  result.splice(1,toBeDeletedBack)
+  registry.free(1);
+  registry.free(2);
+  registry.updateTable();
+  result.splice(1, toBeDeletedBack);
 
-  
   assertEquals(
-    tableSnapshot(registry, sizes.length - toBeDeletedBack).map(track64andIndex),
+    tableSnapshot(registry, sizes.length - toBeDeletedBack).map(
+      track64andIndex,
+    ),
     result,
-      );
+  );
 });
 
 test("check Start from Task", () => {
   const registry = makeRegistry();
-  const sizes = [64, 453 , 64 , 64];
-  const values = []
+  const sizes = [64, 453, 64, 64];
+  const values = [];
 
-  const result = sizes.reduce( (acc,v) => (
+  const result = sizes.reduce((acc, v) => (
     // reduce and adding padding and  >>> 6
-    acc.push(acc[acc.length - 1] + align64(v)),
-    acc ), 
-  [0]).slice(0,-1)
+    acc.push(acc[acc.length - 1] + align64(v)), acc
+  ), [0]).slice(0, -1);
 
   for (const size of sizes) {
     values.push(allocNoSync(registry, size)[TaskIndex.Start]);
   }
 
-
-  assertEquals( values, result  );
-
-
+  assertEquals(values, result);
 });
 
 test("allocTask preserves append offsets past signed integer range", () => {
@@ -304,7 +343,7 @@ test("packing boundary at payload size 63", () => {
   assertEquals(
     tableSnapshot(registry, sizes.length).map(track64andIndex),
     expectedStartAndIndex(sizes),
-      );
+  );
 });
 
 test("updateTable clears freed index >= 5", () => {
@@ -324,7 +363,26 @@ test("updateTable clears freed index >= 5", () => {
   assertEquals(
     tableSnapshot(registry, sizes.length - 1).map(track64andIndex),
     result,
-      );
+  );
+});
+
+test("updateTable compacts survivors and clears the trailing freed slots", () => {
+  const registry = makeRegistry();
+  [64, 64, 64, 64].forEach((size) => {
+    allocNoSync(registry, size);
+  });
+
+  registry.free(1);
+  registry.free(3);
+  registry.updateTable();
+
+  const snapshot = tableSnapshot(registry, 4);
+  assertEquals(snapshot.slice(0, 2).map(track64andIndex), [
+    [0, 0],
+    [2, 2],
+  ]);
+  assertEquals(snapshot[2], EMPTY);
+  assertEquals(snapshot[3], EMPTY);
 });
 
 test("allocTask reuses freed gap", () => {
@@ -341,6 +399,28 @@ test("allocTask reuses freed gap", () => {
   registry.allocTask(task);
 
   assertEquals(task[TaskIndex.Start], freedStart);
+});
+
+test("allocTask compacts survivors before appending past a freed gap", () => {
+  const registry = makeRegistry();
+  [64, 64, 64].forEach((size) => {
+    allocNoSync(registry, size);
+  });
+
+  registry.free(1);
+
+  const task = makeTask();
+  task[TaskIndex.PayloadLen] = 128;
+  registry.allocTask(task);
+
+  const snapshot = tableSnapshot(registry, 4);
+  assertEquals(task[TaskIndex.Start], 192);
+  assertEquals(snapshot.slice(0, 3).map(track64andIndex), [
+    [0, 0],
+    [2, 2],
+    [3, 1],
+  ]);
+  assertEquals(snapshot[3], EMPTY);
 });
 
 test("periodic compaction can reuse a freed gap during allocTask", () => {
@@ -409,7 +489,6 @@ test("setSlotLength shrinks slot and exposes gap for next allocation", () => {
 
   assertEquals(third[TaskIndex.Start], align64(700));
 });
-
 
 test("allocator random overlap stress keeps allocator consistent", () => {
   const registry = makeRegistry();

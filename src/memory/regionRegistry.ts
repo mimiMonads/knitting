@@ -1,6 +1,6 @@
 import {
-  LockBound,
   LOCK_SECTOR_BYTE_LENGTH,
+  LockBound,
   PAYLOAD_LOCK_HOST_BITS_OFFSET_BYTES,
   PAYLOAD_LOCK_WORKER_BITS_OFFSET_BYTES,
   TASK_SLOT_INDEX_MASK,
@@ -9,18 +9,19 @@ import {
 import type { Task } from "./lock.ts";
 import { createWasmSharedArrayBuffer } from "../common/runtime.ts";
 import {
-  toSharedBufferRegion,
   type SharedBufferSource,
+  toSharedBufferRegion,
 } from "../common/shared-buffer-region.ts";
 
 // Low 5 bits = slot index, high 27 bits = caller meta.
 // Inlined from setTaskSlotIndex to avoid cross-closure call on hot path.
 const SLOT_META_PACKED_MASK = 0xFFFFFFE0; // (~0x1F) >>> 0
 
-
 export type RegisterMalloc = ReturnType<typeof register>;
 
-export const register = ({ lockSector }: { lockSector?: SharedBufferSource }) => {
+export const register = (
+  { lockSector }: { lockSector?: SharedBufferSource },
+) => {
   const lockRegion = toSharedBufferRegion(
     lockSector ?? createWasmSharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH),
   );
@@ -58,36 +59,29 @@ export const register = ({ lockSector }: { lockSector?: SharedBufferSource }) =>
   const startAndIndexToArray = (length: number) =>
     startAndIndex.slice(0, length);
 
-  const compactSectorStable = (b: number) => {
+  const compactFreeBitsStable = (b: number, freeBits: number) => {
     const sai = startAndIndex;
     let w = 0 | 0;
-    let r = 0 | 0;
 
     b = b | 0;
+    freeBits = freeBits >>> 0;
 
-    for (; r + 3 < b; r += 4) {
-      const v0 = sai[r];
-      const v1 = sai[r + 1];
-      const v2 = sai[r + 2];
-      const v3 = sai[r + 3];
-
-      if (v0 !== EMPTY) sai[w++] = v0;
-      if (v1 !== EMPTY) sai[w++] = v1;
-      if (v2 !== EMPTY) sai[w++] = v2;
-      if (v3 !== EMPTY) sai[w++] = v3;
-    }
-
-    for (; r < b; r++) {
+    for (let r = 0; r < b; r++) {
       const v = sai[r];
-      if (v !== EMPTY) sai[w++] = v;
+      if (v === EMPTY) continue;
+      if ((freeBits & (1 << (v & SLOT_MASK))) !== 0) continue;
+      if (w !== r) sai[w] = v;
+      w++;
     }
 
-    return w;
+    const live = w;
+    for (; w < b; w++) sai[w] = EMPTY;
+    return live;
   };
 
   const updateTable = () => {
     // state = which bits are currently "in use" under toggle-protocol
-    const w =   Atomics.load(workerBits, 0) | 0;
+    const w = Atomics.load(workerBits, 0) | 0;
     const state = (hostLast ^ w) >>> 0;
 
     // freeBits = bits where host/worker agree (toggle resolved)
@@ -106,20 +100,8 @@ export const register = ({ lockSector }: { lockSector?: SharedBufferSource }) =>
     freeBits &= usedBits;
     if (freeBits === 0) return;
 
-    const sai = startAndIndex;
-
-    for (let i = 0; i < tableLength; i++) {
-      const v = sai[i];
-      if (v === EMPTY) continue;
-
-      // if this slot is now free, clear entry
-      if ((freeBits & (1 << (v & SLOT_MASK))) !== 0) {
-        sai[i] = EMPTY;
-      }
-    }
-
     usedBits &= ~freeBits;
-    tableLength = compactSectorStable(tableLength);
+    tableLength = compactFreeBitsStable(tableLength, freeBits);
   };
 
   // Hot-path allocation: reconcile frees, optionally reuse an exact-fit freed
@@ -150,7 +132,7 @@ export const register = ({ lockSector }: { lockSector?: SharedBufferSource }) =>
       let freeBits = (~(hostLast ^ w)) >>> 0;
       if (freeBits !== 0) freeBits &= usedBits;
 
-       if (freeBits === EMPTY) {
+      if (freeBits === EMPTY) {
         tableLength = 0;
         usedBits = 0 | 0;
         tl = 0;
@@ -172,7 +154,8 @@ export const register = ({ lockSector }: { lockSector?: SharedBufferSource }) =>
           sz[slotIndex] = size;
           task[TaskIndex.Start] = start;
           task[TaskIndex.slotBuffer] =
-            ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>> 0;
+            ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) |
+              slotIndex) >>> 0;
           usedBits = (usedBits & ~reclaimedBit) | freeBit;
           hostLast ^= freeBit;
           return slotIndex;
@@ -198,6 +181,8 @@ export const register = ({ lockSector }: { lockSector?: SharedBufferSource }) =>
           prevEnd = (curStart + (sz[slot] >>> 0)) >>> 0;
         }
 
+        for (let i = write; i < tl; i++) sai[i] = EMPTY;
+
         if (freeBits !== 0) usedBits &= ~freeBits;
         tableLength = tl = write;
       }
@@ -219,7 +204,8 @@ export const register = ({ lockSector }: { lockSector?: SharedBufferSource }) =>
         sz[slotIndex] = size;
         task[TaskIndex.Start] = 0;
         task[TaskIndex.slotBuffer] =
-          ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>> 0;
+          ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>>
+          0;
         tableLength = tl + 1;
         usedBits |= freeBit;
         hostLast ^= freeBit;
@@ -239,7 +225,8 @@ export const register = ({ lockSector }: { lockSector?: SharedBufferSource }) =>
         sz[slotIndex] = size;
         task[TaskIndex.Start] = curEnd;
         task[TaskIndex.slotBuffer] =
-          ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>> 0;
+          ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>>
+          0;
         tableLength = tl + 1;
         usedBits |= freeBit;
         hostLast ^= freeBit;
@@ -253,7 +240,8 @@ export const register = ({ lockSector }: { lockSector?: SharedBufferSource }) =>
       sz[slotIndex] = size;
       task[TaskIndex.Start] = newStart;
       task[TaskIndex.slotBuffer] =
-        ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>> 0;
+        ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>>
+        0;
       tableLength = tl + 1;
       usedBits |= freeBit;
       hostLast ^= freeBit;
@@ -264,7 +252,9 @@ export const register = ({ lockSector }: { lockSector?: SharedBufferSource }) =>
       sai[0] = slotIndex;
       sz[slotIndex] = size;
       task[TaskIndex.Start] = 0;
-      task[TaskIndex.slotBuffer] = ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>> 0;
+      task[TaskIndex.slotBuffer] =
+        ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>>
+        0;
       tableLength = 1;
       usedBits |= freeBit;
       hostLast ^= freeBit;
@@ -276,7 +266,9 @@ export const register = ({ lockSector }: { lockSector?: SharedBufferSource }) =>
       sai[insertAt] = (insertStart | slotIndex) >>> 0;
       sz[slotIndex] = size;
       task[TaskIndex.Start] = insertStart;
-      task[TaskIndex.slotBuffer] = ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>> 0;
+      task[TaskIndex.slotBuffer] =
+        ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>>
+        0;
       tableLength = tl + 1;
       usedBits |= freeBit;
       hostLast ^= freeBit;
@@ -286,13 +278,13 @@ export const register = ({ lockSector }: { lockSector?: SharedBufferSource }) =>
     sai[tl] = (prevEnd | slotIndex) >>> 0;
     sz[slotIndex] = size;
     task[TaskIndex.Start] = prevEnd;
-    task[TaskIndex.slotBuffer] = ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>> 0;
+    task[TaskIndex.slotBuffer] =
+      ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>> 0;
     tableLength = tl + 1;
     usedBits |= freeBit;
     hostLast ^= freeBit;
     return slotIndex;
   };
-
 
   const allocTask = (task: Task) => {
     const payloadLen = task[TaskIndex.PayloadLen] | 0;
@@ -303,7 +295,7 @@ export const register = ({ lockSector }: { lockSector?: SharedBufferSource }) =>
 
     // Publish slot ownership changes with atomic visibility for the peer.
     //Atomics.store(hostBits, 0, hostLast);
-    hostBits[0] = hostLast
+    hostBits[0] = hostLast;
     return slotIndex;
   };
 
