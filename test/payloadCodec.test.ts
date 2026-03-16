@@ -100,18 +100,47 @@ const makeCodec = (
   };
 };
 
+type CapturedPromiseResult =
+  | { status: "fulfilled"; value: unknown }
+  | { status: "rejected"; reason: unknown };
+
+const capturePromiseResult = () => {
+  let result: CapturedPromiseResult | undefined;
+  const onPromise: PromisePayloadHandler = (_task, isRejected, value) => {
+    result = isRejected
+      ? { status: "rejected", reason: value }
+      : { status: "fulfilled", value };
+  };
+  return {
+    onPromise,
+    get result() {
+      return result;
+    },
+  };
+};
+
 test("dynamic string payload stores slotBuffer and frees slot 0", () => {
   const { encode, decode, registry } = makeCodec();
   const task = makeTask();
   task.value = "x".repeat(700);
 
   assertEquals(encode(task, 0), true);
+  assertEquals(task.value, null);
   assertEquals(task[TaskIndex.slotBuffer], 0);
 
   decode(task, 0);
 
   assertEquals(task.value, "x".repeat(700));
   assertEquals(registry.workerBits[0] & 1, 1);
+});
+
+test("successful payload encoding clears the original task value", () => {
+  const { encode } = makeCodec();
+  const task = makeTask();
+  task.value = { msg: "x".repeat(700) };
+
+  assertEquals(encode(task, 0), true);
+  assertEquals(task.value, null);
 });
 
 test("dynamic string payloads use distinct slotBuffer values", () => {
@@ -239,10 +268,8 @@ test("dynamic error uses dedicated error path and preserves allocation", () => {
 });
 
 test("dynamic payload exceeding maxPayloadBytes rejects before reservation", async () => {
-  let result: Parameters<PromisePayloadHandler>[1] | undefined;
-  const { encode, registry } = makeCodec((_, payload) => {
-    result = payload;
-  }, {
+  const capture = capturePromiseResult();
+  const { encode, registry } = makeCodec(capture.onPromise, {
     payloadConfig: {
       mode: "fixed",
       payloadMaxByteLength: 40000,
@@ -255,6 +282,7 @@ test("dynamic payload exceeding maxPayloadBytes rejects before reservation", asy
   assertEquals(encode(task, 0), false);
   await Promise.resolve();
 
+  const result = capture.result;
   assertEquals(registry.hostBits[0] >>> 0, 0);
   assertEquals(result?.status, "rejected");
   if (result?.status === "rejected") {
@@ -292,10 +320,8 @@ test("dynamic utf8 path uses exact byte count only near cap and still succeeds",
 });
 
 test("fixed mode capacity overflow returns controlled encoder error", async () => {
-  let result: Parameters<PromisePayloadHandler>[1] | undefined;
-  const { encode, registry } = makeCodec((_, payload) => {
-    result = payload;
-  }, {
+  const capture = capturePromiseResult();
+  const { encode, registry } = makeCodec(capture.onPromise, {
     payloadBytes: 1024,
     payloadConfig: {
       mode: "fixed",
@@ -309,6 +335,7 @@ test("fixed mode capacity overflow returns controlled encoder error", async () =
   assertEquals(encode(task, 0), false);
   await Promise.resolve();
 
+  const result = capture.result;
   assertEquals((registry.hostBits[0] ^ registry.workerBits[0]) >>> 0, 0);
   assertEquals(result?.status, "rejected");
   if (result?.status === "rejected") {
@@ -319,16 +346,15 @@ test("fixed mode capacity overflow returns controlled encoder error", async () =
 });
 
 test("map payload is rejected by strict object policy", async () => {
-  let result: Parameters<PromisePayloadHandler>[1] | undefined;
-  const { encode } = makeCodec((_, payload) => {
-    result = payload;
-  });
+  const capture = capturePromiseResult();
+  const { encode } = makeCodec(capture.onPromise);
   const task = makeTask();
   task.value = new Map([["x".repeat(700), 1]]);
 
   assertEquals(encode(task, 0), false);
   await Promise.resolve();
 
+  const result = capture.result;
   assertEquals(result?.status, "rejected");
   if (result?.status === "rejected") {
     const reason = String(result.reason);
@@ -338,16 +364,15 @@ test("map payload is rejected by strict object policy", async () => {
 });
 
 test("set payload is rejected by strict object policy", async () => {
-  let result: Parameters<PromisePayloadHandler>[1] | undefined;
-  const { encode } = makeCodec((_, payload) => {
-    result = payload;
-  });
+  const capture = capturePromiseResult();
+  const { encode } = makeCodec(capture.onPromise);
   const task = makeTask();
   task.value = new Set(["x".repeat(700)]);
 
   assertEquals(encode(task, 0), false);
   await Promise.resolve();
 
+  const result = capture.result;
   assertEquals(result?.status, "rejected");
   if (result?.status === "rejected") {
     const reason = String(result.reason);
@@ -610,10 +635,8 @@ test("envelope subclass is accepted by codec via instanceof", () => {
 });
 
 test("envelope rejects promise values inside header", async () => {
-  let result: Parameters<PromisePayloadHandler>[1] | undefined;
-  const { encode } = makeCodec((_, payload) => {
-    result = payload;
-  });
+  const capture = capturePromiseResult();
+  const { encode } = makeCodec(capture.onPromise);
   const task = makeTask();
   task.value = new Envelope(
     { pending: Promise.resolve(1) } as unknown as Envelope["header"],
@@ -623,6 +646,7 @@ test("envelope rejects promise values inside header", async () => {
   assertEquals(encode(task, 0), false);
   await Promise.resolve();
 
+  const result = capture.result;
   assertEquals(result?.status, "rejected");
   if (result?.status === "rejected") {
     const reason = String(result.reason);
@@ -632,10 +656,8 @@ test("envelope rejects promise values inside header", async () => {
 });
 
 test("envelope rejects non-ArrayBuffer payloads", async () => {
-  let result: Parameters<PromisePayloadHandler>[1] | undefined;
-  const { encode } = makeCodec((_, payload) => {
-    result = payload;
-  });
+  const capture = capturePromiseResult();
+  const { encode } = makeCodec(capture.onPromise);
   const task = makeTask();
   task.value = new Envelope(
     "ok",
@@ -645,6 +667,7 @@ test("envelope rejects non-ArrayBuffer payloads", async () => {
   assertEquals(encode(task, 0), false);
   await Promise.resolve();
 
+  const result = capture.result;
   assertEquals(result?.status, "rejected");
   if (result?.status === "rejected") {
     const reason = String(result.reason);
@@ -654,10 +677,8 @@ test("envelope rejects non-ArrayBuffer payloads", async () => {
 });
 
 test("custom class payload is rejected by strict object policy", async () => {
-  let result: Parameters<PromisePayloadHandler>[1] | undefined;
-  const { encode } = makeCodec((_, payload) => {
-    result = payload;
-  });
+  const capture = capturePromiseResult();
+  const { encode } = makeCodec(capture.onPromise);
   class SerializableCarrier {
     safe = 1;
   }
@@ -667,6 +688,7 @@ test("custom class payload is rejected by strict object policy", async () => {
   assertEquals(encode(task, 0), false);
   await Promise.resolve();
 
+  const result = capture.result;
   assertEquals(result?.status, "rejected");
   if (result?.status === "rejected") {
     const reason = String(result.reason);
@@ -695,10 +717,8 @@ test("thenable object is encoded as a normal object payload", () => {
 });
 
 test("promise payload resolves before encoding", async () => {
-  let result: Parameters<PromisePayloadHandler>[1] | undefined;
-  const { encode } = makeCodec((_, payload) => {
-    result = payload;
-  });
+  const capture = capturePromiseResult();
+  const { encode } = makeCodec(capture.onPromise);
   const task = makeTask();
   const { promise, resolve } = withResolvers<number>();
 
@@ -708,6 +728,7 @@ test("promise payload resolves before encoding", async () => {
   resolve(42);
   await promise;
 
+  const result = capture.result;
   assertEquals(result?.status, "fulfilled");
   if (result?.status === "fulfilled") {
     assertEquals(result.value, 42);
@@ -716,10 +737,8 @@ test("promise payload resolves before encoding", async () => {
 });
 
 test("promise payload rejects before encoding", async () => {
-  let result: Parameters<PromisePayloadHandler>[1] | undefined;
-  const { encode } = makeCodec((_, payload) => {
-    result = payload;
-  });
+  const capture = capturePromiseResult();
+  const { encode } = makeCodec(capture.onPromise);
   const task = makeTask();
   const { promise, reject } = withResolvers<number>();
   const err = new Error("boom");
@@ -730,6 +749,7 @@ test("promise payload rejects before encoding", async () => {
   reject(err);
   await promise.catch(() => undefined);
 
+  const result = capture.result;
   assertEquals(result?.status, "rejected");
   if (result?.status === "rejected") {
     assertEquals(result.reason, err);
@@ -738,10 +758,8 @@ test("promise payload rejects before encoding", async () => {
 });
 
 test("function payload is rejected through promise handler", async () => {
-  let result: Parameters<PromisePayloadHandler>[1] | undefined;
-  const { encode } = makeCodec((_, payload) => {
-    result = payload;
-  });
+  const capture = capturePromiseResult();
+  const { encode } = makeCodec(capture.onPromise);
   const task = makeTask();
 
   task.value = function badArg() {};
@@ -749,6 +767,7 @@ test("function payload is rejected through promise handler", async () => {
 
   await Promise.resolve();
 
+  const result = capture.result;
   assertEquals(result?.status, "rejected");
   if (result?.status === "rejected") {
     const reason = String(result.reason);
@@ -769,10 +788,8 @@ test("function payload throws when promise handler is missing", () => {
 });
 
 test("non-global symbol payload is rejected through promise handler", async () => {
-  let result: Parameters<PromisePayloadHandler>[1] | undefined;
-  const { encode } = makeCodec((_, payload) => {
-    result = payload;
-  });
+  const capture = capturePromiseResult();
+  const { encode } = makeCodec(capture.onPromise);
   const task = makeTask();
 
   task.value = Symbol("local");
@@ -780,6 +797,7 @@ test("non-global symbol payload is rejected through promise handler", async () =
 
   await Promise.resolve();
 
+  const result = capture.result;
   assertEquals(result?.status, "rejected");
   if (result?.status === "rejected") {
     const reason = String(result.reason);
@@ -799,10 +817,8 @@ test("non-global symbol payload throws when promise handler is missing", () => {
 });
 
 test("json payload with bigint is rejected through promise handler", async () => {
-  let result: Parameters<PromisePayloadHandler>[1] | undefined;
-  const { encode } = makeCodec((_, payload) => {
-    result = payload;
-  });
+  const capture = capturePromiseResult();
+  const { encode } = makeCodec(capture.onPromise);
   const task = makeTask();
 
   task.value = { n: 1n };
@@ -810,6 +826,7 @@ test("json payload with bigint is rejected through promise handler", async () =>
 
   await Promise.resolve();
 
+  const result = capture.result;
   assertEquals(result?.status, "rejected");
   if (result?.status === "rejected") {
     const reason = String(result.reason);
@@ -834,10 +851,8 @@ test("json payload with bigint throws when promise handler is missing", () => {
 });
 
 test("non-serializable payload is rejected through promise handler", async () => {
-  let result: Parameters<PromisePayloadHandler>[1] | undefined;
-  const { encode } = makeCodec((_, payload) => {
-    result = payload;
-  });
+  const capture = capturePromiseResult();
+  const { encode } = makeCodec(capture.onPromise);
   const task = makeTask();
 
   task.value = new WeakMap();
@@ -845,6 +860,7 @@ test("non-serializable payload is rejected through promise handler", async () =>
 
   await Promise.resolve();
 
+  const result = capture.result;
   assertEquals(result?.status, "rejected");
   if (result?.status === "rejected") {
     const reason = String(result.reason);

@@ -1,6 +1,5 @@
 import {
   makeTask,
-  type PromisePayloadResult,
   TaskIndex,
   type Task,
   type Lock2,
@@ -54,7 +53,7 @@ export function createHostTxQueue({
     const task = makeTask() as QueueTask;
     task[TaskIndex.ID] = id;
     task[TaskIndex.FunctionID] = 0;
-    task.value = undefined;
+    task.value = null;
     task.resolve = PLACE_HOLDER;
     task.reject = PLACE_HOLDER;
     return task;
@@ -93,6 +92,7 @@ export function createHostTxQueue({
     shouldSettle: (task) => task.reject !== PLACE_HOLDER,
     onResolved: (task) => {
       inUsed = (inUsed - 1) | 0;
+      task.value = null;
       task.resolve = PLACE_HOLDER;
       task.reject = PLACE_HOLDER;
       freePush(task[TaskIndex.ID]);
@@ -169,7 +169,7 @@ export function createHostTxQueue({
             return Promise.reject(AbortSignalPoolExhausted);
           }
 
-          new OneShotDeferred(deferred, () => resetSignal?.(maybeSignal));
+          new OneShotDeferred(deferred, () => resetSignal!(maybeSignal));
           const encodedSignalMeta =
             ((maybeSignal + ABORT_SIGNAL_META_OFFSET) & FUNCTION_META_MASK) >>> 0;
           slot[TaskIndex.FunctionID] =
@@ -204,13 +204,18 @@ export function createHostTxQueue({
     },
     flushToWorker,
     enqueueKnown,
-    settlePromisePayload: (task: QueueTask, result: PromisePayloadResult) => {
+    settlePromisePayload: (
+      task: QueueTask,
+      isRejected: boolean,
+      value: unknown,
+    ) => {
       if (task.reject === PLACE_HOLDER) return false;
-      if (result.status === "rejected") {
+      if (isRejected) {
         try {
-          task.reject(result.reason);
+          task.reject(value);
         } catch {
         }
+        task.value = null;
         task.resolve = PLACE_HOLDER;
         task.reject = PLACE_HOLDER;
         inUsed = (inUsed - 1) | 0;
@@ -218,7 +223,7 @@ export function createHostTxQueue({
         return false;
       }
 
-      task.value = result.value;
+      task.value = value;
       return enqueueKnown(task);
     },
   };

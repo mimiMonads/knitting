@@ -53,13 +53,11 @@ export const encoderError = ({
 }): false => {
   const reason = reasonFrom(task, type, detail);
 
-  if(!isMainThread){
+  if (!isMainThread) {
     task.value = reason;
-    task[TaskIndex.FlagsToHost] = TaskFlag.Reject 
-    return false
+    task[TaskIndex.FlagsToHost] = TaskFlag.Reject;
+    return false;
   }
- 
-
 
   // Fallback for direct codec usage where no async settle callback is wired.
   if (onPromise == null) {
@@ -71,7 +69,7 @@ export const encoderError = ({
   queueMicrotask(() => {
     finishPromisePayload(task);
     task.value = reason;
-    onPromise(task, { status: "rejected", reason });
+    onPromise(task, true, reason);
   });
 
   return false;

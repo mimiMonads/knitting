@@ -149,6 +149,7 @@ const enqueueLock = () => {
           const result = runByIndex[fnIndex]!(slot);
           // Slot 0 is reused for response flags; clear request FunctionID value.
           slot[IDX_FLAGS] = 0;
+          slot.value = null;
           if (result instanceof Promise) {
             awaiting++;
 

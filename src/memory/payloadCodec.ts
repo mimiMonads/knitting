@@ -650,12 +650,12 @@ export const encodePayload = ({
         (value) => {
           finishPromisePayload(task);
           task.value = value;
-          onPromise?.(task, { status: "fulfilled", value });
+          onPromise!(task, false, value);
         },
         (reason) => {
           finishPromisePayload(task);
           task.value = reason;
-          onPromise?.(task, { status: "rejected", reason });
+          onPromise!(task, true, reason);
         },
       );
     }
@@ -678,6 +678,7 @@ export const encodePayload = ({
               task[TaskIndex.Type] = PayloadBuffer.StaticBigInt;
               task[TaskIndex.PayloadLen] = written;
               clearBigIntScratch(binaryBytes);
+              task.value = null;
               return true;
             }
           }
@@ -696,6 +697,7 @@ export const encodePayload = ({
           task[TaskIndex.PayloadLen] = written;
           setSlotLength(reservedSlot, written);
           clearBigIntScratch(binaryBytes);
+          task.value = null;
           return true;
         }
         BigInt64View[0] = args;
@@ -912,6 +914,7 @@ export const encodePayload = ({
           if (written !== -1) {
             task[TaskIndex.Type] = PayloadBuffer.StaticString;
             task[TaskIndex.PayloadLen] = written;
+            task.value = null;
             return true;
           }
         }
@@ -931,6 +934,7 @@ export const encodePayload = ({
         }
         task[TaskIndex.PayloadLen] = written;
         setSlotLength(reservedSlot, written);
+        task.value = null;
         return true;
       }
       case "symbol": {
@@ -947,6 +951,7 @@ export const encodePayload = ({
           if (written !== -1) {
             task[TaskIndex.Type] = PayloadBuffer.StaticSymbol;
             task[TaskIndex.PayloadLen] = written;
+            task.value = null;
             return true;
           }
         }
@@ -965,6 +970,7 @@ export const encodePayload = ({
         }
         task[TaskIndex.PayloadLen] = written;
         setSlotLength(reservedSlot, written);
+        task.value = null;
         return true;
       }
       case "undefined":

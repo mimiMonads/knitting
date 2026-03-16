@@ -38,7 +38,7 @@ const reportWorkerStartupFatal = (error: unknown): void => {
   } catch {
   }
   try {
-    (globalThis as { postMessage?: (message: unknown) => void }).postMessage?.(
+    (globalThis as { postMessage?: (message: unknown) => void }).postMessage!(
       payload,
     );
   } catch {

@@ -304,8 +304,8 @@ test("publish tracks deferred promise count until settlement", async () => {
   const { lock } = makeLock();
   let settled = false;
 
-  lock.setPromiseHandler((_task, result) => {
-    settled = result.status === "fulfilled" && result.value === "later";
+  lock.setPromiseHandler((_task, isRejected, value) => {
+    settled = isRejected === false && value === "later";
   });
 
   assertEquals(lock.publish(makeValueTask(Promise.resolve("later"))), false);
@@ -316,6 +316,14 @@ test("publish tracks deferred promise count until settlement", async () => {
 
   assertEquals(settled, true);
   assertEquals(lock.getPendingPromiseCount(), 0);
+});
+
+test("encode clears source value after successful publish into shared memory", () => {
+  const { lock } = makeLock();
+  const task = makeValueTask("x".repeat(700));
+
+  assertEquals(lock.encode(task), true);
+  assertEquals(task.value, null);
 });
 
 test("decode syncs worker bits", () => {

@@ -172,3 +172,42 @@ test("late return frames are acked without settling inactive slots", async () =>
   assert.equal(tx.completeFrame(), 1);
   assert.equal(await secondPromise, "second-result");
 });
+
+test("tx queue clears slot value after a response settles", async () => {
+  const requestLock = {
+    publish: () => true,
+    flushPending: () => false,
+    hasPendingFrames: () => false,
+    getPendingFrameCount: () => 0,
+    getPendingPromiseCount: () => 0,
+    resetPendingState: () => {},
+  } as unknown as Lock2;
+
+  let capturedQueue: Task[] | undefined;
+  const returnLock = {
+    resolveHost: ({ queue, onResolved }: {
+      queue: Task[];
+      onResolved?: (task: Task) => void;
+    }) => {
+      capturedQueue = queue;
+      return () => {
+        const task = queue[0]!;
+        task.value = "done";
+        task.resolve(task.value);
+        onResolved?.(task);
+        return 1;
+      };
+    },
+  } as unknown as Lock2;
+
+  const tx = createHostTxQueue({
+    lock: requestLock,
+    returnLock,
+    max: 1,
+  });
+
+  const promise = tx.enqueue(0)("request");
+  assert.equal(tx.completeFrame(), 1);
+  assert.equal(await promise, "done");
+  assert.equal(capturedQueue?.[0]?.value, null);
+});

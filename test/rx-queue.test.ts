@@ -3,6 +3,7 @@ import test from "node:test";
 import RingQueue from "../src/ipc/tools/RingQueue.ts";
 import { TaskFlag, TaskIndex, TASK_SLOT_META_VALUE_MASK, makeTask, setTaskSlotMeta, type Task } from "../src/memory/lock.ts";
 import { createWorkerRxQueue } from "../src/worker/rx-queue.ts";
+import { withResolvers } from "../src/common/with-resolvers.ts";
 
 test("worker queue async settle handles encode backpressure without unhandledRejection", async () => {
   const resolved = new RingQueue<Task>();
@@ -221,4 +222,44 @@ test("worker abort toolkit exposes shorthand hasAborted accessor", () => {
     short: false,
   });
   assert.deepEqual(seenSignals, [0, 0]);
+});
+
+test("worker queue drops original args once async work has been invoked", () => {
+  const resolved = new RingQueue<Task>();
+  const recyclecList = new RingQueue<Task>();
+  const lock = {
+    decode: () => true,
+    resolved,
+    recyclecList,
+  } as unknown as {
+    decode: () => boolean;
+    resolved: RingQueue<Task>;
+    recyclecList: RingQueue<Task>;
+  };
+
+  const pending = withResolvers<number>();
+  const returnLock = {
+    encode: () => true,
+  } as unknown as {
+    encode: (task: Task) => boolean;
+  };
+
+  const queue = createWorkerRxQueue({
+    listOfFunctions: [{
+      run: () => pending.promise,
+    }] as unknown as Array<{ run: (args: unknown) => unknown }>,
+    lock: lock as any,
+    returnLock: returnLock as any,
+  } as any);
+
+  const slot = makeTask();
+  slot[TaskIndex.FunctionID] = 0;
+  slot.value = { big: "x".repeat(4096) };
+  resolved.push(slot);
+
+  assert.equal(queue.enqueueLock(), true);
+  assert.equal(queue.serviceBatchImmediate(), 1);
+  assert.equal(slot.value, null);
+
+  pending.resolve(1);
 });

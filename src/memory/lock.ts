@@ -91,13 +91,12 @@ export type Task = [
 
 export const PromisePayloadMarker = Symbol.for("knitting.promise.payload");
 
-export type PromisePayloadResult =
-  | { status: "fulfilled"; value: unknown }
-  | { status: "rejected"; reason: unknown };
-
+// Pass settlement state positionally to avoid allocating wrapper objects on the
+// promise encode hot path.
 export type PromisePayloadHandler = (
   task: Task,
-  result: PromisePayloadResult,
+  isRejected: boolean,
+  value: unknown,
 ) => void;
 
 const pendingPromisePayloads = new WeakSet<Task>();
@@ -383,11 +382,11 @@ export const lock2 = ({
     headersBuffer,
     headerSlotStrideU32: headersSlotStride,
     lockSector: payloadLockRegion,
-    onPromise: (task, result) => {
+    onPromise: (task, isRejected, value) => {
       if (trackedDeferredTasks.delete(task) && pendingPromiseCount > 0) {
         pendingPromiseCount = (pendingPromiseCount - 1) | 0;
       }
-      promiseHandler?.(task, result);
+      promiseHandler!(task, isRejected, value);
     },
   });
   const decodeTask = decodePayload({

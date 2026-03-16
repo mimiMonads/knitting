@@ -170,8 +170,8 @@ export class ChannelHandler {
       // @ts-ignore
       port1.onmessage = f;
     }
-    this.port1.start?.();
-    this.port2.start?.();
+    this.port1.start!();
+    this.port2.start!();
   }
 
   /**

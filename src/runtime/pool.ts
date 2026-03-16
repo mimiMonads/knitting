@@ -12,7 +12,6 @@ import {
   lock2,
   LOCK_SECTOR_BYTE_LENGTH,
   LockBound,
-  type PromisePayloadResult,
   type Task,
 } from "../memory/lock.ts";
 import type {
@@ -433,18 +432,18 @@ export const spawnWorkerContext = ({
   };
 
   const nodeWorker = worker as unknown as NodeWorkerLike;
-  nodeWorker.on?.("message", (message: unknown) => {
+  nodeWorker.on!("message", (message: unknown) => {
     if (!isWorkerFatalMessage(message)) return;
     markWorkerClosed(
       `Worker startup failed: ${message[WORKER_FATAL_MESSAGE_KEY]}`,
     );
     terminateWorkerQuietly(worker);
   });
-  nodeWorker.on?.("error", (error: unknown) => {
+  nodeWorker.on!("error", (error: unknown) => {
     const message = String((error as { message?: unknown })?.message ?? error);
     markWorkerClosed(`Worker crashed: ${message}`);
   });
-  nodeWorker.on?.("exit", (code: unknown) => {
+  nodeWorker.on!("exit", (code: unknown) => {
     if (typeof code === "number" && code === 0) return;
     const normalized = typeof code === "number" ? code : -1;
     markWorkerClosed(`Worker exited with code ${normalized}`);
@@ -470,8 +469,8 @@ export const spawnWorkerContext = ({
     }
   };
 
-  lock.setPromiseHandler((task: Task, result: PromisePayloadResult) => {
-    queue.settlePromisePayload(task, result);
+  lock.setPromiseHandler((task: Task, isRejected: boolean, value: unknown) => {
+    queue.settlePromisePayload(task, isRejected, value);
     send();
   });
 
