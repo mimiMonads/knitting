@@ -356,6 +356,44 @@ test("set payload is rejected by strict object policy", async () => {
   }
 });
 
+test("static Uint8Array payload round-trips with Uint8Array type", () => {
+  const { encode, decode } = makeCodec();
+  const task = makeTask();
+  task.value = new Uint8Array([1, 2, 3, 4, 5]);
+
+  assertEquals(encode(task, 0), true);
+  assertEquals(task[TaskIndex.Type], PayloadBuffer.StaticBinary);
+
+  decode(task, 0);
+
+  assertEquals(task.value instanceof Uint8Array, true);
+  assertEquals(NodeBuffer.isBuffer(task.value), false);
+  assertEquals((task.value as Uint8Array).constructor, Uint8Array);
+  assertEquals(Array.from(task.value as Uint8Array), [1, 2, 3, 4, 5]);
+});
+
+test("dynamic Uint8Array payload stores slotBuffer and decodes as Uint8Array", () => {
+  const { encode, decode, registry } = makeCodec();
+  const task = makeTask();
+  const src = new Uint8Array(700);
+  for (let i = 0; i < src.length; i++) src[i] = i & 0xff;
+  task.value = src;
+
+  assertEquals(encode(task, 0), true);
+  assertEquals(task[TaskIndex.Type], PayloadBuffer.Binary);
+  assertEquals(task[TaskIndex.slotBuffer], 0);
+
+  decode(task, 0);
+
+  assertEquals(task.value instanceof Uint8Array, true);
+  assertEquals(NodeBuffer.isBuffer(task.value), false);
+  const out = task.value as Uint8Array;
+  assertEquals(out.constructor, Uint8Array);
+  assertEquals(out[0], 0);
+  assertEquals(out[699], 699 & 0xff);
+  assertEquals(registry.workerBits[0] & 1, 1);
+});
+
 test("static ArrayBuffer payload round-trips with ArrayBuffer type", () => {
   const { encode, decode } = makeCodec();
   const task = makeTask();

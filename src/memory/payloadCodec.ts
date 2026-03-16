@@ -259,6 +259,7 @@ export const encodePayload = ({
   const {
     maxBytes: staticMaxBytes,
     writeBinary: writeStaticBinary,
+    writeUint8Array: writeStaticUint8Array,
     write8Binary: writeStatic8Binary,
     writeUtf8: writeStaticUtf8,
   } = requireStaticIO(headersBuffer, headerSlotStrideU32);
@@ -419,6 +420,32 @@ export const encodePayload = ({
     if (!ensureWithinDynamicLimit(task, bytes, PayloadBuffer[dynamicType])) {
       return false;
     }
+    const reservedSlot = reserveDynamicObject(task, bytes);
+    const written = writeDynamicBinary(bytesView, task[TaskIndex.Start]);
+    if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
+    task[TaskIndex.PayloadLen] = written;
+    setSlotLength(reservedSlot, written);
+    task.value = null;
+    return true;
+  };
+  const encodeObjectUint8Array = (
+    task: Task,
+    slotIndex: number,
+    bytesView: Uint8Array,
+  ) => {
+    const bytes = bytesView.byteLength;
+    if (bytes <= staticMaxBytes) {
+      const written = writeStaticUint8Array(bytesView, slotIndex);
+      if (written !== -1) {
+        task[TaskIndex.Type] = PayloadBuffer.StaticBinary;
+        task[TaskIndex.PayloadLen] = written;
+        task.value = null;
+        return true;
+      }
+    }
+
+    task[TaskIndex.Type] = PayloadBuffer.Binary;
+    if (!ensureWithinDynamicLimit(task, bytes, "Binary")) return false;
     const reservedSlot = reserveDynamicObject(task, bytes);
     const written = writeDynamicBinary(bytesView, task[TaskIndex.Start]);
     if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
@@ -762,12 +789,10 @@ export const encodePayload = ({
 
           switch ((objectValue as { constructor?: unknown }).constructor) {
             case Uint8Array:
-              return encodeObjectBinary(
+              return encodeObjectUint8Array(
                 task,
                 slotIndex,
                 objectValue as Uint8Array,
-                PayloadBuffer.Binary,
-                PayloadBuffer.StaticBinary,
               );
             case ArrayBuffer:
               return encodeObjectArrayBuffer(
@@ -1002,6 +1027,7 @@ export const decodePayload = ({
     readUtf8: readStaticUtf8,
     readBytesCopy: readStaticBytesCopy,
     readBytesBufferCopy: readStaticBufferCopy,
+    readUint8ArrayCopy: readStaticUint8ArrayCopy,
     readBytesArrayBufferCopy: readStaticArrayBufferCopy,
     read8BytesFloatCopy: readStatic8BytesFloatCopy,
   } = requireStaticIO(headersBuffer, headerSlotStrideU32);
@@ -1278,7 +1304,7 @@ export const decodePayload = ({
         freeTaskSlot(task);
         return;
       case PayloadBuffer.StaticBinary:
-        task.value = readStaticBufferCopy(
+        task.value = readStaticUint8ArrayCopy(
           0,
           task[TaskIndex.PayloadLen],
           slotIndex,

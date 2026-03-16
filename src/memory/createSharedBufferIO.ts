@@ -6,6 +6,8 @@ import {
 } from "./lock.ts";
 import { getStridedSlotByteOffset } from "./byte-carpet.ts";
 import {
+  IS_BUN,
+  IS_NODE,
   createSharedArrayBuffer,
   growSharedArrayBuffer,
 } from "../common/runtime.ts";
@@ -19,8 +21,9 @@ const DYNAMIC_HEADER_BYTES = 64;
 const DYNAMIC_SAFE_PADDING_BYTES = page;
 
 const alignUpto64 = (n: number) => (n + (64 - 1)) & ~(64 - 1);
+const isExactUint8Array = (src: Uint8Array) => src.constructor === Uint8Array;
 const canonicalDynamicUint8Array = (src: Uint8Array) =>
-  src.constructor === Uint8Array
+  isExactUint8Array(src)
     ? src
     : new Uint8Array(src.buffer, src.byteOffset, src.byteLength);
 
@@ -227,11 +230,13 @@ export const createSharedStaticBufferIO = ({
   };
 
   const writeBinary = (src: Uint8Array, at: number, start = 0) => {
-    if (!canWrite(start, src.byteLength)) return -1;
+    //if (!canWrite(start, src.byteLength)) return -1;
 
     arrU8Sec[at].set(src, start);
     return src.byteLength;
   };
+  const writeUint8Array = (src: Uint8Array, at: number, start = 0) =>
+    isExactUint8Array(src) ? writeBinary(src, at, start) : -1;
 
   const write8Binary = (src: Float64Array, at: number, start = 0) => {
     const bytes = src.byteLength;
@@ -245,12 +250,30 @@ export const createSharedStaticBufferIO = ({
   const readBytesView = (start: number, end: number, at: number) =>
     arrU8Sec[at].subarray(start, end);
   const readBytesBufferCopy = (start: number, end: number, at: number) => {
-    const length = Math.max(0, (end - start) | 0);
+    const length = end - start;
     const out = NodeBuffer.allocUnsafe(length);
-    if (length === 0) return out;
+    //if (length === 0) return out;
     arrBuffSec[at]!.copy(out, 0, start, end);
     return out;
   };
+  const readUint8ArrayBufferCopy = (
+    start: number,
+    end: number,
+    at: number,
+  ) => {
+    const bytes = readBytesBufferCopy(start, end, at);
+    return new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  };
+  const readUint8ArraySliceCopy = (
+    start: number,
+    end: number,
+    at: number,
+  ) => readBytesCopy(start, end, at);
+
+  const readUint8ArrayCopy = !IS_BUN
+    ? readUint8ArrayBufferCopy
+    : readUint8ArraySliceCopy;
+
   const readBytesArrayBufferCopy = (
     start: number,
     end: number,
@@ -272,10 +295,13 @@ export const createSharedStaticBufferIO = ({
     writeUtf8,
     readUtf8,
     writeBinary,
+    writeUint8Array,
     write8Binary,
     readBytesCopy,
     readBytesView,
     readBytesBufferCopy,
+    readUint8ArrayCopy,
+    readUint8ArrayBufferCopy,
     readBytesArrayBufferCopy,
     read8BytesFloatCopy,
     read8BytesFloatView,

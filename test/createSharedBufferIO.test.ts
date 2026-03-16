@@ -546,3 +546,23 @@ test("static writeBinary accepts Buffer and Uint8Array sources on the same path"
     24,
   ]);
 });
+
+test("static Uint8Array helpers keep the exact Uint8Array path separate from Buffer", () => {
+  const headersBuffer = makeHeaders();
+  const io = createSharedStaticBufferIO({ headersBuffer });
+  const slot = 0;
+  const bytes = new Uint8Array([31, 32, 33, 34]);
+
+  assertEquals(io.writeUint8Array(bytes, slot, 0), bytes.byteLength);
+  assertEquals(io.writeUint8Array(NodeBuffer.from(bytes), slot, 4), -1);
+
+  const copied = io.readUint8ArrayCopy(0, bytes.byteLength, slot);
+  assertEquals(copied.constructor, Uint8Array);
+  assertEquals(NodeBuffer.isBuffer(copied), false);
+  assertEquals(Array.from(copied), Array.from(bytes));
+
+  const bufferCopied = io.readUint8ArrayBufferCopy(0, bytes.byteLength, slot);
+  assertEquals(bufferCopied.constructor, Uint8Array);
+  assertEquals(NodeBuffer.isBuffer(bufferCopied), false);
+  assertEquals(Array.from(bufferCopied), Array.from(bytes));
+});
