@@ -7,7 +7,6 @@ import {
 import { getStridedSlotByteOffset } from "./byte-carpet.ts";
 import {
   IS_BUN,
-  IS_NODE,
   createSharedArrayBuffer,
   growSharedArrayBuffer,
 } from "../common/runtime.ts";
@@ -188,6 +187,13 @@ export const createSharedStaticBufferIO = ({
   const u32Bytes = Uint32Array.BYTES_PER_ELEMENT;
   const slotStride = slotStrideU32 ?? HEADER_SLOT_STRIDE_U32;
   const writableBytes = HEADER_STATIC_PAYLOAD_U32 * u32Bytes;
+  const baseU8 = new Uint8Array(buffer, baseByteOffset);
+  const baseBuf = NodeBuffer.from(buffer, baseByteOffset);
+  const baseF64 = new Float64Array(
+    buffer,
+    baseByteOffset,
+    (buffer.byteLength - baseByteOffset) >>> 3,
+  );
 
   const slotStartBytes = (at: number) =>
     getStridedSlotByteOffset({
@@ -197,63 +203,60 @@ export const createSharedStaticBufferIO = ({
       baseU32: LockBound.header,
     });
 
-  const arrU8Sec = Array.from({
-    length: LockBound.slots,
-  }, (_, i) => new Uint8Array(buffer, slotStartBytes(i), writableBytes));
-
-  const arrBuffSec = Array.from(
-    { length: LockBound.slots },
-    (_, i) => NodeBuffer.from(buffer, slotStartBytes(i), writableBytes),
-  );
-
-  const arrF64Sec = Array.from({
-    length: LockBound.slots,
-  }, (_, i) =>
-    new Float64Array(
-      buffer,
-      slotStartBytes(i),
-      writableBytes >>> 3,
-    ));
+  const slotByteOffsets = new Uint32Array(LockBound.slots);
+  for (let i = 0; i < LockBound.slots; i++) {
+    slotByteOffsets[i] = slotStartBytes(i) - baseByteOffset;
+  }
 
   const canWrite = (start: number, length: number) =>
     (start | 0) >= 0 && (start + length) <= writableBytes;
 
   const writeUtf8 = (str: string, at: number) => {
-    const { read, written } = textEncode.encodeInto(str, arrU8Sec[at]);
+    const start = slotByteOffsets[at]!;
+    const { read, written } = textEncode.encodeInto(
+      str,
+      baseU8.subarray(start, start + writableBytes),
+    );
     if (read !== str.length) return -1;
 
     return written;
   };
 
   const readUtf8 = (start: number, end: number, at: number) => {
-    return arrBuffSec[at]!.toString("utf8", start, end);
+    const slotStart = slotByteOffsets[at]!;
+    return baseBuf.toString("utf8", slotStart + start, slotStart + end);
   };
 
   const writeBinary = (src: Uint8Array, at: number, start = 0) => {
-    //if (!canWrite(start, src.byteLength)) return -1;
-
-    arrU8Sec[at].set(src, start);
+    baseU8.set(src, slotByteOffsets[at]! + start);
     return src.byteLength;
   };
-  const writeUint8Array = (src: Uint8Array, at: number, start = 0) =>
-    isExactUint8Array(src) ? writeBinary(src, at, start) : -1;
+  const writeExactUint8Array = (src: Uint8Array, at: number, start = 0) => {
+    baseU8.set(src, slotByteOffsets[at]! + start);
+    return src.byteLength;
+  };
+  const writeUint8Array = (src: Uint8Array, at: number, start = 0) => {
+    if (!isExactUint8Array(src)) return -1;
+    return writeExactUint8Array(src, at, start);
+  };
 
   const write8Binary = (src: Float64Array, at: number, start = 0) => {
     const bytes = src.byteLength;
     if (!canWrite(start, bytes)) return -1;
-    arrF64Sec[at].set(src, start >>> 3);
+    baseF64.set(src, (slotByteOffsets[at]! + start) >>> 3);
     return bytes;
   };
 
   const readBytesCopy = (start: number, end: number, at: number) =>
-    arrU8Sec[at].slice(start, end);
+    baseU8.slice(slotByteOffsets[at]! + start, slotByteOffsets[at]! + end);
   const readBytesView = (start: number, end: number, at: number) =>
-    arrU8Sec[at].subarray(start, end);
+    baseU8.subarray(slotByteOffsets[at]! + start, slotByteOffsets[at]! + end);
   const readBytesBufferCopy = (start: number, end: number, at: number) => {
     const length = end - start;
     const out = NodeBuffer.allocUnsafe(length);
     //if (length === 0) return out;
-    arrBuffSec[at]!.copy(out, 0, start, end);
+    const slotStart = slotByteOffsets[at]!;
+    baseBuf.copy(out, 0, slotStart + start, slotStart + end);
     return out;
   };
   const readUint8ArrayBufferCopy = (
@@ -269,10 +272,9 @@ export const createSharedStaticBufferIO = ({
     end: number,
     at: number,
   ) => readBytesCopy(start, end, at);
-
-  const readUint8ArrayCopy = !IS_BUN
-    ? readUint8ArrayBufferCopy
-    : readUint8ArraySliceCopy;
+  const readUint8ArrayCopy = IS_BUN
+    ? readUint8ArraySliceCopy
+    : readUint8ArrayBufferCopy;
 
   const readBytesArrayBufferCopy = (
     start: number,
@@ -282,19 +284,27 @@ export const createSharedStaticBufferIO = ({
     const length = Math.max(0, (end - start) | 0);
     if (length === 0) return new ArrayBuffer(0);
     const out = NodeBuffer.allocUnsafeSlow(length);
-    arrBuffSec[at]!.copy(out, 0, start, end);
+    const slotStart = slotByteOffsets[at]!;
+    baseBuf.copy(out, 0, slotStart + start, slotStart + end);
     return out.buffer;
   };
 
   const read8BytesFloatCopy = (start: number, end: number, at: number) =>
-    arrF64Sec[at].slice(start >>> 3, end >>> 3);
+    baseF64.slice(
+      (slotByteOffsets[at]! + start) >>> 3,
+      (slotByteOffsets[at]! + end) >>> 3,
+    );
   const read8BytesFloatView = (start: number, end: number, at: number) =>
-    arrF64Sec[at].subarray(start >>> 3, end >>> 3);
+    baseF64.subarray(
+      (slotByteOffsets[at]! + start) >>> 3,
+      (slotByteOffsets[at]! + end) >>> 3,
+    );
 
   return {
     writeUtf8,
     readUtf8,
     writeBinary,
+    writeExactUint8Array,
     writeUint8Array,
     write8Binary,
     readBytesCopy,

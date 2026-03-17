@@ -259,7 +259,7 @@ export const encodePayload = ({
   const {
     maxBytes: staticMaxBytes,
     writeBinary: writeStaticBinary,
-    writeUint8Array: writeStaticUint8Array,
+    writeExactUint8Array: writeStaticExactUint8Array,
     write8Binary: writeStatic8Binary,
     writeUtf8: writeStaticUtf8,
   } = requireStaticIO(headersBuffer, headerSlotStrideU32);
@@ -435,13 +435,11 @@ export const encodePayload = ({
   ) => {
     const bytes = bytesView.byteLength;
     if (bytes <= staticMaxBytes) {
-      const written = writeStaticUint8Array(bytesView, slotIndex);
-      if (written !== -1) {
-        task[TaskIndex.Type] = PayloadBuffer.StaticBinary;
-        task[TaskIndex.PayloadLen] = written;
-        task.value = null;
-        return true;
-      }
+      writeStaticExactUint8Array(bytesView, slotIndex);
+      task[TaskIndex.Type] = PayloadBuffer.StaticBinary;
+      task[TaskIndex.PayloadLen] = bytes;
+      task.value = null;
+      return true;
     }
 
     task[TaskIndex.Type] = PayloadBuffer.Binary;
@@ -736,7 +734,20 @@ export const encodePayload = ({
 
         try {
           const objectValue = args as object;
-          if (arrayIsArray(objectValue) || isPlainJsonObject(objectValue)) {
+          const objectProto = objectGetPrototypeOf(objectValue);
+          if (objectProto === Uint8Array.prototype) {
+            return encodeObjectUint8Array(
+              task,
+              slotIndex,
+              objectValue as Uint8Array,
+            );
+          }
+
+          if (
+            arrayIsArray(objectValue) ||
+            objectProto === objectPrototype ||
+            objectProto === null
+          ) {
             let text: string;
             try {
               text = stringifyJSON(objectValue);
@@ -779,6 +790,9 @@ export const encodePayload = ({
             return true;
           }
 
+          const objectCtor = (objectValue as { constructor?: unknown })
+            .constructor;
+
           if (NodeBuffer.isBuffer(objectValue)) {
             return encodeObjectBinary(
               task,
@@ -789,13 +803,7 @@ export const encodePayload = ({
             );
           }
 
-          switch ((objectValue as { constructor?: unknown }).constructor) {
-            case Uint8Array:
-              return encodeObjectUint8Array(
-                task,
-                slotIndex,
-                objectValue as Uint8Array,
-              );
+          switch (objectCtor) {
             case ArrayBuffer:
               return encodeObjectArrayBuffer(
                 task,

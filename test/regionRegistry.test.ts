@@ -496,7 +496,7 @@ test("allocTask keeps appending contiguously after clear and tail-only frees", (
   assertEquals(tailReuse[TaskIndex.Start], align64(96) + 64);
 });
 
-test("updateTable compacts once four freed holes accumulate", () => {
+test("updateTable still appends while only four freed holes accumulate", () => {
   const registry = makeRegistry();
   [64, 64, 64, 64, 64, 64].forEach((size) => {
     allocNoSync(registry, size);
@@ -506,6 +506,26 @@ test("updateTable compacts once four freed holes accumulate", () => {
   registry.free(1);
   registry.free(2);
   registry.free(3);
+  registry.updateTable();
+
+  const task = makeTask();
+  task[TaskIndex.PayloadLen] = 64;
+  registry.allocTask(task);
+
+  assertEquals(task[TaskIndex.Start], 384);
+});
+
+test("updateTable compacts once five freed holes accumulate", () => {
+  const registry = makeRegistry();
+  [64, 64, 64, 64, 64, 64].forEach((size) => {
+    allocNoSync(registry, size);
+  });
+
+  registry.free(0);
+  registry.free(1);
+  registry.free(2);
+  registry.free(3);
+  registry.free(4);
   registry.updateTable();
 
   const task = makeTask();
