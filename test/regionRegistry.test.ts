@@ -385,11 +385,10 @@ test("updateTable compacts survivors and clears the trailing freed slots", () =>
   assertEquals(snapshot[3], EMPTY);
 });
 
-test("allocTask reuses freed gap", () => {
+test("allocTask appends while freed-hole count stays below threshold", () => {
   const registry = makeRegistry();
   const sizes = [64, 64, 64];
-  const tasks = sizes.map((size) => allocNoSync(registry, size));
-  const freedStart = tasks[1][TaskIndex.Start];
+  sizes.map((size) => allocNoSync(registry, size));
 
   registry.free(1);
   registry.updateTable();
@@ -398,10 +397,10 @@ test("allocTask reuses freed gap", () => {
   task[TaskIndex.PayloadLen] = 64;
   registry.allocTask(task);
 
-  assertEquals(task[TaskIndex.Start], freedStart);
+  assertEquals(task[TaskIndex.Start], 192);
 });
 
-test("allocTask compacts survivors before appending past a freed gap", () => {
+test("allocTask keeps queue order stable while appending past a small freed-hole set", () => {
   const registry = makeRegistry();
   [64, 64, 64].forEach((size) => {
     allocNoSync(registry, size);
@@ -418,16 +417,14 @@ test("allocTask compacts survivors before appending past a freed gap", () => {
   assertEquals(snapshot.slice(0, 3).map(track64andIndex), [
     [0, 0],
     [2, 2],
-    [3, 1],
+    [3, 3],
   ]);
   assertEquals(snapshot[3], EMPTY);
 });
 
-test("periodic compaction can reuse a freed gap during allocTask", () => {
+test("allocTask skips periodic compaction while holes stay below threshold", () => {
   const registry = makeRegistry();
-  const sizes = [64, 64, 64];
-  const tasks = sizes.map((size) => allocNoSync(registry, size));
-  const freedStart = tasks[1][TaskIndex.Start];
+  [64, 64, 64].forEach((size) => allocNoSync(registry, size));
 
   registry.free(1);
 
@@ -435,12 +432,12 @@ test("periodic compaction can reuse a freed gap during allocTask", () => {
   task[TaskIndex.PayloadLen] = 64;
   registry.allocTask(task);
 
-  assertEquals(task[TaskIndex.Start], freedStart);
+  assertEquals(task[TaskIndex.Start], 192);
 });
 
-test("updateTable reuses freed slots in gaps and at start", () => {
+test("updateTable leaves small hole sets for append-only allocation", () => {
   const registry = makeRegistry();
-  const tasks = [64, 64, 64, 64].map((size) => allocNoSync(registry, size));
+  [64, 64, 64, 64].map((size) => allocNoSync(registry, size));
 
   registry.free(0);
   registry.free(2);
@@ -454,8 +451,8 @@ test("updateTable reuses freed slots in gaps and at start", () => {
   second[TaskIndex.PayloadLen] = 64;
   registry.allocTask(second);
 
-  assertEquals(first[TaskIndex.Start], 0);
-  assertEquals(second[TaskIndex.Start], tasks[1][TaskIndex.Start] + 64);
+  assertEquals(first[TaskIndex.Start], 256);
+  assertEquals(second[TaskIndex.Start], 320);
 });
 
 test("updateTable resets usedBits when all slots freed", () => {
@@ -465,6 +462,50 @@ test("updateTable resets usedBits when all slots freed", () => {
 
   registry.free(0);
   registry.free(1);
+  registry.updateTable();
+
+  const task = makeTask();
+  task[TaskIndex.PayloadLen] = 64;
+  registry.allocTask(task);
+
+  assertEquals(task[TaskIndex.Start], 0);
+});
+
+test("allocTask keeps appending contiguously after clear and tail-only frees", () => {
+  const registry = makeRegistry();
+
+  const first = allocNoSync(registry, 64);
+  const second = allocNoSync(registry, 128);
+
+  registry.free(first[TaskIndex.slotBuffer]);
+  registry.free(second[TaskIndex.slotBuffer]);
+  registry.updateTable();
+
+  const reset = allocNoSync(registry, 96);
+  assertEquals(reset[TaskIndex.Start], 0);
+
+  const tailA = allocNoSync(registry, 64);
+  const tailB = allocNoSync(registry, 64);
+  assertEquals(tailA[TaskIndex.Start], align64(96));
+  assertEquals(tailB[TaskIndex.Start], align64(96) + 64);
+
+  registry.free(tailB[TaskIndex.slotBuffer]);
+  registry.updateTable();
+
+  const tailReuse = allocNoSync(registry, 64);
+  assertEquals(tailReuse[TaskIndex.Start], align64(96) + 64);
+});
+
+test("updateTable compacts once four freed holes accumulate", () => {
+  const registry = makeRegistry();
+  [64, 64, 64, 64, 64, 64].forEach((size) => {
+    allocNoSync(registry, size);
+  });
+
+  registry.free(0);
+  registry.free(1);
+  registry.free(2);
+  registry.free(3);
   registry.updateTable();
 
   const task = makeTask();
