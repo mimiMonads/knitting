@@ -385,7 +385,7 @@ test("updateTable compacts survivors and clears the trailing freed slots", () =>
   assertEquals(snapshot[3], EMPTY);
 });
 
-test("allocTask appends while freed-hole count stays below threshold", () => {
+test("allocTask reuses freed gap", () => {
   const registry = makeRegistry();
   const sizes = [64, 64, 64];
   sizes.map((size) => allocNoSync(registry, size));
@@ -397,10 +397,10 @@ test("allocTask appends while freed-hole count stays below threshold", () => {
   task[TaskIndex.PayloadLen] = 64;
   registry.allocTask(task);
 
-  assertEquals(task[TaskIndex.Start], 192);
+  assertEquals(task[TaskIndex.Start], 64);
 });
 
-test("allocTask keeps queue order stable while appending past a small freed-hole set", () => {
+test("allocTask compacts survivors before appending past a freed gap", () => {
   const registry = makeRegistry();
   [64, 64, 64].forEach((size) => {
     allocNoSync(registry, size);
@@ -417,12 +417,12 @@ test("allocTask keeps queue order stable while appending past a small freed-hole
   assertEquals(snapshot.slice(0, 3).map(track64andIndex), [
     [0, 0],
     [2, 2],
-    [3, 3],
+    [3, 1],
   ]);
   assertEquals(snapshot[3], EMPTY);
 });
 
-test("allocTask skips periodic compaction while holes stay below threshold", () => {
+test("periodic compaction can reuse a freed gap during allocTask", () => {
   const registry = makeRegistry();
   [64, 64, 64].forEach((size) => allocNoSync(registry, size));
 
@@ -432,10 +432,10 @@ test("allocTask skips periodic compaction while holes stay below threshold", () 
   task[TaskIndex.PayloadLen] = 64;
   registry.allocTask(task);
 
-  assertEquals(task[TaskIndex.Start], 192);
+  assertEquals(task[TaskIndex.Start], 64);
 });
 
-test("updateTable leaves small hole sets for append-only allocation", () => {
+test("updateTable reuses freed slots in gaps and at start", () => {
   const registry = makeRegistry();
   [64, 64, 64, 64].map((size) => allocNoSync(registry, size));
 
@@ -451,8 +451,8 @@ test("updateTable leaves small hole sets for append-only allocation", () => {
   second[TaskIndex.PayloadLen] = 64;
   registry.allocTask(second);
 
-  assertEquals(first[TaskIndex.Start], 256);
-  assertEquals(second[TaskIndex.Start], 320);
+  assertEquals(first[TaskIndex.Start], 0);
+  assertEquals(second[TaskIndex.Start], 128);
 });
 
 test("updateTable resets usedBits when all slots freed", () => {
@@ -496,7 +496,7 @@ test("allocTask keeps appending contiguously after clear and tail-only frees", (
   assertEquals(tailReuse[TaskIndex.Start], align64(96) + 64);
 });
 
-test("updateTable still appends while only four freed holes accumulate", () => {
+test("updateTable compacts once four freed holes accumulate", () => {
   const registry = makeRegistry();
   [64, 64, 64, 64, 64, 64].forEach((size) => {
     allocNoSync(registry, size);
@@ -512,7 +512,7 @@ test("updateTable still appends while only four freed holes accumulate", () => {
   task[TaskIndex.PayloadLen] = 64;
   registry.allocTask(task);
 
-  assertEquals(task[TaskIndex.Start], 384);
+  assertEquals(task[TaskIndex.Start], 0);
 });
 
 test("updateTable compacts once five freed holes accumulate", () => {
