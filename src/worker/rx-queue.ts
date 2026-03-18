@@ -141,7 +141,7 @@ const enqueueLock = () => {
     serviceBatchImmediate: () => {
       let processed = 0;
 
-      while (toWork.size !== 0) {
+      while ( processed < 5 && toWork.size !== 0 ) {
         const slot = toWorkShift()!;
 
         try {
