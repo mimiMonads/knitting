@@ -16,15 +16,30 @@ const textDecoder = new TextDecoder();
 const isBunRuntime = typeof Bun !== "undefined";
 const isDenoRuntime = typeof Deno !== "undefined";
 const isNodeRuntime = !isBunRuntime && !isDenoRuntime;
+let sharedBufferDecodeUnsupported = false;
+
+const decodeText = (bytes: Uint8Array) => {
+  const sharedBacked = bytes.buffer instanceof SharedArrayBuffer;
+  if (!sharedBacked || !sharedBufferDecodeUnsupported) {
+    try {
+      return textDecoder.decode(bytes);
+    } catch (error) {
+      if (!sharedBacked || !(error instanceof TypeError)) throw error;
+      sharedBufferDecodeUnsupported = true;
+    }
+  }
+
+  return textDecoder.decode(new Uint8Array(bytes));
+};
 
 const toText = (data: unknown) => {
   if (typeof data === "string") return data;
-  if (data instanceof Uint8Array) return textDecoder.decode(data);
+  if (data instanceof Uint8Array) return decodeText(data);
   if (data instanceof ArrayBuffer) {
-    return textDecoder.decode(new Uint8Array(data));
+    return decodeText(new Uint8Array(data));
   }
   if (ArrayBuffer.isView(data)) {
-    return textDecoder.decode(
+    return decodeText(
       new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
     );
   }

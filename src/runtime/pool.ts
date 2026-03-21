@@ -35,6 +35,7 @@ import {
   type RuntimeWorkerLike,
 } from "../common/worker-runtime.ts";
 import type { SharedBufferSource } from "../common/shared-buffer-region.ts";
+import { probeLockBufferTextCompat } from "../common/shared-buffer-text.ts";
 import { signalAbortFactory } from "../shared/abortSignal.ts";
 import { createLockControlCarpet } from "../memory/byte-carpet.ts";
 import {
@@ -260,13 +261,23 @@ export const spawnWorkerContext = ({
   };
 
   const controlLayout = makeLockControlLayout();
+  const lockPayload = makePayloadBuffer();
   const lockBuffers: LockBuffers = {
     ...controlLayout.lock,
-    payload: makePayloadBuffer(),
+    payload: lockPayload,
+    textCompat: probeLockBufferTextCompat({
+      headers: controlLayout.lock.headers,
+      payload: lockPayload,
+    }),
   };
+  const returnPayload = makePayloadBuffer();
   const returnLockBuffers: LockBuffers = {
     ...controlLayout.returnLock,
-    payload: makePayloadBuffer(),
+    payload: returnPayload,
+    textCompat: probeLockBufferTextCompat({
+      headers: controlLayout.returnLock.headers,
+      payload: returnPayload,
+    }),
   };
 
   const lock = lock2({
@@ -276,6 +287,7 @@ export const spawnWorkerContext = ({
     payload: lockBuffers.payload,
     payloadSector: lockBuffers.payloadSector,
     payloadConfig: resolvedPayloadConfig,
+    textCompat: lockBuffers.textCompat,
   });
   const returnLock = lock2({
     headers: returnLockBuffers.headers,
@@ -284,6 +296,7 @@ export const spawnWorkerContext = ({
     payload: returnLockBuffers.payload,
     payloadSector: returnLockBuffers.payloadSector,
     payloadConfig: resolvedPayloadConfig,
+    textCompat: returnLockBuffers.textCompat,
   });
   const abortSignalSAB = usesAbortSignal === true
     ? controlLayout.abortSignals

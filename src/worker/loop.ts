@@ -5,6 +5,7 @@ import {
   createRuntimeMessageChannel,
 } from "../common/worker-runtime.ts";
 import { isSharedBufferSource } from "../common/shared-buffer-region.ts";
+import { isLockBufferTextCompat } from "../common/shared-buffer-text.ts";
 import { createWorkerRxQueue } from "./rx-queue.ts";
 import {
   createSharedMemoryTransport,
@@ -89,10 +90,11 @@ export const workerMainLoop = async (startupData: WorkerData): Promise<void> => 
     lock2({
       headers: lock.headers,
       headerSlotStrideU32: lock.headerSlotStrideU32,
-      LockBoundSector: lock.lockSector,
-      payload: lock.payload,
-      payloadSector: lock.payloadSector,
-      payloadConfig,
+    LockBoundSector: lock.lockSector,
+    payload: lock.payload,
+    payloadSector: lock.payloadSector,
+    payloadConfig,
+    textCompat: lock.textCompat,
     })
   const returnLockState =
     lock2({
@@ -102,6 +104,7 @@ export const workerMainLoop = async (startupData: WorkerData): Promise<void> => 
       payload: returnLock.payload,
       payloadSector: returnLock.payloadSector,
       payloadConfig,
+      textCompat: returnLock.textCompat,
     })
     
 
@@ -283,7 +286,11 @@ const isLockBuffers = (value: unknown): value is LockBuffers => {
   return isSharedBufferSource(candidate.headers) &&
     isSharedBufferSource(candidate.lockSector) &&
     candidate.payload instanceof SharedArrayBuffer &&
-    isSharedBufferSource(candidate.payloadSector);
+    isSharedBufferSource(candidate.payloadSector) &&
+    (
+      candidate.textCompat === undefined ||
+      isLockBufferTextCompat(candidate.textCompat)
+    );
 };
 
 const isWorkerBootPayload = (value: unknown): value is WorkerData => {

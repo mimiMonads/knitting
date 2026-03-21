@@ -11,6 +11,7 @@ import {
   createSharedDynamicBufferIO,
   createSharedStaticBufferIO,
 } from "../src/memory/createSharedBufferIO.ts";
+import { probeSharedBufferTextCompat } from "../src/common/shared-buffer-text.ts";
 import {
   createLockControlCarpet,
   getStridedSlotOffsetU32,
@@ -55,6 +56,103 @@ const makeSab = (payloadBytes: number) =>
     { maxByteLength: header + 1024 * 1024 },
   );
 const makeHeaders = () => new SharedArrayBuffer(HEADER_BYTE_LENGTH);
+const withSharedMemoryEncodeIntoRejected = async (
+  run: () => void | Promise<void>,
+) => {
+  const original = TextEncoder.prototype.encodeInto;
+  TextEncoder.prototype.encodeInto = function (
+    input: string,
+    destination: Uint8Array,
+  ) {
+    if (destination.buffer instanceof SharedArrayBuffer) {
+      throw new TypeError(
+        "Argument 2 can't be a SharedArrayBuffer or an ArrayBufferView backed by a SharedArrayBuffer",
+      );
+    }
+    return original.call(this, input, destination);
+  };
+
+  try {
+    await run();
+  } finally {
+    TextEncoder.prototype.encodeInto = original;
+  }
+};
+const withSharedMemoryDecodeRejected = async (
+  run: () => void | Promise<void>,
+) => {
+  const original = TextDecoder.prototype.decode;
+  TextDecoder.prototype.decode = function (
+    input?: Parameters<TextDecoder["decode"]>[0],
+    options?: Parameters<TextDecoder["decode"]>[1],
+  ) {
+    if (
+      input &&
+      ArrayBuffer.isView(input) &&
+      input.buffer instanceof SharedArrayBuffer
+    ) {
+      throw new TypeError(
+        "ArrayBufferView branch of (ArrayBufferView or ArrayBuffer) can't be a SharedArrayBuffer or an ArrayBufferView backed by a SharedArrayBuffer",
+      );
+    }
+    return original.call(this, input, options);
+  };
+
+  try {
+    await run();
+  } finally {
+    TextDecoder.prototype.decode = original;
+  }
+};
+const withTrackedSharedTextNativeCalls = async (
+  run: (state: {
+    sharedEncodeIntoCalls: number;
+    sharedDecodeCalls: number;
+  }) => void | Promise<void>,
+) => {
+  const originalEncodeInto = TextEncoder.prototype.encodeInto;
+  const originalDecode = TextDecoder.prototype.decode;
+  const state = {
+    sharedEncodeIntoCalls: 0,
+    sharedDecodeCalls: 0,
+  };
+
+  TextEncoder.prototype.encodeInto = function (
+    input: string,
+    destination: Uint8Array,
+  ) {
+    if (destination.buffer instanceof SharedArrayBuffer) {
+      state.sharedEncodeIntoCalls += 1;
+      throw new TypeError(
+        "Argument 2 can't be a SharedArrayBuffer or an ArrayBufferView backed by a SharedArrayBuffer",
+      );
+    }
+    return originalEncodeInto.call(this, input, destination);
+  };
+  TextDecoder.prototype.decode = function (
+    input?: Parameters<TextDecoder["decode"]>[0],
+    options?: Parameters<TextDecoder["decode"]>[1],
+  ) {
+    if (
+      input &&
+      ArrayBuffer.isView(input) &&
+      input.buffer instanceof SharedArrayBuffer
+    ) {
+      state.sharedDecodeCalls += 1;
+      throw new TypeError(
+        "ArrayBufferView branch of (ArrayBufferView or ArrayBuffer) can't be a SharedArrayBuffer or an ArrayBufferView backed by a SharedArrayBuffer",
+      );
+    }
+    return originalDecode.call(this, input, options);
+  };
+
+  try {
+    await run(state);
+  } finally {
+    TextEncoder.prototype.encodeInto = originalEncodeInto;
+    TextDecoder.prototype.decode = originalDecode;
+  }
+};
 
 test("writeBinary grows and reads back", () => {
   const sab = makeSab(8);
@@ -135,6 +233,49 @@ test("writeUtf8 does not grow when buffer is large enough", () => {
   assertEquals(sab.byteLength, before);
 });
 
+test("writeUtf8 falls back when encodeInto rejects shared-memory views", {
+  concurrency: false,
+}, async () => {
+  await withSharedMemoryEncodeIntoRejected(() => {
+    const sab = makeSab(8);
+    const io = createSharedDynamicBufferIO({ sab });
+    const text = "😀".repeat(40) + "-shared-memory";
+    const encoded = textEncode.encode(text);
+
+    const written = io.writeUtf8(text, 0, encoded.byteLength);
+
+    assertEquals(written, encoded.byteLength);
+    assertEquals(io.readUtf8(0, written), text);
+  });
+});
+
+test("probeSharedBufferTextCompat detects SAB rejection without mutating bytes", {
+  concurrency: false,
+}, async () => {
+  const sab = makeSab(16);
+  const probeStart = header + 3;
+  const view = new Uint8Array(sab, probeStart, 4);
+  view.set([9, 8, 7, 6]);
+  const before = Array.from(view);
+
+  await withSharedMemoryEncodeIntoRejected(() =>
+    withSharedMemoryDecodeRejected(() => {
+      assertEquals(
+        probeSharedBufferTextCompat({
+          sab,
+          byteOffset: probeStart,
+          byteLength: view.byteLength,
+        }),
+        {
+          encodeInto: false,
+          decode: false,
+        },
+      );
+      assertEquals(Array.from(view), before);
+    })
+  );
+});
+
 test("dynamic fixed mode returns -1 on binary overflow", () => {
   const sab = new SharedArrayBuffer(header + 32);
   const io = createSharedDynamicBufferIO({
@@ -187,6 +328,103 @@ test("dynamic writeUtf8 honors exact reserved bytes and start offsets", () => {
     assertEquals(io.readUtf8(cursor, cursor + written), text);
     cursor += written + 5;
   }
+});
+
+test("dynamic readUtf8 falls back when decode rejects shared-memory views", {
+  concurrency: false,
+}, async () => {
+  await withSharedMemoryDecodeRejected(() => {
+    const sab = makeSab(64);
+    const io = createSharedDynamicBufferIO({ sab });
+    const text = "dynamic-decode-😀-shared";
+    const encoded = textEncode.encode(text);
+
+    assertEquals(io.writeBinary(encoded, 0), encoded.byteLength);
+    assertEquals(io.readUtf8(0, encoded.byteLength), text);
+  });
+});
+
+test("dynamic textCompat skips shared native text paths after upfront probe", {
+  concurrency: false,
+}, async () => {
+  await withTrackedSharedTextNativeCalls(async (state) => {
+    const sab = makeSab(64);
+    const io = createSharedDynamicBufferIO({
+      sab,
+      textCompat: {
+        encodeInto: false,
+        decode: false,
+      },
+    });
+    const text = "dynamic-pre-probed-😀";
+    const encoded = textEncode.encode(text);
+
+    assertEquals(io.writeUtf8(text, 0, encoded.byteLength), encoded.byteLength);
+    assertEquals(io.readUtf8(0, encoded.byteLength), text);
+    assertEquals(state.sharedEncodeIntoCalls, 0);
+    assertEquals(state.sharedDecodeCalls, 0);
+  });
+});
+
+test("static writeUtf8 fallback preserves partial encodeInto semantics", {
+  concurrency: false,
+}, async () => {
+  const headersBuffer = makeHeaders();
+  const io = createSharedStaticBufferIO({ headersBuffer });
+  let text = "";
+
+  while (textEncode.encode(text).byteLength <= staticWritableBytes) {
+    text += "😀";
+  }
+
+  const probe = new Uint8Array(staticWritableBytes);
+  const probeResult = textEncode.encodeInto(text, probe);
+
+  await withSharedMemoryEncodeIntoRejected(() => {
+    const written = io.writeUtf8(text, 0);
+
+    assertEquals(written, -1);
+    assertEquals(
+      Array.from(io.readBytesCopy(0, probeResult.written, 0)),
+      Array.from(probe.subarray(0, probeResult.written)),
+    );
+  });
+});
+
+test("static textCompat skips shared native text paths after upfront probe", {
+  concurrency: false,
+}, async () => {
+  await withTrackedSharedTextNativeCalls(async (state) => {
+    const headersBuffer = makeHeaders();
+    const io = createSharedStaticBufferIO({
+      headersBuffer,
+      textCompat: {
+        encodeInto: false,
+        decode: false,
+      },
+    });
+    const text = "static-pre-probed-😀";
+    const encoded = textEncode.encode(text);
+
+    assertEquals(io.writeUtf8(text, 0), encoded.byteLength);
+    assertEquals(io.readUtf8(0, encoded.byteLength, 0), text);
+    assertEquals(state.sharedEncodeIntoCalls, 0);
+    assertEquals(state.sharedDecodeCalls, 0);
+  });
+});
+
+test("static readUtf8 falls back when decode rejects shared-memory views", {
+  concurrency: false,
+}, async () => {
+  await withSharedMemoryDecodeRejected(() => {
+    const headersBuffer = makeHeaders();
+    const io = createSharedStaticBufferIO({ headersBuffer });
+    const text = "static-decode-😀-shared";
+    const encoded = textEncode.encode(text);
+
+    assertEquals(io.writeBinary(encoded, 0, 0), encoded.byteLength);
+    assertEquals(io.readUtf8(0, encoded.byteLength, 0), text);
+  });
 });
 
 test("readBytesCopy is isolated and readBytesView reflects writes", () => {

@@ -20,6 +20,7 @@ import {
 import { getStridedRegionSpanBytes } from "./byte-carpet.ts";
 import { encoderError, ErrorKnitting } from "../error.ts";
 import { Envelope } from "../common/envelope.ts";
+import type { LockBufferTextCompat } from "../common/shared-buffer-text.ts";
 import {
   type PayloadBufferOptions,
   resolvePayloadBufferOptions,
@@ -31,6 +32,13 @@ const Float64View = new Float64Array(memory);
 const BigInt64View = new BigInt64Array(memory);
 const Uint32View = new Uint32Array(memory);
 const textEncode = new TextEncoder();
+const isExactUint8Array = (value: Uint8Array) => value.constructor === Uint8Array;
+const isNodeBuffer = (value: unknown): value is Uint8Array => {
+  const bufferCtor = (globalThis as typeof globalThis & {
+    Buffer?: { isBuffer?: (candidate: unknown) => boolean };
+  }).Buffer;
+  return typeof bufferCtor?.isBuffer === "function" && bufferCtor.isBuffer(value);
+};
 const BIGINT64_MIN = -(1n << 63n);
 const BIGINT64_MAX = (1n << 63n) - 1n;
 const { parse: parseJSON, stringify: stringifyJSON } = JSON;
@@ -178,6 +186,7 @@ const decodeBigIntBinary = (bytes: Uint8Array) => {
 const initStaticIO = (
   headersBuffer: Uint32Array,
   headerSlotStrideU32?: number,
+  textCompat?: LockBufferTextCompat["headers"],
 ) => {
   const slotStride = headerSlotStrideU32 ?? HEADER_SLOT_STRIDE_U32;
   const requiredBytes = getStridedRegionSpanBytes({
@@ -193,14 +202,16 @@ const initStaticIO = (
   return createSharedStaticBufferIO({
     headersBuffer,
     slotStrideU32: slotStride,
+    textCompat,
   });
 };
 
 const requireStaticIO = (
   headersBuffer: Uint32Array,
   headerSlotStrideU32?: number,
+  textCompat?: LockBufferTextCompat["headers"],
 ) => {
-  const staticIO = initStaticIO(headersBuffer, headerSlotStrideU32);
+  const staticIO = initStaticIO(headersBuffer, headerSlotStrideU32, textCompat);
   if (staticIO === null) {
     throw new RangeError("headersBuffer is too small for static payload IO");
   }
@@ -219,6 +230,7 @@ export const encodePayload = ({
   payloadConfig,
   headersBuffer,
   headerSlotStrideU32,
+  textCompat,
   onPromise,
 }: {
   lockSector?: SharedBufferSource;
@@ -236,6 +248,7 @@ export const encodePayload = ({
   payloadConfig?: PayloadBufferOptions;
   headersBuffer: Uint32Array;
   headerSlotStrideU32?: number;
+  textCompat?: LockBufferTextCompat;
   onPromise?: PromisePayloadHandler;
 }) => {
   const payloadSab = payload?.sab ?? sab;
@@ -250,11 +263,13 @@ export const encodePayload = ({
   });
   const {
     writeBinary: writeDynamicBinary,
+    writeExactUint8Array: writeDynamicExactUint8Array,
     write8Binary: writeDynamic8Binary,
     writeUtf8: writeDynamicUtf8,
   } = createSharedDynamicBufferIO({
     sab: payloadSab,
     payloadConfig: resolvedPayloadConfig,
+    textCompat: textCompat?.payload,
   });
   const {
     maxBytes: staticMaxBytes,
@@ -262,7 +277,11 @@ export const encodePayload = ({
     writeExactUint8Array: writeStaticExactUint8Array,
     write8Binary: writeStatic8Binary,
     writeUtf8: writeStaticUtf8,
-  } = requireStaticIO(headersBuffer, headerSlotStrideU32);
+  } = requireStaticIO(
+    headersBuffer,
+    headerSlotStrideU32,
+    textCompat?.headers,
+  );
   const dynamicLimitError = (
     task: Task,
     actualBytes: number,
@@ -421,7 +440,10 @@ export const encodePayload = ({
       return false;
     }
     const reservedSlot = reserveDynamicObject(task, bytes);
-    const written = writeDynamicBinary(bytesView, task[TaskIndex.Start]);
+    const written = writeDynamicExactUint8Array(
+      bytesView,
+      task[TaskIndex.Start],
+    );
     if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
     task[TaskIndex.PayloadLen] = written;
     setSlotLength(reservedSlot, written);
@@ -445,7 +467,9 @@ export const encodePayload = ({
     task[TaskIndex.Type] = PayloadBuffer.Binary;
     if (!ensureWithinDynamicLimit(task, bytes, "Binary")) return false;
     const reservedSlot = reserveDynamicObject(task, bytes);
-    const written = writeDynamicBinary(bytesView, task[TaskIndex.Start]);
+    const written = isExactUint8Array(bytesView)
+      ? writeDynamicExactUint8Array(bytesView, task[TaskIndex.Start])
+      : writeDynamicBinary(bytesView, task[TaskIndex.Start]);
     if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
     task[TaskIndex.PayloadLen] = written;
     setSlotLength(reservedSlot, written);
@@ -500,7 +524,7 @@ export const encodePayload = ({
     task[TaskIndex.Type] = PayloadBuffer.ArrayBuffer;
     if (!ensureWithinDynamicLimit(task, bytes, "ArrayBuffer")) return false;
     const reservedSlot = reserveDynamicObject(task, bytes);
-    const written = writeDynamicBinary(
+    const written = writeDynamicExactUint8Array(
       bytesView ?? new Uint8Array(arrayBuffer),
       task[TaskIndex.Start],
     );
@@ -588,7 +612,7 @@ export const encodePayload = ({
       task[TaskIndex.PayloadLen] = staticHeaderWritten;
       task[TaskIndex.End] = payloadLength;
       if (payloadLength > 0) {
-        const payloadWritten = writeDynamicBinary(
+        const payloadWritten = writeDynamicExactUint8Array(
           payloadBytes,
           task[TaskIndex.Start],
         );
@@ -625,7 +649,7 @@ export const encodePayload = ({
       return failDynamicWriteAfterReserve(task, reservedSlot);
     }
     if (payloadLength > 0) {
-      const payloadWritten = writeDynamicBinary(
+      const payloadWritten = writeDynamicExactUint8Array(
         payloadBytes,
         baseStart + writtenHeaderBytes,
       );
@@ -735,6 +759,15 @@ export const encodePayload = ({
         try {
           const objectValue = args as object;
           const objectProto = objectGetPrototypeOf(objectValue);
+          if (isNodeBuffer(objectValue)) {
+            return encodeObjectBinary(
+              task,
+              slotIndex,
+              objectValue,
+              PayloadBuffer.Buffer,
+              PayloadBuffer.StaticBuffer,
+            );
+          }
           if (objectValue instanceof Uint8Array) {
             return encodeObjectUint8Array(
               task,
@@ -988,6 +1021,7 @@ export const decodePayload = ({
   payloadConfig,
   headersBuffer,
   headerSlotStrideU32,
+  textCompat,
   host,
 }: {
   lockSector?: SharedBufferSource;
@@ -1005,6 +1039,7 @@ export const decodePayload = ({
   payloadConfig?: PayloadBufferOptions;
   headersBuffer: Uint32Array;
   headerSlotStrideU32?: number;
+  textCompat?: LockBufferTextCompat;
   host?: true;
 }) => {
   const payloadSab = payload?.sab ?? sab;
@@ -1026,6 +1061,7 @@ export const decodePayload = ({
   } = createSharedDynamicBufferIO({
     sab: payloadSab,
     payloadConfig: resolvedPayloadConfig,
+    textCompat: textCompat?.payload,
   });
   const {
     readUtf8: readStaticUtf8,
@@ -1034,7 +1070,11 @@ export const decodePayload = ({
     readUint8ArrayCopy: readStaticUint8ArrayCopy,
     readBytesArrayBufferCopy: readStaticArrayBufferCopy,
     read8BytesFloatCopy: readStatic8BytesFloatCopy,
-  } = requireStaticIO(headersBuffer, headerSlotStrideU32);
+  } = requireStaticIO(
+    headersBuffer,
+    headerSlotStrideU32,
+    textCompat?.headers,
+  );
 
   // TODO: remove slotIndex and make that all their callers
   // store the slot in their Task, to just get it when it comes

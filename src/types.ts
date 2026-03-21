@@ -1,6 +1,10 @@
 import { endpointSymbol } from "./common/task-symbol.ts";
 import type { Envelope } from "./common/envelope.ts";
 import type {
+  LockBufferTextCompat,
+  SharedBufferTextCompat,
+} from "./common/shared-buffer-text.ts";
+import type {
   SharedBufferRegion,
   SharedBufferSource,
 } from "./common/shared-buffer-region.ts";
@@ -53,6 +57,7 @@ type LockBuffers = {
   lockSector: SharedBufferSource;
   payload: SharedArrayBuffer;
   payloadSector: SharedBufferSource;
+  textCompat?: LockBufferTextCompat;
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -484,6 +489,8 @@ export type {
   PermissionProtocolInput as PermissionProtocolInput,
   ResolvedPermissionProtocol as ResolvedPermissionProtocol,
   Envelope as Envelope,
+  SharedBufferTextCompat as SharedBufferTextCompat,
+  LockBufferTextCompat as LockBufferTextCompat,
   SharedBufferRegion as SharedBufferRegion,
   SharedBufferSource as SharedBufferSource,
 };

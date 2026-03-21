@@ -8,6 +8,10 @@ import {
   type SharedBufferSource,
   toSharedBufferRegion,
 } from "../common/shared-buffer-region.ts";
+import {
+  probeLockBufferTextCompat,
+  type LockBufferTextCompat,
+} from "../common/shared-buffer-text.ts";
 import { getStridedSlotOffsetU32 } from "./byte-carpet.ts";
 import {
   type PayloadBufferOptions,
@@ -304,6 +308,7 @@ export const lock2 = ({
   payload,
   payloadConfig,
   payloadSector,
+  textCompat,
   resultList,
   toSentList,
   recycleList,
@@ -314,6 +319,7 @@ export const lock2 = ({
   payload?: SharedArrayBuffer;
   payloadConfig?: PayloadBufferOptions;
   payloadSector?: SharedBufferSource;
+  textCompat?: LockBufferTextCompat;
   toSentList?: RingQueue<Task>;
   resultList?: RingQueue<Task>;
   recycleList?: RingQueue<Task>;
@@ -370,6 +376,10 @@ export const lock2 = ({
   const payloadLockRegion = toSharedBufferRegion(
     payloadSector ?? lockSectorRegion,
   );
+  const resolvedTextCompat = textCompat ?? probeLockBufferTextCompat({
+    headers: headersRegion,
+    payload: payloadSAB,
+  });
 
   let promiseHandler: PromisePayloadHandler | undefined;
   let trackedDeferredTasks = new WeakSet<Task>();
@@ -382,6 +392,7 @@ export const lock2 = ({
     headersBuffer,
     headerSlotStrideU32: headersSlotStride,
     lockSector: payloadLockRegion,
+    textCompat: resolvedTextCompat,
     onPromise: (task, isRejected, value) => {
       if (trackedDeferredTasks.delete(task) && pendingPromiseCount > 0) {
         pendingPromiseCount = (pendingPromiseCount - 1) | 0;
@@ -397,6 +408,7 @@ export const lock2 = ({
     headersBuffer,
     headerSlotStrideU32: headersSlotStride,
     lockSector: payloadLockRegion,
+    textCompat: resolvedTextCompat,
   });
 
   let LastLocal = 0 | 0;
