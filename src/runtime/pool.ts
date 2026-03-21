@@ -29,18 +29,18 @@ import {
   createSharedArrayBuffer,
   createWasmSharedArrayBuffer,
 } from "../common/runtime.ts";
+import {
+  HAS_NODE_WORKER_THREADS,
+  RUNTIME_WORKER,
+  type RuntimeWorkerLike,
+} from "../common/worker-runtime.ts";
 import type { SharedBufferSource } from "../common/shared-buffer-region.ts";
 import { signalAbortFactory } from "../shared/abortSignal.ts";
 import { createLockControlCarpet } from "../memory/byte-carpet.ts";
-import { Worker } from "node:worker_threads";
 import {
   type PayloadBufferOptions,
   resolvePayloadBufferOptions,
 } from "../memory/payload-config.ts";
-
-//const isBrowser = typeof window !== "undefined";
-
-let poliWorker = Worker;
 
 type SpawnedWorker = {
   terminate: () => unknown;
@@ -192,10 +192,14 @@ export const spawnWorkerContext = ({
   usesAbortSignal?: boolean;
 }) => {
   const tsFileUrl = new URL(import.meta.url);
+  const poliWorker = RUNTIME_WORKER;
 
   if (debug?.logHref === true) {
     console.log(tsFileUrl);
     jsrIsGreatAndWorkWithoutBugs();
+  }
+  if (typeof poliWorker !== "function") {
+    throw new Error("Worker is not available in this runtime");
   }
 
   // Lock buffers must be shared between host and worker.
@@ -331,12 +335,7 @@ export const spawnWorkerContext = ({
 
   let worker: SpawnedWorker;
 
-  const workerUrl = source ?? (
-    // isBrowser
-    //   ? tsFileUrl.href // correct in browser
-    //   :
-    tsFileUrl
-  );
+  const workerUrl = source ?? tsFileUrl;
   const workerDataPayload = {
     sab: signals.sab,
     abortSignalSAB,
@@ -376,51 +375,64 @@ export const spawnWorkerContext = ({
   const withExecArgv = workerExecArgv && workerExecArgv.length > 0
     ? { ...baseNodeWorkerOptions, execArgv: workerExecArgv }
     : baseNodeWorkerOptions;
-  try {
-    worker = new poliWorker(workerUrl, withExecArgv) as Worker;
-  } catch (error) {
-    if ((error as { code?: string })?.code === "ERR_WORKER_INVALID_EXEC_ARGV") {
-      const fallbackExecArgv = toWorkerSafeExecArgv(withExecArgv.execArgv);
-      if (fallbackExecArgv && fallbackExecArgv.length > 0) {
-        try {
-          worker = new poliWorker(
-            workerUrl,
-            { ...baseNodeWorkerOptions, execArgv: fallbackExecArgv },
-          ) as Worker;
-        } catch (fallbackError) {
-          if (
-            (fallbackError as { code?: string })?.code ===
-              "ERR_WORKER_INVALID_EXEC_ARGV"
-          ) {
-            const compatExecArgv = toWorkerCompatExecArgv(fallbackExecArgv);
-            if (compatExecArgv && compatExecArgv.length > 0) {
-              try {
-                worker = new poliWorker(
-                  workerUrl,
-                  { ...baseNodeWorkerOptions, execArgv: compatExecArgv },
-                ) as Worker;
-              } catch {
+  if (HAS_NODE_WORKER_THREADS) {
+    try {
+      worker = new poliWorker(workerUrl, withExecArgv) as RuntimeWorkerLike;
+    } catch (error) {
+      if ((error as { code?: string })?.code === "ERR_WORKER_INVALID_EXEC_ARGV") {
+        const fallbackExecArgv = toWorkerSafeExecArgv(withExecArgv.execArgv);
+        if (fallbackExecArgv && fallbackExecArgv.length > 0) {
+          try {
+            worker = new poliWorker(
+              workerUrl,
+              { ...baseNodeWorkerOptions, execArgv: fallbackExecArgv },
+            ) as RuntimeWorkerLike;
+          } catch (fallbackError) {
+            if (
+              (fallbackError as { code?: string })?.code ===
+                "ERR_WORKER_INVALID_EXEC_ARGV"
+            ) {
+              const compatExecArgv = toWorkerCompatExecArgv(fallbackExecArgv);
+              if (compatExecArgv && compatExecArgv.length > 0) {
+                try {
+                  worker = new poliWorker(
+                    workerUrl,
+                    { ...baseNodeWorkerOptions, execArgv: compatExecArgv },
+                  ) as RuntimeWorkerLike;
+                } catch {
+                  worker = new poliWorker(
+                    workerUrl,
+                    baseNodeWorkerOptions,
+                  ) as RuntimeWorkerLike;
+                }
+              } else {
                 worker = new poliWorker(
                   workerUrl,
                   baseNodeWorkerOptions,
-                ) as Worker;
+                ) as RuntimeWorkerLike;
               }
             } else {
-              worker = new poliWorker(
-                workerUrl,
-                baseNodeWorkerOptions,
-              ) as Worker;
+              throw fallbackError;
             }
-          } else {
-            throw fallbackError;
           }
+        } else {
+          worker = new poliWorker(
+            workerUrl,
+            baseNodeWorkerOptions,
+          ) as RuntimeWorkerLike;
         }
       } else {
-        worker = new poliWorker(workerUrl, baseNodeWorkerOptions) as Worker;
+        throw error;
       }
-    } else {
-      throw error;
     }
+  } else {
+    worker = new poliWorker(
+      workerUrl,
+      {
+        type: "module",
+      },
+    ) as RuntimeWorkerLike;
+    worker.postMessage?.(workerDataPayload);
   }
 
   let closedReason: string | undefined;
@@ -431,23 +443,50 @@ export const spawnWorkerContext = ({
     channelHandler.close();
   };
 
-  const nodeWorker = worker as unknown as NodeWorkerLike;
-  nodeWorker.on!("message", (message: unknown) => {
+  const onWorkerMessage = (message: unknown) => {
     if (!isWorkerFatalMessage(message)) return;
     markWorkerClosed(
       `Worker startup failed: ${message[WORKER_FATAL_MESSAGE_KEY]}`,
     );
     terminateWorkerQuietly(worker);
-  });
-  nodeWorker.on!("error", (error: unknown) => {
+  };
+  const onWorkerError = (error: unknown) => {
     const message = String((error as { message?: unknown })?.message ?? error);
     markWorkerClosed(`Worker crashed: ${message}`);
-  });
-  nodeWorker.on!("exit", (code: unknown) => {
-    if (typeof code === "number" && code === 0) return;
-    const normalized = typeof code === "number" ? code : -1;
-    markWorkerClosed(`Worker exited with code ${normalized}`);
-  });
+  };
+  const nodeWorker = worker as unknown as NodeWorkerLike;
+  if (typeof nodeWorker.on === "function") {
+    nodeWorker.on("message", onWorkerMessage);
+    nodeWorker.on("error", onWorkerError);
+    nodeWorker.on("exit", (code: unknown) => {
+      if (typeof code === "number" && code === 0) return;
+      const normalized = typeof code === "number" ? code : -1;
+      markWorkerClosed(`Worker exited with code ${normalized}`);
+    });
+  } else {
+    const webWorker = worker as RuntimeWorkerLike & {
+      addEventListener?: (
+        type: string,
+        listener: (event: { data?: unknown; error?: unknown; message?: unknown }) => void,
+      ) => void;
+      onerror?: ((event: unknown) => void) | null;
+    };
+    if (typeof webWorker.addEventListener === "function") {
+      webWorker.addEventListener("message", (event) => {
+        onWorkerMessage(event?.data);
+      });
+      webWorker.addEventListener("error", (event) => {
+        onWorkerError(event?.error ?? event?.message ?? event);
+      });
+    } else {
+      webWorker.onmessage = (event) => {
+        onWorkerMessage(event?.data);
+      };
+      webWorker.onerror = (event) => {
+        onWorkerError(event);
+      };
+    }
+  }
 
   const thisSignal = signalBox.opView;
   const a_add = Atomics.add;

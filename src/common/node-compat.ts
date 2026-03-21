@@ -1,0 +1,248 @@
+import { IS_NODE } from "./runtime.ts";
+
+type HiddenImport = <T = unknown>(specifier: string) => Promise<T>;
+
+const hiddenImport = Function(
+  "specifier",
+  "return import(specifier);",
+) as HiddenImport;
+
+export const importNodeModule = async <T>(
+  specifier: string,
+): Promise<T | undefined> => {
+  if (!IS_NODE) return undefined;
+  try {
+    return await hiddenImport<T>(specifier);
+  } catch {
+    return undefined;
+  }
+};
+
+type PathModuleLike = {
+  resolve: (...segments: string[]) => string;
+  join: (...segments: string[]) => string;
+  dirname: (value: string) => string;
+  basename: (value: string) => string;
+  relative: (from: string, to: string) => string;
+  isAbsolute: (value: string) => boolean;
+};
+
+type FsModuleLike = {
+  existsSync?: (candidate: string) => boolean;
+  realpathSync?: ((candidate: string) => string) & {
+    native?: (candidate: string) => string;
+  };
+};
+
+type UrlModuleLike = {
+  fileURLToPath?: (value: string | URL) => string;
+  pathToFileURL?: (value: string) => URL;
+};
+
+const rawPathModule = await importNodeModule<
+  PathModuleLike & { default?: PathModuleLike }
+>("node:path");
+const rawFsModule = await importNodeModule<FsModuleLike>("node:fs");
+const rawUrlModule = await importNodeModule<UrlModuleLike>("node:url");
+
+const pathModule = (rawPathModule?.default ?? rawPathModule) as
+  | PathModuleLike
+  | undefined;
+
+const WINDOWS_DRIVE_PATH = /^[A-Za-z]:[/\\]/;
+const WINDOWS_UNC_PATH = /^[/\\]{2}[^/\\]+[/\\][^/\\]+/;
+
+const hostIsWindows = (() => {
+  try {
+    if (typeof process !== "undefined") return process.platform === "win32";
+  } catch {
+  }
+  const g = globalThis as typeof globalThis & {
+    Deno?: { build?: { os?: string } };
+  };
+  return g.Deno?.build?.os === "windows";
+})();
+
+const looksWindowsPath = (value: string) =>
+  hostIsWindows || WINDOWS_DRIVE_PATH.test(value) || WINDOWS_UNC_PATH.test(value);
+
+const normalizePathSeparators = (value: string) => value.replace(/\\/g, "/");
+
+const splitRoot = (value: string): { root: string; rest: string } => {
+  const normalized = normalizePathSeparators(value);
+  if (WINDOWS_UNC_PATH.test(value)) {
+    const [, host = "", share = "", rest = ""] = normalized.match(
+      /^\/\/([^/]+)\/([^/]+)(\/.*)?$/,
+    ) ?? [];
+    return {
+      root: `//${host}/${share}`,
+      rest: rest.replace(/^\/+/, ""),
+    };
+  }
+  if (WINDOWS_DRIVE_PATH.test(value)) {
+    return {
+      root: normalized.slice(0, 2).toUpperCase() + "/",
+      rest: normalized.slice(3),
+    };
+  }
+  if (normalized.startsWith("/")) {
+    return {
+      root: "/",
+      rest: normalized.replace(/^\/+/, ""),
+    };
+  }
+  return {
+    root: "",
+    rest: normalized,
+  };
+};
+
+const normalizeJoinedPath = (value: string): string => {
+  const { root, rest } = splitRoot(value);
+  const parts = rest.split("/");
+  const stack: string[] = [];
+
+  for (const part of parts) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      if (stack.length > 0 && stack[stack.length - 1] !== "..") {
+        stack.pop();
+      } else if (!root) {
+        stack.push("..");
+      }
+      continue;
+    }
+    stack.push(part);
+  }
+
+  if (root) {
+    const joined = stack.join("/");
+    return joined.length > 0 ? `${root}${joined}` : root;
+  }
+  return stack.length > 0 ? stack.join("/") : ".";
+};
+
+const fallbackIsAbsolute = (value: string): boolean => {
+  if (value.length === 0) return false;
+  const normalized = normalizePathSeparators(value);
+  return normalized.startsWith("/") ||
+    WINDOWS_DRIVE_PATH.test(value) ||
+    WINDOWS_UNC_PATH.test(value);
+};
+
+const fallbackResolve = (...segments: string[]): string => {
+  let resolved = "";
+  for (let i = segments.length - 1; i >= 0; i--) {
+    const segment = segments[i];
+    if (!segment) continue;
+    resolved = resolved ? `${segment}/${resolved}` : segment;
+    if (fallbackIsAbsolute(segment)) break;
+  }
+  if (!fallbackIsAbsolute(resolved)) {
+    resolved = `/${resolved}`;
+  }
+  return normalizeJoinedPath(resolved);
+};
+
+const fallbackJoin = (...segments: string[]): string =>
+  normalizeJoinedPath(segments.filter(Boolean).join("/"));
+
+const fallbackDirname = (value: string): string => {
+  const normalized = normalizeJoinedPath(value);
+  const { root, rest } = splitRoot(normalized);
+  if (!rest) return root || ".";
+  const parts = rest.split("/");
+  parts.pop();
+  if (root) {
+    return parts.length > 0 ? `${root}${parts.join("/")}` : root;
+  }
+  return parts.length > 0 ? parts.join("/") : ".";
+};
+
+const fallbackBasename = (value: string): string => {
+  const normalized = normalizeJoinedPath(value);
+  const { rest } = splitRoot(normalized);
+  const parts = rest.split("/");
+  return parts[parts.length - 1] ?? "";
+};
+
+const splitRelativeParts = (value: string): string[] => {
+  const normalized = normalizeJoinedPath(value);
+  const { rest } = splitRoot(normalized);
+  if (!rest) return [];
+  return rest.split("/").filter(Boolean);
+};
+
+const fallbackRelative = (from: string, to: string): string => {
+  const fromResolved = fallbackResolve(from);
+  const toResolved = fallbackResolve(to);
+  const fromRoot = splitRoot(fromResolved).root;
+  const toRoot = splitRoot(toResolved).root;
+  if (fromRoot !== toRoot) return toResolved;
+
+  const fromParts = splitRelativeParts(fromResolved);
+  const toParts = splitRelativeParts(toResolved);
+
+  let common = 0;
+  while (
+    common < fromParts.length &&
+    common < toParts.length &&
+    fromParts[common] === toParts[common]
+  ) {
+    common++;
+  }
+
+  const up = new Array(fromParts.length - common).fill("..");
+  const down = toParts.slice(common);
+  const out = [...up, ...down].join("/");
+  return out.length > 0 ? out : "";
+};
+
+const encodeFilePath = (value: string) =>
+  encodeURI(value)
+    .replace(/\?/g, "%3F")
+    .replace(/#/g, "%23");
+
+const fallbackFileURLToPath = (value: string | URL): string => {
+  const url = value instanceof URL ? value : new URL(value);
+  if (url.protocol !== "file:") {
+    throw new TypeError("Expected a file URL");
+  }
+  let pathname = decodeURIComponent(url.pathname);
+  if (/^\/[A-Za-z]:/.test(pathname)) pathname = pathname.slice(1);
+  if (url.host.length > 0) {
+    return `//${url.host}${pathname}`;
+  }
+  return looksWindowsPath(pathname) ? pathname.replace(/\//g, "\\") : pathname;
+};
+
+const fallbackPathToFileURL = (value: string): URL => {
+  if (WINDOWS_UNC_PATH.test(value)) {
+    const normalized = normalizePathSeparators(value).replace(/^\/+/, "");
+    return new URL(`file://${encodeFilePath(normalized)}`);
+  }
+  if (WINDOWS_DRIVE_PATH.test(value)) {
+    const normalized = normalizePathSeparators(value);
+    return new URL(`file:///${encodeFilePath(normalized)}`);
+  }
+  const absolute = fallbackIsAbsolute(value) ? value : fallbackResolve(value);
+  const normalized = normalizePathSeparators(absolute);
+  return new URL(`file://${encodeFilePath(normalized.startsWith("/") ? normalized : `/${normalized}`)}`);
+};
+
+export const pathResolve = pathModule?.resolve?.bind(pathModule) ?? fallbackResolve;
+export const pathJoin = pathModule?.join?.bind(pathModule) ?? fallbackJoin;
+export const pathDirname = pathModule?.dirname?.bind(pathModule) ?? fallbackDirname;
+export const pathBasename = pathModule?.basename?.bind(pathModule) ?? fallbackBasename;
+export const pathRelative = pathModule?.relative?.bind(pathModule) ?? fallbackRelative;
+export const pathIsAbsolute = pathModule?.isAbsolute?.bind(pathModule) ??
+  fallbackIsAbsolute;
+
+export const fileURLToPathCompat = rawUrlModule?.fileURLToPath ??
+  fallbackFileURLToPath;
+export const pathToFileURLCompat = rawUrlModule?.pathToFileURL ??
+  fallbackPathToFileURL;
+
+export const existsSyncCompat = rawFsModule?.existsSync;
+export const realpathSyncCompat = rawFsModule?.realpathSync?.native ??
+  rawFsModule?.realpathSync;

@@ -1,6 +1,10 @@
 import { type MultiQueue } from "./tx-queue.ts";
 import { type MainSignal } from "../ipc/transport/shared-memory.ts";
-import { MessageChannel, type MessagePort } from "node:worker_threads";
+import {
+  createRuntimeMessageChannel,
+  type RuntimeMessageChannelLike,
+  type RuntimeMessagePortLike,
+} from "../common/worker-runtime.ts";
 import type { DispatcherSettings } from "../types.ts";
 
 export const hostDispatcherLoop = ({
@@ -138,13 +142,13 @@ type CheckWithState = (() => void) & {
 };
 
 export class ChannelHandler {
-  public channel: MessageChannel;
-  public port1: MessagePort;
-  public port2: MessagePort;
+  public channel: RuntimeMessageChannelLike;
+  public port1: RuntimeMessagePortLike;
+  public port2: RuntimeMessagePortLike;
   readonly #post2: (message: unknown) => void;
 
   constructor() {
-    this.channel = new MessageChannel();
+    this.channel = createRuntimeMessageChannel();
     this.port1 = this.channel.port1;
     this.port2 = this.channel.port2;
     this.#post2 = this.port2.postMessage.bind(this.port2);
@@ -170,8 +174,8 @@ export class ChannelHandler {
       // @ts-ignore
       port1.onmessage = f;
     }
-    this.port1.start!();
-    this.port2.start!();
+    this.port1.start?.();
+    this.port2.start?.();
   }
 
   /**
@@ -182,7 +186,7 @@ export class ChannelHandler {
     this.port1.onmessage = null;
     //@ts-ignore
     this.port2.onmessage = null;
-    this.port1.close();
-    this.port2.close();
+    this.port1.close?.();
+    this.port2.close?.();
   }
 }

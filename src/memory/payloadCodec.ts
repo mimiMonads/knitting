@@ -18,7 +18,6 @@ import {
   createSharedStaticBufferIO,
 } from "./createSharedBufferIO.ts";
 import { getStridedRegionSpanBytes } from "./byte-carpet.ts";
-import { Buffer as NodeBuffer } from "node:buffer";
 import { encoderError, ErrorKnitting } from "../error.ts";
 import { Envelope } from "../common/envelope.ts";
 import {
@@ -31,6 +30,7 @@ const memory = new ArrayBuffer(8);
 const Float64View = new Float64Array(memory);
 const BigInt64View = new BigInt64Array(memory);
 const Uint32View = new Uint32Array(memory);
+const textEncode = new TextEncoder();
 const BIGINT64_MIN = -(1n << 63n);
 const BIGINT64_MAX = (1n << 63n) - 1n;
 const { parse: parseJSON, stringify: stringifyJSON } = JSON;
@@ -300,7 +300,7 @@ export const encodePayload = ({
     const estimatedTotal = estimatedBytes + extraBytes;
     if (estimatedTotal <= maxPayloadBytes) return estimatedBytes;
 
-    const exactBytes = NodeBuffer.byteLength(text, "utf8");
+    const exactBytes = textEncode.encode(text).byteLength;
     const exactTotal = exactBytes + extraBytes;
     if (exactTotal > maxPayloadBytes) {
       dynamicLimitError(task, exactTotal, label);
@@ -735,7 +735,7 @@ export const encodePayload = ({
         try {
           const objectValue = args as object;
           const objectProto = objectGetPrototypeOf(objectValue);
-          if (objectProto === Uint8Array.prototype) {
+          if (objectValue instanceof Uint8Array) {
             return encodeObjectUint8Array(
               task,
               slotIndex,
@@ -792,16 +792,6 @@ export const encodePayload = ({
 
           const objectCtor = (objectValue as { constructor?: unknown })
             .constructor;
-
-          if (NodeBuffer.isBuffer(objectValue)) {
-            return encodeObjectBinary(
-              task,
-              slotIndex,
-              objectValue as NodeBuffer,
-              PayloadBuffer.Buffer,
-              PayloadBuffer.StaticBuffer,
-            );
-          }
 
           switch (objectCtor) {
             case ArrayBuffer:

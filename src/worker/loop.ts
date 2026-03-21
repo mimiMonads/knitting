@@ -1,9 +1,9 @@
 import {
-  isMainThread,
-  workerData,
-  MessageChannel,
-  parentPort,
-} from "node:worker_threads";
+  RUNTIME_IS_MAIN_THREAD,
+  RUNTIME_PARENT_PORT,
+  RUNTIME_WORKER_DATA,
+  createRuntimeMessageChannel,
+} from "../common/worker-runtime.ts";
 import { isSharedBufferSource } from "../common/shared-buffer-region.ts";
 import { createWorkerRxQueue } from "./rx-queue.ts";
 import {
@@ -33,7 +33,7 @@ const reportWorkerStartupFatal = (error: unknown): void => {
     [WORKER_FATAL_MESSAGE_KEY]: message,
   };
   try {
-    parentPort?.postMessage(payload);
+    RUNTIME_PARENT_PORT?.postMessage?.(payload);
     return;
   } catch {
   }
@@ -167,7 +167,7 @@ const pauseSpin = (() => {
     write: () => hasCompleted() ? writeBatch(WRITE_MAX) : 0,
   });
 
-  const channel = new MessageChannel();
+  const channel = createRuntimeMessageChannel();
   const port1 = channel.port1;
   const port2 = channel.port2;
   const post2 = port2.postMessage.bind(port2);
@@ -347,8 +347,8 @@ const installWebWorkerBootstrap = (): void => {
 };
 
 
-if (isMainThread === false && isWorkerBootPayload(workerData)) {
-  void workerMainLoop(workerData).catch(reportWorkerStartupFatal);
+if (RUNTIME_IS_MAIN_THREAD === false && isWorkerBootPayload(RUNTIME_WORKER_DATA)) {
+  void workerMainLoop(RUNTIME_WORKER_DATA).catch(reportWorkerStartupFatal);
 } else if (isWebWorkerScope()) {
   installWebWorkerBootstrap();
 }

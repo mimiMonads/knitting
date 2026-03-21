@@ -1,4 +1,11 @@
-import path from "node:path";
+import {
+  existsSyncCompat,
+  pathBasename,
+  pathDirname,
+  pathJoin,
+  pathResolve,
+  realpathSyncCompat,
+} from "./node-compat.ts";
 
 type CanonicalPathFsApi = {
   existsSync?: (candidate: string) => boolean;
@@ -7,14 +14,17 @@ type CanonicalPathFsApi = {
 
 export const toCanonicalPath = (
   candidate: string,
-  fsApi: CanonicalPathFsApi = {},
+  fsApi: CanonicalPathFsApi = {
+    existsSync: existsSyncCompat,
+    realpathSync: realpathSyncCompat,
+  },
 ): string => {
-  const absolute = path.resolve(candidate);
+  const absolute = pathResolve(candidate);
   const { existsSync, realpathSync } = fsApi;
 
   if (typeof realpathSync === "function") {
     try {
-      return path.resolve(realpathSync(absolute));
+      return pathResolve(realpathSync(absolute));
     } catch {
     }
   } else {
@@ -26,9 +36,9 @@ export const toCanonicalPath = (
   const missingSegments: string[] = [];
   let cursor = absolute;
   while (!existsSync(cursor)) {
-    const parent = path.dirname(cursor);
+    const parent = pathDirname(cursor);
     if (parent === cursor) return absolute;
-    missingSegments.push(path.basename(cursor));
+    missingSegments.push(pathBasename(cursor));
     cursor = parent;
   }
 
@@ -40,7 +50,7 @@ export const toCanonicalPath = (
 
   let rebuilt = base;
   for (let i = missingSegments.length - 1; i >= 0; i--) {
-    rebuilt = path.join(rebuilt, missingSegments[i]!);
+    rebuilt = pathJoin(rebuilt, missingSegments[i]!);
   }
-  return path.resolve(rebuilt);
+  return pathResolve(rebuilt);
 };

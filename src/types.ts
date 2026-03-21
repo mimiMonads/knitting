@@ -1,5 +1,4 @@
 import { endpointSymbol } from "./common/task-symbol.ts";
-import type { Buffer as NodeBuffer } from "node:buffer";
 import type { Envelope } from "./common/envelope.ts";
 import type {
   SharedBufferRegion,
@@ -81,7 +80,6 @@ type ValidInput =
   | void
   | JSONValue
   | symbol
-  | NodeBuffer
   | ArrayBuffer
   | Uint8Array
   | Int32Array

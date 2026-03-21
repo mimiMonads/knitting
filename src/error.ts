@@ -1,4 +1,3 @@
-import { isMainThread } from "node:worker_threads";
 import {
   beginPromisePayload,
   finishPromisePayload,
@@ -7,6 +6,7 @@ import {
   type PromisePayloadHandler,
   type Task,
 } from "./memory/lock.ts";
+import { RUNTIME_IS_MAIN_THREAD } from "./common/worker-runtime.ts";
 
 export enum ErrorKnitting {
   Function = 0,
@@ -53,7 +53,7 @@ export const encoderError = ({
 }): false => {
   const reason = reasonFrom(task, type, detail);
 
-  if (!isMainThread) {
+  if (!RUNTIME_IS_MAIN_THREAD) {
     task.value = reason;
     task[TaskIndex.FlagsToHost] = TaskFlag.Reject;
     return false;

@@ -1,7 +1,7 @@
 import type { TaskTimeout, WorkerCall, tasks } from "../types.ts";
-import { MessageChannel } from "node:worker_threads";
 import { withResolvers } from "../common/with-resolvers.ts";
 import RingQueue from "../ipc/tools/RingQueue.ts";
+import { createRuntimeMessageChannel } from "../common/worker-runtime.ts";
 
 type WorkerCallable = (args: unknown, abortToolkit?: unknown) => unknown;
 
@@ -142,7 +142,7 @@ export const createInlineExecutor = ({
     ? Math.max(1, Math.floor(batchSize ?? 1))
     : Number.POSITIVE_INFINITY;
 
-  const channel = new MessageChannel();
+  const channel = createRuntimeMessageChannel();
   const port1 = channel.port1;
   const port2 = channel.port2;
   const post2 = port2.postMessage.bind(port2);
