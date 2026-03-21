@@ -18,6 +18,7 @@ import {
   createSharedStaticBufferIO,
 } from "./createSharedBufferIO.ts";
 import { getStridedRegionSpanBytes } from "./byte-carpet.ts";
+import { IS_BROWSER } from "../common/runtime.ts";
 import { encoderError, ErrorKnitting } from "../error.ts";
 import { Envelope } from "../common/envelope.ts";
 import type { LockBufferTextCompat } from "../common/shared-buffer-text.ts";
@@ -32,32 +33,30 @@ const Float64View = new Float64Array(memory);
 const BigInt64View = new BigInt64Array(memory);
 const Uint32View = new Uint32Array(memory);
 const textEncode = new TextEncoder();
-const runtimeBufferClass = (globalThis as typeof globalThis & {
+const runtimeBufferClass = (IS_BROWSER ? undefined : (globalThis as typeof globalThis & {
   Buffer?: {
     byteLength?: (value: string, encoding?: string) => number;
     isBuffer?: (candidate: unknown) => boolean;
   };
-}).Buffer;
-const runtimeBufferByteLength = typeof runtimeBufferClass?.byteLength === "function"
+}).Buffer);
+const runtimeBufferByteLength = !IS_BROWSER &&
+    typeof runtimeBufferClass?.byteLength === "function"
   ? runtimeBufferClass.byteLength.bind(runtimeBufferClass)
   : undefined;
-const isRuntimeBuffer: (value: unknown) => value is Uint8Array =
-  typeof runtimeBufferClass?.isBuffer === "function"
-    ? runtimeBufferClass.isBuffer.bind(runtimeBufferClass)
-    : ((_: unknown): _ is Uint8Array => false);
-const isRuntimeUint8Array: (value: unknown) => value is Uint8Array =
-  typeof runtimeBufferClass?.isBuffer === "function"
-    ? ((value: unknown): value is Uint8Array =>
-      value != null &&
-      typeof value === "object" &&
-      Object.getPrototypeOf(value) === Uint8Array.prototype)
-    : ((value: unknown): value is Uint8Array => value instanceof Uint8Array);
-const utf8ByteLength = (text: string): number => {
-  if (runtimeBufferByteLength) {
-    return runtimeBufferByteLength(text, "utf8");
-  }
-  return textEncode.encode(text).byteLength;
-};
+const isRuntimeBuffer: (value: unknown) => value is Uint8Array = IS_BROWSER
+  ? ((_: unknown): _ is Uint8Array => false)
+  : typeof runtimeBufferClass?.isBuffer === "function"
+  ? runtimeBufferClass.isBuffer.bind(runtimeBufferClass)
+  : ((_: unknown): _ is Uint8Array => false);
+const isRuntimeUint8Array: (value: unknown) => value is Uint8Array = IS_BROWSER
+  ? ((value: unknown): value is Uint8Array => value instanceof Uint8Array)
+  : ((value: unknown): value is Uint8Array =>
+    value != null &&
+    typeof value === "object" &&
+    Object.getPrototypeOf(value) === Uint8Array.prototype);
+const utf8ByteLength = IS_BROWSER || !runtimeBufferByteLength
+  ? (text: string): number => textEncode.encode(text).byteLength
+  : (text: string): number => runtimeBufferByteLength(text, "utf8");
 const BIGINT64_MIN = -(1n << 63n);
 const BIGINT64_MAX = (1n << 63n) - 1n;
 const { parse: parseJSON, stringify: stringifyJSON } = JSON;
@@ -282,6 +281,8 @@ export const encodePayload = ({
   });
   const {
     writeBinary: writeDynamicBinary,
+    writeBuffer: writeDynamicBuffer,
+    writeArrayBuffer: writeDynamicArrayBuffer,
     write8Binary: writeDynamic8Binary,
     writeUtf8: writeDynamicUtf8,
   } = createSharedDynamicBufferIO({
@@ -292,6 +293,8 @@ export const encodePayload = ({
   const {
     maxBytes: staticMaxBytes,
     writeBinary: writeStaticBinary,
+    writeBuffer: writeStaticBuffer,
+    writeArrayBuffer: writeStaticArrayBuffer,
     writeExactUint8Array: writeStaticExactUint8Array,
     write8Binary: writeStatic8Binary,
     writeUtf8: writeStaticUtf8,
@@ -489,6 +492,32 @@ export const encodePayload = ({
     task.value = null;
     return true;
   };
+  const encodeObjectBuffer = (
+    task: Task,
+    slotIndex: number,
+    buffer: Uint8Array,
+  ) => {
+    const bytes = buffer.byteLength;
+    if (bytes <= staticMaxBytes) {
+      const written = writeStaticBuffer(buffer, slotIndex);
+      if (written !== -1) {
+        task[TaskIndex.Type] = PayloadBuffer.StaticBuffer;
+        task[TaskIndex.PayloadLen] = written;
+        task.value = null;
+        return true;
+      }
+    }
+
+    task[TaskIndex.Type] = PayloadBuffer.Buffer;
+    if (!ensureWithinDynamicLimit(task, bytes, "Buffer")) return false;
+    const reservedSlot = reserveDynamicObject(task, bytes);
+    const written = writeDynamicBuffer(buffer, task[TaskIndex.Start]);
+    if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
+    task[TaskIndex.PayloadLen] = written;
+    setSlotLength(reservedSlot, written);
+    task.value = null;
+    return true;
+  };
 
   const encodeObjectFloat64Array = (
     task: Task,
@@ -522,10 +551,8 @@ export const encodePayload = ({
     arrayBuffer: ArrayBuffer,
   ) => {
     const bytes = arrayBuffer.byteLength;
-    let bytesView: Uint8Array | undefined;
     if (bytes <= staticMaxBytes) {
-      bytesView = new Uint8Array(arrayBuffer);
-      const written = writeStaticBinary(bytesView, slotIndex);
+      const written = writeStaticArrayBuffer(arrayBuffer, slotIndex);
       if (written !== -1) {
         task[TaskIndex.Type] = PayloadBuffer.StaticArrayBuffer;
         task[TaskIndex.PayloadLen] = written;
@@ -537,10 +564,7 @@ export const encodePayload = ({
     task[TaskIndex.Type] = PayloadBuffer.ArrayBuffer;
     if (!ensureWithinDynamicLimit(task, bytes, "ArrayBuffer")) return false;
     const reservedSlot = reserveDynamicObject(task, bytes);
-    const written = writeDynamicBinary(
-      bytesView ?? new Uint8Array(arrayBuffer),
-      task[TaskIndex.Start],
-    );
+    const written = writeDynamicArrayBuffer(arrayBuffer, task[TaskIndex.Start]);
     if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
     task[TaskIndex.PayloadLen] = written;
     setSlotLength(reservedSlot, written);
@@ -831,12 +855,10 @@ export const encodePayload = ({
             .constructor;
 
           if (isRuntimeBuffer(objectValue)) {
-            return encodeObjectBinary(
+            return encodeObjectBuffer(
               task,
               slotIndex,
               objectValue,
-              PayloadBuffer.Buffer,
-              PayloadBuffer.StaticBuffer,
             );
           }
 
@@ -1069,7 +1091,9 @@ export const decodePayload = ({
     readUtf8: readDynamicUtf8,
     readBytesCopy: readDynamicBytesCopy,
     readBytesBufferCopy: readDynamicBufferCopy,
+    readBufferCopy: readDynamicBuffer,
     readBytesArrayBufferCopy: readDynamicArrayBufferCopy,
+    readArrayBufferCopy: readDynamicArrayBuffer,
     read8BytesFloatCopy: readDynamic8BytesFloatCopy,
     read8BytesFloatView: readDynamic8BytesFloatView,
   } = createSharedDynamicBufferIO({
@@ -1081,8 +1105,10 @@ export const decodePayload = ({
     readUtf8: readStaticUtf8,
     readBytesCopy: readStaticBytesCopy,
     readBytesBufferCopy: readStaticBufferCopy,
+    readBufferCopy: readStaticBuffer,
     readUint8ArrayCopy: readStaticUint8ArrayCopy,
     readBytesArrayBufferCopy: readStaticArrayBufferCopy,
+    readArrayBufferCopy: readStaticArrayBuffer,
     read8BytesFloatCopy: readStatic8BytesFloatCopy,
   } = requireStaticIO(
     headersBuffer,
@@ -1369,28 +1395,28 @@ export const decodePayload = ({
         );
         return;
       case PayloadBuffer.ArrayBuffer:
-        task.value = readDynamicArrayBufferCopy(
+        task.value = readDynamicArrayBuffer(
           task[TaskIndex.Start],
           task[TaskIndex.Start] + task[TaskIndex.PayloadLen],
         );
         freeTaskSlot(task);
         return;
       case PayloadBuffer.StaticArrayBuffer:
-        task.value = readStaticArrayBufferCopy(
+        task.value = readStaticArrayBuffer(
           0,
           task[TaskIndex.PayloadLen],
           slotIndex,
         );
         return;
       case PayloadBuffer.Buffer:
-        task.value = readDynamicBufferCopy(
+        task.value = readDynamicBuffer(
           task[TaskIndex.Start],
           task[TaskIndex.Start] + task[TaskIndex.PayloadLen],
         );
         freeTaskSlot(task);
         return;
       case PayloadBuffer.StaticBuffer:
-        task.value = readStaticBufferCopy(
+        task.value = readStaticBuffer(
           0,
           task[TaskIndex.PayloadLen],
           slotIndex,
