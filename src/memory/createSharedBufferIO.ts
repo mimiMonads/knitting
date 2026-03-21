@@ -5,6 +5,7 @@ import {
 } from "./lock.ts";
 import { getStridedSlotByteOffset } from "./byte-carpet.ts";
 import {
+  IS_BUN,
   createSharedArrayBuffer,
   growSharedArrayBuffer,
 } from "../common/runtime.ts";
@@ -29,21 +30,44 @@ const isSharedBufferEncodeIntoError = (error: unknown) =>
   error instanceof TypeError;
 const isSharedBufferDecodeError = (error: unknown) =>
   error instanceof TypeError;
-const createBufferCopyCompat = () => {
+type BufferLike = Uint8Array & {
+  copy: (
+    target: Uint8Array,
+    targetStart?: number,
+    sourceStart?: number,
+    sourceEnd?: number,
+  ) => number;
+  toString: (encoding?: string, start?: number, end?: number) => string;
+};
+type BufferCtorLike = {
+  from: (
+    source: SharedArrayBuffer | ArrayBuffer,
+    byteOffset?: number,
+    length?: number,
+  ) => BufferLike;
+  allocUnsafe: (size: number) => BufferLike;
+  allocUnsafeSlow: (size: number) => BufferLike;
+};
+const getBufferCtor = (): BufferCtorLike | undefined => {
   const bufferCtor = (globalThis as typeof globalThis & {
     Buffer?: {
       from?: (
-        source: ArrayBuffer,
+        source: SharedArrayBuffer | ArrayBuffer,
         byteOffset?: number,
         length?: number,
-      ) => Uint8Array;
+      ) => BufferLike;
+      allocUnsafe?: (size: number) => BufferLike;
+      allocUnsafeSlow?: (size: number) => BufferLike;
     };
   }).Buffer;
-  if (typeof bufferCtor?.from !== "function") {
-    return (bytes: Uint8Array) => bytes;
+  if (
+    typeof bufferCtor?.from !== "function" ||
+    typeof bufferCtor?.allocUnsafe !== "function" ||
+    typeof bufferCtor?.allocUnsafeSlow !== "function"
+  ) {
+    return undefined;
   }
-  return (bytes: Uint8Array) =>
-    bufferCtor.from(bytes.buffer as ArrayBuffer, bytes.byteOffset, bytes.byteLength);
+  return bufferCtor as BufferCtorLike;
 };
 const manualEncodeInto = (str: string, target: Uint8Array) => {
   let read = 0;
@@ -128,7 +152,7 @@ export const createSharedDynamicBufferIO = ({
   textCompat?: SharedBufferTextCompat;
 }) => {
   const { encodeIntoCompat, decodeCompat } = createTextCompatIO(textCompat);
-  const toBufferCopy = createBufferCopyCompat();
+  const bufferCtor = getBufferCtor();
   const resolvedPayload = resolvePayloadBufferOptions({
     sab,
     options: payloadConfig,
@@ -145,6 +169,16 @@ export const createSharedDynamicBufferIO = ({
     );
 
   let u8 = new Uint8Array(lockSAB, DYNAMIC_HEADER_BYTES);
+  const requireBufferView = bufferCtor
+    ? (buffer: SharedArrayBuffer) => {
+      const view = bufferCtor.from(buffer, DYNAMIC_HEADER_BYTES);
+      if (view.buffer !== buffer) {
+        throw new Error("Buffer view does not alias SharedArrayBuffer");
+      }
+      return view;
+    }
+    : undefined;
+  let buf = requireBufferView?.(lockSAB);
   let f64 = new Float64Array(lockSAB, DYNAMIC_HEADER_BYTES);
 
   const capacityBytes = () => lockSAB.byteLength - DYNAMIC_HEADER_BYTES;
@@ -169,6 +203,7 @@ export const createSharedDynamicBufferIO = ({
       DYNAMIC_HEADER_BYTES,
       lockSAB.byteLength - DYNAMIC_HEADER_BYTES,
     );
+    buf = requireBufferView?.(lockSAB);
     f64 = new Float64Array(
       lockSAB,
       DYNAMIC_HEADER_BYTES,
@@ -177,23 +212,18 @@ export const createSharedDynamicBufferIO = ({
     return true;
   };
 
-  const readUtf8 = (start: number, end: number) =>
-    decodeCompat(u8.subarray(start, end));
-
-  const writeExactUint8Array = (src: Uint8Array, start = 0) => {
-    const bytes = src.byteLength;
-    if (!ensureCapacity(start + bytes)) {
-      return -1;
-    }
-    u8.set(src, start);
-    return bytes;
+  const readUtf8 = (start: number, end: number) => {
+    if (buf) return buf.toString("utf8", start, end);
+    return decodeCompat(u8.subarray(start, end));
   };
 
   const writeBinary = (src: Uint8Array, start = 0) => {
-    if (isExactUint8Array(src)) {
-      return writeExactUint8Array(src, start);
+    const bytes = canonicalDynamicUint8Array(src);
+    if (!ensureCapacity(start + bytes.byteLength)) {
+      return -1;
     }
-    return writeExactUint8Array(canonicalDynamicUint8Array(src), start);
+    u8.set(bytes, start);
+    return bytes.byteLength;
   };
 
   const write8Binary = (src: Float64Array, start = 0) => {
@@ -207,12 +237,28 @@ export const createSharedDynamicBufferIO = ({
 
   const readBytesCopy = (start: number, end: number) => u8.slice(start, end);
   const readBytesView = (start: number, end: number) => u8.subarray(start, end);
-  const readBytesBufferCopy = (start: number, end: number) =>
-    toBufferCopy(readBytesCopy(start, end));
+  const readBytesBufferCopy = (start: number, end: number) => {
+    if (!bufferCtor || !buf) return readBytesCopy(start, end);
+    const length = Math.max(0, (end - start) | 0);
+    const out = bufferCtor.allocUnsafe(length);
+    if (length === 0) return out;
+    buf.copy(out, 0, start, end);
+    return out;
+  };
   const readBytesArrayBufferCopy = (
     start: number,
     end: number,
-  ): ArrayBuffer => readBytesCopy(start, end).buffer as ArrayBuffer;
+  ): ArrayBuffer => {
+    if (!bufferCtor || !buf) {
+      const out = readBytesCopy(start, end);
+      return out.buffer as ArrayBuffer;
+    }
+    const length = Math.max(0, (end - start) | 0);
+    if (length === 0) return new ArrayBuffer(0);
+    const out = bufferCtor.allocUnsafeSlow(length);
+    buf.copy(out, 0, start, end);
+    return out.buffer as ArrayBuffer;
+  };
 
   const read8BytesFloatCopy = (start: number, end: number) =>
     f64.slice(start >>> 3, end >>> 3);
@@ -239,7 +285,6 @@ export const createSharedDynamicBufferIO = ({
   return {
     readUtf8,
     writeBinary,
-    writeExactUint8Array,
     write8Binary,
     readBytesCopy,
     readBytesView,
@@ -262,7 +307,7 @@ export const createSharedStaticBufferIO = ({
   textCompat?: SharedBufferTextCompat;
 }) => {
   const { encodeIntoCompat, decodeCompat } = createTextCompatIO(textCompat);
-  const toBufferCopy = createBufferCopyCompat();
+  const bufferCtor = getBufferCtor();
   const buffer = headersBuffer instanceof Uint32Array
     ? headersBuffer.buffer as SharedArrayBuffer
     : headersBuffer;
@@ -273,6 +318,7 @@ export const createSharedStaticBufferIO = ({
   const slotStride = slotStrideU32 ?? HEADER_SLOT_STRIDE_U32;
   const writableBytes = HEADER_STATIC_PAYLOAD_U32 * u32Bytes;
   const baseU8 = new Uint8Array(buffer, baseByteOffset);
+  const baseBuf = bufferCtor?.from(buffer, baseByteOffset);
   const baseF64 = new Float64Array(
     buffer,
     baseByteOffset,
@@ -308,6 +354,7 @@ export const createSharedStaticBufferIO = ({
 
   const readUtf8 = (start: number, end: number, at: number) => {
     const slotStart = slotByteOffsets[at]!;
+    if (baseBuf) return baseBuf.toString("utf8", slotStart + start, slotStart + end);
     return decodeCompat(baseU8.subarray(slotStart + start, slotStart + end));
   };
 
@@ -335,25 +382,48 @@ export const createSharedStaticBufferIO = ({
     baseU8.slice(slotByteOffsets[at]! + start, slotByteOffsets[at]! + end);
   const readBytesView = (start: number, end: number, at: number) =>
     baseU8.subarray(slotByteOffsets[at]! + start, slotByteOffsets[at]! + end);
-  const readBytesBufferCopy = (start: number, end: number, at: number) =>
-    toBufferCopy(readBytesCopy(start, end, at));
+  const readBytesBufferCopy = (start: number, end: number, at: number) => {
+    if (!bufferCtor || !baseBuf) return readBytesCopy(start, end, at);
+    const length = end - start;
+    const out = bufferCtor.allocUnsafe(length);
+    const slotStart = slotByteOffsets[at]!;
+    baseBuf.copy(out, 0, slotStart + start, slotStart + end);
+    return out;
+  };
   const readUint8ArrayBufferCopy = (
     start: number,
     end: number,
     at: number,
-  ) => readBytesCopy(start, end, at);
+  ) => {
+    if (!bufferCtor) return readBytesCopy(start, end, at);
+    const bytes = readBytesBufferCopy(start, end, at);
+    return new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  };
   const readUint8ArraySliceCopy = (
     start: number,
     end: number,
     at: number,
   ) => readBytesCopy(start, end, at);
-  const readUint8ArrayCopy = readUint8ArraySliceCopy;
+  const readUint8ArrayCopy = IS_BUN
+    ? readUint8ArraySliceCopy
+    : readUint8ArrayBufferCopy;
 
   const readBytesArrayBufferCopy = (
     start: number,
     end: number,
     at: number,
-  ): ArrayBuffer => readBytesCopy(start, end, at).buffer as ArrayBuffer;
+  ): ArrayBuffer => {
+    if (!bufferCtor || !baseBuf) {
+      const out = readBytesCopy(start, end, at);
+      return out.buffer as ArrayBuffer;
+    }
+    const length = Math.max(0, (end - start) | 0);
+    if (length === 0) return new ArrayBuffer(0);
+    const out = bufferCtor.allocUnsafeSlow(length);
+    const slotStart = slotByteOffsets[at]!;
+    baseBuf.copy(out, 0, slotStart + start, slotStart + end);
+    return out.buffer as ArrayBuffer;
+  };
 
   const read8BytesFloatCopy = (start: number, end: number, at: number) =>
     baseF64.slice(

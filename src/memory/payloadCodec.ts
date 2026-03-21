@@ -32,12 +32,31 @@ const Float64View = new Float64Array(memory);
 const BigInt64View = new BigInt64Array(memory);
 const Uint32View = new Uint32Array(memory);
 const textEncode = new TextEncoder();
-const isExactUint8Array = (value: Uint8Array) => value.constructor === Uint8Array;
-const isNodeBuffer = (value: unknown): value is Uint8Array => {
-  const bufferCtor = (globalThis as typeof globalThis & {
-    Buffer?: { isBuffer?: (candidate: unknown) => boolean };
-  }).Buffer;
-  return typeof bufferCtor?.isBuffer === "function" && bufferCtor.isBuffer(value);
+const runtimeBufferClass = (globalThis as typeof globalThis & {
+  Buffer?: {
+    byteLength?: (value: string, encoding?: string) => number;
+    isBuffer?: (candidate: unknown) => boolean;
+  };
+}).Buffer;
+const runtimeBufferByteLength = typeof runtimeBufferClass?.byteLength === "function"
+  ? runtimeBufferClass.byteLength.bind(runtimeBufferClass)
+  : undefined;
+const isRuntimeBuffer: (value: unknown) => value is Uint8Array =
+  typeof runtimeBufferClass?.isBuffer === "function"
+    ? runtimeBufferClass.isBuffer.bind(runtimeBufferClass)
+    : ((_: unknown): _ is Uint8Array => false);
+const isRuntimeUint8Array: (value: unknown) => value is Uint8Array =
+  typeof runtimeBufferClass?.isBuffer === "function"
+    ? ((value: unknown): value is Uint8Array =>
+      value != null &&
+      typeof value === "object" &&
+      Object.getPrototypeOf(value) === Uint8Array.prototype)
+    : ((value: unknown): value is Uint8Array => value instanceof Uint8Array);
+const utf8ByteLength = (text: string): number => {
+  if (runtimeBufferByteLength) {
+    return runtimeBufferByteLength(text, "utf8");
+  }
+  return textEncode.encode(text).byteLength;
 };
 const BIGINT64_MIN = -(1n << 63n);
 const BIGINT64_MAX = (1n << 63n) - 1n;
@@ -263,7 +282,6 @@ export const encodePayload = ({
   });
   const {
     writeBinary: writeDynamicBinary,
-    writeExactUint8Array: writeDynamicExactUint8Array,
     write8Binary: writeDynamic8Binary,
     writeUtf8: writeDynamicUtf8,
   } = createSharedDynamicBufferIO({
@@ -319,7 +337,7 @@ export const encodePayload = ({
     const estimatedTotal = estimatedBytes + extraBytes;
     if (estimatedTotal <= maxPayloadBytes) return estimatedBytes;
 
-    const exactBytes = textEncode.encode(text).byteLength;
+    const exactBytes = utf8ByteLength(text);
     const exactTotal = exactBytes + extraBytes;
     if (exactTotal > maxPayloadBytes) {
       dynamicLimitError(task, exactTotal, label);
@@ -440,10 +458,7 @@ export const encodePayload = ({
       return false;
     }
     const reservedSlot = reserveDynamicObject(task, bytes);
-    const written = writeDynamicExactUint8Array(
-      bytesView,
-      task[TaskIndex.Start],
-    );
+    const written = writeDynamicBinary(bytesView, task[TaskIndex.Start]);
     if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
     task[TaskIndex.PayloadLen] = written;
     setSlotLength(reservedSlot, written);
@@ -467,9 +482,7 @@ export const encodePayload = ({
     task[TaskIndex.Type] = PayloadBuffer.Binary;
     if (!ensureWithinDynamicLimit(task, bytes, "Binary")) return false;
     const reservedSlot = reserveDynamicObject(task, bytes);
-    const written = isExactUint8Array(bytesView)
-      ? writeDynamicExactUint8Array(bytesView, task[TaskIndex.Start])
-      : writeDynamicBinary(bytesView, task[TaskIndex.Start]);
+    const written = writeDynamicBinary(bytesView, task[TaskIndex.Start]);
     if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
     task[TaskIndex.PayloadLen] = written;
     setSlotLength(reservedSlot, written);
@@ -524,7 +537,7 @@ export const encodePayload = ({
     task[TaskIndex.Type] = PayloadBuffer.ArrayBuffer;
     if (!ensureWithinDynamicLimit(task, bytes, "ArrayBuffer")) return false;
     const reservedSlot = reserveDynamicObject(task, bytes);
-    const written = writeDynamicExactUint8Array(
+    const written = writeDynamicBinary(
       bytesView ?? new Uint8Array(arrayBuffer),
       task[TaskIndex.Start],
     );
@@ -612,7 +625,7 @@ export const encodePayload = ({
       task[TaskIndex.PayloadLen] = staticHeaderWritten;
       task[TaskIndex.End] = payloadLength;
       if (payloadLength > 0) {
-        const payloadWritten = writeDynamicExactUint8Array(
+        const payloadWritten = writeDynamicBinary(
           payloadBytes,
           task[TaskIndex.Start],
         );
@@ -649,7 +662,7 @@ export const encodePayload = ({
       return failDynamicWriteAfterReserve(task, reservedSlot);
     }
     if (payloadLength > 0) {
-      const payloadWritten = writeDynamicExactUint8Array(
+      const payloadWritten = writeDynamicBinary(
         payloadBytes,
         baseStart + writtenHeaderBytes,
       );
@@ -759,16 +772,7 @@ export const encodePayload = ({
         try {
           const objectValue = args as object;
           const objectProto = objectGetPrototypeOf(objectValue);
-          if (isNodeBuffer(objectValue)) {
-            return encodeObjectBinary(
-              task,
-              slotIndex,
-              objectValue,
-              PayloadBuffer.Buffer,
-              PayloadBuffer.StaticBuffer,
-            );
-          }
-          if (objectValue instanceof Uint8Array) {
+          if (isRuntimeUint8Array(objectValue)) {
             return encodeObjectUint8Array(
               task,
               slotIndex,
@@ -825,6 +829,16 @@ export const encodePayload = ({
 
           const objectCtor = (objectValue as { constructor?: unknown })
             .constructor;
+
+          if (isRuntimeBuffer(objectValue)) {
+            return encodeObjectBinary(
+              task,
+              slotIndex,
+              objectValue,
+              PayloadBuffer.Buffer,
+              PayloadBuffer.StaticBuffer,
+            );
+          }
 
           switch (objectCtor) {
             case ArrayBuffer:
