@@ -60,10 +60,10 @@ type WorkerConstructorLike = new (
 type MessageChannelConstructorLike = new () => RuntimeMessageChannelLike;
 
 export const RUNTIME_WORKER = workerThreads?.Worker ??
-  ((globalThis as { Worker?: WorkerConstructorLike }).Worker);
+  ((globalThis as unknown as { Worker?: WorkerConstructorLike }).Worker);
 
 export const RUNTIME_MESSAGE_CHANNEL = workerThreads?.MessageChannel ??
-  ((globalThis as { MessageChannel?: MessageChannelConstructorLike }).MessageChannel);
+  ((globalThis as unknown as { MessageChannel?: MessageChannelConstructorLike }).MessageChannel);
 
 export const HAS_NODE_WORKER_THREADS = workerThreads != null;
 

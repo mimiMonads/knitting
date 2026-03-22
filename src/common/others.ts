@@ -1,4 +1,5 @@
 import { toModuleUrl } from "./module-url.ts";
+import type { NodeCallSiteLike } from "./node-compat.ts";
 
 export const genTaskID = ((counter: number) => () => counter++)(0);
 
@@ -68,7 +69,7 @@ const isInternalCallerFunction = (
 
 const collectStackFrames = (): StackFrameInfo[] => {
   const ErrorCtor = Error as typeof Error & {
-    prepareStackTrace?: (error: Error, stack: NodeJS.CallSite[]) => unknown;
+    prepareStackTrace?: (error: Error, stack: NodeCallSiteLike[]) => unknown;
   };
   const original = ErrorCtor.prepareStackTrace;
 
@@ -92,7 +93,7 @@ const collectStackFrames = (): StackFrameInfo[] => {
     }
     if (!Array.isArray(stack)) return [];
 
-    const frames = (stack as NodeJS.CallSite[])
+    const frames = (stack as NodeCallSiteLike[])
       .map((site) => {
         try {
           const file = site?.getFileName?.();

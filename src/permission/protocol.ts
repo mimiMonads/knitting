@@ -3,6 +3,7 @@ import { toCanonicalPath as toSharedCanonicalPath } from "../common/path-canonic
 import {
   existsSyncCompat,
   fileURLToPathCompat,
+  getNodeProcess,
   pathIsAbsolute,
   pathResolve,
   pathRelative,
@@ -302,7 +303,8 @@ const normalizeProtocolInput = (
   !input ? undefined : (typeof input === "string" ? { mode: input as PermissionMode } : input);
 
 const isWindows = (): boolean => {
-  if (typeof process !== "undefined") return process.platform === "win32";
+  const nodeProcess = getNodeProcess();
+  if (typeof nodeProcess?.platform === "string") return nodeProcess.platform === "win32";
   const g = globalThis as typeof globalThis & {
     Deno?: { build?: { os?: string } };
   };
@@ -311,8 +313,9 @@ const isWindows = (): boolean => {
 
 const getCwd = (): string => {
   try {
-    if (typeof process !== "undefined" && typeof process.cwd === "function") {
-      return process.cwd();
+    const nodeProcess = getNodeProcess();
+    if (typeof nodeProcess?.cwd === "function") {
+      return nodeProcess.cwd();
     }
   } catch {
   }
@@ -328,8 +331,9 @@ const getCwd = (): string => {
 
 const getHome = (): string | undefined => {
   try {
-    if (typeof process !== "undefined" && typeof process.env === "object") {
-      const home = process.env.HOME ?? process.env.USERPROFILE;
+    const nodeProcess = getNodeProcess();
+    if (typeof nodeProcess?.env === "object") {
+      const home = nodeProcess.env.HOME ?? nodeProcess.env.USERPROFILE;
       if (typeof home === "string" && home.length > 0) return home;
     }
   } catch {
@@ -500,12 +504,10 @@ const resolveDenoLock = (
 
 const resolveNodePermissionActivationFlag = (): string => {
   try {
-    if (typeof process !== "undefined") {
-      const raw = process.versions?.node;
-      const major = Number.parseInt(String(raw).split(".", 1)[0] ?? "", 10);
-      if (Number.isFinite(major) && major > 0 && major < 22) {
-        return "--experimental-permission";
-      }
+    const raw = getNodeProcess()?.versions?.node;
+    const major = Number.parseInt(String(raw).split(".", 1)[0] ?? "", 10);
+    if (Number.isFinite(major) && major > 0 && major < 22) {
+      return "--experimental-permission";
     }
   } catch {
   }

@@ -11,6 +11,7 @@ import {
   resolvePermissionProtocol,
   toRuntimePermissionFlags,
 } from "./permission/index.ts";
+import { getNodeProcess } from "./common/node-compat.ts";
 
 import { managerMethod } from "./runtime/balancer.ts";
 import { createInlineExecutor } from "./runtime/inline-executor.ts";
@@ -174,11 +175,9 @@ export const createPool: CreatePoolFactory = ({
     modules: list,
   });
   const permissionExecArgv = toRuntimePermissionFlags(permissionProtocol);
+  const nodeProcess = getNodeProcess();
 
-  const allowedFlags = typeof process !== "undefined" &&
-      process.allowedNodeEnvironmentFlags
-    ? process.allowedNodeEnvironmentFlags
-    : null;
+  const allowedFlags = nodeProcess?.allowedNodeEnvironmentFlags ?? null;
   const isNodePermissionFlag = (flag: string): boolean => {
     const key = flag.split("=", 1)[0];
     return key === "--permission" ||
@@ -211,16 +210,19 @@ export const createPool: CreatePoolFactory = ({
     });
     return filtered.length > 0 ? filtered : undefined;
   };
+  const inheritedExecArgv = Array.isArray(nodeProcess?.execArgv)
+    ? nodeProcess.execArgv
+    : undefined;
   const defaultExecArgvCandidate = workerExecArgv ??
-    (typeof process !== "undefined" && Array.isArray(process.execArgv)
+    (inheritedExecArgv
       ? (
         allowedFlags?.has("--expose-gc") === true
           ? (
-            process.execArgv.includes("--expose-gc")
-              ? process.execArgv
-              : [...process.execArgv, "--expose-gc"]
+            inheritedExecArgv.includes("--expose-gc")
+              ? inheritedExecArgv
+              : [...inheritedExecArgv, "--expose-gc"]
           )
-          : process.execArgv
+          : inheritedExecArgv
       )
       : undefined);
   const defaultExecArgv = permissionProtocol?.unsafe === true

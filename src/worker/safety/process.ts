@@ -1,10 +1,15 @@
-type NodeProcessWithUnhandledGuard = NodeJS.Process & {
+import { getNodeProcess, type NodeProcessLike } from "../../common/node-compat.ts";
+
+type NodeProcessWithUnhandledGuard = NodeProcessLike & {
   __knittingUnhandledRejectionSilencer?: boolean;
 };
 
-type NodeProcessWithTerminationGuard = NodeJS.Process & {
+type NodeProcessWithTerminationGuard = NodeProcessLike & {
   __knittingTerminationGuard?: boolean;
   reallyExit?: (code?: number) => never;
+  exit?: (code?: number) => never;
+  kill?: (...args: unknown[]) => unknown;
+  abort?: () => never;
 };
 
 const toErrorMessage = (error: unknown): string =>
@@ -20,8 +25,8 @@ const failProcessGuardInstall = (
 };
 
 export const installTerminationGuard = (): void => {
-  if (typeof process === "undefined") return;
-  const proc = process as NodeProcessWithTerminationGuard;
+  const proc = getNodeProcess() as NodeProcessWithTerminationGuard | undefined;
+  if (!proc) return;
   if (proc.__knittingTerminationGuard === true) return;
 
   const blocked = (name: string): never => {
@@ -86,13 +91,13 @@ export const installTerminationGuard = (): void => {
 };
 
 export const installUnhandledRejectionSilencer = (): void => {
-  if (typeof process === "undefined" || typeof process.on !== "function") {
+  const proc = getNodeProcess() as NodeProcessWithUnhandledGuard | undefined;
+  if (!proc || typeof proc.on !== "function") {
     return;
   }
-  const proc = process as NodeProcessWithUnhandledGuard;
   if (proc.__knittingUnhandledRejectionSilencer === true) return;
   proc.__knittingUnhandledRejectionSilencer = true;
 
   // Worker task code may create detached promises; keep workers alive.
-  process.on("unhandledRejection", () => {});
+  proc.on("unhandledRejection", () => {});
 };

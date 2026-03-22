@@ -1,3 +1,5 @@
+import { getNodeProcess } from "./node-compat.ts";
+
 type RuntimeName = "deno" | "bun" | "node" | "unknown";
 
 type GlobalWithRuntimes = typeof globalThis & {
@@ -10,11 +12,12 @@ type GlobalWithRuntimes = typeof globalThis & {
 };
 
 const globals = globalThis as GlobalWithRuntimes;
+const nodeProcess = getNodeProcess();
 
 export const IS_DENO = typeof globals.Deno?.version?.deno === "string";
 export const IS_BUN = typeof globals.Bun?.version === "string";
 export const IS_NODE =
-  typeof process !== "undefined" && typeof process.versions?.node === "string";
+  typeof nodeProcess?.versions?.node === "string";
 export const IS_BROWSER =
   !IS_DENO &&
   !IS_BUN &&

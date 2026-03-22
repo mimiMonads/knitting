@@ -1,16 +1,29 @@
-type NodeProcessLike = {
+export type NodeProcessLike = {
   getBuiltinModule?: (id: string) => unknown;
   versions?: {
     node?: string;
   };
   platform?: string;
+  allowedNodeEnvironmentFlags?: ReadonlySet<string>;
+  execArgv?: string[];
+  cwd?: () => string;
+  env?: Record<string, string | undefined>;
+  on?: (event: string, handler: (...args: unknown[]) => void) => unknown;
+};
+
+export type NodeCallSiteLike = {
+  getFileName?: () => string | null | undefined;
+  getFunctionName?: () => string | null | undefined;
+  getMethodName?: () => string | null | undefined;
 };
 
 const nodeProcess = (() => {
-  if (typeof process === "undefined") return undefined;
-  const candidate = process as unknown as NodeProcessLike;
-  return typeof candidate.versions?.node === "string" ? candidate : undefined;
+  const candidate = (globalThis as typeof globalThis & { process?: unknown })
+    .process as NodeProcessLike | undefined;
+  return typeof candidate?.versions?.node === "string" ? candidate : undefined;
 })();
+
+export const getNodeProcess = (): NodeProcessLike | undefined => nodeProcess;
 
 export const getNodeBuiltinModule = <T>(
   specifier: string,
