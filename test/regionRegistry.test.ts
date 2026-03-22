@@ -22,9 +22,10 @@ const align64 = (n: number) => (n + 63) & ~63;
 const START_MASK = (~31) >>> 0;
 const EMPTY = 0xFFFFFFFF >>> 0;
 
-const makeRegistry = () =>
+const makeRegistry = (publishMode?: "plain" | "atomic") =>
   register({
     lockSector: new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH),
+    publishMode,
   });
 
 test("registry uses separate words inside the shared lock sector", () => {
@@ -549,6 +550,38 @@ test("setSlotLength shrinks slot and exposes gap for next allocation", () => {
   registry.allocTask(third);
 
   assertEquals(third[TaskIndex.Start], align64(700));
+});
+
+test("atomic publish mode preserves toggle-bit allocator invariants", () => {
+  const registry = makeRegistry("atomic");
+  const live = new Map<number, LiveAllocation>();
+
+  for (let i = 0; i < 6; i++) {
+    const payloadLen = 1 + (i * 17);
+    const task = makeTask();
+    task[TaskIndex.PayloadLen] = payloadLen;
+    assertEquals(registry.allocTask(task) === -1, false);
+    live.set(task[TaskIndex.slotBuffer], {
+      start: task[TaskIndex.Start],
+      size: align64(payloadLen),
+    });
+  }
+
+  registry.free(1);
+  registry.free(3);
+  live.delete(1);
+  live.delete(3);
+  registry.updateTable();
+  assertAllocatorInvariants(registry, live);
+
+  const reused = makeTask();
+  reused[TaskIndex.PayloadLen] = 8;
+  assertEquals(registry.allocTask(reused) === -1, false);
+  live.set(reused[TaskIndex.slotBuffer], {
+    start: reused[TaskIndex.Start],
+    size: align64(reused[TaskIndex.PayloadLen]),
+  });
+  assertAllocatorInvariants(registry, live);
 });
 
 test("allocator random overlap stress keeps allocator consistent", () => {

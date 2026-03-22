@@ -108,6 +108,50 @@ test("flushToWorker moves a backlogged task into deferred state", () => {
   assert.equal(tx.txIdle(), true);
 });
 
+test("rejectAll ignores late deferred promise settlement for invalidated slots", () => {
+  let publishCount = 0;
+  let resetCalls = 0;
+  let capturedTask: Task | undefined;
+  const lock = {
+    publish: (task: Task) => {
+      publishCount++;
+      capturedTask = task;
+      return false;
+    },
+    flushPending: () => false,
+    hasPendingFrames: () => false,
+    getPendingFrameCount: () => 0,
+    getPendingPromiseCount: () => 1,
+    resetPendingState: () => {
+      resetCalls++;
+    },
+  } as unknown as Lock2;
+
+  const returnLock = {
+    resolveHost: () => () => 0,
+  } as unknown as Lock2;
+
+  const tx = createHostTxQueue({
+    lock,
+    returnLock,
+    max: 1,
+  });
+
+  const call = tx.enqueue(0);
+  const pending = call(Promise.resolve("later"));
+  void pending.catch(() => {});
+
+  assert.equal(publishCount, 1);
+  tx.rejectAll("closed");
+  assert.equal(resetCalls, 1);
+
+  assert.equal(
+    tx.settlePromisePayload(capturedTask!, false, "late"),
+    false,
+  );
+  assert.equal(publishCount, 1);
+});
+
 test("late return frames are acked without settling inactive slots", async () => {
   const requestLock = {
     publish: () => true,

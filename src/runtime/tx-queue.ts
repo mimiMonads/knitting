@@ -209,7 +209,7 @@ export function createHostTxQueue({
       isRejected: boolean,
       value: unknown,
     ) => {
-      //if (task.reject === PLACE_HOLDER) return false;
+      if (task.reject === PLACE_HOLDER) return false;
       if (isRejected) {
         try {
           task.reject(value);
