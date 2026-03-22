@@ -20,7 +20,13 @@ const SLOT_META_PACKED_MASK = 0xFFFFFFE0; // (~0x1F) >>> 0
 export type RegisterMalloc = ReturnType<typeof register>;
 
 export const register = (
-  { lockSector }: { lockSector?: SharedBufferSource },
+  {
+    lockSector,
+    publishMode = "plain",
+  }: {
+    lockSector?: SharedBufferSource;
+    publishMode?: "plain" | "atomic";
+  },
 ) => {
   const lockRegion = toSharedBufferRegion(
     lockSector ?? createWasmSharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH),
@@ -42,6 +48,9 @@ export const register = (
   const size64bit = new Uint32Array(LockBound.slots);
 
   const clz32 = Math.clz32;
+  const a_load = Atomics.load;
+  const a_store = Atomics.store;
+  const useAtomicPublish = publishMode === "atomic";
 
   const EMPTY = 0xFFFFFFFF >>> 0;
   const SLOT_MASK = TASK_SLOT_INDEX_MASK;
@@ -81,7 +90,7 @@ export const register = (
 
   const updateTable = () => {
     // state = which bits are currently "in use" under toggle-protocol
-    const w = Atomics.load(workerBits, 0) | 0;
+    const w = a_load(workerBits, 0) | 0;
     const state = (hostLast ^ w) >>> 0;
 
     // freeBits = bits where host/worker agree (toggle resolved)
@@ -128,7 +137,7 @@ export const register = (
     }
 
     if (tl !== 0) {
-      const w = Atomics.load(workerBits, 0) | 0;
+      const w = a_load(workerBits, 0) | 0;
       let freeBits = (~(hostLast ^ w)) >>> 0;
       if (freeBits !== 0) freeBits &= usedBits;
 
@@ -291,11 +300,10 @@ export const register = (
     const size = (payloadLen + 63) & ~63;
 
     const slotIndex = findAndInsert(task, size);
-    //if (slotIndex === -1) return -1;
+    if (slotIndex === -1) return -1;
 
-    // Publish slot ownership changes with atomic visibility for the peer.
-    //Atomics.store(hostBits, 0, hostLast);
-    hostBits[0] = hostLast;
+    if (useAtomicPublish) a_store(hostBits, 0, hostLast);
+    else hostBits[0] = hostLast;
     return slotIndex;
   };
 
@@ -317,8 +325,8 @@ export const register = (
   const free = (index: number) => {
     index = index & TASK_SLOT_INDEX_MASK;
     workerLast ^= 1 << index;
-    // Publish frees atomically so the allocator sees the updated toggle state.
-    Atomics.store(workerBits, 0, workerLast);
+    if (useAtomicPublish) a_store(workerBits, 0, workerLast);
+    else workerBits[0] = workerLast;
   };
 
   return {
