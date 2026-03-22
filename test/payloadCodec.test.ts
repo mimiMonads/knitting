@@ -143,6 +143,29 @@ test("successful payload encoding clears the original task value", () => {
   assertEquals(task.value, null);
 });
 
+test("payload codec rejects direct scalar primitives", () => {
+  const { encode } = makeCodec();
+
+  for (const value of [123, true, null, undefined, NaN]) {
+    const task = makeTask();
+    task.value = value;
+
+    assert.throws(() => encode(task, 0), /encoded by lock/);
+  }
+});
+
+test("payload codec keeps bigint support via buffered payload types", () => {
+  const { encode, decode } = makeCodec();
+  const task = makeTask();
+  task.value = 9n;
+
+  assertEquals(encode(task, 0), true);
+  assertEquals(task[TaskIndex.Type], PayloadBuffer.StaticBigInt);
+
+  decode(task, 0);
+  assertEquals(task.value, 9n);
+});
+
 test("dynamic string payloads use distinct slotBuffer values", () => {
   const { encode, decode, registry } = makeCodec();
   const first = makeTask();
@@ -492,7 +515,7 @@ test("non-buffer payloads do not modify slotBuffer", () => {
   const task = makeTask();
 
   task[TaskIndex.slotBuffer] = 7;
-  task.value = 123;
+  task.value = "123";
 
   assertEquals(encode(task, 0), true);
   assertEquals(task[TaskIndex.slotBuffer], 7);

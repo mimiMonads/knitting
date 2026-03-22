@@ -3,7 +3,10 @@ import { genTaskID } from "./common/others.ts";
 import { toModuleUrl } from "./common/module-url.ts";
 import { endpointSymbol } from "./common/task-symbol.ts";
 import { spawnWorkerContext } from "./runtime/pool.ts";
-import { isMainThread, workerData } from "node:worker_threads";
+import {
+  RUNTIME_IS_MAIN_THREAD,
+  RUNTIME_WORKER_DATA,
+} from "./common/worker-runtime.ts";
 import {
   resolvePermissionProtocol,
   toRuntimePermissionFlags,
@@ -46,7 +49,7 @@ type CreatePoolFactory = (
 const MAX_FUNCTION_ID = 0xFFFF;
 const MAX_FUNCTION_COUNT = MAX_FUNCTION_ID + 1;
 
-export const isMain: boolean = isMainThread;
+export const isMain: boolean = RUNTIME_IS_MAIN_THREAD;
 export { endpointSymbol as endpointSymbol };
 
 
@@ -110,11 +113,11 @@ export const createPool: CreatePoolFactory = ({
    *  This functions is only available in the main thread.
    *  Also triggers when debug extra is enabled.
    */
-  if (isMainThread === false) {
+  if (RUNTIME_IS_MAIN_THREAD === false) {
     if ((debug?.extras === true)) {
       console.warn(
         "createPool has been called with : " + JSON.stringify(
-          workerData,
+          RUNTIME_WORKER_DATA,
         ),
       );
     }
@@ -459,7 +462,7 @@ const buildTaskDefinitionFromCaller = <
   }) as ReturnFixed<A, B, AS>;
 
   out.createPool = (options?: CreatePool) => {
-    if (isMainThread === false) {
+    if (RUNTIME_IS_MAIN_THREAD === false) {
       return out as unknown as SingleTaskPool<A, B, AS>;
     }
     return createSingleTaskPool(out, options);

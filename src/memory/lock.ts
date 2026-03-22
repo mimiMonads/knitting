@@ -8,7 +8,10 @@ import {
   type SharedBufferSource,
   toSharedBufferRegion,
 } from "../common/shared-buffer-region.ts";
-import { getStridedSlotOffsetU32 } from "./byte-carpet.ts";
+import {
+  probeLockBufferTextCompat,
+  type LockBufferTextCompat,
+} from "../common/shared-buffer-text.ts";
 import {
   type PayloadBufferOptions,
   resolvePayloadBufferOptions,
@@ -233,6 +236,12 @@ export const HEADER_BYTE_LENGTH = HEADER_U32_LENGTH *
 let INDEX_ID = 0;
 const INIT_VAL = PayloadSignal.UNREACHABLE;
 const def = (_?: unknown) => {};
+const primitiveEncodeMemory = new ArrayBuffer(8);
+const primitiveEncodeFloat64View = new Float64Array(primitiveEncodeMemory);
+const primitiveEncodeBigInt64View = new BigInt64Array(primitiveEncodeMemory);
+const primitiveEncodeUint32View = new Uint32Array(primitiveEncodeMemory);
+const PRIMITIVE_BIGINT64_MIN = -(1n << 63n);
+const PRIMITIVE_BIGINT64_MAX = (1n << 63n) - 1n;
 
 const createTaskShell = () => {
   const task = new Uint32Array(TaskIndex.Size) as Uint32Array & {
@@ -275,6 +284,77 @@ const makeTaskFrom = (array: Uint32Array, at: number) => {
   return task;
 };
 
+const tryEncodePrimitiveTask = (task: Task): boolean => {
+  const value = task.value;
+  switch (typeof value) {
+    case "number":
+      if (value !== value) {
+        task[TaskIndex.Type] = PayloadSignal.NaN;
+        return true;
+      }
+      primitiveEncodeFloat64View[0] = value;
+      task[TaskIndex.Type] = PayloadSignal.Float64;
+      task[TaskIndex.Start] = primitiveEncodeUint32View[0]!;
+      task[TaskIndex.End] = primitiveEncodeUint32View[1]!;
+      return true;
+    case "boolean":
+      task[TaskIndex.Type] = value ? PayloadSignal.True : PayloadSignal.False;
+      return true;
+    case "undefined":
+      task[TaskIndex.Type] = PayloadSignal.Undefined;
+      return true;
+    case "bigint":
+      if (value < PRIMITIVE_BIGINT64_MIN || value > PRIMITIVE_BIGINT64_MAX) {
+        return false;
+      }
+      primitiveEncodeBigInt64View[0] = value;
+      task[TaskIndex.Type] = PayloadSignal.BigInt;
+      task[TaskIndex.Start] = primitiveEncodeUint32View[0]!;
+      task[TaskIndex.End] = primitiveEncodeUint32View[1]!;
+      return true;
+    case "object":
+      if (value === null) {
+        task[TaskIndex.Type] = PayloadSignal.Null;
+        return true;
+      }
+      return false;
+    default:
+      return false;
+  }
+};
+
+const tryDecodePrimitiveTask = (task: Task): boolean => {
+  switch (task[TaskIndex.Type]) {
+    case PayloadSignal.BigInt:
+      primitiveEncodeUint32View[0] = task[TaskIndex.Start];
+      primitiveEncodeUint32View[1] = task[TaskIndex.End];
+      task.value = primitiveEncodeBigInt64View[0];
+      return true;
+    case PayloadSignal.True:
+      task.value = true;
+      return true;
+    case PayloadSignal.False:
+      task.value = false;
+      return true;
+    case PayloadSignal.Float64:
+      primitiveEncodeUint32View[0] = task[TaskIndex.Start];
+      primitiveEncodeUint32View[1] = task[TaskIndex.End];
+      task.value = primitiveEncodeFloat64View[0];
+      return true;
+    case PayloadSignal.NaN:
+      task.value = NaN;
+      return true;
+    case PayloadSignal.Null:
+      task.value = null;
+      return true;
+    case PayloadSignal.Undefined:
+      task.value = undefined;
+      return true;
+    default:
+      return false;
+  }
+};
+
 // could be inlined
 const settleTask = (task: Task) => {
   if (task[TaskIndex["FlagsToHost"]] === 0) {
@@ -304,6 +384,7 @@ export const lock2 = ({
   payload,
   payloadConfig,
   payloadSector,
+  textCompat,
   resultList,
   toSentList,
   recycleList,
@@ -314,6 +395,7 @@ export const lock2 = ({
   payload?: SharedArrayBuffer;
   payloadConfig?: PayloadBufferOptions;
   payloadSector?: SharedBufferSource;
+  textCompat?: LockBufferTextCompat;
   toSentList?: RingQueue<Task>;
   resultList?: RingQueue<Task>;
   recycleList?: RingQueue<Task>;
@@ -370,6 +452,10 @@ export const lock2 = ({
   const payloadLockRegion = toSharedBufferRegion(
     payloadSector ?? lockSectorRegion,
   );
+  const resolvedTextCompat = textCompat ?? probeLockBufferTextCompat({
+    headers: headersRegion,
+    payload: payloadSAB,
+  });
 
   let promiseHandler: PromisePayloadHandler | undefined;
   let trackedDeferredTasks = new WeakSet<Task>();
@@ -382,6 +468,7 @@ export const lock2 = ({
     headersBuffer,
     headerSlotStrideU32: headersSlotStride,
     lockSector: payloadLockRegion,
+    textCompat: resolvedTextCompat,
     onPromise: (task, isRejected, value) => {
       if (trackedDeferredTasks.delete(task) && pendingPromiseCount > 0) {
         pendingPromiseCount = (pendingPromiseCount - 1) | 0;
@@ -397,6 +484,7 @@ export const lock2 = ({
     headersBuffer,
     headerSlotStrideU32: headersSlotStride,
     lockSector: payloadLockRegion,
+    textCompat: resolvedTextCompat,
   });
 
   let LastLocal = 0 | 0;
@@ -422,15 +510,9 @@ export const lock2 = ({
   const resolvedPush = (task: Task) => resolved.push(task);
 
   const clz32 = Math.clz32;
-  const slotOffset = (at: number) =>
-    getStridedSlotOffsetU32({
-      slotIndex: at,
-      slotStrideU32: headersSlotStride,
-      baseU32: LockBound.header,
-      extraU32: HEADER_TASK_OFFSET_IN_SLOT_U32,
-    });
+  const slotBaseU32 = LockBound.header + HEADER_TASK_OFFSET_IN_SLOT_U32;
   const takeTask = ({ queue }: { queue: Task[] }) => (at: number) => {
-    const off = slotOffset(at);
+    const off = (at * headersSlotStride) + slotBaseU32;
     const task = queue[headersBuffer[off + TaskIndex.ID]!];
     fillTaskFrom(task, headersBuffer, off);
     return task;
@@ -442,13 +524,18 @@ export const lock2 = ({
     trackedDeferredTasks.add(task);
     pendingPromiseCount = (pendingPromiseCount + 1) | 0;
   };
+  const encodeTaskValue = (task: Task, slotIndex: number): boolean =>
+    tryEncodePrimitiveTask(task) || encodeTask(task, slotIndex);
+  const decodeTaskValue = (task: Task, slotIndex: number): void => {
+    if (!tryDecodePrimitiveTask(task)) decodeTask(task, slotIndex);
+  };
   let selectedSlotIndex = 0 | 0, selectedSlotBit = 0 >>> 0;
 
   const encodeWithState = (task: Task, state: number): number => {
     const free = ~state;
     if (free === 0) return 0;
 
-    if (!encodeTask(task, selectedSlotIndex = 31 - clz32(free))) return 0;
+    if (!encodeTaskValue(task, selectedSlotIndex = 31 - clz32(free))) return 0;
     encodeAt(
       task,
       selectedSlotIndex,
@@ -459,8 +546,44 @@ export const lock2 = ({
 
   const encodeManyFrom = (
     list: RingQueue<Task>,
-    trackDeferreds = false,
   ): number => {
+    let state = (LastLocal ^ a_load(workerBits, 0)) | 0;
+    let encoded = 0 | 0;
+
+    if (list === toBeSent) {
+      while (true) {
+        const task = toBeSentShift();
+        if (!task) break;
+
+        const bit = encodeWithState(task, state) | 0;
+        if (bit === 0) {
+          toBeSentUnshift(task);
+          break;
+        }
+
+        state = (state ^ bit) | 0;
+        encoded = (encoded + 1) | 0;
+      }
+    } else {
+      while (true) {
+        const task = list.shiftNoClear();
+        if (!task) break;
+
+        const bit = encodeWithState(task, state) | 0;
+        if (bit === 0) {
+          list.unshift(task);
+          break;
+        }
+
+        state = (state ^ bit) | 0;
+        encoded = (encoded + 1) | 0;
+      }
+    }
+
+    return encoded;
+  };
+
+  const encodeManyTrackedFrom = (list: RingQueue<Task>): number => {
     let state = (LastLocal ^ a_load(workerBits, 0)) | 0;
     let encoded = 0 | 0;
     deferredCount = 0 | 0;
@@ -474,7 +597,7 @@ export const lock2 = ({
         if (bit === 0) {
           if (isPromisePayloadPending(task)) {
             deferredCount = (deferredCount + 1) | 0;
-            if (trackDeferreds) trackDeferredTask(task);
+            trackDeferredTask(task);
             continue;
           }
           toBeSentUnshift(task);
@@ -493,7 +616,7 @@ export const lock2 = ({
         if (bit === 0) {
           if (isPromisePayloadPending(task)) {
             deferredCount = (deferredCount + 1) | 0;
-            if (trackDeferreds) trackDeferredTask(task);
+            trackDeferredTask(task);
             continue;
           }
           list.unshift(task);
@@ -510,7 +633,7 @@ export const lock2 = ({
 
   const encodeAll = (): boolean => {
     if (toBeSent.isEmpty) return true;
-    encodeManyFrom(toBeSent, true);
+    encodeManyTrackedFrom(toBeSent);
     deferredCount = 0 | 0;
     return toBeSent.isEmpty;
   };
@@ -522,16 +645,32 @@ export const lock2 = ({
   const encode = (
     task: Task,
     state: number = (LastLocal ^ a_load(workerBits, 0)) | 0,
-    trackDeferreds = false,
+  ): boolean => {
+    const free = ~state;
+    if (free === 0) return false;
+
+    if (!encodeTaskValue(task, selectedSlotIndex = 31 - clz32(free))) {
+      return false;
+    }
+    return encodeAt(
+      task,
+      selectedSlotIndex,
+      selectedSlotBit = 1 << selectedSlotIndex,
+    );
+  };
+
+  const encodeTracked = (
+    task: Task,
+    state: number = (LastLocal ^ a_load(workerBits, 0)) | 0,
   ): boolean => {
     deferredCount = 0 | 0;
     const free = ~state;
     if (free === 0) return false;
 
-    if (!encodeTask(task, selectedSlotIndex = 31 - clz32(free))) {
+    if (!encodeTaskValue(task, selectedSlotIndex = 31 - clz32(free))) {
       if (isPromisePayloadPending(task)) {
         deferredCount = 1;
-        if (trackDeferreds) trackDeferredTask(task);
+        trackDeferredTask(task);
       }
       return false;
     }
@@ -543,7 +682,7 @@ export const lock2 = ({
   };
 
   const encodeAt = (task: Task, at: number, bit: number): boolean => {
-    const off = slotOffset(at);
+    const off = (at * headersSlotStride) + slotBaseU32;
     headersBuffer[off] = task[0];
     headersBuffer[off + 1] = task[1];
     headersBuffer[off + 2] = task[2];
@@ -620,7 +759,7 @@ export const lock2 = ({
         const selectedBit = 1 << idx;
 
         const task = getTask(idx);
-        decodeTask(task, idx);
+        decodeTaskValue(task, idx);
 
         consumedBits = (consumedBits ^ selectedBit) | 0;
         const CAN_SETTLE = !HAS_SHOULD_SETTLE || shouldSettle!(task);
@@ -650,7 +789,7 @@ export const lock2 = ({
         const selectedBit = 1 << idx;
 
         const task = getTask(idx);
-        decodeTask(task, idx);
+        decodeTaskValue(task, idx);
 
         consumedBits = (consumedBits ^ selectedBit) | 0;
         const CAN_SETTLE = !HAS_SHOULD_SETTLE || shouldSettle!(task);
@@ -682,7 +821,7 @@ export const lock2 = ({
   };
 
   const decodeAt = (at: number): boolean => {
-    const off = slotOffset(at);
+    const off = (at * headersSlotStride) + slotBaseU32;
     const recycled = recycleShift() as Task | undefined;
     let task: Task;
     if (recycled) {
@@ -695,14 +834,14 @@ export const lock2 = ({
       task = makeTaskFrom(headersBuffer, off);
     }
 
-    decodeTask(task, at);
+    decodeTaskValue(task, at);
     resolvedPush(task);
 
     return true;
   };
 
   const publish = (task: Task): boolean => {
-    if (encode(task, undefined, true)) return true;
+    if (encodeTracked(task)) return true;
     if ((deferredCount | 0) !== 0) {
       deferredCount = 0 | 0;
       return false;
@@ -713,7 +852,7 @@ export const lock2 = ({
 
   const flushPending = (): boolean => {
     if (toBeSent.isEmpty) return false;
-    const encoded = encodeManyFrom(toBeSent, true) | 0;
+    const encoded = encodeManyTrackedFrom(toBeSent) | 0;
     deferredCount = 0 | 0;
     return encoded !== 0;
   };

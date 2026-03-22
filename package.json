@@ -1,6 +1,6 @@
 {
   "name": "@vixeny/knitting",
-  "version": "0.1.30",
+  "version": "0.1.38",
   "description": "Shared-memory worker pool for Node.js, Deno, and Bun.",
   "license": "Apache-2.0",
   "type": "module",
@@ -19,6 +19,7 @@
   "scripts": {
     "build": "bun run build.ts",
     "build:node": "bun build knitting.ts --outdir dest --target node --format esm",
+    "smoke:browser": "bun run smoke/browser/build.ts",
     "test": "npm run test:deno",
     "test:deno": "deno test -A --ignore=test/runtime.node.test.ts",
     "test:node": "node --no-warnings --experimental-transform-types --test \"./test/*.test.ts\"",

@@ -1,6 +1,9 @@
 import { endpointSymbol } from "./common/task-symbol.ts";
-import type { Buffer as NodeBuffer } from "node:buffer";
 import type { Envelope } from "./common/envelope.ts";
+import type {
+  LockBufferTextCompat,
+  SharedBufferTextCompat,
+} from "./common/shared-buffer-text.ts";
 import type {
   SharedBufferRegion,
   SharedBufferSource,
@@ -54,6 +57,7 @@ type LockBuffers = {
   lockSector: SharedBufferSource;
   payload: SharedArrayBuffer;
   payloadSector: SharedBufferSource;
+  textCompat?: LockBufferTextCompat;
 };
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -81,7 +85,6 @@ type ValidInput =
   | void
   | JSONValue
   | symbol
-  | NodeBuffer
   | ArrayBuffer
   | Uint8Array
   | Int32Array
@@ -486,6 +489,8 @@ export type {
   PermissionProtocolInput as PermissionProtocolInput,
   ResolvedPermissionProtocol as ResolvedPermissionProtocol,
   Envelope as Envelope,
+  SharedBufferTextCompat as SharedBufferTextCompat,
+  LockBufferTextCompat as LockBufferTextCompat,
   SharedBufferRegion as SharedBufferRegion,
   SharedBufferSource as SharedBufferSource,
 };

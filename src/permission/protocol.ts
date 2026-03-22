@@ -1,8 +1,13 @@
-import path from "node:path";
-import { existsSync, realpathSync } from "node:fs";
-import { fileURLToPath } from "node:url";
 import { RUNTIME } from "../common/runtime.ts";
 import { toCanonicalPath as toSharedCanonicalPath } from "../common/path-canonical.ts";
+import {
+  existsSyncCompat,
+  fileURLToPathCompat,
+  pathIsAbsolute,
+  pathResolve,
+  pathRelative,
+  realpathSyncCompat,
+} from "../common/node-compat.ts";
 
 type PermissionPath = string | URL;
 
@@ -345,7 +350,7 @@ const expandHomePath = (value: string, home: string | undefined): string => {
   if (!home) return value;
   if (value === "~") return home;
   if (value.startsWith("~/") || value.startsWith("~\\")) {
-    return path.resolve(home, value.slice(2));
+    return pathResolve(home, value.slice(2));
   }
   return value;
 };
@@ -357,19 +362,19 @@ const toAbsolutePath = (
 ): string | undefined => {
   if (value instanceof URL) {
     if (value.protocol !== "file:") return undefined;
-    return path.resolve(fileURLToPath(value));
+    return pathResolve(fileURLToPathCompat(value));
   }
 
   const expanded = expandHomePath(value, home);
-  if (path.isAbsolute(expanded)) {
-    return path.resolve(expanded);
+  if (pathIsAbsolute(expanded)) {
+    return pathResolve(expanded);
   }
   try {
     const parsed = new URL(expanded);
     if (parsed.protocol !== "file:") return undefined;
-    return path.resolve(fileURLToPath(parsed));
+    return pathResolve(fileURLToPathCompat(parsed));
   } catch {
-    return path.resolve(cwd, expanded);
+    return pathResolve(cwd, expanded);
   }
 };
 
@@ -409,11 +414,11 @@ const toEnvFiles = (
   return toUniquePathList(values, cwd, home);
 };
 
-const rawRealpathSync = realpathSync.native ?? realpathSync;
+const rawRealpathSync = realpathSyncCompat;
 
 const toCanonicalPath = (candidate: string): string => {
   return toSharedCanonicalPath(candidate, {
-    existsSync,
+    existsSync: existsSyncCompat,
     realpathSync: rawRealpathSync,
   });
 };
@@ -421,17 +426,19 @@ const toCanonicalPath = (candidate: string): string => {
 const isPathWithin = (base: string, candidate: string): boolean => {
   const canonicalBase = toCanonicalPath(base);
   const canonicalCandidate = toCanonicalPath(candidate);
-  const relative = path.relative(canonicalBase, canonicalCandidate);
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+  const relative = pathRelative(canonicalBase, canonicalCandidate);
+  return relative === "" || (!relative.startsWith("..") && !pathIsAbsolute(relative));
 };
 
 const defaultSensitiveProjectAndHomePaths = (
   cwd: string,
   home: string | undefined,
 ): string[] => {
-  const projectSensitive = DEFAULT_DENY_RELATIVE.map((entry) => path.resolve(cwd, entry));
+  const projectSensitive = DEFAULT_DENY_RELATIVE.map((entry) =>
+    pathResolve(cwd, entry)
+  );
   const homeSensitive = home
-    ? DEFAULT_DENY_HOME.map((entry) => path.resolve(home, entry))
+    ? DEFAULT_DENY_HOME.map((entry) => pathResolve(home, entry))
     : [];
   return normalizeList([...projectSensitive, ...homeSensitive]);
 };
@@ -443,7 +450,7 @@ const defaultSensitiveReadDenyPaths = (
   const projectAndHome = defaultSensitiveProjectAndHomePaths(cwd, home);
   const osSensitive = isWindows()
     ? []
-    : DEFAULT_DENY_ABSOLUTE_POSIX.map((entry) => path.resolve(entry));
+    : DEFAULT_DENY_ABSOLUTE_POSIX.map((entry) => pathResolve(entry));
   return normalizeList([...projectAndHome, ...osSensitive]);
 };
 
@@ -470,7 +477,7 @@ const collectReadPaths = ({
 }): string[] => {
   const out = [
     cwd,
-    path.resolve(cwd, NODE_MODULES_DIR),
+    pathResolve(cwd, NODE_MODULES_DIR),
     ...read,
     ...moduleFiles,
     ...envFiles,
@@ -488,7 +495,7 @@ const resolveDenoLock = (
   if (input && input !== true) {
     return toPath(input, cwd, home);
   }
-  return path.resolve(cwd, DEFAULT_DENO_LOCK_FILE);
+  return pathResolve(cwd, DEFAULT_DENO_LOCK_FILE);
 };
 
 const resolveNodePermissionActivationFlag = (): string => {
@@ -716,7 +723,7 @@ export const resolvePermissionProtocol = ({
   const unsafe = mode === "unsafe";
   const allowConsole = input.console ?? unsafe;
 
-  const cwd = path.resolve(input.cwd ?? getCwd());
+  const cwd = pathResolve(input.cwd ?? getCwd());
   const home = getHome();
 
   const envFiles = toEnvFiles(input.env?.files, cwd, home);
@@ -789,7 +796,7 @@ export const resolvePermissionProtocol = ({
     };
   }
 
-  const nodeModulesPath = path.resolve(cwd, NODE_MODULES_DIR);
+  const nodeModulesPath = pathResolve(cwd, NODE_MODULES_DIR);
   const hasExplicitDenyRead = hasOwn(input, "denyRead");
   const hasExplicitDenyWrite = hasOwn(input, "denyWrite");
   const hasExplicitRead = hasOwn(input, "read");

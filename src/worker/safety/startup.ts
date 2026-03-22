@@ -2,6 +2,7 @@ import {
   isSharedBufferSource,
   type SharedBufferSource,
 } from "../../common/shared-buffer-region.ts";
+import { isLockBufferTextCompat } from "../../common/shared-buffer-text.ts";
 import type { DebugOptions, LockBuffers } from "../../types.ts";
 
 type SharedMemoryBootData = {
@@ -21,7 +22,11 @@ const hasLockBuffers = (value: LockBuffers | undefined): value is LockBuffers =>
   isSharedBufferSource(value?.headers) &&
   isSharedBufferSource(value?.lockSector) &&
   value?.payload instanceof SharedArrayBuffer &&
-  isSharedBufferSource(value?.payloadSector);
+  isSharedBufferSource(value?.payloadSector) &&
+  (
+    value?.textCompat === undefined ||
+    isLockBufferTextCompat(value.textCompat)
+  );
 
 export const assertWorkerSharedMemoryBootData = (
   { sab, lock, returnLock }: SharedMemoryBootData,
