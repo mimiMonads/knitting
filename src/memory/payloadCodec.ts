@@ -43,11 +43,10 @@ const runtimeBufferByteLength = !IS_BROWSER &&
     typeof runtimeBufferClass?.byteLength === "function"
   ? runtimeBufferClass.byteLength.bind(runtimeBufferClass)
   : undefined;
-const isRuntimeBuffer: (value: unknown) => value is Uint8Array = IS_BROWSER
-  ? ((_: unknown): _ is Uint8Array => false)
-  : typeof runtimeBufferClass?.isBuffer === "function"
-  ? runtimeBufferClass.isBuffer.bind(runtimeBufferClass)
-  : ((_: unknown): _ is Uint8Array => false);
+const isRuntimeBuffer = (value: unknown): value is Uint8Array =>
+  !IS_BROWSER &&
+  typeof runtimeBufferClass?.isBuffer === "function" &&
+  runtimeBufferClass.isBuffer(value);
 const isRuntimeUint8Array: (value: unknown) => value is Uint8Array = IS_BROWSER
   ? ((value: unknown): value is Uint8Array => value instanceof Uint8Array)
   : ((value: unknown): value is Uint8Array =>

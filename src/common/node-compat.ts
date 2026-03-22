@@ -1,18 +1,32 @@
-import { IS_NODE } from "./runtime.ts";
+type NodeProcessLike = {
+  getBuiltinModule?: (id: string) => unknown;
+  versions?: {
+    node?: string;
+  };
+  platform?: string;
+};
 
-type HiddenImport = <T = unknown>(specifier: string) => Promise<T>;
+const nodeProcess = (() => {
+  if (typeof process === "undefined") return undefined;
+  const candidate = process as unknown as NodeProcessLike;
+  return typeof candidate.versions?.node === "string" ? candidate : undefined;
+})();
 
-const hiddenImport = Function(
-  "specifier",
-  "return import(specifier);",
-) as HiddenImport;
-
-export const importNodeModule = async <T>(
+export const getNodeBuiltinModule = <T>(
   specifier: string,
-): Promise<T | undefined> => {
-  if (!IS_NODE) return undefined;
+): T | undefined => {
+  const getter = nodeProcess?.getBuiltinModule;
+  if (typeof getter !== "function") return undefined;
+
   try {
-    return await hiddenImport<T>(specifier);
+    return getter.call(nodeProcess, specifier) as T | undefined;
+  } catch {
+  }
+
+  if (!specifier.startsWith("node:")) return undefined;
+
+  try {
+    return getter.call(nodeProcess, specifier.slice(5)) as T | undefined;
   } catch {
     return undefined;
   }
@@ -39,11 +53,11 @@ type UrlModuleLike = {
   pathToFileURL?: (value: string) => URL;
 };
 
-const rawPathModule = await importNodeModule<
+const rawPathModule = getNodeBuiltinModule<
   PathModuleLike & { default?: PathModuleLike }
 >("node:path");
-const rawFsModule = await importNodeModule<FsModuleLike>("node:fs");
-const rawUrlModule = await importNodeModule<UrlModuleLike>("node:url");
+const rawFsModule = getNodeBuiltinModule<FsModuleLike>("node:fs");
+const rawUrlModule = getNodeBuiltinModule<UrlModuleLike>("node:url");
 
 const pathModule = (rawPathModule?.default ?? rawPathModule) as
   | PathModuleLike
@@ -54,7 +68,9 @@ const WINDOWS_UNC_PATH = /^[/\\]{2}[^/\\]+[/\\][^/\\]+/;
 
 const hostIsWindows = (() => {
   try {
-    if (typeof process !== "undefined") return process.platform === "win32";
+    if (typeof nodeProcess?.platform === "string") {
+      return nodeProcess.platform === "win32";
+    }
   } catch {
   }
   const g = globalThis as typeof globalThis & {

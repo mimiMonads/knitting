@@ -322,10 +322,10 @@ export const createInlineExecutor = ({
       }
       //@ts-ignore
       port1.onmessage = null;
-      port1.close();
+      port1.close?.();
       //@ts-ignore
       port2.onmessage = null;
-      port2.close();
+      port2.close?.();
       pendingQueue.clear();
       freeTop = 0;
       freeStack.length = 0;

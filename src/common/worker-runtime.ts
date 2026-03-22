@@ -1,9 +1,9 @@
-import { importNodeModule } from "./node-compat.ts";
+import { getNodeBuiltinModule } from "./node-compat.ts";
 
 type RuntimePortMessageHandler = (message: unknown) => void;
 
 export type RuntimeMessagePortLike = {
-  postMessage?: (message: unknown) => void;
+  postMessage: (message: unknown) => void;
   close?: () => void;
   start?: () => void;
   on?: (event: string, handler: (...args: unknown[]) => void) => void;
@@ -38,7 +38,7 @@ type WorkerThreadsModuleLike = {
   parentPort?: RuntimeMessagePortLike | null;
 };
 
-const workerThreads = await importNodeModule<WorkerThreadsModuleLike>(
+const workerThreads = getNodeBuiltinModule<WorkerThreadsModuleLike>(
   "node:worker_threads",
 );
 
