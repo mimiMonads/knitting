@@ -56,6 +56,8 @@ const isRuntimeUint8Array: (value: unknown) => value is Uint8Array = IS_BROWSER
 const utf8ByteLength = IS_BROWSER || !runtimeBufferByteLength
   ? (text: string): number => textEncode.encode(text).byteLength
   : (text: string): number => runtimeBufferByteLength(text, "utf8");
+const BIGINT64_MIN = -(1n << 63n);
+const BIGINT64_MAX = (1n << 63n) - 1n;
 const { parse: parseJSON, stringify: stringifyJSON } = JSON;
 const { for: symbolFor, keyFor: symbolKeyFor } = Symbol;
 const objectGetPrototypeOf = Object.getPrototypeOf;
@@ -72,19 +74,48 @@ const ENVELOPE_PROMISE_DETAIL =
 const DYNAMIC_PAYLOAD_LIMIT_DETAIL = "Dynamic payload exceeds maxPayloadBytes.";
 const DYNAMIC_PAYLOAD_CAPACITY_DETAIL =
   "Dynamic payload buffer capacity exceeded.";
-const LOCK_SCALAR_PRIMITIVE_DETAIL =
-  "Direct scalar primitives must be encoded by lock.";
 
 const isPlainJsonObject = (value: object) => {
   const proto = objectGetPrototypeOf(value);
   return proto === objectPrototype || proto === null;
 };
 
-const isLockScalarPrimitive = (value: unknown) =>
-  value === null ||
-  typeof value === "number" ||
-  typeof value === "boolean" ||
-  typeof value === "undefined";
+const tryEncodePrimitiveTask = (task: Task): boolean => {
+  const value = task.value;
+  switch (typeof value) {
+    case "number":
+      if (value !== value) {
+        task[TaskIndex.Type] = PayloadSignal.NaN;
+        return true;
+      }
+      Float64View[0] = value;
+      task[TaskIndex.Type] = PayloadSignal.Float64;
+      task[TaskIndex.Start] = Uint32View[0]!;
+      task[TaskIndex.End] = Uint32View[1]!;
+      return true;
+    case "boolean":
+      task[TaskIndex.Type] = value ? PayloadSignal.True : PayloadSignal.False;
+      return true;
+    case "undefined":
+      task[TaskIndex.Type] = PayloadSignal.Undefined;
+      return true;
+    case "bigint":
+      if (value < BIGINT64_MIN || value > BIGINT64_MAX) return false;
+      BigInt64View[0] = value;
+      task[TaskIndex.Type] = PayloadSignal.BigInt;
+      task[TaskIndex.Start] = Uint32View[0]!;
+      task[TaskIndex.End] = Uint32View[1]!;
+      return true;
+    case "object":
+      if (value === null) {
+        task[TaskIndex.Type] = PayloadSignal.Null;
+        return true;
+      }
+      return false;
+    default:
+      return false;
+  }
+};
 
 const hasPromiseInEnvelopeHeader = (
   value: unknown,
@@ -731,9 +762,7 @@ export const encodePayload = ({
   // because the outer factory is too large for TurboFan's bytecode limit.
   const encodeDispatch = (task: Task, slotIndex: number): boolean => {
     const args = task.value;
-    if (isLockScalarPrimitive(args)) {
-      throw new TypeError(LOCK_SCALAR_PRIMITIVE_DETAIL);
-    }
+    if (tryEncodePrimitiveTask(task)) return true;
     switch (typeof args) {
       case "bigint": {
         const binaryBytes = encodeBigIntIntoScratch(args);
@@ -1022,9 +1051,6 @@ export const encodePayload = ({
         task.value = null;
         return true;
       }
-      case "undefined":
-        task[TaskIndex.Type] = PayloadSignal.Undefined;
-        return true;
     }
     return false;
   };

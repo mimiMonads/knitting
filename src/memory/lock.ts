@@ -102,20 +102,28 @@ export type PromisePayloadHandler = (
   value: unknown,
 ) => void;
 
-const pendingPromisePayloads = new WeakSet<Task>();
+const TASK_LOCAL_FLAGS_INDEX = 7;
+const TASK_LOCAL_PROMISE_PENDING_FLAG = 1 << 0;
+const TASK_LOCAL_PROMISE_TRACKED_FLAG = 1 << 1;
 
 export const beginPromisePayload = (task: Task): boolean => {
-  if (pendingPromisePayloads.has(task)) return false;
-  pendingPromisePayloads.add(task);
+  const flags = task[TASK_LOCAL_FLAGS_INDEX];
+  if ((flags & TASK_LOCAL_PROMISE_PENDING_FLAG) !== 0) return false;
+  task[TASK_LOCAL_FLAGS_INDEX] = (flags | TASK_LOCAL_PROMISE_PENDING_FLAG) >>> 0;
   return true;
 };
 
 export const finishPromisePayload = (task: Task): void => {
-  pendingPromisePayloads.delete(task);
+  task[TASK_LOCAL_FLAGS_INDEX] =
+    (task[TASK_LOCAL_FLAGS_INDEX] & ~TASK_LOCAL_PROMISE_PENDING_FLAG) >>> 0;
 };
 
 export const isPromisePayloadPending = (task: Task): boolean =>
-  pendingPromisePayloads.has(task);
+  (task[TASK_LOCAL_FLAGS_INDEX] & TASK_LOCAL_PROMISE_PENDING_FLAG) !== 0;
+
+export const resetTaskLocalFlags = (task: Task): void => {
+  task[TASK_LOCAL_FLAGS_INDEX] = 0;
+};
 
 export enum TaskIndex {
   /**
@@ -240,8 +248,6 @@ const primitiveEncodeMemory = new ArrayBuffer(8);
 const primitiveEncodeFloat64View = new Float64Array(primitiveEncodeMemory);
 const primitiveEncodeBigInt64View = new BigInt64Array(primitiveEncodeMemory);
 const primitiveEncodeUint32View = new Uint32Array(primitiveEncodeMemory);
-const PRIMITIVE_BIGINT64_MIN = -(1n << 63n);
-const PRIMITIVE_BIGINT64_MAX = (1n << 63n) - 1n;
 
 const createTaskShell = () => {
   const task = new Uint32Array(TaskIndex.Size) as Uint32Array & {
@@ -252,6 +258,7 @@ const createTaskShell = () => {
   task.value = null;
   task.resolve = def;
   task.reject = def;
+  task[TASK_LOCAL_FLAGS_INDEX] = 0;
   return task;
 };
 
@@ -275,52 +282,14 @@ const fillTaskFrom = (task: Task, array: ArrayLike<number>, at: number) => {
   task[4] = array[at + 4];
   task[5] = array[at + 5];
   task[6] = array[at + 6];
-  //task[7] = array[at + 7];
+  // Task word 7 is local-only scratch state; never restore it from shared memory.
+  task[TASK_LOCAL_FLAGS_INDEX] = 0;
 };
 
 const makeTaskFrom = (array: Uint32Array, at: number) => {
   const task = createTaskShell();
   fillTaskFrom(task, array, at);
   return task;
-};
-
-const tryEncodePrimitiveTask = (task: Task): boolean => {
-  const value = task.value;
-  switch (typeof value) {
-    case "number":
-      if (value !== value) {
-        task[TaskIndex.Type] = PayloadSignal.NaN;
-        return true;
-      }
-      primitiveEncodeFloat64View[0] = value;
-      task[TaskIndex.Type] = PayloadSignal.Float64;
-      task[TaskIndex.Start] = primitiveEncodeUint32View[0]!;
-      task[TaskIndex.End] = primitiveEncodeUint32View[1]!;
-      return true;
-    case "boolean":
-      task[TaskIndex.Type] = value ? PayloadSignal.True : PayloadSignal.False;
-      return true;
-    case "undefined":
-      task[TaskIndex.Type] = PayloadSignal.Undefined;
-      return true;
-    case "bigint":
-      if (value < PRIMITIVE_BIGINT64_MIN || value > PRIMITIVE_BIGINT64_MAX) {
-        return false;
-      }
-      primitiveEncodeBigInt64View[0] = value;
-      task[TaskIndex.Type] = PayloadSignal.BigInt;
-      task[TaskIndex.Start] = primitiveEncodeUint32View[0]!;
-      task[TaskIndex.End] = primitiveEncodeUint32View[1]!;
-      return true;
-    case "object":
-      if (value === null) {
-        task[TaskIndex.Type] = PayloadSignal.Null;
-        return true;
-      }
-      return false;
-    default:
-      return false;
-  }
 };
 
 const tryDecodePrimitiveTask = (task: Task): boolean => {
@@ -458,7 +427,6 @@ export const lock2 = ({
   });
 
   let promiseHandler: PromisePayloadHandler | undefined;
-  let trackedDeferredTasks = new WeakSet<Task>();
 
   const encodeTask = encodePayload({
     payload: {
@@ -470,7 +438,12 @@ export const lock2 = ({
     lockSector: payloadLockRegion,
     textCompat: resolvedTextCompat,
     onPromise: (task, isRejected, value) => {
-      if (trackedDeferredTasks.delete(task) && pendingPromiseCount > 0) {
+      if (
+        (task[TASK_LOCAL_FLAGS_INDEX] & TASK_LOCAL_PROMISE_TRACKED_FLAG) !== 0 &&
+        pendingPromiseCount > 0
+      ) {
+        task[TASK_LOCAL_FLAGS_INDEX] =
+          (task[TASK_LOCAL_FLAGS_INDEX] & ~TASK_LOCAL_PROMISE_TRACKED_FLAG) >>> 0;
         pendingPromiseCount = (pendingPromiseCount - 1) | 0;
       }
       promiseHandler!(task, isRejected, value);
@@ -520,12 +493,13 @@ export const lock2 = ({
 
   const enlist = (task: Task) => toBeSentPush(task);
   const trackDeferredTask = (task: Task) => {
-    if (trackedDeferredTasks.has(task)) return;
-    trackedDeferredTasks.add(task);
+    const flags = task[TASK_LOCAL_FLAGS_INDEX];
+    if ((flags & TASK_LOCAL_PROMISE_TRACKED_FLAG) !== 0) return;
+    task[TASK_LOCAL_FLAGS_INDEX] = (flags | TASK_LOCAL_PROMISE_TRACKED_FLAG) >>> 0;
     pendingPromiseCount = (pendingPromiseCount + 1) | 0;
   };
   const encodeTaskValue = (task: Task, slotIndex: number): boolean =>
-    tryEncodePrimitiveTask(task) || encodeTask(task, slotIndex);
+    encodeTask(task, slotIndex);
   const decodeTaskValue = (task: Task, slotIndex: number): void => {
     if (!tryDecodePrimitiveTask(task)) decodeTask(task, slotIndex);
   };
@@ -690,7 +664,7 @@ export const lock2 = ({
     headersBuffer[off + 4] = task[4];
     headersBuffer[off + 5] = task[5];
     headersBuffer[off + 6] = task[6];
-    headersBuffer[off + 7] = task[7];
+    headersBuffer[off + TASK_LOCAL_FLAGS_INDEX] = 0;
 
     storeHost(bit);
     return true;
@@ -861,7 +835,6 @@ export const lock2 = ({
     toBeSent.clear();
     deferredCount = 0 | 0;
     pendingPromiseCount = 0 | 0;
-    trackedDeferredTasks = new WeakSet<Task>();
   };
 
   return {

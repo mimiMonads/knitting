@@ -347,6 +347,7 @@ test("node:test permission unsafe mode allows unrestricted file access", {
   timeout: TEST_TIMEOUT_MS,
 }, async () => {
   if (process.versions.bun) {
+    // Bun does not implement Node permission flags.
     return;
   }
 
@@ -507,6 +508,7 @@ test("node:test default permission profile blocks child process execution", {
   timeout: TEST_TIMEOUT_MS,
 }, async () => {
   if (process.versions.bun) {
+    // Bun does not implement Node permission flags.
     return;
   }
 
@@ -561,6 +563,7 @@ test("node:test worker hard timeout force-shuts pool on runaway cpu loops", {
   timeout: TEST_TIMEOUT_MS,
 }, async () => {
   if (process.versions.bun) {
+    // Bun does not implement this Node worker hard-timeout path.
     return;
   }
 

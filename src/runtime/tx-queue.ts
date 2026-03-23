@@ -1,5 +1,6 @@
 import {
   makeTask,
+  resetTaskLocalFlags,
   TaskIndex,
   type Task,
   type Lock2,
@@ -92,6 +93,7 @@ export function createHostTxQueue({
     shouldSettle: (task) => task.reject !== PLACE_HOLDER,
     onResolved: (task) => {
       inUsed = (inUsed - 1) | 0;
+      resetTaskLocalFlags(task);
       task.value = null;
       task.resolve = PLACE_HOLDER;
       task.reject = PLACE_HOLDER;
@@ -215,6 +217,7 @@ export function createHostTxQueue({
           task.reject(value);
         } catch {
         }
+        resetTaskLocalFlags(task);
         task.value = null;
         task.resolve = PLACE_HOLDER;
         task.reject = PLACE_HOLDER;

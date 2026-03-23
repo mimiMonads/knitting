@@ -13,6 +13,7 @@ import {
   makeTask,
   PAYLOAD_LOCK_SECTOR_BYTE_LENGTH,
   PayloadBuffer,
+  PayloadSignal,
   type PromisePayloadHandler,
   TaskIndex,
 } from "../src/memory/lock.ts";
@@ -143,27 +144,47 @@ test("successful payload encoding clears the original task value", () => {
   assertEquals(task.value, null);
 });
 
-test("payload codec rejects direct scalar primitives", () => {
-  const { encode } = makeCodec();
+test("payload codec encodes direct scalar primitives inline", () => {
+  const { encode, decode } = makeCodec();
+  const cases: Array<{
+    value: unknown;
+    type: PayloadSignal;
+    decoded: unknown;
+  }> = [
+    { value: 123, type: PayloadSignal.Float64, decoded: 123 },
+    { value: true, type: PayloadSignal.True, decoded: true },
+    { value: null, type: PayloadSignal.Null, decoded: null },
+    { value: undefined, type: PayloadSignal.Undefined, decoded: undefined },
+    { value: NaN, type: PayloadSignal.NaN, decoded: NaN },
+    { value: 9n, type: PayloadSignal.BigInt, decoded: 9n },
+  ];
 
-  for (const value of [123, true, null, undefined, NaN]) {
+  for (const { value, type, decoded } of cases) {
     const task = makeTask();
     task.value = value;
 
-    assert.throws(() => encode(task, 0), /encoded by lock/);
+    assertEquals(encode(task, 0), true);
+    assertEquals(task[TaskIndex.Type], type);
+
+    decode(task, 0);
+    if (typeof decoded === "number" && Number.isNaN(decoded)) {
+      assert(Number.isNaN(task.value));
+      continue;
+    }
+    assertEquals(task.value, decoded);
   }
 });
 
-test("payload codec keeps bigint support via buffered payload types", () => {
+test("payload codec keeps large bigint support via buffered payload types", () => {
   const { encode, decode } = makeCodec();
   const task = makeTask();
-  task.value = 9n;
+  task.value = (1n << 63n) + 1n;
 
   assertEquals(encode(task, 0), true);
   assertEquals(task[TaskIndex.Type], PayloadBuffer.StaticBigInt);
 
   decode(task, 0);
-  assertEquals(task.value, 9n);
+  assertEquals(task.value, (1n << 63n) + 1n);
 });
 
 test("dynamic string payloads use distinct slotBuffer values", () => {
