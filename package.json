@@ -1,6 +1,6 @@
 {
   "name": "@vixeny/knitting",
-  "version": "0.1.38",
+  "version": "0.1.39",
   "description": "Shared-memory worker pool for Node.js, Deno, and Bun.",
   "license": "Apache-2.0",
   "type": "module",
@@ -23,7 +23,7 @@
     "test": "npm run test:deno",
     "test:deno": "deno test -A --ignore=test/runtime.node.test.ts",
     "test:node": "node --no-warnings --experimental-transform-types --test \"./test/*.test.ts\"",
-    "test:bun": "echo \"Skipping Bun tests: current suite uses node:test APIs not fully implemented in Bun yet (issue #5090).\"",
+    "test:bun": "bun test ./test/*.test.ts",
     "test:runtimes": "npm run test:node && npm run test:bun",
     "test:all": "npm run test:deno && npm run test:runtimes",
     "coverage:node": "node --no-warnings --experimental-transform-types --experimental-test-coverage --test \"./test/*.test.ts\"",

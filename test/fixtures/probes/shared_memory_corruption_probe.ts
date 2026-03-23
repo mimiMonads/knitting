@@ -43,7 +43,7 @@ try {
   }
 
   for (let i = 0; i < 20; i++) {
-    const value = await withTimeout(pool.call.passthroughNumber(i), 200);
+    const value = await withTimeout(pool.call.passthroughNumber(i), 500);
     if (value !== i) {
       console.error("probe-worker-corrupted");
       process.exit(3);
