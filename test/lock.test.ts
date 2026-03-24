@@ -438,6 +438,56 @@ test("resolveHost sees producer toggles in hostBits across instances", () => {
   assertEquals(resolveHost(), 0);
 });
 
+test("resolveHost onResolved runs after settling active queue slots", () => {
+  const lockSector = new SharedArrayBuffer(
+    LOCK_SECTOR_BYTE_LENGTH,
+  );
+  const headers = new SharedArrayBuffer(HEADER_BYTE_LENGTH);
+  const payloadSector = new SharedArrayBuffer(
+    PAYLOAD_LOCK_SECTOR_BYTE_LENGTH,
+  );
+  const payload = new SharedArrayBuffer(1024 * 64);
+
+  const producer = lock2({
+    headers,
+    LockBoundSector: lockSector,
+    payload,
+    payloadSector,
+  });
+  const consumer = lock2({
+    headers,
+    LockBoundSector: lockSector,
+    payload,
+    payloadSector,
+  });
+
+  const events: string[] = [];
+  const queue = [makeTask()];
+  queue[0].resolve = (value) => {
+    events.push(`settled:${String(value)}`);
+  };
+  queue[0].reject = (reason) => {
+    assert.fail(String(reason));
+  };
+
+  const response = makeTask();
+  response[TaskIndex.ID] = 0;
+  response.value = "ok";
+  assertEquals(producer.encode(response), true);
+
+  const resolveHost = consumer.resolveHost({
+    queue,
+    onResolved: (task) => {
+      events.push(`resolved:${task[TaskIndex.ID]}`);
+    },
+  });
+
+  assertEquals(resolveHost(), 1);
+  assertEquals(events, ["settled:ok", "resolved:0"]);
+  assertEquals((consumer.hostBits[0] ^ consumer.workerBits[0]) >>> 0, 0);
+  assertEquals(resolveHost(), 0);
+});
+
 test("resolveHost can skip inactive queue slots while still acking frames", () => {
   const lockSector = new SharedArrayBuffer(
     LOCK_SECTOR_BYTE_LENGTH,
