@@ -8,7 +8,6 @@ import {
   TaskIndex,
   type Task,
 } from "../../src/memory/lock.ts";
-import { decodePayload } from "../../src/memory/payloadCodec.ts";
 import { format, print } from "./../ulti/json-parse.ts";
 
 const makeLock = () => lock2({});
@@ -26,9 +25,7 @@ const makeLockWithBuffers = () => {
     LockBoundSector: lockSector,
     payload,
   });
-  const headersBuffer = new Uint32Array(headers);
-  const decode = decodePayload({ sab: payload, headersBuffer });
-  return { lock, decode };
+  return { lock };
 };
 
 const makeNumberTask = (value: number) => {
@@ -82,6 +79,7 @@ const batch16Strings = Array.from(
   { length: 16 },
   (_, i) => makeStringTask(`${smallString}-${i}`),
 );
+const noop = () => {};
 const resolveHostState = makeLockWithBuffers();
 const resolveHostQueue = Array.from({ length: LockBound.slots }, (_, i) => {
   const task = makeTask();
@@ -90,7 +88,30 @@ const resolveHostQueue = Array.from({ length: LockBound.slots }, (_, i) => {
 });
 const resolveHost = resolveHostState.lock.resolveHost({
   queue: resolveHostQueue,
-  decode: resolveHostState.decode,
+});
+const resolveHostOnResolvedState = makeLockWithBuffers();
+const resolveHostOnResolvedQueue = Array.from(
+  { length: LockBound.slots },
+  (_, i) => {
+    const task = makeTask();
+    task[TaskIndex.ID] = i;
+    return task;
+  },
+);
+const resolveHostOnResolved = resolveHostOnResolvedState.lock.resolveHost({
+  queue: resolveHostOnResolvedQueue,
+  onResolved: noop,
+});
+const resolveHostRuntimeState = makeLockWithBuffers();
+const resolveHostRuntimeQueue = Array.from({ length: LockBound.slots }, (_, i) => {
+  const task = makeTask();
+  task[TaskIndex.ID] = i;
+  return task;
+});
+const resolveHostRuntime = resolveHostRuntimeState.lock.resolveHost({
+  queue: resolveHostRuntimeQueue,
+  shouldSettle: (task) => typeof task.reject === "function",
+  onResolved: noop,
 });
 const resolveHostSingle = makeTask();
 resolveHostSingle[TaskIndex.ID] = 0;
@@ -218,6 +239,34 @@ group("lock", () => {
       resolveHostState.lock.encode(task);
     }
     resolveHost();
+  });
+
+  bench("resolveHost (1) + onResolved", () => {
+    ackAll(resolveHostOnResolvedState.lock);
+    resolveHostOnResolvedState.lock.encode(resolveHostSingle);
+    resolveHostOnResolved();
+  });
+
+  bench("resolveHost (1) + shouldSettle + onResolved", () => {
+    ackAll(resolveHostRuntimeState.lock);
+    resolveHostRuntimeState.lock.encode(resolveHostSingle);
+    resolveHostRuntime();
+  });
+
+  bench("resolveHost (32) + onResolved", () => {
+    ackAll(resolveHostOnResolvedState.lock);
+    for (const task of resolveHostBatch) {
+      resolveHostOnResolvedState.lock.encode(task);
+    }
+    resolveHostOnResolved();
+  });
+
+  bench("resolveHost (32) + shouldSettle + onResolved", () => {
+    ackAll(resolveHostRuntimeState.lock);
+    for (const task of resolveHostBatch) {
+      resolveHostRuntimeState.lock.encode(task);
+    }
+    resolveHostRuntime();
   });
 });
 
