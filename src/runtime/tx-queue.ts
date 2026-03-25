@@ -37,7 +37,7 @@ type CreateHostTxQueueArgs = {
   now?: () => number;
 };
 
-const p_now = performance.now.bind(performance);
+const p_now = () => performance.now();
 
 export function createHostTxQueue({
   max,
@@ -90,7 +90,7 @@ export function createHostTxQueue({
 
   const resolveReturn = returnLock.resolveHost({
     queue,
-    shouldSettle: (task) => task.reject !== PLACE_HOLDER,
+    activeRejectPlaceholder: PLACE_HOLDER,
     onResolved: (task) => {
       inUsed = (inUsed - 1) | 0;
       resetTaskLocalFlags(task);

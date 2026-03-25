@@ -41,7 +41,8 @@ const runtimeBufferClass = (IS_BROWSER ? undefined : (globalThis as typeof globa
 }).Buffer);
 const runtimeBufferByteLength = !IS_BROWSER &&
     typeof runtimeBufferClass?.byteLength === "function"
-  ? runtimeBufferClass.byteLength.bind(runtimeBufferClass)
+  ? ((value: string, encoding?: string) =>
+    runtimeBufferClass.byteLength!(value, encoding))
   : undefined;
 const isRuntimeBuffer = (value: unknown): value is Uint8Array =>
   !IS_BROWSER &&

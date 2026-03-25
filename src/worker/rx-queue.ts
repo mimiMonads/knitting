@@ -72,7 +72,7 @@ export const createWorkerRxQueue = (
     : () => hasAnythingFinished !== 0;
 
 const { decode, resolved } = lock;
-const resolvedShift = resolved.shiftNoClear.bind(resolved);
+const resolvedShift = () => resolved.shiftNoClear();
 
 
 const enqueueLock = () => {

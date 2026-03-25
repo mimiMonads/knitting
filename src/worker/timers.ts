@@ -16,7 +16,7 @@ const maybeGc = (() => {
 
   const host = globalThis as GcHost;
   const gc = typeof host.gc === "function"
-    ? host.gc.bind(globalThis) as () => void
+    ? (() => host.gc!()) as () => void
     : undefined;
 
   if (gc) {
@@ -43,7 +43,7 @@ const DEFAULT_PAUSE_TIME = 250;
 const a_load = Atomics.load;
 const a_store = Atomics.store;
 const a_wait = typeof Atomics.wait === "function" ? Atomics.wait : undefined;
-const p_now = performance.now.bind(performance);
+const p_now = () => performance.now();
 const a_pause: ((n: number) => void) | undefined = "pause" in Atomics
   ? (Atomics.pause as (n: number) => void)
   : undefined;

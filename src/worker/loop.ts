@@ -173,7 +173,7 @@ const pauseSpin = (() => {
   const channel = createRuntimeMessageChannel();
   const port1 = channel.port1;
   const port2 = channel.port2;
-  const post2 = port2.postMessage.bind(port2);
+  const post2 = (message: unknown) => port2.postMessage(message);
   let isInMacro = false;
   let awaitingSpins = 0;
   let lastAwaiting = 0;
