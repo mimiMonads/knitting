@@ -30,7 +30,7 @@ export const hostDispatcherLoop = ({
   const a_load = Atomics.load;
   const a_store = Atomics.store;
   const a_notify = Atomics.notify;
-  const notify = channelHandler.notify.bind(channelHandler);
+  const notify = () => channelHandler.notify();
   let stallCount = 0 | 0;
   const STALL_FREE_LOOPS = Math.max(
     0,
@@ -151,7 +151,7 @@ export class ChannelHandler {
     this.channel = createRuntimeMessageChannel();
     this.port1 = this.channel.port1;
     this.port2 = this.channel.port2;
-    this.#post2 = this.port2.postMessage.bind(this.port2);
+    this.#post2 = (message: unknown) => this.port2.postMessage(message);
   }
 
   public notify(): void {

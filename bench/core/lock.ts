@@ -1,4 +1,5 @@
 import { bench, group, run as mitataRun } from "mitata";
+import RingQueue from "../../src/ipc/tools/RingQueue.ts";
 import {
   HEADER_BYTE_LENGTH,
   LOCK_SECTOR_BYTE_LENGTH,
@@ -113,6 +114,21 @@ const resolveHostRuntime = resolveHostRuntimeState.lock.resolveHost({
   shouldSettle: (task) => typeof task.reject === "function",
   onResolved: noop,
 });
+const resolveHostActivePlaceholder = (_?: unknown) => {};
+const resolveHostActiveState = makeLockWithBuffers();
+const resolveHostActiveQueue = Array.from(
+  { length: LockBound.slots },
+  (_, i) => {
+    const task = makeTask();
+    task[TaskIndex.ID] = i;
+    return task;
+  },
+);
+const resolveHostActive = resolveHostActiveState.lock.resolveHost({
+  queue: resolveHostActiveQueue,
+  activeRejectPlaceholder: resolveHostActivePlaceholder,
+  onResolved: noop,
+});
 const resolveHostSingle = makeTask();
 resolveHostSingle[TaskIndex.ID] = 0;
 resolveHostSingle.value = 123;
@@ -126,6 +142,19 @@ const resolveHostBatch = Array.from({ length: 32 }, (_, i) => {
 const ackAll = (registry: ReturnType<typeof makeLock>) => {
   // Match worker bits to host so all slots are free again.
   Atomics.store(registry.workerBits, 0, registry.hostBits[0]);
+};
+
+const refillNumberTasks = (tasks: Task[]) => {
+  for (let i = 0; i < tasks.length; i++) {
+    tasks[i]!.value = i;
+  }
+};
+
+const fillQueue = (queue: RingQueue<Task>, tasks: Task[]) => {
+  queue.clear();
+  for (let i = 0; i < tasks.length; i++) {
+    queue.push(tasks[i]!);
+  }
 };
 
 const encodeBatch = (
@@ -149,6 +178,46 @@ group("lock", () => {
   bench("encode (32)", () => {
     ackAll(lock);
     encodeBatch(lock, batch32);
+  });
+
+  const encodeAllLock = makeLock();
+  const encodeAllBatch = Array.from({ length: 32 }, (_, i) => makeNumberTask(i));
+  bench("encodeAll pending (32)", () => {
+    ackAll(encodeAllLock);
+    encodeAllLock.resetPendingState();
+    refillNumberTasks(encodeAllBatch);
+    for (let i = 0; i < encodeAllBatch.length; i++) {
+      encodeAllLock.enlist(encodeAllBatch[i]!);
+    }
+    encodeAllLock.encodeAll();
+  });
+
+  const flushPendingLock = makeLock();
+  const flushPendingBatch = Array.from(
+    { length: 32 },
+    (_, i) => makeNumberTask(i),
+  );
+  bench("flushPending (32)", () => {
+    ackAll(flushPendingLock);
+    flushPendingLock.resetPendingState();
+    refillNumberTasks(flushPendingBatch);
+    for (let i = 0; i < flushPendingBatch.length; i++) {
+      flushPendingLock.enlist(flushPendingBatch[i]!);
+    }
+    flushPendingLock.flushPending();
+  });
+
+  const encodeManyFromLock = makeLock();
+  const encodeManyFromQueue = new RingQueue<Task>(32);
+  const encodeManyFromBatch = Array.from(
+    { length: 32 },
+    (_, i) => makeNumberTask(i),
+  );
+  bench("encodeManyFrom external queue (32)", () => {
+    ackAll(encodeManyFromLock);
+    refillNumberTasks(encodeManyFromBatch);
+    fillQueue(encodeManyFromQueue, encodeManyFromBatch);
+    encodeManyFromLock.encodeManyFrom(encodeManyFromQueue);
   });
 
   bench("roundtrip (1)", () => {
@@ -253,6 +322,12 @@ group("lock", () => {
     resolveHostRuntime();
   });
 
+  bench("resolveHost (1) + activeRejectPlaceholder + onResolved", () => {
+    ackAll(resolveHostActiveState.lock);
+    resolveHostActiveState.lock.encode(resolveHostSingle);
+    resolveHostActive();
+  });
+
   bench("resolveHost (32) + onResolved", () => {
     ackAll(resolveHostOnResolvedState.lock);
     for (const task of resolveHostBatch) {
@@ -267,6 +342,14 @@ group("lock", () => {
       resolveHostRuntimeState.lock.encode(task);
     }
     resolveHostRuntime();
+  });
+
+  bench("resolveHost (32) + activeRejectPlaceholder + onResolved", () => {
+    ackAll(resolveHostActiveState.lock);
+    for (const task of resolveHostBatch) {
+      resolveHostActiveState.lock.encode(task);
+    }
+    resolveHostActive();
   });
 });
 

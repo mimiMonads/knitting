@@ -244,10 +244,6 @@ export const HEADER_BYTE_LENGTH = HEADER_U32_LENGTH *
 let INDEX_ID = 0;
 const INIT_VAL = PayloadSignal.UNREACHABLE;
 const def = (_?: unknown) => {};
-const primitiveEncodeMemory = new ArrayBuffer(8);
-const primitiveEncodeFloat64View = new Float64Array(primitiveEncodeMemory);
-const primitiveEncodeBigInt64View = new BigInt64Array(primitiveEncodeMemory);
-const primitiveEncodeUint32View = new Uint32Array(primitiveEncodeMemory);
 
 const createTaskShell = () => {
   const task = new Uint32Array(TaskIndex.Size) as Uint32Array & {
@@ -272,6 +268,7 @@ type ResolveHostOptions = {
   queue: Task[];
   onResolved?: (task: Task) => void;
   shouldSettle?: (task: Task) => boolean;
+  activeRejectPlaceholder?: Task["reject"];
 };
 
 const fillTaskFrom = (task: Task, array: ArrayLike<number>, at: number) => {
@@ -290,38 +287,6 @@ const makeTaskFrom = (array: Uint32Array, at: number) => {
   const task = createTaskShell();
   fillTaskFrom(task, array, at);
   return task;
-};
-
-const tryDecodePrimitiveTask = (task: Task): boolean => {
-  switch (task[TaskIndex.Type]) {
-    case PayloadSignal.BigInt:
-      primitiveEncodeUint32View[0] = task[TaskIndex.Start];
-      primitiveEncodeUint32View[1] = task[TaskIndex.End];
-      task.value = primitiveEncodeBigInt64View[0];
-      return true;
-    case PayloadSignal.True:
-      task.value = true;
-      return true;
-    case PayloadSignal.False:
-      task.value = false;
-      return true;
-    case PayloadSignal.Float64:
-      primitiveEncodeUint32View[0] = task[TaskIndex.Start];
-      primitiveEncodeUint32View[1] = task[TaskIndex.End];
-      task.value = primitiveEncodeFloat64View[0];
-      return true;
-    case PayloadSignal.NaN:
-      task.value = NaN;
-      return true;
-    case PayloadSignal.Null:
-      task.value = null;
-      return true;
-    case PayloadSignal.Undefined:
-      task.value = undefined;
-      return true;
-    default:
-      return false;
-  }
 };
 
 // could be inlined
@@ -500,9 +465,6 @@ export const lock2 = ({
   };
   const encodeTaskValue = (task: Task, slotIndex: number): boolean =>
     encodeTask(task, slotIndex);
-  const decodeTaskValue = (task: Task, slotIndex: number): void => {
-    if (!tryDecodePrimitiveTask(task)) decodeTask(task, slotIndex);
-  };
   let selectedSlotIndex = 0 | 0, selectedSlotBit = 0 >>> 0;
 
   const encodeWithState = (task: Task, state: number): number => {
@@ -714,9 +676,81 @@ export const lock2 = ({
     queue,
     onResolved,
     shouldSettle,
+    activeRejectPlaceholder,
   }: ResolveHostOptions) => {
     const getTask = takeTask({ queue });
     let lastResolved = 32;
+
+    if (activeRejectPlaceholder !== undefined && onResolved) {
+      const onResolvedTask = onResolved;
+      const inactiveReject = activeRejectPlaceholder;
+      return (): number => {
+        let diff = (a_load(hostBits, 0) ^ LastWorker) | 0;
+        if (diff === 0) return 0;
+
+        let modified = 0;
+        let consumedBits = 0 | 0;
+        let last = lastResolved;
+
+        if (last === 32) {
+          const idx = 31 - clz32(diff);
+          const selectedBit = 1 << idx;
+
+          const task = getTask(idx);
+          decodeTask(task, idx);
+
+          consumedBits = (consumedBits ^ selectedBit) | 0;
+          if (task.reject !== inactiveReject) {
+            settleTask(task);
+            onResolvedTask(task);
+          }
+
+          diff ^= selectedBit;
+          modified++;
+
+          if ((modified & 7) === 0 && consumedBits !== 0) {
+            LastWorker = (LastWorker ^ consumedBits) | 0;
+            a_store(workerBits, 0, LastWorker);
+            consumedBits = 0 | 0;
+          }
+          last = idx;
+        }
+
+        while (diff !== 0) {
+          const lowerMask = last === 31 ? 0x7fffffff : ((1 << last) - 1);
+          let pick = diff & lowerMask;
+          if (pick === 0) pick = diff;
+          const idx = 31 - clz32(pick);
+          const selectedBit = 1 << idx;
+
+          const task = getTask(idx);
+          decodeTask(task, idx);
+
+          consumedBits = (consumedBits ^ selectedBit) | 0;
+          if (task.reject !== inactiveReject) {
+            settleTask(task);
+            onResolvedTask(task);
+          }
+
+          diff ^= selectedBit;
+          modified++;
+          if ((modified & 7) === 0 && consumedBits !== 0) {
+            LastWorker = (LastWorker ^ consumedBits) | 0;
+            a_store(workerBits, 0, LastWorker);
+            consumedBits = 0 | 0;
+          }
+          last = idx;
+        }
+
+        if (consumedBits !== 0) {
+          LastWorker = (LastWorker ^ consumedBits) | 0;
+          a_store(workerBits, 0, LastWorker);
+        }
+
+        lastResolved = last;
+        return modified;
+      };
+    }
 
     if (!shouldSettle) {
       if (!onResolved) {
@@ -733,7 +767,7 @@ export const lock2 = ({
             const selectedBit = 1 << idx;
 
             const task = getTask(idx);
-            decodeTaskValue(task, idx);
+            decodeTask(task, idx);
 
             consumedBits = (consumedBits ^ selectedBit) | 0;
             settleTask(task);
@@ -757,7 +791,7 @@ export const lock2 = ({
             const selectedBit = 1 << idx;
 
             const task = getTask(idx);
-            decodeTaskValue(task, idx);
+            decodeTask(task, idx);
 
             consumedBits = (consumedBits ^ selectedBit) | 0;
             settleTask(task);
@@ -796,7 +830,7 @@ export const lock2 = ({
           const selectedBit = 1 << idx;
 
           const task = getTask(idx);
-          decodeTaskValue(task, idx);
+          decodeTask(task, idx);
 
           consumedBits = (consumedBits ^ selectedBit) | 0;
           settleTask(task);
@@ -821,7 +855,7 @@ export const lock2 = ({
           const selectedBit = 1 << idx;
 
           const task = getTask(idx);
-          decodeTaskValue(task, idx);
+          decodeTask(task, idx);
 
           consumedBits = (consumedBits ^ selectedBit) | 0;
           settleTask(task);
@@ -862,7 +896,7 @@ export const lock2 = ({
           const selectedBit = 1 << idx;
 
           const task = getTask(idx);
-          decodeTaskValue(task, idx);
+          decodeTask(task, idx);
 
           consumedBits = (consumedBits ^ selectedBit) | 0;
           if (shouldSettleTask(task)) {
@@ -888,7 +922,7 @@ export const lock2 = ({
           const selectedBit = 1 << idx;
 
           const task = getTask(idx);
-          decodeTaskValue(task, idx);
+          decodeTask(task, idx);
 
           consumedBits = (consumedBits ^ selectedBit) | 0;
           if (shouldSettleTask(task)) {
@@ -929,7 +963,7 @@ export const lock2 = ({
         const selectedBit = 1 << idx;
 
         const task = getTask(idx);
-        decodeTaskValue(task, idx);
+        decodeTask(task, idx);
 
         consumedBits = (consumedBits ^ selectedBit) | 0;
         if (shouldSettleTask(task)) {
@@ -956,7 +990,7 @@ export const lock2 = ({
         const selectedBit = 1 << idx;
 
         const task = getTask(idx);
-        decodeTaskValue(task, idx);
+        decodeTask(task, idx);
 
         consumedBits = (consumedBits ^ selectedBit) | 0;
         if (shouldSettleTask(task)) {
@@ -998,7 +1032,7 @@ export const lock2 = ({
       task = makeTaskFrom(headersBuffer, off);
     }
 
-    decodeTaskValue(task, at);
+    decodeTask(task, at);
     resolvedPush(task);
 
     return true;

@@ -259,13 +259,30 @@ const fallbackPathToFileURL = (value: string): URL => {
   return new URL(`file://${encodeFilePath(normalized.startsWith("/") ? normalized : `/${normalized}`)}`);
 };
 
-export const pathResolve = pathModule?.resolve?.bind(pathModule) ?? fallbackResolve;
-export const pathJoin = pathModule?.join?.bind(pathModule) ?? fallbackJoin;
-export const pathDirname = pathModule?.dirname?.bind(pathModule) ?? fallbackDirname;
-export const pathBasename = pathModule?.basename?.bind(pathModule) ?? fallbackBasename;
-export const pathRelative = pathModule?.relative?.bind(pathModule) ?? fallbackRelative;
-export const pathIsAbsolute = pathModule?.isAbsolute?.bind(pathModule) ??
-  fallbackIsAbsolute;
+export const pathResolve = pathModule?.resolve
+  ? ((...args: Parameters<NonNullable<typeof pathModule.resolve>>) =>
+    pathModule.resolve!(...args))
+  : fallbackResolve;
+export const pathJoin = pathModule?.join
+  ? ((...args: Parameters<NonNullable<typeof pathModule.join>>) =>
+    pathModule.join!(...args))
+  : fallbackJoin;
+export const pathDirname = pathModule?.dirname
+  ? ((...args: Parameters<NonNullable<typeof pathModule.dirname>>) =>
+    pathModule.dirname!(...args))
+  : fallbackDirname;
+export const pathBasename = pathModule?.basename
+  ? ((...args: Parameters<NonNullable<typeof pathModule.basename>>) =>
+    pathModule.basename!(...args))
+  : fallbackBasename;
+export const pathRelative = pathModule?.relative
+  ? ((...args: Parameters<NonNullable<typeof pathModule.relative>>) =>
+    pathModule.relative!(...args))
+  : fallbackRelative;
+export const pathIsAbsolute = pathModule?.isAbsolute
+  ? ((...args: Parameters<NonNullable<typeof pathModule.isAbsolute>>) =>
+    pathModule.isAbsolute!(...args))
+  : fallbackIsAbsolute;
 
 export const fileURLToPathCompat = rawUrlModule?.fileURLToPath ??
   fallbackFileURLToPath;
