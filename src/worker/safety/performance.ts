@@ -11,8 +11,8 @@ export const installPerformanceNowGuard = (): void => {
   if (!perf || typeof perf.now !== "function") return;
 
   // Non-intrusive guard: ensure a high-resolution clock exists.
-  // Internal timing paths capture `performance.now` directly and do not
-  // require freezing global objects.
+  // Internal timing paths capture a bound `performance.now` reference and
+  // do not require freezing global objects.
   try {
     void perf.now();
   } catch {

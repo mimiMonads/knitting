@@ -16,7 +16,7 @@ type WorkerAbortToolkit = {
 
 const ABORT_SIGNAL_META_OFFSET = 1;
 const TIMEOUT_KIND_RESOLVE = 1;
-const p_now = () => performance.now();
+const p_now = performance.now.bind(performance);
 
 const raceTimeout = (
   promise: Promise<unknown>,

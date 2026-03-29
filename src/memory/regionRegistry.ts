@@ -18,6 +18,7 @@ import {
 const SLOT_META_PACKED_MASK = 0xFFFFFFE0; // (~0x1F) >>> 0
 
 export type RegisterMalloc = ReturnType<typeof register>;
+export type RegionRegistryPublishMode = "plain" | "atomic";
 
 export const register = (
   {
@@ -25,7 +26,7 @@ export const register = (
     publishMode = "plain",
   }: {
     lockSector?: SharedBufferSource;
-    publishMode?: "plain" | "atomic";
+    publishMode?: RegionRegistryPublishMode;
   },
 ) => {
   const lockRegion = toSharedBufferRegion(

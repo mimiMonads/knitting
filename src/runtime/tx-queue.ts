@@ -37,7 +37,7 @@ type CreateHostTxQueueArgs = {
   now?: () => number;
 };
 
-const p_now = () => performance.now();
+const p_now = performance.now.bind(performance);
 
 export function createHostTxQueue({
   max,
