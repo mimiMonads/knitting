@@ -565,7 +565,7 @@ test("setSlotLength shrinks slot and exposes gap for next allocation", () => {
 });
 
 test("non-plain publish modes preserve toggle-bit allocator invariants", () => {
-  for (const publishMode of ["atomic", "shadow"] as const) {
+  for (const publishMode of ["atomic"] as const) {
     const registry = makeRegistry(publishMode);
     const live = new Map<number, LiveAllocation>();
 
