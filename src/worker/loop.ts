@@ -244,10 +244,7 @@ const _pauseUntil = pauseUntil;
     
 
       if (!progressed) {
-        if (txStatus[Comment.thisIsAHint] === 1) {
-          _pauseSpin();
-          continue;
-        }
+
         _pauseUntil(wakeSeq, spinMicroseconds, parkMs);
         wakeSeq = a_load(opView, 0);
       }

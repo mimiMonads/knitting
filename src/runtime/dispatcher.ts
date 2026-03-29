@@ -62,8 +62,7 @@ export const hostDispatcherLoop = ({
     do {
       check.rerun = false;
 
-      txStatus[0] = 1;
-
+     
       // Wake the worker before draining so it can start processing while we flush.
       if (a_load(rxStatus, 0) === 0) {
         a_store(opView, 0, 1);
@@ -86,7 +85,7 @@ export const hostDispatcherLoop = ({
         }
       }
 
-      txStatus[0] = 0;
+    
 
       if (!txIdle()) {
         if (anyProgressed || hasPendingFrames()) {
