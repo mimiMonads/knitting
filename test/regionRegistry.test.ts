@@ -6,8 +6,12 @@ const assertEquals: (actual: unknown, expected: unknown) => void = (
 ) => {
   assert.deepStrictEqual(actual, expected);
 };
-import { register } from "../src/memory/regionRegistry.ts";
 import {
+  type RegionRegistryPublishMode,
+  register,
+} from "../src/memory/regionRegistry.ts";
+import {
+  LOCK_CACHE_LINE_BYTES,
   LOCK_HOST_BITS_OFFSET_BYTES,
   LOCK_SECTOR_BYTE_LENGTH,
   LOCK_WORKER_BITS_OFFSET_BYTES,
@@ -22,7 +26,7 @@ const align64 = (n: number) => (n + 63) & ~63;
 const START_MASK = (~31) >>> 0;
 const EMPTY = 0xFFFFFFFF >>> 0;
 
-const makeRegistry = (publishMode?: "plain" | "atomic") =>
+const makeRegistry = (publishMode?: RegionRegistryPublishMode) =>
   register({
     lockSector: new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH),
     publishMode,
@@ -54,6 +58,14 @@ test("registry uses separate words inside the shared lock sector", () => {
   );
   assert.equal(mainHostBits.byteOffset, LOCK_HOST_BITS_OFFSET_BYTES);
   assert.equal(mainWorkerBits.byteOffset, LOCK_WORKER_BITS_OFFSET_BYTES);
+  assert.equal(LOCK_HOST_BITS_OFFSET_BYTES, 0);
+  assert.equal(LOCK_WORKER_BITS_OFFSET_BYTES, LOCK_CACHE_LINE_BYTES);
+  assert.equal(PAYLOAD_LOCK_HOST_BITS_OFFSET_BYTES, LOCK_CACHE_LINE_BYTES * 2);
+  assert.equal(
+    PAYLOAD_LOCK_WORKER_BITS_OFFSET_BYTES,
+    LOCK_CACHE_LINE_BYTES * 3,
+  );
+  assert.equal(LOCK_SECTOR_BYTE_LENGTH, LOCK_CACHE_LINE_BYTES * 4);
 });
 
 const track64andIndex = (
@@ -552,36 +564,38 @@ test("setSlotLength shrinks slot and exposes gap for next allocation", () => {
   assertEquals(third[TaskIndex.Start], align64(700));
 });
 
-test("atomic publish mode preserves toggle-bit allocator invariants", () => {
-  const registry = makeRegistry("atomic");
-  const live = new Map<number, LiveAllocation>();
+test("non-plain publish modes preserve toggle-bit allocator invariants", () => {
+  for (const publishMode of ["atomic", "shadow"] as const) {
+    const registry = makeRegistry(publishMode);
+    const live = new Map<number, LiveAllocation>();
 
-  for (let i = 0; i < 6; i++) {
-    const payloadLen = 1 + (i * 17);
-    const task = makeTask();
-    task[TaskIndex.PayloadLen] = payloadLen;
-    assertEquals(registry.allocTask(task) === -1, false);
-    live.set(task[TaskIndex.slotBuffer], {
-      start: task[TaskIndex.Start],
-      size: align64(payloadLen),
+    for (let i = 0; i < 6; i++) {
+      const payloadLen = 1 + (i * 17);
+      const task = makeTask();
+      task[TaskIndex.PayloadLen] = payloadLen;
+      assertEquals(registry.allocTask(task) === -1, false);
+      live.set(task[TaskIndex.slotBuffer], {
+        start: task[TaskIndex.Start],
+        size: align64(payloadLen),
+      });
+    }
+
+    registry.free(1);
+    registry.free(3);
+    live.delete(1);
+    live.delete(3);
+    registry.updateTable();
+    assertAllocatorInvariants(registry, live);
+
+    const reused = makeTask();
+    reused[TaskIndex.PayloadLen] = 8;
+    assertEquals(registry.allocTask(reused) === -1, false);
+    live.set(reused[TaskIndex.slotBuffer], {
+      start: reused[TaskIndex.Start],
+      size: align64(reused[TaskIndex.PayloadLen]),
     });
+    assertAllocatorInvariants(registry, live);
   }
-
-  registry.free(1);
-  registry.free(3);
-  live.delete(1);
-  live.delete(3);
-  registry.updateTable();
-  assertAllocatorInvariants(registry, live);
-
-  const reused = makeTask();
-  reused[TaskIndex.PayloadLen] = 8;
-  assertEquals(registry.allocTask(reused) === -1, false);
-  live.set(reused[TaskIndex.slotBuffer], {
-    start: reused[TaskIndex.Start],
-    size: align64(reused[TaskIndex.PayloadLen]),
-  });
-  assertAllocatorInvariants(registry, live);
 });
 
 test("allocator random overlap stress keeps allocator consistent", () => {

@@ -213,7 +213,11 @@ export enum TaskFlag {
 }
 
 // Main queue lock layout in bytes.
-// Keep each lock word on its own cache line inside the first 256 bytes.
+// The queue protocol uses two Int32 signal words, each on its own cache line:
+// - hostBits at byte 0
+// - workerBits at byte 64
+// A slot is free when both words agree on that bit (XOR = 0), and in use when
+// they differ (XOR = 1). The 32-bit mask supports up to 32 concurrent slots.
 export const LOCK_WORD_BYTES = Int32Array.BYTES_PER_ELEMENT;
 export const LOCK_HOST_BITS_OFFSET_BYTES = LockBound.paddingLock;
 export const LOCK_WORKER_BITS_OFFSET_BYTES = LOCK_CACHE_LINE_BYTES;
@@ -334,10 +338,12 @@ export const lock2 = ({
   resultList?: RingQueue<Task>;
   recycleList?: RingQueue<Task>;
 }) => {
-  // Layout:
-  // - hostBits starts at byte `paddingLock`
-  // - workerBits starts immediately after hostBits
-  // This intentionally allows false sharing on the main queue lock.
+  // Layout within `lockSectorRegion`:
+  // - hostBits starts at byte 0
+  // - workerBits starts at byte 64
+  // These queue signal words are intentionally placed on separate cache lines.
+  // The remaining two cache lines in the 256-byte sector are reserved for the
+  // payload allocator lock (`PAYLOAD_LOCK_*` at bytes 128 and 192).
   //
   // Important: encode() always toggles `hostBits` and decode/resolveHost always
   // toggles `workerBits`, regardless of which thread calls them. This is why
@@ -440,6 +446,15 @@ export const lock2 = ({
   const a_load = Atomics.load;
   const a_store = Atomics.store;
 
+  // Sender-side cached shadow of the receiver-owned queue word. Under the XSC
+  // false-busy-only sender-side staleness property, this may hide newly freed
+  // lanes but cannot make a genuinely pending lane appear free. Refresh only
+  // when the cached free set is exhausted.
+  let workerShadow = a_load(workerBits, 0) | 0;
+  const refreshWorkerShadow = () => workerShadow = a_load(workerBits, 0) | 0;
+  const ensureSenderStateHasFree = (state: number): number =>
+    (~state) !== 0 ? state : (LastLocal ^ refreshWorkerShadow()) | 0;
+
   // RingQueue method aliases (hot path)
   const toBeSentPush = (task: Task) => toBeSent.push(task);
   const toBeSentShift = () => toBeSent.shiftNoClear();
@@ -483,7 +498,7 @@ export const lock2 = ({
   const encodeManyFrom = (
     list: RingQueue<Task>,
   ): number => {
-    let state = (LastLocal ^ a_load(workerBits, 0)) | 0;
+    let state = ensureSenderStateHasFree((LastLocal ^ workerShadow) | 0);
     let encoded = 0 | 0;
 
     if (list === toBeSent) {
@@ -491,6 +506,7 @@ export const lock2 = ({
         const task = toBeSentShift();
         if (!task) break;
 
+        state = ensureSenderStateHasFree(state);
         const bit = encodeWithState(task, state) | 0;
         if (bit === 0) {
           toBeSentUnshift(task);
@@ -505,6 +521,7 @@ export const lock2 = ({
         const task = list.shiftNoClear();
         if (!task) break;
 
+        state = ensureSenderStateHasFree(state);
         const bit = encodeWithState(task, state) | 0;
         if (bit === 0) {
           list.unshift(task);
@@ -520,7 +537,7 @@ export const lock2 = ({
   };
 
   const encodeManyTrackedFrom = (list: RingQueue<Task>): number => {
-    let state = (LastLocal ^ a_load(workerBits, 0)) | 0;
+    let state = ensureSenderStateHasFree((LastLocal ^ workerShadow) | 0);
     let encoded = 0 | 0;
     deferredCount = 0 | 0;
 
@@ -529,6 +546,7 @@ export const lock2 = ({
         const task = toBeSentShift();
         if (!task) break;
 
+        state = ensureSenderStateHasFree(state);
         const bit = encodeWithState(task, state) | 0;
         if (bit === 0) {
           if (isPromisePayloadPending(task)) {
@@ -548,6 +566,7 @@ export const lock2 = ({
         const task = list.shiftNoClear();
         if (!task) break;
 
+        state = ensureSenderStateHasFree(state);
         const bit = encodeWithState(task, state) | 0;
         if (bit === 0) {
           if (isPromisePayloadPending(task)) {
@@ -580,8 +599,9 @@ export const lock2 = ({
     a_store(workerBits, 0, LastWorker = (LastWorker ^ bit) | 0);
   const encode = (
     task: Task,
-    state: number = (LastLocal ^ a_load(workerBits, 0)) | 0,
+    state: number = (LastLocal ^ workerShadow) | 0,
   ): boolean => {
+    state = ensureSenderStateHasFree(state);
     const free = ~state;
     if (free === 0) return false;
 
@@ -597,9 +617,10 @@ export const lock2 = ({
 
   const encodeTracked = (
     task: Task,
-    state: number = (LastLocal ^ a_load(workerBits, 0)) | 0,
+    state: number = (LastLocal ^ workerShadow) | 0,
   ): boolean => {
     deferredCount = 0 | 0;
+    state = ensureSenderStateHasFree(state);
     const free = ~state;
     if (free === 0) return false;
 
