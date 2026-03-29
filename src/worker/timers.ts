@@ -43,7 +43,7 @@ const DEFAULT_PAUSE_TIME = 250;
 const a_load = Atomics.load;
 const a_store = Atomics.store;
 const a_wait = typeof Atomics.wait === "function" ? Atomics.wait : undefined;
-const p_now =  => performance.now;
+const p_now = performance.now.bind(performance);
 const a_pause: ((n: number) => void) | undefined = "pause" in Atomics
   ? (Atomics.pause as (n: number) => void)
   : undefined;
