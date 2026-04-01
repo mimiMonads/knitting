@@ -62,13 +62,6 @@ export const hostDispatcherLoop = ({
     do {
       check.rerun = false;
 
-     
-      // Wake the worker before draining so it can start processing while we flush.
-      if (a_load(rxStatus, 0) === 0) {
-        a_store(opView, 0, 1);
-        a_notify(opView, 0, 1);
-      }
-
       // Drain loop: local vars so V8 keeps them as unboxed int32.
       let anyProgressed = false;
       let progressed = true;
@@ -88,6 +81,15 @@ export const hostDispatcherLoop = ({
     
 
       if (!txIdle()) {
+
+             
+      // Wake the worker before draining so it can start processing while we flush.
+      if (a_load(rxStatus, 0) === 0) {
+        a_store(opView, 0, 1);
+        a_notify(opView, 0, 1);
+      }
+
+      
         if (anyProgressed || hasPendingFrames()) {
           stallCount = 0 | 0;
         } else {

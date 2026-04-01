@@ -15,6 +15,7 @@ import {
   type Task,
 } from "../memory/lock.ts";
 import type {
+  AdvanceSettings,
   DebugOptions,
   DispatcherSettings,
   LockBuffers,
@@ -163,6 +164,7 @@ export const spawnWorkerContext = ({
   workerExecArgv,
   permission,
   host,
+  advance,
   payload,
   payloadInitialBytes,
   payloadMaxBytes,
@@ -184,6 +186,7 @@ export const spawnWorkerContext = ({
   workerExecArgv?: string[];
   permission?: WorkerData["permission"];
   host?: DispatcherSettings;
+  advance?: AdvanceSettings;
   payload?: PayloadBufferOptions;
   payloadInitialBytes?: number;
   payloadMaxBytes?: number;
@@ -288,6 +291,7 @@ export const spawnWorkerContext = ({
     payloadSector: lockBuffers.payloadSector,
     payloadConfig: resolvedPayloadConfig,
     textCompat: lockBuffers.textCompat,
+    advance,
   });
   const returnLock = lock2({
     headers: returnLockBuffers.headers,
@@ -297,6 +301,7 @@ export const spawnWorkerContext = ({
     payloadSector: returnLockBuffers.payloadSector,
     payloadConfig: resolvedPayloadConfig,
     textCompat: returnLockBuffers.textCompat,
+    advance,
   });
   const abortSignalSAB = usesAbortSignal === true
     ? controlLayout.abortSignals
@@ -367,6 +372,7 @@ export const spawnWorkerContext = ({
     returnLock: returnLockBuffers,
     payloadConfig: resolvedPayloadConfig,
     permission,
+    advance,
   } as WorkerData;
   const baseWorkerOptions = {
     //@ts-ignore Reason
@@ -509,16 +515,12 @@ export const spawnWorkerContext = ({
 
   const send = () => {
     if (check.isRunning === true) return;
-    check.isRunning = true;
-    Promise.resolve().then(check);
-    // Macro lane: dispatcher check is driven by the channel callback.
-    // channelHandler.notify();
-
-    // Use opView as a wake counter in lock2 mode to avoid lost wakeups.
-    if (a_load(signalBox.rxStatus, 0) === 0) {
       a_add(thisSignal, 0, 1);
       a_notify(thisSignal, 0, 1);
-    }
+    check.isRunning = true;
+    Promise.resolve().then(check);
+
+
   };
 
   lock.setPromiseHandler((task: Task, isRejected: boolean, value: unknown) => {

@@ -16,6 +16,7 @@ import {
   type PayloadBufferOptions,
   resolvePayloadBufferOptions,
 } from "./payload-config.ts";
+import type { AdvanceSettings } from "../types.ts";
 
 /**
  * TODO: Compose all the instance where the array is passed as argument
@@ -323,6 +324,7 @@ export const lock2 = ({
   payloadConfig,
   payloadSector,
   textCompat,
+  advance,
   resultList,
   toSentList,
   recycleList,
@@ -334,6 +336,7 @@ export const lock2 = ({
   payloadConfig?: PayloadBufferOptions;
   payloadSector?: SharedBufferSource;
   textCompat?: LockBufferTextCompat;
+  advance?: AdvanceSettings;
   toSentList?: RingQueue<Task>;
   resultList?: RingQueue<Task>;
   recycleList?: RingQueue<Task>;
@@ -452,8 +455,11 @@ export const lock2 = ({
   // when the cached free set is exhausted.
   let workerShadow = a_load(workerBits, 0) | 0;
   const refreshWorkerShadow = () => workerShadow = a_load(workerBits, 0) | 0;
-  const ensureSenderStateHasFree = (state: number): number =>
-    (~state) !== 0 ? state : (LastLocal ^ refreshWorkerShadow()) | 0;
+  const ensureSenderStateHasFree = advance?.shadowRefresh === "always"
+    ? (_state: number): number =>
+      (LastLocal ^ refreshWorkerShadow()) | 0
+    : (state: number): number =>
+      (~state) !== 0 ? state : (LastLocal ^ refreshWorkerShadow()) | 0;
 
   // RingQueue method aliases (hot path)
   const toBeSentPush = (task: Task) => toBeSent.push(task);

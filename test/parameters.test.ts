@@ -179,3 +179,21 @@ test("createPool accepts payload config object", async () => {
     await pool.shutdown();
   }
 });
+
+test("createPool accepts advance config object", async () => {
+  const pool = createPool({
+    threads: 1,
+    advance: {
+      shadowRefresh: "always",
+    },
+  })({
+    toString,
+  });
+
+  try {
+    const out = await pool.call.toString("advance-shadow-refresh-ok");
+    assertEquals(out, "advance-shadow-refresh-ok");
+  } finally {
+    await pool.shutdown();
+  }
+});

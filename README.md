@@ -241,6 +241,9 @@ Key options:
   or `{ strategy?: "roundRobin" | "robinRound" | "firstIdle" | "randomLane" | "firstIdleOrRandom" }`
   task routing strategy.
 - `worker?: { resolveAfterFinishingAll?: true; timers?: WorkerTimers; hardTimeoutMs?: number; resourceLimits?: WorkerResourceLimits }`
+- `advance?: { shadowRefresh?: "exhausted" | "always" }`
+  advanced transport tuning. Defaults to `"exhausted"`; use `"always"` to
+  force sender-side shadow refresh on every free-lane probe.
 - `payload?: { mode?: "growable" | "fixed"; payloadInitialBytes?: number; payloadMaxByteLength?: number; maxPayloadBytes?: number }`
   payload transport settings.
   - `mode`: defaults to `"growable"` when SAB growth is available, otherwise `"fixed"`.
@@ -341,6 +344,9 @@ You can tune idle behavior and backoff:
   On timeout, the pool force-shuts down to stop runaway CPU execution.
 - `worker.resourceLimits?: { maxOldGenerationSizeMb?, maxYoungGenerationSizeMb?, codeRangeSizeMb?, stackSizeMb? }`
   Node worker memory/stack limits.
+- `advance.shadowRefresh?: "exhausted" | "always"` sender-side cached shadow
+  refresh policy. `"always"` is mainly useful for benchmarking alternate
+  scheduling behavior.
 - `payload.mode?: "growable" | "fixed"` select growable GSAB vs fixed SAB transport.
 - `payload.payloadInitialBytes?: number` initial payload buffer size in bytes.
 - `payload.payloadMaxByteLength?: number` max payload buffer size in bytes.

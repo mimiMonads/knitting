@@ -587,6 +587,42 @@ test("resolveHost ignores workerBits changes without producer toggles", () => {
   assertEquals(resolved.length, 0);
 });
 
+test("advance.shadowRefresh always reloads the sender shadow before encode", () => {
+  const lockSector = new SharedArrayBuffer(
+    LOCK_SECTOR_BYTE_LENGTH,
+  );
+  const headers = new SharedArrayBuffer(HEADER_BYTE_LENGTH);
+  const payloadSector = new SharedArrayBuffer(
+    PAYLOAD_LOCK_SECTOR_BYTE_LENGTH,
+  );
+  const payload = new SharedArrayBuffer(1024 * 64);
+
+  const producer = lock2({
+    headers,
+    LockBoundSector: lockSector,
+    payload,
+    payloadSector,
+    advance: {
+      shadowRefresh: "always",
+    },
+  });
+  const consumer = lock2({
+    headers,
+    LockBoundSector: lockSector,
+    payload,
+    payloadSector,
+  });
+
+  assertEquals(producer.encode(makeValueTask("first")), true);
+  assertEquals(consumer.decode(), true);
+  assertEquals(consumer.resolved.shift()?.value, "first");
+
+  assertEquals(producer.encode(makeValueTask("second")), true);
+  assertEquals(Atomics.load(producer.hostBits, 0) >>> 0, 0);
+  assertEquals(consumer.decode(), true);
+  assertEquals(consumer.resolved.shift()?.value, "second");
+});
+
 test("resolveHost random stress keeps toggle protocol consistent across instances", () => {
   const lockSector = new SharedArrayBuffer(
     LOCK_SECTOR_BYTE_LENGTH,

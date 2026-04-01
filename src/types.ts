@@ -33,6 +33,17 @@ interface WorkerContext {
 
 type CreateContext = WorkerContext;
 
+type ShadowRefreshStrategy = "exhausted" | "always";
+
+type AdvanceSettings = {
+  /**
+   * Sender-side cached shadow refresh policy.
+   * Defaults to `"exhausted"` to preserve the current fast path.
+   * Use `"always"` to reload the receiver-owned word on every free-lane probe.
+   */
+  shadowRefresh?: ShadowRefreshStrategy;
+};
+
 type WorkerData = {
   sab: SharedBufferSource;
   abortSignalSAB?: SharedBufferSource;
@@ -49,6 +60,7 @@ type WorkerData = {
   returnLock: LockBuffers;
   payloadConfig?: PayloadBufferOptions;
   permission?: ResolvedPermissionProtocol;
+  advance?: AdvanceSettings;
 };
 
 type LockBuffers = {
@@ -391,6 +403,10 @@ type CreatePool = {
   balancer?: Balancer;
   worker?: WorkerSettings;
   /**
+   * Advanced transport tuning knobs.
+   */
+  advance?: AdvanceSettings;
+  /**
    * Payload transport settings.
    */
   payload?: PayloadBufferOptions;
@@ -481,6 +497,8 @@ export type {
   WorkerSettings as WorkerSettings,
   WorkerResourceLimits as WorkerResourceLimits,
   WorkerTimers as WorkerTimers,
+  ShadowRefreshStrategy as ShadowRefreshStrategy,
+  AdvanceSettings as AdvanceSettings,
   DispatcherSettings as DispatcherSettings,
   CreatePool as CreatePool,
   PayloadBufferMode as PayloadBufferMode,
