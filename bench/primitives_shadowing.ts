@@ -46,7 +46,7 @@ if (isMain) {
     : Number.parseInt(sizeFilterRaw, 10);
   const caseFilter = toFilter(process.env.PRIMITIVE_SHADOW_CASE);
   const variantFilter = toFilter(process.env.PRIMITIVE_SHADOW_VARIANT);
-  const sizes = sizeFilter == null ? [1, 10 , 100] : [sizeFilter];
+  const sizes = sizeFilter == null ? [1, 32 , 100] : [sizeFilter];
   const variants = [
         {
       name: "shadowRefresh=always",

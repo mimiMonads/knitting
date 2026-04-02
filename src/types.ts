@@ -34,6 +34,7 @@ interface WorkerContext {
 type CreateContext = WorkerContext;
 
 type ShadowRefreshStrategy = "exhausted" | "always";
+type ResolveHostAckBatchSize = 2 | 4 | 8 | 16;
 
 type AdvanceSettings = {
   /**
@@ -42,6 +43,11 @@ type AdvanceSettings = {
    * Use `"always"` to reload the receiver-owned word on every free-lane probe.
    */
   shadowRefresh?: ShadowRefreshStrategy;
+  /**
+   * Deprecated compatibility knob. `resolveHost()` now batches
+   * acknowledgements until the end of each drain pass.
+   */
+  resolveHostAckBatchSize?: ResolveHostAckBatchSize;
 };
 
 type WorkerData = {
@@ -498,6 +504,7 @@ export type {
   WorkerResourceLimits as WorkerResourceLimits,
   WorkerTimers as WorkerTimers,
   ShadowRefreshStrategy as ShadowRefreshStrategy,
+  ResolveHostAckBatchSize as ResolveHostAckBatchSize,
   AdvanceSettings as AdvanceSettings,
   DispatcherSettings as DispatcherSettings,
   CreatePool as CreatePool,

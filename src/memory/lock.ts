@@ -454,12 +454,12 @@ export const lock2 = ({
   // lanes but cannot make a genuinely pending lane appear free. Refresh only
   // when the cached free set is exhausted.
   let workerShadow = a_load(workerBits, 0) | 0;
-  const refreshWorkerShadow = () => workerShadow = a_load(workerBits, 0) | 0;
+
   const ensureSenderStateHasFree = advance?.shadowRefresh === "always"
     ? (_state: number): number =>
-      (LastLocal ^ refreshWorkerShadow()) | 0
+      (LastLocal ^ (workerShadow = a_load(workerBits, 0))) | 0
     : (state: number): number =>
-      (~state) !== 0 ? state : (LastLocal ^ refreshWorkerShadow()) | 0;
+      (~state) !== 0 ? state : (LastLocal ^ (workerShadow = a_load(workerBits, 0))) | 0;
 
   // RingQueue method aliases (hot path)
   const toBeSentPush = (task: Task) => toBeSent.push(task);
@@ -671,16 +671,14 @@ export const lock2 = ({
     let last = lastTake;
     let consumedBits = 0 | 0;
 
-    try {
-      if (last === 32) {
-        decodeAt(selectedSlotIndex = 31 - clz32(diff));
-        selectedSlotBit = 1 << (last = selectedSlotIndex);
-        diff ^= selectedSlotBit;
-        consumedBits = (consumedBits ^ selectedSlotBit) | 0;
-      }
-
+   
       while (diff !== 0) {
-        let pick = diff & ((1 << last) - 1);
+        const lowerMask = last === 32
+          ? -1
+          : last === 31
+            ? 0x7fffffff
+            : ((1 << last) - 1);
+        let pick = diff & lowerMask;
         if (pick === 0) pick = diff;
 
         decodeAt(selectedSlotIndex = 31 - clz32(pick));
@@ -688,9 +686,9 @@ export const lock2 = ({
         diff ^= selectedSlotBit;
         consumedBits = (consumedBits ^ selectedSlotBit) | 0;
       }
-    } finally {
+    
       if (consumedBits !== 0) storeWorker(consumedBits);
-    }
+    
 
     lastTake = last;
     return true;
@@ -719,32 +717,12 @@ export const lock2 = ({
         let consumedBits = 0 | 0;
         let last = lastResolved;
 
-        if (last === 32) {
-          const idx = 31 - clz32(diff);
-          const selectedBit = 1 << idx;
-
-          const task = getTask(idx);
-          decodeTask(task, idx);
-
-          consumedBits = (consumedBits ^ selectedBit) | 0;
-          if (task.reject !== inactiveReject) {
-            settleTask(task);
-            onResolvedTask(task);
-          }
-
-          diff ^= selectedBit;
-          modified++;
-
-          if ((modified & 7) === 0 && consumedBits !== 0) {
-            LastWorker = (LastWorker ^ consumedBits) | 0;
-            a_store(workerBits, 0, LastWorker);
-            consumedBits = 0 | 0;
-          }
-          last = idx;
-        }
-
         while (diff !== 0) {
-          const lowerMask = last === 31 ? 0x7fffffff : ((1 << last) - 1);
+          const lowerMask = last === 32
+            ? -1
+            : last === 31
+              ? 0x7fffffff
+              : ((1 << last) - 1);
           let pick = diff & lowerMask;
           if (pick === 0) pick = diff;
           const idx = 31 - clz32(pick);
@@ -761,18 +739,13 @@ export const lock2 = ({
 
           diff ^= selectedBit;
           modified++;
-          if ((modified & 7) === 0 && consumedBits !== 0) {
-            LastWorker = (LastWorker ^ consumedBits) | 0;
-            a_store(workerBits, 0, LastWorker);
-            consumedBits = 0 | 0;
-          }
           last = idx;
         }
 
-        if (consumedBits !== 0) {
+        
           LastWorker = (LastWorker ^ consumedBits) | 0;
           a_store(workerBits, 0, LastWorker);
-        }
+        
 
         lastResolved = last;
         return modified;
@@ -789,29 +762,12 @@ export const lock2 = ({
           let consumedBits = 0 | 0;
           let last = lastResolved;
 
-          if (last === 32) {
-            const idx = 31 - clz32(diff);
-            const selectedBit = 1 << idx;
-
-            const task = getTask(idx);
-            decodeTask(task, idx);
-
-            consumedBits = (consumedBits ^ selectedBit) | 0;
-            settleTask(task);
-
-            diff ^= selectedBit;
-            modified++;
-
-            if ((modified & 7) === 0 && consumedBits !== 0) {
-              LastWorker = (LastWorker ^ consumedBits) | 0;
-              a_store(workerBits, 0, LastWorker);
-              consumedBits = 0 | 0;
-            }
-            last = idx;
-          }
-
-          while (diff !== 0) {
-            const lowerMask = last === 31 ? 0x7fffffff : ((1 << last) - 1);
+          while (diff !== 0 ) {
+            const lowerMask = last === 32
+              ? -1
+              : last === 31
+                ? 0x7fffffff
+                : ((1 << last) - 1);
             let pick = diff & lowerMask;
             if (pick === 0) pick = diff;
             const idx = 31 - clz32(pick);
@@ -825,18 +781,13 @@ export const lock2 = ({
 
             diff ^= selectedBit;
             modified++;
-            if ((modified & 7) === 0 && consumedBits !== 0) {
-              LastWorker = (LastWorker ^ consumedBits) | 0;
-              a_store(workerBits, 0, LastWorker);
-              consumedBits = 0 | 0;
-            }
             last = idx;
           }
 
-          if (consumedBits !== 0) {
+          
             LastWorker = (LastWorker ^ consumedBits) | 0;
             a_store(workerBits, 0, LastWorker);
-          }
+          
 
           lastResolved = last;
           return modified;
@@ -852,30 +803,12 @@ export const lock2 = ({
         let consumedBits = 0 | 0;
         let last = lastResolved;
 
-        if (last === 32) {
-          const idx = 31 - clz32(diff);
-          const selectedBit = 1 << idx;
-
-          const task = getTask(idx);
-          decodeTask(task, idx);
-
-          consumedBits = (consumedBits ^ selectedBit) | 0;
-          settleTask(task);
-          onResolvedTask(task);
-
-          diff ^= selectedBit;
-          modified++;
-
-          if ((modified & 7) === 0 && consumedBits !== 0) {
-            LastWorker = (LastWorker ^ consumedBits) | 0;
-            a_store(workerBits, 0, LastWorker);
-            consumedBits = 0 | 0;
-          }
-          last = idx;
-        }
-
         while (diff !== 0) {
-          const lowerMask = last === 31 ? 0x7fffffff : ((1 << last) - 1);
+          const lowerMask = last === 32
+            ? -1
+            : last === 31
+              ? 0x7fffffff
+              : ((1 << last) - 1);
           let pick = diff & lowerMask;
           if (pick === 0) pick = diff;
           const idx = 31 - clz32(pick);
@@ -890,18 +823,13 @@ export const lock2 = ({
 
           diff ^= selectedBit;
           modified++;
-          if ((modified & 7) === 0 && consumedBits !== 0) {
-            LastWorker = (LastWorker ^ consumedBits) | 0;
-            a_store(workerBits, 0, LastWorker);
-            consumedBits = 0 | 0;
-          }
           last = idx;
         }
 
-        if (consumedBits !== 0) {
+        
           LastWorker = (LastWorker ^ consumedBits) | 0;
           a_store(workerBits, 0, LastWorker);
-        }
+        
 
         lastResolved = last;
         return modified;
@@ -918,31 +846,12 @@ export const lock2 = ({
         let consumedBits = 0 | 0;
         let last = lastResolved;
 
-        if (last === 32) {
-          const idx = 31 - clz32(diff);
-          const selectedBit = 1 << idx;
-
-          const task = getTask(idx);
-          decodeTask(task, idx);
-
-          consumedBits = (consumedBits ^ selectedBit) | 0;
-          if (shouldSettleTask(task)) {
-            settleTask(task);
-          }
-
-          diff ^= selectedBit;
-          modified++;
-
-          if ((modified & 7) === 0 && consumedBits !== 0) {
-            LastWorker = (LastWorker ^ consumedBits) | 0;
-            a_store(workerBits, 0, LastWorker);
-            consumedBits = 0 | 0;
-          }
-          last = idx;
-        }
-
         while (diff !== 0) {
-          const lowerMask = last === 31 ? 0x7fffffff : ((1 << last) - 1);
+          const lowerMask = last === 32
+            ? -1
+            : last === 31
+              ? 0x7fffffff
+              : ((1 << last) - 1);
           let pick = diff & lowerMask;
           if (pick === 0) pick = diff;
           const idx = 31 - clz32(pick);
@@ -958,11 +867,6 @@ export const lock2 = ({
 
           diff ^= selectedBit;
           modified++;
-          if ((modified & 7) === 0 && consumedBits !== 0) {
-            LastWorker = (LastWorker ^ consumedBits) | 0;
-            a_store(workerBits, 0, LastWorker);
-            consumedBits = 0 | 0;
-          }
           last = idx;
         }
 
@@ -985,32 +889,12 @@ export const lock2 = ({
       let consumedBits = 0 | 0;
       let last = lastResolved;
 
-      if (last === 32) {
-        const idx = 31 - clz32(diff);
-        const selectedBit = 1 << idx;
-
-        const task = getTask(idx);
-        decodeTask(task, idx);
-
-        consumedBits = (consumedBits ^ selectedBit) | 0;
-        if (shouldSettleTask(task)) {
-          settleTask(task);
-          onResolvedTask(task);
-        }
-
-        diff ^= selectedBit;
-        modified++;
-
-        if ((modified & 7) === 0 && consumedBits !== 0) {
-          LastWorker = (LastWorker ^ consumedBits) | 0;
-          a_store(workerBits, 0, LastWorker);
-          consumedBits = 0 | 0;
-        }
-        last = idx;
-      }
-
       while (diff !== 0) {
-        const lowerMask = last === 31 ? 0x7fffffff : ((1 << last) - 1);
+        const lowerMask = last === 32
+          ? -1
+          : last === 31
+            ? 0x7fffffff
+            : ((1 << last) - 1);
         let pick = diff & lowerMask;
         if (pick === 0) pick = diff;
         const idx = 31 - clz32(pick);
@@ -1027,18 +911,13 @@ export const lock2 = ({
 
         diff ^= selectedBit;
         modified++;
-        if ((modified & 7) === 0 && consumedBits !== 0) {
-          LastWorker = (LastWorker ^ consumedBits) | 0;
-          a_store(workerBits, 0, LastWorker);
-          consumedBits = 0 | 0;
-        }
         last = idx;
       }
 
-      if (consumedBits !== 0) {
+    
         LastWorker = (LastWorker ^ consumedBits) | 0;
         a_store(workerBits, 0, LastWorker);
-      }
+      
 
       lastResolved = last;
       return modified;

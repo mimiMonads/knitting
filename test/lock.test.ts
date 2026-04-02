@@ -488,6 +488,77 @@ test("resolveHost onResolved runs after settling active queue slots", () => {
   assertEquals(resolveHost(), 0);
 });
 
+test("resolveHost batches workerBits ack until the end of the pass", () => {
+  const runCase = (
+    taskCount: number,
+    batchSize?: 2 | 4 | 8 | 16,
+  ) => {
+    const lockSector = new SharedArrayBuffer(
+      LOCK_SECTOR_BYTE_LENGTH,
+    );
+    const headers = new SharedArrayBuffer(HEADER_BYTE_LENGTH);
+    const payloadSector = new SharedArrayBuffer(
+      PAYLOAD_LOCK_SECTOR_BYTE_LENGTH,
+    );
+    const payload = new SharedArrayBuffer(1024 * 64);
+
+    const producer = lock2({
+      headers,
+      LockBoundSector: lockSector,
+      payload,
+      payloadSector,
+    });
+    const consumer = lock2({
+      headers,
+      LockBoundSector: lockSector,
+      payload,
+      payloadSector,
+      advance: batchSize === undefined
+        ? undefined
+        : { resolveHostAckBatchSize: batchSize },
+    });
+
+    const observations: number[] = [];
+    const queue = Array.from({ length: taskCount }, (_, id) => {
+      const task = makeTask();
+      task[TaskIndex.ID] = id;
+      task.resolve = () => {};
+      task.reject = (reason) => {
+        assert.fail(String(reason));
+      };
+      return task;
+    });
+
+    for (let id = 0; id < taskCount; id++) {
+      const response = makeTask();
+      response[TaskIndex.ID] = id;
+      response.value = id;
+      assertEquals(producer.encode(response), true);
+    }
+
+    const resolveHost = consumer.resolveHost({
+      queue,
+      onResolved: () => {
+        observations.push(Atomics.load(consumer.workerBits, 0) >>> 0);
+      },
+    });
+
+    assertEquals(resolveHost(), taskCount);
+    assertEquals((consumer.hostBits[0] ^ consumer.workerBits[0]) >>> 0, 0);
+    assertEquals(resolveHost(), 0);
+    return observations;
+  };
+
+  const defaultObservations = runCase(9);
+  assertEquals(defaultObservations, new Array(9).fill(0));
+
+  const batch2Observations = runCase(3, 2);
+  assertEquals(batch2Observations, [0, 0, 0]);
+
+  const batch16Observations = runCase(17, 16);
+  assertEquals(batch16Observations, new Array(17).fill(0));
+});
+
 test("resolveHost can skip inactive queue slots while still acking frames", () => {
   const lockSector = new SharedArrayBuffer(
     LOCK_SECTOR_BYTE_LENGTH,

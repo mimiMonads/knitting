@@ -185,14 +185,15 @@ test("createPool accepts advance config object", async () => {
     threads: 1,
     advance: {
       shadowRefresh: "always",
+      resolveHostAckBatchSize: 2,
     },
   })({
     toString,
   });
 
   try {
-    const out = await pool.call.toString("advance-shadow-refresh-ok");
-    assertEquals(out, "advance-shadow-refresh-ok");
+    const out = await pool.call.toString("advance-config-ok");
+    assertEquals(out, "advance-config-ok");
   } finally {
     await pool.shutdown();
   }
