@@ -15,6 +15,7 @@ import {
   type Task,
 } from "../memory/lock.ts";
 import type {
+  AdvanceSettings,
   DebugOptions,
   DispatcherSettings,
   LockBuffers,
@@ -163,6 +164,7 @@ export const spawnWorkerContext = ({
   workerExecArgv,
   permission,
   host,
+  advance,
   payload,
   payloadInitialBytes,
   payloadMaxBytes,
@@ -184,6 +186,7 @@ export const spawnWorkerContext = ({
   workerExecArgv?: string[];
   permission?: WorkerData["permission"];
   host?: DispatcherSettings;
+  advance?: AdvanceSettings;
   payload?: PayloadBufferOptions;
   payloadInitialBytes?: number;
   payloadMaxBytes?: number;
@@ -288,6 +291,7 @@ export const spawnWorkerContext = ({
     payloadSector: lockBuffers.payloadSector,
     payloadConfig: resolvedPayloadConfig,
     textCompat: lockBuffers.textCompat,
+    advance,
   });
   const returnLock = lock2({
     headers: returnLockBuffers.headers,
@@ -297,6 +301,7 @@ export const spawnWorkerContext = ({
     payloadSector: returnLockBuffers.payloadSector,
     payloadConfig: resolvedPayloadConfig,
     textCompat: returnLockBuffers.textCompat,
+    advance,
   });
   const abortSignalSAB = usesAbortSignal === true
     ? controlLayout.abortSignals
@@ -367,6 +372,7 @@ export const spawnWorkerContext = ({
     returnLock: returnLockBuffers,
     payloadConfig: resolvedPayloadConfig,
     permission,
+    advance,
   } as WorkerData;
   const baseWorkerOptions = {
     //@ts-ignore Reason
