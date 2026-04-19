@@ -606,6 +606,12 @@ export const lock2 = ({
     const HAS_RESOLVE = onResolved ? true : false;
     const HAS_SHOULD_SETTLE = shouldSettle ? true : false;
     let lastResolved = 32;
+    const flushConsumedBits = (consumedBits: number): number => {
+      if (consumedBits === 0) return 0;
+      LastWorker = (LastWorker ^ consumedBits) | 0;
+      a_store(workerBits, 0, LastWorker);
+      return 0;
+    };
 
     return (): number => {
       let diff = (a_load(hostBits, 0) ^ LastWorker) | 0;
@@ -633,12 +639,7 @@ export const lock2 = ({
 
         diff ^= selectedBit;
         modified++;
-
-        if ((modified & 7) === 0 && consumedBits !== 0) {
-          LastWorker = (LastWorker ^ consumedBits) | 0;
-          a_store(workerBits, 0, LastWorker);
-          consumedBits = 0 | 0;
-        }
+        consumedBits = flushConsumedBits(consumedBits);
         last = idx;
       }
 
@@ -663,18 +664,11 @@ export const lock2 = ({
 
         diff ^= selectedBit;
         modified++;
-        if ((modified & 7) === 0 && consumedBits !== 0) {
-          LastWorker = (LastWorker ^ consumedBits) | 0;
-          a_store(workerBits, 0, LastWorker);
-          consumedBits = 0 | 0;
-        }
+        consumedBits = flushConsumedBits(consumedBits);
         last = idx;
       }
 
-      if (consumedBits !== 0) {
-        LastWorker = (LastWorker ^ consumedBits) | 0;
-        a_store(workerBits, 0, LastWorker);
-      }
+      flushConsumedBits(consumedBits);
 
       lastResolved = last;
       return modified;
