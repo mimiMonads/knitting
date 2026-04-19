@@ -16,6 +16,7 @@ import {
   addOneViaImportTask,
   addOnePromise,
 } from "./fixtures/runtime_tasks.ts";
+import { runAliasedRawFunctionPool } from "./fixtures/raw_function_pool.ts";
 import {
   fetchNetworkProbe,
   nodeHttpNetworkProbe,
@@ -256,6 +257,17 @@ test("node:test pool imports worker function via importTask href", {
   } finally {
     await pool.shutdown();
   }
+});
+
+test("node:test pool accepts plain exported functions and alias keys", {
+  concurrency: false,
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
+  const value = await withTimeout(
+    runAliasedRawFunctionPool("hello"),
+    TEST_TIMEOUT_MS,
+  );
+  assert.equal(value, "hello");
 });
 
 test("node:test pool rejects when worker cannot encode returned payload", {

@@ -129,10 +129,8 @@ const runBench = async (
   }
 };
 
-export const echoString = task<string, string>({
-  f: (value) => value,
-});
 
+export const echoString = (sink:string) => sink
 export const echoBytes = task<Uint8Array, Uint8Array>({
   f: (value) => value,
 });

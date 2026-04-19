@@ -27,6 +27,13 @@ type TimeoutSpec = {
   value: unknown;
 };
 
+type InlineEntry = {
+  name: string;
+  f: WorkerCallable;
+  timeout?: TaskTimeout;
+  abortSignal?: unknown;
+};
+
 const normalizeTimeout = (timeout?: TaskTimeout): TimeoutSpec | undefined => {
   if (timeout == null) return undefined;
   if (typeof timeout === "number") {
@@ -113,11 +120,37 @@ export const createInlineExecutor = ({
   genTaskID: () => number;
   batchSize?: number;
 }) => {
-  const entries = Object.values(tasks)
-    .sort((a, b) => a.id - b.id);
+  const entries: InlineEntry[] = Object.entries(tasks)
+    .map(([name, entry]) => {
+      if (typeof entry === "function") {
+        return {
+          name,
+          f: entry as WorkerCallable,
+          timeout: undefined,
+          abortSignal: undefined,
+        };
+      }
+
+      if (typeof entry?.f === "function") {
+        const timeout = "timeout" in entry
+          ? (entry as { timeout?: TaskTimeout }).timeout
+          : undefined;
+        return {
+          name,
+          f: entry.f as WorkerCallable,
+          timeout,
+          abortSignal: entry.abortSignal,
+        };
+      }
+
+      throw new TypeError(
+        `createInlineExecutor expected "${name}" to be a knitting task or function export.`,
+      );
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
   const runners = entries.map((entry) =>
     composeInlineCallable(
-      entry.f as WorkerCallable,
+      entry.f,
       entry.timeout,
       entry.abortSignal !== undefined,
     )

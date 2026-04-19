@@ -20,6 +20,17 @@ type WorkerCall = {
   abortSignal?: AbortSignalOption;
 };
 
+type WorkerFunctionKind = "task" | "function";
+
+type WorkerFunctionDescriptor = {
+  name: string;
+  exportName: string;
+  importedFrom: string;
+  kind: WorkerFunctionKind;
+  id?: number;
+  at?: number;
+};
+
 type WorkerInvoke = (args: Uint8Array) => Promise<unknown>;
 
 interface WorkerContext {
@@ -34,6 +45,7 @@ type WorkerData = {
   sab: SharedBufferSource;
   abortSignalSAB?: SharedBufferSource;
   abortSignalMax?: number;
+  functions: WorkerFunctionDescriptor[];
   list: string[];
   ids: number[];
   thread: number;
@@ -155,6 +167,10 @@ type TaskLike<AS extends AbortSignalOption = AbortSignalOption> = {
     : { readonly abortSignal: AS }
 );
 
+type PoolEntry<AS extends AbortSignalOption = AbortSignalOption> =
+  | TaskLike<AS>
+  | ((...args: any[]) => any);
+
 type Composed<
   A extends TaskInput = Args,
   B extends Args = Args,
@@ -163,7 +179,7 @@ type Composed<
   & FixPoint<A, B, AS>
   & SecondPart;
 
-type tasks = Record<string, Composed<any, any, AbortSignalOption>>;
+type tasks = Record<string, PoolEntry<any>>;
 
 type ComposedWithKey = Composed<any, any, AbortSignalOption> & { name: string };
 
@@ -212,14 +228,19 @@ type PromisifyCallArgs<
       : never
     : never;
 
-type AbortSignalOfTask<T extends TaskLike<any>> =
+type CallableOfTask<T> =
+  T extends { readonly f: infer F }
+    ? Extract<F, (...args: any[]) => any>
+    : Extract<T, (...args: any[]) => any>;
+
+type AbortSignalOfTask<T> =
   T extends { readonly abortSignal: infer AS }
     ? Extract<AS, AbortSignalOption>
     : undefined;
 
-type FunctionMapType<T extends Record<string, TaskLike<any>>> = {
+type FunctionMapType<T extends Record<string, PoolEntry<any>>> = {
   [K in keyof T]: PromiseWrapped<
-    T[K]["f"],
+    CallableOfTask<T[K]>,
     AbortSignalOfTask<T[K]>
   >;
 };
@@ -277,7 +298,7 @@ type SingleTaskPool<
   shutdown: (delayMs?: number) => Promise<void>;
 };
 
-type Pool<T extends Record<string, TaskLike<any>>> = {
+type Pool<T extends Record<string, PoolEntry<any>>> = {
   shutdown: (delayMs?: number) => Promise<void>;
   call: FunctionMapType<T>;
 };
@@ -445,6 +466,8 @@ type CreatePool = {
 // especially for curried APIs like `createPool`.
 export type {
   WorkerCall as WorkerCall,
+  WorkerFunctionKind as WorkerFunctionKind,
+  WorkerFunctionDescriptor as WorkerFunctionDescriptor,
   WorkerInvoke as WorkerInvoke,
   WorkerContext as WorkerContext,
   CreateContext as CreateContext,
@@ -461,6 +484,7 @@ export type {
   AbortSignalMethods as AbortSignalMethods,
   AbortSignalToolkit as AbortSignalToolkit,
   Composed as Composed,
+  PoolEntry as PoolEntry,
   tasks as tasks,
   ComposedWithKey as ComposedWithKey,
   FunctionMapType as FunctionMapType,

@@ -150,6 +150,7 @@ const terminateWorkerQuietly = (worker: SpawnedWorker): void => {
 };
 
 export const spawnWorkerContext = ({
+  functions,
   list,
   ids,
   sab,
@@ -170,6 +171,7 @@ export const spawnWorkerContext = ({
   abortSignalCapacity,
   usesAbortSignal,
 }: {
+  functions: WorkerData["functions"];
   list: string[];
   ids: number[];
   at: number[];
@@ -343,6 +345,7 @@ export const spawnWorkerContext = ({
     abortSignalMax: usesAbortSignal === true
       ? resolvedAbortSignalCapacity
       : undefined,
+    functions,
     list,
     ids,
     at,

@@ -31,6 +31,7 @@ const isInternalCallerFrame = (file: string): boolean =>
   INTERNAL_CALLER_HINTS.some((hint) => file.includes(hint));
 
 const isRuntimeInternalFrame = (file: string): boolean =>
+  /^\[[^\]]+\]$/.test(file) ||
   file.startsWith("node:") ||
   file.startsWith("native:") ||
   file.startsWith("bun:") ||

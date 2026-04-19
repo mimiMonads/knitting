@@ -64,6 +64,7 @@ export const workerMainLoop = async (startupData: WorkerData): Promise<void> => 
     payloadConfig,
     permission,
     totalNumberOfThread,
+    functions,
     list,
     ids,
     at,
@@ -124,6 +125,7 @@ const pauseSpin = (() => {
   const a_load = Atomics.load;
 
   const listOfFunctions = await getFunctions({
+    functions,
     list,
     isWorker: true,
     ids,

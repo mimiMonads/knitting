@@ -1,5 +1,6 @@
 import { getCallerFilePath } from "./common/others.ts";
 import { genTaskID } from "./common/others.ts";
+import { createImportedTaskPlaceholder } from "./common/import-task.ts";
 import { toModuleUrl } from "./common/module-url.ts";
 import { endpointSymbol } from "./common/task-symbol.ts";
 import { spawnWorkerContext } from "./runtime/pool.ts";
@@ -15,23 +16,24 @@ import type {
   Args,
   AbortSignalConfig,
   AbortSignalOption,
-  ComposedWithKey,
   CreatePool,
   DispatcherSettings,
   FixPoint,
   FunctionMapType,
-  Pool,
-  TaskInput,
-  SingleTaskPool,
-  ReturnFixed,
   ImportTaskOptions,
+  Pool,
+  ReturnFixed,
+  SingleTaskPool,
+  TaskInput,
   TaskFn,
   WorkerInvoke,
+  WorkerFunctionDescriptor,
   tasks,
 } from "./types.ts";
 
 // NOTE: Explicit API typings keep JSR from widening curried signatures.
 type ToListAndIds = {
+  functions: WorkerFunctionDescriptor[];
   list: string[];
   ids: number[];
   at: number[];
@@ -46,8 +48,121 @@ type CreatePoolFactory = (
 const MAX_FUNCTION_ID = 0xFFFF;
 const MAX_FUNCTION_COUNT = MAX_FUNCTION_ID + 1;
 
+type NormalizedPoolFunction = {
+  name: string;
+  exportName: string;
+  importedFrom: string;
+  kind: WorkerFunctionDescriptor["kind"];
+  f: (...args: any[]) => any;
+  timeout?: number | {
+    time: number;
+    maybe?: true;
+    default?: unknown;
+    error?: unknown;
+  };
+  abortSignal?: AbortSignalOption;
+  id: number;
+  at: number;
+};
+
 export const isMain: boolean = isMainThread;
 export { endpointSymbol as endpointSymbol };
+
+const isTaskDefinition = (
+  value: unknown,
+): value is ReturnFixed<any, any, AbortSignalOption> => {
+  if (value == null || typeof value !== "object") return false;
+  if ((value as Record<PropertyKey, unknown>)[endpointSymbol] !== true) {
+    return false;
+  }
+  return typeof (value as { f?: unknown }).f === "function";
+};
+
+const resolvePlainFunctionExportName = (
+  poolName: string,
+  value: (...args: any[]) => any,
+): string => {
+  const inferred = typeof value.name === "string" ? value.name.trim() : "";
+  return inferred.length > 0 ? inferred : poolName;
+};
+
+const normalizePoolFunctions = (args: tasks) => {
+  let callerHref: string | undefined;
+  const rawAtByModule = new Map<string, number>();
+
+  const listOfFunctions = Object.entries(args).map(([name, value]) => {
+    if (isTaskDefinition(value)) {
+      return {
+        ...value,
+        name,
+        exportName: name,
+        kind: "task",
+      } as NormalizedPoolFunction;
+    }
+
+    if (typeof value === "function") {
+      callerHref ??= getCallerFilePath(3)[0];
+      const importedFrom = callerHref;
+      const at = rawAtByModule.get(importedFrom) ?? 0;
+      rawAtByModule.set(importedFrom, at + 1);
+
+      return {
+        name,
+        exportName: resolvePlainFunctionExportName(name, value),
+        importedFrom,
+        kind: "function",
+        f: value,
+        id: genTaskID(),
+        at,
+      } satisfies NormalizedPoolFunction;
+    }
+
+    throw new TypeError(
+      `createPool expected "${name}" to be a knitting task or function export.`,
+    );
+  }).sort((a, b) => a.name.localeCompare(b.name));
+
+  return listOfFunctions;
+};
+
+const collectWorkerMetadata = (
+  listOfFunctions: readonly NormalizedPoolFunction[],
+): ToListAndIds => {
+  const result = listOfFunctions.reduce(
+    (acc, value) => (
+      acc[0].add(value.importedFrom),
+      acc[1].add(value.id),
+      acc[2].add(value.at),
+      acc[3].push({
+        name: value.name,
+        exportName: value.exportName,
+        importedFrom: value.importedFrom,
+        kind: value.kind,
+        id: value.id,
+        at: value.at,
+      }),
+      acc
+    ),
+    [
+      new Set<string>(),
+      new Set<number>(),
+      new Set<number>(),
+      [],
+    ] as [
+      Set<string>,
+      Set<number>,
+      Set<number>,
+      WorkerFunctionDescriptor[],
+    ],
+  );
+
+  return {
+    list: [...result[0]],
+    ids: [...result[1]],
+    at: [...result[2]],
+    functions: result[3],
+  };
+};
 
 
 /**
@@ -60,32 +175,7 @@ export { endpointSymbol as endpointSymbol };
  */
 export const toListAndIds: ToListAndIdsFn = (
   args: tasks,
-): ToListAndIds => {
-  const result = Object.values(args)
-    .reduce(
-      (acc, v) => (
-        acc[0].add(v.importedFrom), 
-        acc[1].add(v.id), 
-        acc[2].add(v.at), 
-        acc
-      ),
-      [
-        new Set<string>(),
-        new Set<number>(),
-        new Set<number>()
-      ] as [
-        Set<string>,
-        Set<number>,
-        Set<number>,
-      ],
-    );
-
-  return {
-    list: [...result[0]],
-    ids: [...result[1]],
-    at: [...result[2]],
-  };
-};
+): ToListAndIds => collectWorkerMetadata(normalizePoolFunctions(args));
 
 export const createPool: CreatePoolFactory = ({
   threads,
@@ -146,12 +236,13 @@ export const createPool: CreatePoolFactory = ({
     } as Pool<T>);
   }
 
-  const { list, ids  , at } = toListAndIds(tasks),
-    listOfFunctions = Object.entries(tasks).map(([k, v]) => ({
-      ...v,
-      name: k,
-    }))
-      .sort((a, b) => a.name.localeCompare(b.name)) as ComposedWithKey[];
+  const listOfFunctions = normalizePoolFunctions(tasks);
+  const {
+    list,
+    ids,
+    at,
+    functions,
+  } = collectWorkerMetadata(listOfFunctions);
 
   if (listOfFunctions.length > MAX_FUNCTION_COUNT) {
     throw new RangeError(
@@ -241,6 +332,7 @@ export const createPool: CreatePoolFactory = ({
     length: threads ?? 1,
   }).map((_, thread) =>
     spawnWorkerContext({
+      functions,
       list,
       ids,
       at,
@@ -488,45 +580,6 @@ const resolveImportHref = (href: string, callerHref: string): string => {
   }
 };
 
-const createImportedTaskFn = <
-  A extends TaskInput = void,
-  B extends Args = void,
-  AS extends true | AbortSignalConfig | undefined = undefined,
->(
-  href: string,
-  exportName: string,
-): TaskFn<A, B, AS> => {
-  let cachedFn: ((...args: unknown[]) => unknown) | undefined;
-  let cachedLoad: Promise<(...args: unknown[]) => unknown> | undefined;
-
-  const loadFn = async (): Promise<(...args: unknown[]) => unknown> => {
-    if (cachedFn) return cachedFn;
-    if (!cachedLoad) {
-      cachedLoad = import(href).then((module) => {
-        const record = module as Record<string, unknown>;
-        const selected = exportName === DEFAULT_IMPORT_EXPORT_NAME
-          ? record.default
-          : record[exportName];
-        if (typeof selected !== "function") {
-          const available = Object.keys(record).join(", ");
-          throw new TypeError(
-            `importTask expected export "${exportName}" from "${href}" to be a function.` +
-              ` Available exports: ${available || "(none)"}`,
-          );
-        }
-        cachedFn = selected as (...args: unknown[]) => unknown;
-        return cachedFn;
-      });
-    }
-    return cachedLoad;
-  };
-
-  return (async (...args: unknown[]) => {
-    const fn = await loadFn();
-    return fn(...args);
-  }) as TaskFn<A, B, AS>;
-};
-
 /**
  * Define a worker task.
  *
@@ -592,6 +645,6 @@ export function importTask<
 
   return buildTaskDefinitionFromCaller<A, B, AS>({
     ...(rest as unknown as Omit<FixPoint<A, B, AS>, "f">),
-    f: createImportedTaskFn<A, B, AS>(resolvedHref, name),
+    f: createImportedTaskPlaceholder<TaskFn<A, B, AS>>(resolvedHref, name),
   } as FixPoint<A, B, AS>, callerHref, at);
 }

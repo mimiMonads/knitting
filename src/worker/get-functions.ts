@@ -1,9 +1,16 @@
-import type { ComposedWithKey, TaskTimeout } from "../types.ts";
+import type {
+  AbortSignalOption,
+  ComposedWithKey,
+  TaskTimeout,
+  WorkerFunctionDescriptor,
+} from "../types.ts";
+import { getImportedTaskReference } from "../common/import-task.ts";
 import { endpointSymbol } from "../common/task-symbol.ts";
 import { toModuleUrl } from "../common/module-url.ts";
 import type { ResolvedPermissionProtocol } from "../permission/protocol.ts";
 
 type GetFunctionParams = {
+  functions: WorkerFunctionDescriptor[];
   list: string[];
   ids: number[];
   at: number[];
@@ -49,58 +56,152 @@ const normalizeTimeout = (timeout?: TaskTimeout): TimeoutSpec | undefined => {
 const composeWorkerCallable = (
   fixed: ComposedWithKey,
   _permission?: ResolvedPermissionProtocol,
-): WorkerCallable => {
+): Promise<WorkerCallable> | WorkerCallable => {
+  const importedTaskReference = getImportedTaskReference(fixed.f);
+  if (importedTaskReference) {
+    return loadImportedTaskCallable(importedTaskReference);
+  }
+
   return fixed.f as WorkerCallable;
 };
 
-export type WorkerComposedWithKey = ComposedWithKey & {
+export type WorkerComposedWithKey = {
+  name: string;
   run: WorkerCallable;
   timeout?: TimeoutSpec;
+  abortSignal?: AbortSignalOption;
+};
+
+const importedTaskCallableCache = new Map<string, Promise<WorkerCallable>>();
+const moduleRecordCache = new Map<string, Promise<Record<string, unknown>>>();
+
+const loadImportedTaskCallable = async (
+  { href, name }: { href: string; name: string },
+): Promise<WorkerCallable> => {
+  const cacheKey = `${href}\u0000${name}`;
+  let pending = importedTaskCallableCache.get(cacheKey);
+
+  if (!pending) {
+    pending = import(href).then((module) => {
+      const record = module as Record<string, unknown>;
+      const selected = name === "default" ? record.default : record[name];
+
+      if (typeof selected !== "function") {
+        const available = Object.keys(record).join(", ");
+        throw new TypeError(
+          `importTask expected export "${name}" from "${href}" to be a function.` +
+            ` Available exports: ${available || "(none)"}`,
+        );
+      }
+
+      return selected as WorkerCallable;
+    });
+
+    importedTaskCallableCache.set(cacheKey, pending);
+  }
+
+  return pending;
+};
+
+const loadModuleRecord = async (
+  imports: string,
+): Promise<Record<string, unknown>> => {
+  let pending = moduleRecordCache.get(imports);
+
+  if (!pending) {
+    pending = import(imports).then((module) => module as Record<string, unknown>);
+    moduleRecordCache.set(imports, pending);
+  }
+
+  return pending;
+};
+
+const resolveTaskDefinition = (
+  descriptor: WorkerFunctionDescriptor,
+  imports: string,
+  module: Record<string, unknown>,
+): ComposedWithKey => {
+  const useAtMatch = descriptor.at !== undefined;
+  const matched = Object.values(module).find((value) =>
+    value != null && typeof value === "object" &&
+    //@ts-ignore Reason -> worker verifies endpoint objects at runtime
+    value?.[endpointSymbol] === true &&
+    (useAtMatch
+      ?
+      (
+        //@ts-ignore Reason -> worker verifies endpoint objects at runtime
+        value.importedFrom === imports &&
+        //@ts-ignore Reason -> worker verifies endpoint objects at runtime
+        value.at === descriptor.at
+      ) : (
+        descriptor.id === undefined ||
+          //@ts-ignore Reason -> worker verifies endpoint objects at runtime
+          value.id === descriptor.id
+      ))
+  );
+
+  if (matched == null || typeof matched !== "object") {
+    throw new Error(
+      `Worker could not resolve task export "${descriptor.name}" from "${imports}".`,
+    );
+  }
+
+  return {
+    ...(matched as ComposedWithKey),
+    name: descriptor.name,
+  };
+};
+
+const resolvePlainFunctionCallable = (
+  descriptor: WorkerFunctionDescriptor,
+  imports: string,
+  module: Record<string, unknown>,
+): WorkerCallable => {
+  const primary = descriptor.exportName === "default"
+    ? module.default
+    : module[descriptor.exportName];
+  const fallback = descriptor.exportName === descriptor.name
+    ? undefined
+    : (descriptor.name === "default" ? module.default : module[descriptor.name]);
+  const selected = primary ?? fallback;
+
+  if (typeof selected !== "function") {
+    const available = Object.keys(module).join(", ");
+    throw new TypeError(
+      `Worker expected plain function export "${descriptor.exportName}" from "${imports}".` +
+        ` Available exports: ${available || "(none)"}`,
+    );
+  }
+
+  return selected as WorkerCallable;
 };
 
 export const getFunctions = async (
-  { list, ids, at, permission }: GetFunctionParams,
+  { functions, permission }: GetFunctionParams,
 ) => {
-  const modules = list.map((specifier) => toModuleUrl(specifier));
+  const resolved = await Promise.all(
+    functions.map(async (descriptor) => {
+      const imports = toModuleUrl(descriptor.importedFrom);
+      const module = await loadModuleRecord(imports);
 
-  const results = await Promise.all(
-    modules.map(async (imports) => {
-      const module = (await import(imports)) as Record<string, unknown>;
-      return Object.entries(module)
-        .filter(
-          ([_, value]) =>
-            value != null && typeof value === "object" &&
-            //@ts-ignore Reason -> trust me
-            value?.[endpointSymbol] === true,
-        )
-        .map(([name, value]) => (
-          {
-          //@ts-ignore Reason -> trust me
-          ...value,
-          name,
-        })) as unknown as ComposedWithKey[];
+      if (descriptor.kind === "function") {
+        return {
+          name: descriptor.name,
+          run: resolvePlainFunctionCallable(descriptor, imports, module),
+        };
+      }
+
+      const fixed = resolveTaskDefinition(descriptor, imports, module);
+      return {
+        name: descriptor.name,
+        run: await composeWorkerCallable(fixed, permission),
+        timeout: normalizeTimeout(fixed.timeout),
+        abortSignal: fixed.abortSignal,
+      };
     }),
   );
 
-  // Flatten the results, filter by IDs, and sort
-  const flattened = results.flat();
-  const useAtFilter = modules.length === 1 && at.length > 0;
-  const atSet = useAtFilter ? new Set(at) : null;
-  const targetModule = useAtFilter ? modules[0] : null;
-
-  const flattenedResults = flattened
-    .filter((obj) =>
-      useAtFilter
-        ? obj.importedFrom === targetModule && atSet!.has(obj.at)
-        : ids.includes(obj.id)
-    )
-    .sort((a, b) => a.name.localeCompare(b.name));
-
-  return flattenedResults.map((fixed) => ({
-    ...fixed,
-    run: composeWorkerCallable(fixed, permission),
-    timeout: normalizeTimeout(fixed.timeout),
-  })) as WorkerComposedWithKey[];
+  return resolved as WorkerComposedWithKey[];
 };
 
 export type GetFunctions = ReturnType<typeof getFunctions>;
