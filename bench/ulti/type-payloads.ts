@@ -1,6 +1,7 @@
 import { Buffer as NodeBuffer } from "node:buffer";
+import type { Args } from "../../src/types.ts";
 
-export type BenchPayloadCase = readonly [name: string, payload: unknown];
+export type BenchPayloadCase = readonly [name: string, payload: Args | Promise<Args>];
 
 export const createSharedTypePayloadCases = () => {
   const numberValue = 123.456;
@@ -102,30 +103,30 @@ export const createStringLength3xCases = (): BenchPayloadCase[] => [
 export const estimatePayloadBytes = (value: unknown): number => {
   if (value === null || value === undefined) return 0;
 
-  const valueType = typeof value;
-  if (valueType === "string") return Buffer.byteLength(value, "utf-8");
-  if (valueType === "number") return Float64Array.BYTES_PER_ELEMENT;
-  if (valueType === "boolean") return 1;
-  if (valueType === "bigint") {
+  if (typeof value === "string") return NodeBuffer.byteLength(value, "utf-8");
+  if (typeof value === "number") return Float64Array.BYTES_PER_ELEMENT;
+  if (typeof value === "boolean") return 1;
+  if (typeof value === "bigint") {
     const n = value < 0n ? -value : value;
     const bits = (n === 0n ? 1 : n.toString(2).length) + 1;
     return Math.ceil(bits / 8);
   }
-  if (valueType === "symbol") {
-    return Buffer.byteLength(String(value.description ?? ""), "utf-8");
+  if (typeof value === "symbol") {
+    return NodeBuffer.byteLength(String(value.description ?? ""), "utf-8");
   }
-  if (valueType === "function") return 0;
+  if (typeof value === "function") return 0;
 
   if (value instanceof Date) return Float64Array.BYTES_PER_ELEMENT;
   if (value instanceof Error) {
-    return Buffer.byteLength(value.name, "utf-8") + Buffer.byteLength(value.message, "utf-8");
+    return NodeBuffer.byteLength(value.name, "utf-8") +
+      NodeBuffer.byteLength(value.message, "utf-8");
   }
   if (value instanceof ArrayBuffer) return value.byteLength;
   if (ArrayBuffer.isView(value)) return value.byteLength;
   if (value instanceof Promise) return 0;
-  if (valueType === "object") {
+  if (typeof value === "object") {
     try {
-      return Buffer.byteLength(JSON.stringify(value), "utf-8");
+      return NodeBuffer.byteLength(JSON.stringify(value), "utf-8");
     } catch {
       return 0;
     }

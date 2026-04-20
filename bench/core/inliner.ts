@@ -6,8 +6,8 @@ export const add = task<number, number>({
   f: (value) => value + 1,
 });
 
-export const echo = task<unknown, number>({
-  f: (value) => value as number,
+export const echo = task<number, number>({
+  f: (value) => value,
 });
 
 export const laneProbe = task<number, boolean>({
@@ -56,7 +56,7 @@ const runSyncBurst = async (
 };
 
 const runPromiseArgBurst = async (
-  invoke: (value: unknown) => Promise<number>,
+  invoke: (value: number | Promise<number>) => Promise<number>,
 ): Promise<void> => {
   const jobs = new Array<Promise<number>>(BATCH);
   for (let i = 0; i < BATCH; i++) {

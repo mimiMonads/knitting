@@ -1,17 +1,18 @@
 import { bench, group, run as mitataRun } from "mitata";
 import { createPool, isMain, task } from "../knitting.ts";
+import type { Args } from "../src/types.ts";
 import { shutdownWorkers, toResolve } from "./postmessage/single.ts";
 import { format, print } from "./ulti/json-parse.ts";
 import { createSharedTypePayloadCases } from "./ulti/type-payloads.ts";
 
-export const echo = task<unknown, unknown>({ f: (value) => value });
+export const echo = task<Args, Args>({ f: (value) => value });
 
 if (isMain) {
   const { call, shutdown } = createPool({})({ echo });
   const sizes = [1, 100];
   const { comparableCases } = createSharedTypePayloadCases();
 
-  const runKnitting = async (n: number, payload: unknown) => {
+  const runKnitting = async (n: number, payload: Args | Promise<Args>) => {
     const jobs = Array.from({ length: n }, () => call.echo(payload));
     await Promise.all(jobs);
   };

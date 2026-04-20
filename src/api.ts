@@ -19,17 +19,20 @@ import type {
   Args,
   AbortSignalConfig,
   AbortSignalOption,
+  AbortSignalToolkit,
   ComposedWithKey,
   CreatePool,
   DispatcherSettings,
   FixPoint,
   FunctionMapType,
+  MaybePromise,
   Pool,
   TaskInput,
   SingleTaskPool,
   ReturnFixed,
   ImportTaskOptions,
   TaskFn,
+  TaskTimeout,
   WorkerInvoke,
   tasks,
 } from "./types.ts";
@@ -49,6 +52,43 @@ type CreatePoolFactory = (
 
 const MAX_FUNCTION_ID = 0xFFFF;
 const MAX_FUNCTION_COUNT = MAX_FUNCTION_ID + 1;
+
+type InferredTaskFunction = (...args: any[]) => MaybePromise<Args>;
+
+type InferredTaskInput<
+  F extends InferredTaskFunction,
+  AS extends AbortSignalOption,
+> = Parameters<F> extends []
+  ? void
+  : AS extends undefined
+    ? Parameters<F> extends [infer A]
+      ? A extends TaskInput ? A : never
+      : never
+    : Parameters<F> extends [infer A]
+      ? A extends TaskInput ? A : never
+      : Parameters<F> extends [infer A, AbortSignalToolkit<AS>]
+        ? A extends TaskInput ? A : never
+        : never;
+
+type InferredTaskOutput<F extends InferredTaskFunction> =
+  Awaited<ReturnType<F>> extends infer R
+    ? R extends Blob ? never : R extends Args ? R : never
+    : never;
+
+type InferredTaskShape<
+  F extends InferredTaskFunction,
+  AS extends AbortSignalOption,
+> =
+  [InferredTaskInput<F, AS>] extends [never] ? never
+    : [InferredTaskOutput<F>] extends [never] ? never
+    : {
+      readonly f: F;
+      readonly timeout?: TaskTimeout;
+    } & (
+      AS extends undefined
+        ? { readonly abortSignal?: undefined }
+        : { readonly abortSignal: AS }
+    );
 
 export const isMain: boolean = RUNTIME_IS_MAIN_THREAD;
 export { endpointSymbol as endpointSymbol };
@@ -538,6 +578,30 @@ const createImportedTaskFn = <
  * Input may be a direct value or a native Promise of that value.
  * Thenables/PromiseLike values are treated as plain values.
  */
+export function task<F extends InferredTaskFunction>(
+  I: InferredTaskShape<F, undefined>,
+): ReturnFixed<
+  InferredTaskInput<F, undefined>,
+  InferredTaskOutput<F>,
+  undefined
+>;
+export function task<F extends InferredTaskFunction>(
+  I: InferredTaskShape<F, true>,
+): ReturnFixed<
+  InferredTaskInput<F, true>,
+  InferredTaskOutput<F>,
+  true
+>;
+export function task<
+  AS extends AbortSignalConfig,
+  F extends InferredTaskFunction,
+>(
+  I: InferredTaskShape<F, AS>,
+): ReturnFixed<
+  InferredTaskInput<F, AS>,
+  InferredTaskOutput<F>,
+  AS
+>;
 export function task<A extends TaskInput = void, B extends Args = void>(
   I: FixPoint<A, B, true>,
 ): ReturnFixed<A, B, true>;
