@@ -1,6 +1,7 @@
 import { bench, group, run as mitataRun } from "mitata";
 import { createPool, isMain, task } from "../knitting.ts";
 import { TaskIndex } from "../src/memory/lock.ts";
+import type { Args } from "../src/types.ts";
 import { format, print } from "./ulti/json-parse.ts";
 import {
   createSharedTypePayloadCases,
@@ -10,7 +11,7 @@ import {
   estimatePayloadBytes,
 } from "./ulti/type-payloads.ts";
 
-export const echo = task<unknown, unknown>({
+export const echo = task<Args, Args>({
   f: (value) => value,
 });
 
@@ -19,7 +20,7 @@ if (isMain) {
   const isJsonOutput = process.argv.includes("--json");
   const sizes = [1, 100];
 
-  const runBatch = async (n: number, payload: unknown) => {
+  const runBatch = async (n: number, payload: Args | Promise<Args>) => {
     const jobs = Array.from({ length: n }, () => call.echo(payload));
     await Promise.all(jobs);
   };

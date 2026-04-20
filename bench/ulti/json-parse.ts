@@ -1,5 +1,3 @@
-import type { run as mitataRun } from "mitata";
-
 const json = { debug: false, samples: false };
 
 export const format = process.argv.includes("--json")
@@ -8,15 +6,35 @@ export const format = process.argv.includes("--json")
   }
   : "markdown";
 
-type Returned = Awaited<ReturnType<typeof mitataRun>> & {
-  layout: ({
-    name: string | null;
-  })[];
+type JsonBenchStats = {
+  kind: "fn" | "iter" | "yield";
+  min: number;
+  max: number;
+  avg: number;
+  p25: number;
+  p50: number;
+  p75: number;
+  p99: number;
+  p999: number;
+  ticks: number;
+  gc?: { avg: number; min: number; max: number; total: number };
+  heap?: { avg: number; min: number; max: number; total: number };
+};
+
+type JsonRun = {
+  layout: Array<{ name: string | null }>;
+  benchmarks: Array<{
+    group: number;
+    alias: string;
+    runs: Array<{
+      stats: JsonBenchStats;
+    }>;
+  }>;
 };
 
 export const print = process.argv.includes("--json")
   ? (jsonString: string) => {
-    const user = JSON.parse(jsonString) as Returned;
+    const user = JSON.parse(jsonString) as JsonRun;
     const layouts = user.layout;
     const endMap = new Map<string, { name: string; stats: object }[]>();
 
@@ -39,7 +57,7 @@ export const print = process.argv.includes("--json")
         heap,
         gc,
         // samples, counters, // purposely omitted
-      } = runs[0].stats;
+      } = runs[0]!.stats;
 
       arr.push({
         name: alias,
@@ -65,24 +83,4 @@ export const print = process.argv.includes("--json")
     console.log(JSON.stringify(Object.fromEntries(endMap), null, 2));
   }
   : (s: string) => console.log(s);
-type JsonBench = {
-  [key: string]: (
-    {
-      debug: string;
-      ticks: number;
-      samples: number[];
-      counters?: object;
-      kind: "fn" | "iter" | "yield";
-      min: number;
-      max: number;
-      avg: number;
-      p25: number;
-      p50: number;
-      p75: number;
-      p99: number;
-      p999: number;
-      gc?: { avg: number; min: number; max: number; total: number };
-      heap?: { avg: number; min: number; max: number; total: number };
-    }
-  )[];
-};
+type JsonBench = Record<string, JsonBenchStats[]>;
