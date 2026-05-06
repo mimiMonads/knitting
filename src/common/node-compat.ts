@@ -17,7 +17,13 @@ export type NodeCallSiteLike = {
   getMethodName?: () => string | null | undefined;
 };
 
+const BROWSER_BUILD = (globalThis as typeof globalThis & {
+  __KNITTING_BROWSER_BUILD__?: boolean;
+}).__KNITTING_BROWSER_BUILD__ === true;
+
 const nodeProcess = (() => {
+  if (BROWSER_BUILD) return undefined;
+
   const candidate = (globalThis as typeof globalThis & { process?: unknown })
     .process as NodeProcessLike | undefined;
   return typeof candidate?.versions?.node === "string" ? candidate : undefined;
@@ -25,25 +31,26 @@ const nodeProcess = (() => {
 
 export const getNodeProcess = (): NodeProcessLike | undefined => nodeProcess;
 
-export const getNodeBuiltinModule = <T>(
-  specifier: string,
-): T | undefined => {
-  const getter = nodeProcess?.getBuiltinModule;
-  if (typeof getter !== "function") return undefined;
+export const getNodeBuiltinModule: <T>(specifier: string) => T | undefined =
+  BROWSER_BUILD ? <T>(_specifier: string): T | undefined => undefined : <T>(
+    specifier: string,
+  ): T | undefined => {
+    const getter = nodeProcess?.getBuiltinModule;
+    if (typeof getter !== "function") return undefined;
 
-  try {
-    return getter.call(nodeProcess, specifier) as T | undefined;
-  } catch {
-  }
+    try {
+      return getter.call(nodeProcess, specifier) as T | undefined;
+    } catch {
+    }
 
-  if (!specifier.startsWith("node:")) return undefined;
+    if (!specifier.startsWith("node:")) return undefined;
 
-  try {
-    return getter.call(nodeProcess, specifier.slice(5)) as T | undefined;
-  } catch {
-    return undefined;
-  }
-};
+    try {
+      return getter.call(nodeProcess, specifier.slice(5)) as T | undefined;
+    } catch {
+      return undefined;
+    }
+  };
 
 type PathModuleLike = {
   resolve: (...segments: string[]) => string;
@@ -66,11 +73,23 @@ type UrlModuleLike = {
   pathToFileURL?: (value: string) => URL;
 };
 
-const rawPathModule = getNodeBuiltinModule<
-  PathModuleLike & { default?: PathModuleLike }
->("node:path");
-const rawFsModule = getNodeBuiltinModule<FsModuleLike>("node:fs");
-const rawUrlModule = getNodeBuiltinModule<UrlModuleLike>("node:url");
+const rawPathModule =
+  (globalThis as typeof globalThis & { __KNITTING_BROWSER_BUILD__?: boolean })
+      .__KNITTING_BROWSER_BUILD__ === true
+    ? undefined
+    : getNodeBuiltinModule<PathModuleLike & { default?: PathModuleLike }>(
+      "node:path",
+    );
+const rawFsModule =
+  (globalThis as typeof globalThis & { __KNITTING_BROWSER_BUILD__?: boolean })
+      .__KNITTING_BROWSER_BUILD__ === true
+    ? undefined
+    : getNodeBuiltinModule<FsModuleLike>("node:fs");
+const rawUrlModule =
+  (globalThis as typeof globalThis & { __KNITTING_BROWSER_BUILD__?: boolean })
+      .__KNITTING_BROWSER_BUILD__ === true
+    ? undefined
+    : getNodeBuiltinModule<UrlModuleLike>("node:url");
 
 const pathModule = (rawPathModule?.default ?? rawPathModule) as
   | PathModuleLike
@@ -80,6 +99,8 @@ const WINDOWS_DRIVE_PATH = /^[A-Za-z]:[/\\]/;
 const WINDOWS_UNC_PATH = /^[/\\]{2}[^/\\]+[/\\][^/\\]+/;
 
 const hostIsWindows = (() => {
+  if (BROWSER_BUILD) return false;
+
   try {
     if (typeof nodeProcess?.platform === "string") {
       return nodeProcess.platform === "win32";
@@ -93,7 +114,8 @@ const hostIsWindows = (() => {
 })();
 
 const looksWindowsPath = (value: string) =>
-  hostIsWindows || WINDOWS_DRIVE_PATH.test(value) || WINDOWS_UNC_PATH.test(value);
+  hostIsWindows || WINDOWS_DRIVE_PATH.test(value) ||
+  WINDOWS_UNC_PATH.test(value);
 
 const normalizePathSeparators = (value: string) => value.replace(/\\/g, "/");
 
@@ -256,39 +278,115 @@ const fallbackPathToFileURL = (value: string): URL => {
   }
   const absolute = fallbackIsAbsolute(value) ? value : fallbackResolve(value);
   const normalized = normalizePathSeparators(absolute);
-  return new URL(`file://${encodeFilePath(normalized.startsWith("/") ? normalized : `/${normalized}`)}`);
+  return new URL(
+    `file://${
+      encodeFilePath(normalized.startsWith("/") ? normalized : `/${normalized}`)
+    }`,
+  );
 };
 
-export const pathResolve = pathModule?.resolve
+const browserPathNormalize = (value: string): string => {
+  const normalized = value.replace(/\\/g, "/").replace(/\/+/g, "/");
+  return normalized.length > 1 ? normalized.replace(/\/+$/, "") : normalized;
+};
+
+const browserPathResolve = (...segments: string[]): string => {
+  const joined = browserPathNormalize(segments.filter(Boolean).join("/"));
+  if (joined.length === 0) return "/";
+  return joined.startsWith("/") ? joined : `/${joined}`;
+};
+
+const browserPathJoin = (...segments: string[]): string =>
+  browserPathNormalize(segments.filter(Boolean).join("/")) || ".";
+
+const browserPathDirname = (value: string): string => {
+  const normalized = browserPathNormalize(value);
+  const index = normalized.lastIndexOf("/");
+  if (index <= 0) return normalized.startsWith("/") ? "/" : ".";
+  return normalized.slice(0, index);
+};
+
+const browserPathBasename = (value: string): string => {
+  const normalized = browserPathNormalize(value);
+  const index = normalized.lastIndexOf("/");
+  return index < 0 ? normalized : normalized.slice(index + 1);
+};
+
+const browserPathRelative = (from: string, to: string): string => {
+  const normalizedFrom = browserPathResolve(from);
+  const normalizedTo = browserPathResolve(to);
+  if (normalizedFrom === normalizedTo) return "";
+  const prefix = normalizedFrom.endsWith("/")
+    ? normalizedFrom
+    : `${normalizedFrom}/`;
+  return normalizedTo.startsWith(prefix)
+    ? normalizedTo.slice(prefix.length)
+    : normalizedTo;
+};
+
+const browserPathIsAbsolute = (value: string): boolean =>
+  value.startsWith("/") || /^[A-Za-z][A-Za-z\d+.-]*:/.test(value);
+
+const browserFileURLToPath = (value: string | URL): string => {
+  const url = value instanceof URL ? value : new URL(value);
+  return decodeURIComponent(url.pathname);
+};
+
+const browserPathToFileURL = (value: string): URL => {
+  try {
+    return new URL(value);
+  } catch {
+    return new URL(browserPathResolve(value), "file://");
+  }
+};
+
+export const pathResolve = BROWSER_BUILD
+  ? browserPathResolve
+  : pathModule?.resolve
   ? ((...args: Parameters<NonNullable<typeof pathModule.resolve>>) =>
     pathModule.resolve!(...args))
   : fallbackResolve;
-export const pathJoin = pathModule?.join
+export const pathJoin = BROWSER_BUILD
+  ? browserPathJoin
+  : pathModule?.join
   ? ((...args: Parameters<NonNullable<typeof pathModule.join>>) =>
     pathModule.join!(...args))
   : fallbackJoin;
-export const pathDirname = pathModule?.dirname
+export const pathDirname = BROWSER_BUILD
+  ? browserPathDirname
+  : pathModule?.dirname
   ? ((...args: Parameters<NonNullable<typeof pathModule.dirname>>) =>
     pathModule.dirname!(...args))
   : fallbackDirname;
-export const pathBasename = pathModule?.basename
+export const pathBasename = BROWSER_BUILD
+  ? browserPathBasename
+  : pathModule?.basename
   ? ((...args: Parameters<NonNullable<typeof pathModule.basename>>) =>
     pathModule.basename!(...args))
   : fallbackBasename;
-export const pathRelative = pathModule?.relative
+export const pathRelative = BROWSER_BUILD
+  ? browserPathRelative
+  : pathModule?.relative
   ? ((...args: Parameters<NonNullable<typeof pathModule.relative>>) =>
     pathModule.relative!(...args))
   : fallbackRelative;
-export const pathIsAbsolute = pathModule?.isAbsolute
+export const pathIsAbsolute = BROWSER_BUILD
+  ? browserPathIsAbsolute
+  : pathModule?.isAbsolute
   ? ((...args: Parameters<NonNullable<typeof pathModule.isAbsolute>>) =>
     pathModule.isAbsolute!(...args))
   : fallbackIsAbsolute;
 
-export const fileURLToPathCompat = rawUrlModule?.fileURLToPath ??
-  fallbackFileURLToPath;
-export const pathToFileURLCompat = rawUrlModule?.pathToFileURL ??
-  fallbackPathToFileURL;
+export const fileURLToPathCompat = BROWSER_BUILD
+  ? browserFileURLToPath
+  : rawUrlModule?.fileURLToPath ?? fallbackFileURLToPath;
+export const pathToFileURLCompat = BROWSER_BUILD
+  ? browserPathToFileURL
+  : rawUrlModule?.pathToFileURL ?? fallbackPathToFileURL;
 
-export const existsSyncCompat = rawFsModule?.existsSync;
-export const realpathSyncCompat = rawFsModule?.realpathSync?.native ??
-  rawFsModule?.realpathSync;
+export const existsSyncCompat = BROWSER_BUILD
+  ? undefined
+  : rawFsModule?.existsSync;
+export const realpathSyncCompat = BROWSER_BUILD
+  ? undefined
+  : rawFsModule?.realpathSync?.native ?? rawFsModule?.realpathSync;

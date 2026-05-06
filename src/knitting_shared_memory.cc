@@ -1,13 +1,17 @@
+#if defined(__linux__) && !defined(_GNU_SOURCE)
 #define _GNU_SOURCE
+#endif
 
-#ifndef __linux__
-#error "knitting_shared_memory.cc currently uses Linux memfd_create + mmap."
+#if !defined(__linux__) && !defined(__APPLE__)
+#error "knitting_shared_memory.cc currently supports Linux and macOS."
 #endif
 
 #include <node.h>
 #include <v8.h>
 
+#include <atomic>
 #include <cerrno>
+#include <cstdio>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -15,7 +19,10 @@
 
 #include <fcntl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
+#ifdef __linux__
 #include <sys/syscall.h>
+#endif
 #include <unistd.h>
 
 namespace knitting_shared_memory {
@@ -33,8 +40,37 @@ size_t AlignUp(size_t value, size_t alignment) {
   return (value + alignment - 1) & ~(alignment - 1);
 }
 
-int CreateMemfd(const char* name) {
+int CreateSharedMemoryFd(const char* name) {
+#ifdef __linux__
   return static_cast<int>(syscall(SYS_memfd_create, name, 0));
+#else
+  (void)name;
+  static std::atomic<unsigned long> counter{0};
+  char shm_name[128];
+
+  for (int attempt = 0; attempt < 16; attempt++) {
+    unsigned long next = counter.fetch_add(1);
+    std::snprintf(
+      shm_name,
+      sizeof(shm_name),
+      "/knit_n_%05lx_%06lx_%02d",
+      static_cast<unsigned long>(getpid()) & 0xfffffUL,
+      next & 0xffffffUL,
+      attempt
+    );
+
+    int fd = shm_open(shm_name, O_CREAT | O_EXCL | O_RDWR, 0600);
+    if (fd >= 0) {
+      shm_unlink(shm_name);
+      return fd;
+    }
+
+    if (errno != EEXIST) return -1;
+  }
+
+  errno = EEXIST;
+  return -1;
+#endif
 }
 
 void ThrowErrno(v8::Isolate* isolate, const char* message, int err = errno) {
@@ -151,9 +187,9 @@ void CreateSharedMemory(const v8::FunctionCallbackInfo<v8::Value>& args) {
   }
 
   size_t size = AlignUp(static_cast<size_t>(maybe_size.FromJust()), CACHE_LINE_SIZE);
-  int fd = CreateMemfd("knitting_shared_memory");
+  int fd = CreateSharedMemoryFd("knitting_shared_memory");
   if (fd == -1) {
-    ThrowErrno(isolate, "memfd_create failed");
+    ThrowErrno(isolate, "shared memory fd create failed");
     return;
   }
 
