@@ -83,6 +83,7 @@ test("withResolvers uses native Promise.withResolvers when available", {
   try {
     const deferred = withResolvers<string>();
     assert.equal(callCount, 1);
+    assert.equal(deferred.promise.reject, deferred.reject);
     deferred.resolve("native");
     await assert.doesNotReject(deferred.promise);
     assert.equal(await deferred.promise, "native");
@@ -108,11 +109,13 @@ test("withResolvers falls back to Promise constructor when native helper is abse
 
   try {
     const resolved = withResolvers<number>();
+    assert.equal(resolved.promise.reject, resolved.reject);
     resolved.resolve(7);
     assert.equal(await resolved.promise, 7);
 
     const rejected = withResolvers<void>();
-    rejected.reject(new Error("fallback rejection"));
+    assert.equal(rejected.promise.reject, rejected.reject);
+    rejected.promise.reject(new Error("fallback rejection"));
     await assert.rejects(rejected.promise, /fallback rejection/);
   } finally {
     Object.defineProperty(ctor, "withResolvers", descriptor);

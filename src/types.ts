@@ -147,7 +147,7 @@ type TaskFn<
 >;
 
 type PromiseWithMaybeReject<T> = Promise<T> & {
-  reject?: (reason?: unknown) => void;
+  reject: (reason?: unknown) => void;
 };
 
 type TaskLike<AS extends AbortSignalOption = AbortSignalOption> = {

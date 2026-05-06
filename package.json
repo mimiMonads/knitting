@@ -1,6 +1,6 @@
 {
   "name": "@vixeny/knitting",
-  "version": "0.1.41",
+  "version": "0.1.42",
   "description": "Shared-memory worker pool for Node.js, Deno, and Bun.",
   "license": "Apache-2.0",
   "type": "module",
@@ -13,11 +13,17 @@
   "files": [
     "README.md",
     "LICENSE",
+    "build/Release/*.node",
+    "scripts/build-native-addons.ts",
+    "src/**/*.cc",
     "src/**/*.ts",
     "knitting.ts"
   ],
   "scripts": {
     "build": "bun run build.ts",
+    "build:native": "bun run scripts/build-native-addons.ts",
+    "build:release": "bun run build:native && bun run build",
+    "build:web": "bun run build.ts --web",
     "build:node": "bun build knitting.ts --outdir dest --target node --format esm",
     "smoke:browser": "bun run smoke/browser/build.ts",
     "test": "npm run test:deno",
