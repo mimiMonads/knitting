@@ -405,6 +405,7 @@ The transport supports these payloads:
 - plain JSON-like `Object` and `Array`
 - `Envelope<header, payload>` where `header` is JSON-like (or string) and
   `payload` is `ArrayBuffer`
+- registered external payloads such as `ProcessSharedBuffer`
 - `Buffer` (Node.js), `ArrayBuffer`, `Uint8Array`, `Int32Array`, `Float64Array`, `BigInt64Array`,
   `BigUint64Array`, and `DataView`
 - global `symbol` values (`Symbol.for(...)`)
@@ -416,7 +417,8 @@ Thenables are not awaited by the transport.
 
 Not supported directly:
 
-- `Map`, `Set`, `WeakMap`, custom class instances (except `Envelope` and subclasses)
+- `Map`, `Set`, `WeakMap`, custom class instances (except `Envelope` and
+  registered external payloads)
 - non-global symbols
 - `Blob`
 - functions
@@ -430,6 +432,28 @@ const message = new Envelope(
   { route: "/upload", contentType: "application/octet-stream" },
   new Uint8Array([1, 2, 3]).buffer,
 );
+```
+
+`ProcessSharedBuffer` passes fd-backed shared memory by metadata, so slices keep
+their offset and length instead of turning into a raw `SharedArrayBuffer`.
+Node example:
+
+```ts
+import { createPool, isMain, task } from "@vixeny/knitting";
+import { ProcessSharedBuffer } from "@vixeny/knitting/process-shared-buffer";
+
+export const readCell = task<ProcessSharedBuffer, number>({
+  f: (buffer) => Atomics.load(buffer.view(Int32Array), 0),
+});
+
+if (isMain) {
+  const pool = createPool({ threads: 1 })({ readCell });
+  const shared = ProcessSharedBuffer.create(64);
+  Atomics.store(shared.view(Int32Array), 0, 123);
+
+  console.log(await pool.call.readCell(shared.subbuffer(0, 4))); // 123
+  await pool.shutdown();
+}
 ```
 
 If you need to pass several values, prefer a single object or tuple:

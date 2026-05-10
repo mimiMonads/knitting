@@ -1,15 +1,19 @@
 {
   "name": "@vixeny/knitting",
-  "version": "0.1.42",
+  "version": "0.1.43",
   "nodeModulesDir": "auto",
-  "exports": "./knitting.ts",
+  "exports": {
+    ".": "./knitting.ts",
+    "./process-shared-buffer": "./process-shared-buffer.ts"
+  },
   "license": "Apache-2.0",
   "publish": {
     "include": [
       "README.md",
       "LICENSE",
       "src/**/*.ts",
-      "./knitting.ts"
+      "./knitting.ts",
+      "./process-shared-buffer.ts"
     ]
   }
 }
