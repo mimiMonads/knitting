@@ -65,6 +65,9 @@ export enum PayloadBuffer {
   EnvelopeDynamicHeader = 41,
   EnvelopeStaticHeaderString = 42,
   EnvelopeDynamicHeaderString = 43,
+  ExternalPayload = 44,
+  StaticExternalPayload = 45,
+  ProcessSharedBuffer = 46,
 }
 
 export enum LockBound {

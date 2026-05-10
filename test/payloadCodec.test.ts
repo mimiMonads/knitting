@@ -1,12 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-const assertEquals: (actual: unknown, expected: unknown) => void =
-  (actual, expected) => {
-    assert.deepStrictEqual(actual, expected);
-  };
+const assertEquals: (actual: unknown, expected: unknown) => void = (
+  actual,
+  expected,
+) => {
+  assert.deepStrictEqual(actual, expected);
+};
 import { Buffer as NodeBuffer } from "node:buffer";
 import { decodePayload, encodePayload } from "../src/memory/payloadCodec.ts";
 import { Envelope } from "../src/common/envelope.ts";
+import {
+  ProcessSharedBuffer,
+  setDefaultProcessSharedBufferPrimitives,
+  type SharedMemoryMapping,
+} from "../src/connections/index.ts";
 import {
   HEADER_STATIC_PAYLOAD_U32,
   HEADER_U32_LENGTH,
@@ -26,6 +33,20 @@ const textEncoder = new TextEncoder();
 const STATIC_STRING_MAX_BYTES = HEADER_STATIC_PAYLOAD_U32 *
   Uint32Array.BYTES_PER_ELEMENT;
 const utf8Bytes = (value: string) => NodeBuffer.byteLength(value, "utf8");
+
+const makeSharedMemoryMapping = (
+  sab = new SharedArrayBuffer(128),
+  fd = 3,
+): SharedMemoryMapping<SharedArrayBuffer> => ({
+  runtime: "node",
+  fd,
+  size: sab.byteLength,
+  byteLength: sab.byteLength,
+  buffer: sab,
+  kind: "shared-array-buffer",
+  sab,
+  baseAddressMod64: 0,
+});
 
 const makeRng = (seed: number) => {
   let state = seed >>> 0;
@@ -299,7 +320,10 @@ test("dynamic error uses dedicated error path and preserves allocation", () => {
 
   assertEquals(encode(second, 1), true);
   assertEquals(second[TaskIndex.Type], PayloadBuffer.Error);
-  assertEquals(second[TaskIndex.Start] >= align64(first[TaskIndex.PayloadLen]), true);
+  assertEquals(
+    second[TaskIndex.Start] >= align64(first[TaskIndex.PayloadLen]),
+    true,
+  );
 
   decode(first, 0);
   decode(second, 1);
@@ -474,7 +498,13 @@ test("static ArrayBuffer payload round-trips with ArrayBuffer type", () => {
   decode(task, 0);
 
   assertEquals(task.value instanceof ArrayBuffer, true);
-  assertEquals(Array.from(new Uint8Array(task.value as ArrayBuffer)), [1, 2, 3, 4, 5]);
+  assertEquals(Array.from(new Uint8Array(task.value as ArrayBuffer)), [
+    1,
+    2,
+    3,
+    4,
+    5,
+  ]);
 });
 
 test("dynamic ArrayBuffer payload stores slotBuffer and frees slot 0", () => {
@@ -495,6 +525,42 @@ test("dynamic ArrayBuffer payload stores slotBuffer and frees slot 0", () => {
   assertEquals(out[0], 0);
   assertEquals(out[699], 699 & 0xff);
   assertEquals(registry.workerBits[0] & 1, 1);
+});
+
+test("ProcessSharedBuffer payload round-trips descriptor metadata", () => {
+  const { encode, decode } = makeCodec();
+  const task = makeTask();
+  const original = ProcessSharedBuffer.fromMapping(
+    makeSharedMemoryMapping(),
+  ).subbuffer(64, 16);
+
+  task.value = original;
+
+  assertEquals(encode(task, 0), true);
+  assertEquals(task[TaskIndex.Type], PayloadBuffer.ProcessSharedBuffer);
+  assertEquals(task.value, null);
+
+  decode(task, 0);
+
+  assertEquals(task.value instanceof ProcessSharedBuffer, true);
+  const restored = task.value as ProcessSharedBuffer;
+  assertEquals(restored.toMetadata(), original.toMetadata());
+
+  const mappedSab = new SharedArrayBuffer(128);
+  try {
+    setDefaultProcessSharedBufferPrimitives({
+      createSharedMemory: () => makeSharedMemoryMapping(),
+      mapSharedMemory: ({ fd }) => makeSharedMemoryMapping(mappedSab, fd),
+    });
+
+    const bytes = restored.bytes();
+
+    assertEquals(bytes.buffer, mappedSab);
+    assertEquals(bytes.byteOffset, 64);
+    assertEquals(bytes.byteLength, 16);
+  } finally {
+    setDefaultProcessSharedBufferPrimitives(undefined);
+  }
 });
 
 test("static Buffer payload round-trips with Buffer type", () => {
@@ -1065,7 +1131,10 @@ test("randomized unicode boundary stress preserves string integrity", () => {
   const nextRandom = makeRng(0xdecafbad);
 
   for (let i = 0; i < 200; i++) {
-    const firstValue = makeBoundaryOverflowUnicode(nextRandom, STATIC_STRING_MAX_BYTES);
+    const firstValue = makeBoundaryOverflowUnicode(
+      nextRandom,
+      STATIC_STRING_MAX_BYTES,
+    );
     if (
       firstValue.length > STATIC_STRING_MAX_BYTES ||
       utf8Bytes(firstValue) <= STATIC_STRING_MAX_BYTES
@@ -1102,7 +1171,10 @@ test("randomized unicode JSON boundary stress preserves integrity and layout", (
   const nextRandom = makeRng(0x0f1cebad);
 
   for (let i = 0; i < 160; i++) {
-    const message = makeBoundaryOverflowUnicode(nextRandom, STATIC_STRING_MAX_BYTES - 12);
+    const message = makeBoundaryOverflowUnicode(
+      nextRandom,
+      STATIC_STRING_MAX_BYTES - 12,
+    );
     const value = { msg: message };
     const text = JSON.stringify(value);
     if (

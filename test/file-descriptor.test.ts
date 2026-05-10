@@ -37,6 +37,7 @@ const nodeProcess = isPlainNode
   ? (globalThis as typeof globalThis & { process: NodeJS.Process }).process
   : undefined;
 const nativeFdTestsAreEnabled = nodeProcess?.platform === "linux" ||
+  nodeProcess?.platform === "win32" ||
   nodeProcess?.env.KNITTING_EXPERIMENTAL_NATIVE_FD_TESTS === "1";
 
 type SharedMemoryAddon = {
@@ -55,6 +56,8 @@ type SharedMemoryAddon = {
 };
 
 type FutexAddon = {
+  sleep: (milliseconds?: number) => void;
+  yield: () => void;
   wakeU32: (
     buffer: ArrayBuffer | SharedArrayBuffer,
     byteOffset: number,
@@ -85,11 +88,20 @@ const nativeFdGateReason = (): string | undefined => {
   return undefined;
 };
 
+const nativeCrossProcessFdGateReason = (): string | undefined => {
+  const baseReason = nativeFdGateReason();
+  if (baseReason !== undefined) return baseReason;
+  if (nodeProcess?.platform === "win32") {
+    return "cross-process fd inheritance is POSIX-only";
+  }
+  return undefined;
+};
+
 const probeNativeAddon = <T>(
   path: string,
   label: string,
+  gateReason = nativeFdGateReason(),
 ): NativeAddonProbe<T> => {
-  const gateReason = nativeFdGateReason();
   if (gateReason !== undefined) return { skipReason: gateReason };
 
   if (!existsSync(path)) {
@@ -117,6 +129,11 @@ const futexAddonProbe = probeNativeAddon<FutexAddon>(
   futexAddonPath,
   "futex",
 );
+const crossProcessFutexAddonProbe = probeNativeAddon<FutexAddon>(
+  futexAddonPath,
+  "futex",
+  nativeCrossProcessFdGateReason(),
+);
 
 const nativeSharedMemoryTest = sharedMemoryAddonProbe.addon === undefined
   ? test.skip
@@ -125,6 +142,26 @@ const nativeFutexTest = sharedMemoryAddonProbe.addon === undefined ||
     futexAddonProbe.addon === undefined
   ? test.skip
   : test;
+const nativeCrossProcessFutexTest =
+  sharedMemoryAddonProbe.addon === undefined ||
+    crossProcessFutexAddonProbe.addon === undefined
+    ? test.skip
+    : test;
+
+nativeFutexTest(
+  nativeTestName(
+    "futex addon exposes sleep and yield helpers",
+    futexAddonProbe,
+  ),
+  () => {
+    const futex = futexAddonProbe.addon;
+    assert.ok(futex !== undefined);
+
+    futex.yield();
+    futex.sleep(0);
+    futex.sleep(1);
+  },
+);
 
 test("FileDescriptor stringifies and restores descriptor metadata", () => {
   const sab = new SharedArrayBuffer(64);
@@ -197,16 +234,16 @@ nativeSharedMemoryTest(
   },
 );
 
-nativeFutexTest(
+nativeCrossProcessFutexTest(
   nativeTestName(
     "FileDescriptor metadata can be remapped and woken with native futex",
     sharedMemoryAddonProbe.addon === undefined
       ? sharedMemoryAddonProbe
-      : futexAddonProbe,
+      : crossProcessFutexAddonProbe,
   ),
   async () => {
     const addon = sharedMemoryAddonProbe.addon;
-    const futex = futexAddonProbe.addon;
+    const futex = crossProcessFutexAddonProbe.addon;
     assert.ok(addon !== undefined);
     assert.ok(futex !== undefined);
 

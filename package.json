@@ -1,14 +1,15 @@
 {
   "name": "@vixeny/knitting",
-  "version": "0.1.42",
-  "description": "Shared-memory worker pool for Node.js, Deno, and Bun.",
+  "version": "0.1.43",
+  "description": "Shared-memory IPC runtime for Node.js, Deno, and Bun.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./knitting.ts",
   "module": "./knitting.ts",
   "types": "./knitting.ts",
   "exports": {
-    ".": "./knitting.ts"
+    ".": "./knitting.ts",
+    "./process-shared-buffer": "./process-shared-buffer.ts"
   },
   "files": [
     "README.md",
@@ -17,7 +18,8 @@
     "scripts/build-native-addons.ts",
     "src/**/*.cc",
     "src/**/*.ts",
-    "knitting.ts"
+    "knitting.ts",
+    "process-shared-buffer.ts"
   ],
   "scripts": {
     "build": "bun run build.ts",

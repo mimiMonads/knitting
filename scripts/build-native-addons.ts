@@ -15,6 +15,7 @@ declare const Bun: {
 };
 
 type NodeInfo = {
+  arch: string;
   execPath: string;
   nodedir: string | null;
   platform: string;
@@ -63,8 +64,9 @@ const run = (cmd: string, args: string[]): void => {
 
 const nodeInfo = JSON.parse(runCapture(nodeBinary, [
   "-p",
-  "JSON.stringify({execPath:process.execPath,nodedir:process.config.variables.nodedir||null,platform:process.platform})",
+  "JSON.stringify({arch:process.arch,execPath:process.execPath,nodedir:process.config.variables.nodedir||null,platform:process.platform})",
 ])) as NodeInfo;
+const isWindows = nodeInfo.platform === "win32";
 
 const includeCandidates = [
   Bun.env.NODE_INCLUDE_DIR,
@@ -86,22 +88,62 @@ if (includeDir === undefined) {
   );
 }
 
+const nodeLibCandidates = isWindows
+  ? [
+    Bun.env.NODE_LIB_FILE,
+    join(dirname(nodeInfo.execPath), "node.lib"),
+    join(dirname(dirname(nodeInfo.execPath)), "node.lib"),
+    join(dirname(dirname(nodeInfo.execPath)), "lib", "node.lib"),
+    nodeInfo.nodedir
+      ? join(nodeInfo.nodedir, "Release", "node.lib")
+      : undefined,
+    nodeInfo.nodedir
+      ? join(nodeInfo.nodedir, nodeInfo.arch, "node.lib")
+      : undefined,
+    nodeInfo.nodedir ? join(nodeInfo.nodedir, "x64", "node.lib") : undefined,
+    nodeInfo.nodedir ? join(nodeInfo.nodedir, "ia32", "node.lib") : undefined,
+  ].filter((value): value is string => typeof value === "string")
+  : [];
+const nodeLib = isWindows
+  ? nodeLibCandidates.find((candidate) => existsSync(candidate))
+  : undefined;
+
+if (isWindows && nodeLib === undefined) {
+  throw new Error(
+    `Unable to find node.lib for ${nodeInfo.execPath}. ` +
+      "Set NODE_LIB_FILE=C:\\path\\to\\node.lib and retry.",
+  );
+}
+
 mkdirSync(outDir, { recursive: true });
 
-const cxx = Bun.env.CXX ?? (nodeInfo.platform === "darwin" ? "c++" : "g++");
-const compileFlags = [
-  "-std=c++20",
-  "-O2",
-  "-Wall",
-  "-Wextra",
-  "-Wno-unused-parameter",
-  "-Wno-cast-function-type",
-  "-fPIC",
-  `-I${includeDir}`,
-  ...splitFlags(Bun.env.CXXFLAGS),
-];
+const cxx = Bun.env.CXX ??
+  (isWindows ? "cl" : nodeInfo.platform === "darwin" ? "c++" : "g++");
+const compileFlags = isWindows
+  ? [
+    "/nologo",
+    "/std:c++20",
+    "/O2",
+    "/EHsc",
+    "/LD",
+    `/I${includeDir}`,
+    ...splitFlags(Bun.env.CXXFLAGS),
+  ]
+  : [
+    "-std=c++20",
+    "-O2",
+    "-Wall",
+    "-Wextra",
+    "-Wno-unused-parameter",
+    "-Wno-cast-function-type",
+    "-fPIC",
+    `-I${includeDir}`,
+    ...splitFlags(Bun.env.CXXFLAGS),
+  ];
 const linkFlags = nodeInfo.platform === "darwin"
   ? ["-bundle", "-undefined", "dynamic_lookup"]
+  : isWindows
+  ? []
   : ["-shared"];
 const extraLdFlags = splitFlags(Bun.env.LDFLAGS);
 
@@ -119,19 +161,31 @@ const addons = [
 console.log(`Using Node: ${nodeInfo.execPath}`);
 console.log(`Using headers: ${includeDir}`);
 console.log(`Using compiler: ${cxx}`);
+if (nodeLib !== undefined) console.log(`Using node.lib: ${nodeLib}`);
 
 const builtAddons: string[] = [];
 
 for (const addon of addons) {
   const outputPath = join(root, addon.output);
-  run(cxx, [
-    ...compileFlags,
-    ...linkFlags,
-    ...extraLdFlags,
-    "-o",
-    outputPath,
-    join(root, addon.source),
-  ]);
+  if (isWindows) {
+    run(cxx, [
+      ...compileFlags,
+      join(root, addon.source),
+      "/link",
+      `/OUT:${outputPath}`,
+      nodeLib!,
+      ...extraLdFlags,
+    ]);
+  } else {
+    run(cxx, [
+      ...compileFlags,
+      ...linkFlags,
+      ...extraLdFlags,
+      "-o",
+      outputPath,
+      join(root, addon.source),
+    ]);
+  }
   builtAddons.push(addon.output);
 }
 

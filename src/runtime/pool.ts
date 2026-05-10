@@ -28,6 +28,7 @@ import { jsrIsGreatAndWorkWithoutBugs } from "../worker/loop.ts";
 import {
   createSharedArrayBuffer,
   createWasmSharedArrayBuffer,
+  RUNTIME,
 } from "../common/runtime.ts";
 import {
   HAS_NODE_WORKER_THREADS,
@@ -42,6 +43,7 @@ import {
   type PayloadBufferOptions,
   resolvePayloadBufferOptions,
 } from "../memory/payload-config.ts";
+import { getNodeBuiltinModule } from "../common/node-compat.ts";
 
 type SpawnedWorker = {
   terminate: () => unknown;
@@ -120,6 +122,36 @@ type NodeWorkerResourceLimits = {
   stackSizeMb?: number;
 };
 
+type NodeModuleBuiltin = {
+  createRequire: (url: string) => (specifier: string) => unknown;
+};
+
+type ProcessSharedMemoryNativeMapping = {
+  sab: SharedArrayBuffer;
+  fd: number;
+  size: number;
+  baseAddressMod64?: number;
+};
+
+type ProcessSharedMemoryAddon = {
+  createSharedMemory: (size: number) => ProcessSharedMemoryNativeMapping;
+};
+
+type ProcessSharedMemoryBacking = ProcessSharedMemoryNativeMapping & {
+  runtime: "node";
+  buffer: SharedArrayBuffer;
+  kind: "shared-array-buffer";
+  byteLength: number;
+};
+
+type ProcessSharedMemoryAllocator = {
+  createBuffer: (byteLength: number) => SharedArrayBuffer;
+  backings: ProcessSharedMemoryBacking[];
+};
+
+// Keep idle workers self-healing if an Atomics.notify wake is missed.
+const DEFAULT_WORKER_PARK_MS = 1;
+
 const toPositiveInteger = (value: number | undefined): number | undefined => {
   if (!Number.isFinite(value)) return undefined;
   const int = Math.floor(value as number);
@@ -141,6 +173,76 @@ const toNodeWorkerResourceLimits = (
   return Object.values(out).some((value) => value !== undefined)
     ? out
     : undefined;
+};
+
+const withDefaultWorkerTimers = (
+  options: WorkerSettings | undefined,
+): WorkerSettings => {
+  const parkMs = options?.timers?.parkMs ?? DEFAULT_WORKER_PARK_MS;
+  if (options === undefined) return { timers: { parkMs } };
+
+  return {
+    ...options,
+    timers: {
+      ...options.timers,
+      parkMs,
+    },
+  };
+};
+
+const getProcessSharedMemoryAddonSpecifier = (): string =>
+  ["..", "..", "build", "Release", ["knitting", "shared", "memory"].join("_")]
+    .join("/") + ".node";
+
+const toProcessSharedMemorySize = (byteLength: number): number => {
+  if (!Number.isFinite(byteLength) || byteLength <= 0) {
+    throw new RangeError("process shared memory byteLength must be positive");
+  }
+  const size = Math.trunc(byteLength);
+  return size + ((64 - (size % 64)) % 64);
+};
+
+const createProcessSharedMemoryAllocator = (
+  debug: DebugOptions | undefined,
+): ProcessSharedMemoryAllocator | undefined => {
+  if (RUNTIME !== "node") return undefined;
+
+  let addon: ProcessSharedMemoryAddon;
+  try {
+    const nodeModule = getNodeBuiltinModule<NodeModuleBuiltin>("node:module");
+    if (nodeModule === undefined) return undefined;
+
+    const require = nodeModule.createRequire(import.meta.url);
+    addon = require(
+      getProcessSharedMemoryAddonSpecifier(),
+    ) as ProcessSharedMemoryAddon;
+  } catch (error) {
+    if (debug?.extras === true) {
+      console.warn(
+        "Process-shared memory allocator unavailable; falling back to SharedArrayBuffer.",
+        error,
+      );
+    }
+    return undefined;
+  }
+
+  const backings: ProcessSharedMemoryBacking[] = [];
+  return {
+    backings,
+    createBuffer: (byteLength: number): SharedArrayBuffer => {
+      const mapping = addon.createSharedMemory(
+        toProcessSharedMemorySize(byteLength),
+      );
+      backings.push({
+        ...mapping,
+        runtime: "node",
+        buffer: mapping.sab,
+        kind: "shared-array-buffer",
+        byteLength: mapping.sab.byteLength,
+      });
+      return mapping.sab;
+    },
+  };
 };
 
 const terminateWorkerQuietly = (worker: SpawnedWorker): void => {
@@ -220,8 +322,17 @@ export const spawnWorkerContext = ({
         sanitizeBytes(payloadMaxBytes),
     },
   });
+  const processSharedMemory = createProcessSharedMemoryAllocator(debug);
+  const createControlBuffer = processSharedMemory?.createBuffer ??
+    createWasmSharedArrayBuffer;
+  const createPayloadBuffer = processSharedMemory?.createBuffer;
+  const resolvedWorkerOptions = withDefaultWorkerTimers(workerOptions);
   const makePayloadBuffer = () =>
-    resolvedPayloadConfig.mode === "growable"
+    createPayloadBuffer
+      // ProcessSharedBuffer is fixed-size today, so reserve the configured
+      // payload ceiling instead of relying on SAB growth.
+      ? createPayloadBuffer(resolvedPayloadConfig.payloadMaxByteLength)
+      : resolvedPayloadConfig.mode === "growable"
       ? createSharedArrayBuffer(
         resolvedPayloadConfig.payloadInitialBytes,
         resolvedPayloadConfig.payloadMaxByteLength,
@@ -256,7 +367,7 @@ export const spawnWorkerContext = ({
       headerSlotStrideU32: HEADER_SLOT_STRIDE_U32,
       slotCount: LockBound.slots,
       headerLayout: "split",
-      createBuffer: createWasmSharedArrayBuffer,
+      createBuffer: createControlBuffer,
     });
   };
 
@@ -360,7 +471,7 @@ export const spawnWorkerContext = ({
     at,
     thread,
     debug,
-    workerOptions,
+    workerOptions: resolvedWorkerOptions,
     totalNumberOfThread,
     startAt: signalBox.startAt,
     lock: lockBuffers,
@@ -380,7 +491,7 @@ export const spawnWorkerContext = ({
     resourceLimits?: NodeWorkerResourceLimits;
   };
   const nodeResourceLimits = toNodeWorkerResourceLimits(
-    workerOptions?.resourceLimits,
+    resolvedWorkerOptions.resourceLimits,
   );
   const baseNodeWorkerOptions = nodeResourceLimits
     ? { ...baseWorkerOptions, resourceLimits: nodeResourceLimits }
@@ -392,7 +503,9 @@ export const spawnWorkerContext = ({
     try {
       worker = new poliWorker(workerUrl, withExecArgv) as RuntimeWorkerLike;
     } catch (error) {
-      if ((error as { code?: string })?.code === "ERR_WORKER_INVALID_EXEC_ARGV") {
+      if (
+        (error as { code?: string })?.code === "ERR_WORKER_INVALID_EXEC_ARGV"
+      ) {
         const fallbackExecArgv = toWorkerSafeExecArgv(withExecArgv.execArgv);
         if (fallbackExecArgv && fallbackExecArgv.length > 0) {
           try {
@@ -480,7 +593,9 @@ export const spawnWorkerContext = ({
     const webWorker = worker as RuntimeWorkerLike & {
       addEventListener?: (
         type: string,
-        listener: (event: { data?: unknown; error?: unknown; message?: unknown }) => void,
+        listener: (
+          event: { data?: unknown; error?: unknown; message?: unknown },
+        ) => void,
       ) => void;
       onerror?: ((event: unknown) => void) | null;
     };
@@ -536,7 +651,10 @@ export const spawnWorkerContext = ({
     };
   };
 
-  const context: WorkerContext & { lock: ReturnType<typeof lock2> } = {
+  const context: WorkerContext & {
+    lock: ReturnType<typeof lock2>;
+    processSharedMemoryBackings?: readonly ProcessSharedMemoryBacking[];
+  } = {
     txIdle,
     call,
     kills: async () => {
@@ -547,6 +665,7 @@ export const spawnWorkerContext = ({
       }
     },
     lock,
+    processSharedMemoryBackings: processSharedMemory?.backings,
   };
 
   return context;
