@@ -6,6 +6,7 @@ export type NodeProcessLike = {
   platform?: string;
   allowedNodeEnvironmentFlags?: ReadonlySet<string>;
   execArgv?: string[];
+  execPath?: string;
   cwd?: () => string;
   env?: Record<string, string | undefined>;
   on?: (event: string, handler: (...args: unknown[]) => void) => unknown;

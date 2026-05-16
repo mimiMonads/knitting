@@ -55,7 +55,7 @@ type LockBuffers = {
   headers: SharedBufferSource;
   headerSlotStrideU32?: number;
   lockSector: SharedBufferSource;
-  payload: SharedArrayBuffer;
+  payload: SharedBufferSource;
   payloadSector: SharedBufferSource;
   textCompat?: LockBufferTextCompat;
 };
@@ -338,24 +338,30 @@ type DebugOptions = {
 
 type WorkerSettings = {
   resolveAfterFinishingAll?: true;
+  /**
+   * Experimental worker runtime.
+   * "thread" uses Worker/worker_threads. "process" spawns another JavaScript
+   * runtime and shares one inherited fd-backed memory mapping.
+   */
+  runtime?: "thread" | "process";
+  /**
+   * Runtime executable to use when runtime is "process". Defaults to "bun".
+   */
+  processRuntime?: "bun" | "deno" | "node";
+  /**
+   * Command argv to prepend before the process worker runtime command.
+   * Useful for wrappers such as systemd-run, cgexec, nice, or taskset.
+   *
+   * Example:
+   * ["systemd-run", "--scope", "-p", "MemoryMax=500M", "-p", "CPUQuota=25%"]
+   */
+  processCommandPrefix?: string[];
   timers?: WorkerTimers;
   /**
    * Hard task execution timeout in milliseconds.
    * When exceeded, the pool is force-shutdown to stop runaway CPU tasks.
    */
   hardTimeoutMs?: number;
-  /**
-   * Node.js worker thread memory/stack limits.
-   * Ignored on non-Node runtimes.
-   */
-  resourceLimits?: WorkerResourceLimits;
-};
-
-type WorkerResourceLimits = {
-  maxOldGenerationSizeMb?: number;
-  maxYoungGenerationSizeMb?: number;
-  codeRangeSizeMb?: number;
-  stackSizeMb?: number;
 };
 
 type WorkerTimers = {
@@ -479,7 +485,6 @@ export type {
   Balancer as Balancer,
   DebugOptions as DebugOptions,
   WorkerSettings as WorkerSettings,
-  WorkerResourceLimits as WorkerResourceLimits,
   WorkerTimers as WorkerTimers,
   DispatcherSettings as DispatcherSettings,
   CreatePool as CreatePool,

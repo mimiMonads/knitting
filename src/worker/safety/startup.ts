@@ -21,7 +21,7 @@ type ImportedFunctionsState = {
 const hasLockBuffers = (value: LockBuffers | undefined): value is LockBuffers =>
   isSharedBufferSource(value?.headers) &&
   isSharedBufferSource(value?.lockSector) &&
-  value?.payload instanceof SharedArrayBuffer &&
+  isSharedBufferSource(value?.payload) &&
   isSharedBufferSource(value?.payloadSector) &&
   (
     value?.textCompat === undefined ||

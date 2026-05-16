@@ -1,4 +1,4 @@
-import { getNodeBuiltinModule } from "./node-compat.ts";
+import { getNodeBuiltinModule, getNodeProcess } from "./node-compat.ts";
 
 type RuntimePortMessageHandler = (message: unknown) => void;
 
@@ -47,6 +47,19 @@ type WorkerThreadsModuleLike = {
   parentPort?: RuntimeMessagePortLike | null;
 };
 
+export const RUNTIME_PROCESS_WORKER_ENV = "KNITTING_PROCESS_WORKER";
+export const RUNTIME_PROCESS_WORKER_BOOT_ENV = "KNITTING_PROCESS_WORKER_BOOT";
+export const RUNTIME_PROCESS_WORKER_BOOT_VERSION = 1;
+
+type ProcessLikeWithIpc = NonNullable<ReturnType<typeof getNodeProcess>> & {
+  send?: (message: unknown) => void;
+};
+
+const nodeProcess = getNodeProcess() as ProcessLikeWithIpc | undefined;
+
+export const RUNTIME_IS_PROCESS_WORKER =
+  nodeProcess?.env?.[RUNTIME_PROCESS_WORKER_ENV] === "1";
+
 const workerThreads =
   (globalThis as typeof globalThis & { __KNITTING_BROWSER_BUILD__?: boolean })
       .__KNITTING_BROWSER_BUILD__ === true
@@ -94,6 +107,8 @@ export const HAS_NODE_WORKER_THREADS = browserBuildFlag()
 
 export const RUNTIME_IS_MAIN_THREAD = browserBuildFlag()
   ? !isWebWorkerScope()
+  : RUNTIME_IS_PROCESS_WORKER
+  ? false
   : workerThreads?.isMainThread ?? !isWebWorkerScope();
 
 export const RUNTIME_WORKER_DATA = browserBuildFlag()
@@ -102,7 +117,12 @@ export const RUNTIME_WORKER_DATA = browserBuildFlag()
 
 export const RUNTIME_PARENT_PORT = browserBuildFlag()
   ? undefined
-  : workerThreads?.parentPort ?? undefined;
+  : workerThreads?.parentPort ??
+    (RUNTIME_IS_PROCESS_WORKER && typeof nodeProcess?.send === "function"
+      ? {
+        postMessage: (message: unknown) => nodeProcess.send!(message),
+      }
+      : undefined);
 
 export const createRuntimeMessageChannel = (): RuntimeMessageChannelLike => {
   if (typeof RUNTIME_MESSAGE_CHANNEL !== "function") {

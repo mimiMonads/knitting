@@ -1,4 +1,7 @@
-import type { SharedBufferRegion } from "../common/shared-buffer-region.ts";
+import type {
+  SharedBuffer,
+  SharedBufferRegion,
+} from "../common/shared-buffer-region.ts";
 
 export const BYTE_CARPET_ALIGN_BYTES = 64;
 const U32_BYTES = Uint32Array.BYTES_PER_ELEMENT;
@@ -23,7 +26,7 @@ export const alignBytes = (
 };
 
 export const makeSharedBufferRegion = (
-  sab: SharedArrayBuffer,
+  sab: SharedBuffer,
   byteOffset: number,
   byteLength: number,
 ): SharedBufferRegion => ({
@@ -102,7 +105,7 @@ export const createByteCarpet = ({
     take,
     byteLength: () => cursor,
     bind: (
-      sab: SharedArrayBuffer,
+      sab: SharedBuffer,
       slice: ByteCarpetSlice,
     ): SharedBufferRegion =>
       makeSharedBufferRegion(sab, slice.byteOffset, slice.byteLength),
@@ -190,7 +193,7 @@ export type QueueControlByteLayout = {
 };
 
 export type LockControlCarpet = {
-  controlSAB: SharedArrayBuffer;
+  controlSAB: SharedBuffer;
   signals: SharedBufferRegion;
   abortSignals: SharedBufferRegion;
   lock: QueueControlByteLayout;
@@ -204,7 +207,7 @@ const createInterleavedHeaderPair = ({
   slotCount,
   slotStrideU32,
 }: {
-  sab: SharedArrayBuffer;
+  sab: SharedBuffer;
   byteOffset: number;
   slotCount: number;
   slotStrideU32: number;
@@ -240,7 +243,8 @@ export const createLockControlCarpet = ({
   slotCount,
   headerLayout = "interleaved",
   alignTo = BYTE_CARPET_ALIGN_BYTES,
-  createBuffer = (byteLength: number) => new SharedArrayBuffer(byteLength),
+  createBuffer = (byteLength: number): SharedBuffer =>
+    new SharedArrayBuffer(byteLength),
 }: {
   signalBytes: number;
   abortBytes: number;
@@ -249,7 +253,7 @@ export const createLockControlCarpet = ({
   slotCount: number;
   headerLayout?: HeaderLayoutMode;
   alignTo?: number;
-  createBuffer?: (byteLength: number) => SharedArrayBuffer;
+  createBuffer?: (byteLength: number) => SharedBuffer;
 }): LockControlCarpet => {
   const carpet = createByteCarpet({ alignTo });
   const signalsSlice = carpet.take("signals", signalBytes);

@@ -2,6 +2,7 @@ import {
   DARWIN_O_CREAT,
   DARWIN_O_EXCL,
   DARWIN_SHM_MODE,
+  setCloseOnExec,
   detectPosixPlatform,
   encodeCString,
   getPosixLibcPath,
@@ -30,6 +31,7 @@ type DenoLibc = {
     shm_unlink?: (name: Uint8Array) => number;
     ftruncate: (fd: number, length: bigint) => number;
     dup: (fd: number) => number;
+    fcntl: (fd: number, cmd: number, arg: number) => number;
     mmap: (
       address: null,
       length: number,
@@ -73,6 +75,10 @@ export const openDenoLibc = (): DenoLibc =>
     },
     dup: {
       parameters: ["i32"],
+      result: "i32",
+    },
+    fcntl: {
+      parameters: ["i32", "i32", "i32"],
       result: "i32",
     },
     mmap: {
@@ -143,7 +149,12 @@ const createDenoSharedMemoryFd = (
     );
 
     shmUnlink(shmName);
-    return fd;
+    try {
+      return setCloseOnExec(libc, fd);
+    } catch (error) {
+      libc.symbols.close(fd);
+      throw error;
+    }
   }
 
   const memfdCreate = libc.symbols.memfd_create;
@@ -151,10 +162,17 @@ const createDenoSharedMemoryFd = (
     throw new Error("memfd_create symbol is not available");
   }
 
-  return checkResult(
+  const fd = checkResult(
     memfdCreate(encodeCString(name), 0),
     "memfd_create failed",
   );
+
+  try {
+    return setCloseOnExec(libc, fd);
+  } catch (error) {
+    libc.symbols.close(fd);
+    throw error;
+  }
 };
 
 export const mapDenoSharedMemory = (
@@ -163,9 +181,16 @@ export const mapDenoSharedMemory = (
 ): SharedMemoryMapping<ArrayBuffer> => {
   const sourceFd = expectFd(options.fd);
   const size = expectPositiveSize(options.size);
-  const fd = options.duplicateFd === false
-    ? sourceFd
-    : checkResult(libc.symbols.dup(sourceFd), "dup(fd) failed");
+  let fd = sourceFd;
+  if (options.duplicateFd !== false) {
+    fd = checkResult(libc.symbols.dup(sourceFd), "dup(fd) failed");
+    try {
+      setCloseOnExec(libc, fd);
+    } catch (error) {
+      libc.symbols.close(fd);
+      throw error;
+    }
+  }
   const pointer = libc.symbols.mmap(
     null,
     size,

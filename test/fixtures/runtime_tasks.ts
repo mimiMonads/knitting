@@ -1,4 +1,4 @@
-import { importTask, task } from "../../knitting.ts";
+import { importTask, isMain, task } from "../../knitting.ts";
 
 export const addOnePromise = task<Promise<number> | number, number>({
   f: async (value) => value + 1,
@@ -12,4 +12,8 @@ const importedFunctionsHref = new URL(
 export const addOneViaImportTask = importTask<number, number>({
   href: importedFunctionsHref,
   name: "addOne",
+});
+
+export const reportIsMain = task<void, boolean>({
+  f: () => isMain,
 });

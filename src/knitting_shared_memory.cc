@@ -33,6 +33,10 @@
 #include <unistd.h>
 #endif
 
+#ifndef MFD_CLOEXEC
+#define MFD_CLOEXEC 0x0001U
+#endif
+
 namespace knitting_shared_memory {
 
 constexpr size_t CACHE_LINE_SIZE = 64;
@@ -53,9 +57,15 @@ size_t AlignUp(size_t value, size_t alignment) {
 }
 
 #ifndef _WIN32
+bool SetCloseOnExec(int fd) {
+  int flags = fcntl(fd, F_GETFD);
+  if (flags == -1) return false;
+  return fcntl(fd, F_SETFD, flags | FD_CLOEXEC) != -1;
+}
+
 int CreateSharedMemoryFd(const char* name) {
 #ifdef __linux__
-  return static_cast<int>(syscall(SYS_memfd_create, name, 0));
+  return static_cast<int>(syscall(SYS_memfd_create, name, MFD_CLOEXEC));
 #else
   (void)name;
   static std::atomic<unsigned long> counter{0};
@@ -75,7 +85,12 @@ int CreateSharedMemoryFd(const char* name) {
     int fd = shm_open(shm_name, O_CREAT | O_EXCL | O_RDWR, 0600);
     if (fd >= 0) {
       shm_unlink(shm_name);
-      return fd;
+      if (SetCloseOnExec(fd)) return fd;
+
+      int saved = errno;
+      close(fd);
+      errno = saved;
+      return -1;
     }
 
     if (errno != EEXIST) return -1;
@@ -397,6 +412,13 @@ void MapSharedMemory(const v8::FunctionCallbackInfo<v8::Value>& args) {
   int fd = dup(maybe_fd.FromJust());
   if (fd == -1) {
     ThrowErrno(isolate, "dup(fd) failed");
+    return;
+  }
+
+  if (!SetCloseOnExec(fd)) {
+    int saved = errno;
+    close(fd);
+    ThrowErrno(isolate, "fcntl(F_SETFD) failed", saved);
     return;
   }
 

@@ -21,7 +21,6 @@ import type {
   WorkerCall,
   WorkerContext,
   WorkerData,
-  WorkerResourceLimits,
   WorkerSettings,
 } from "../types.ts";
 import { jsrIsGreatAndWorkWithoutBugs } from "../worker/loop.ts";
@@ -32,18 +31,51 @@ import {
 } from "../common/runtime.ts";
 import {
   HAS_NODE_WORKER_THREADS,
+  RUNTIME_PROCESS_WORKER_BOOT_ENV,
+  RUNTIME_PROCESS_WORKER_BOOT_VERSION,
+  RUNTIME_PROCESS_WORKER_ENV,
   RUNTIME_WORKER,
   type RuntimeWorkerLike,
 } from "../common/worker-runtime.ts";
-import type { SharedBufferSource } from "../common/shared-buffer-region.ts";
+import {
+  toSharedBufferRegion,
+  type SharedBufferSource,
+} from "../common/shared-buffer-region.ts";
 import { probeLockBufferTextCompat } from "../common/shared-buffer-text.ts";
 import { signalAbortFactory } from "../shared/abortSignal.ts";
-import { createLockControlCarpet } from "../memory/byte-carpet.ts";
+import {
+  createByteCarpet,
+  createLockControlCarpet,
+  getHeaderBlockByteLength,
+  makeSharedBufferRegion,
+  type ByteCarpetSlice,
+  type LockControlCarpet,
+} from "../memory/byte-carpet.ts";
 import {
   type PayloadBufferOptions,
   resolvePayloadBufferOptions,
 } from "../memory/payload-config.ts";
-import { getNodeBuiltinModule } from "../common/node-compat.ts";
+import {
+  fileURLToPathCompat,
+  getNodeBuiltinModule,
+  getNodeProcess,
+} from "../common/node-compat.ts";
+import { createBunConnectionPrimitives } from "../connections/bun.ts";
+import { createDenoConnectionPrimitives } from "../connections/deno.ts";
+import {
+  FileDescriptor,
+  ProcessSharedBuffer,
+  type ProcessSharedBufferMetadata,
+} from "../connections/index.ts";
+import {
+  createNodeConnectionPrimitives,
+  loadNodeFutexAddon,
+} from "../connections/node.ts";
+import { detectPosixPlatform } from "../connections/posix.ts";
+import type {
+  SharedMemoryBuffer,
+  SharedMemoryMapping,
+} from "../connections/types.ts";
 
 type SpawnedWorker = {
   terminate: () => unknown;
@@ -56,6 +88,99 @@ type NodeWorkerLike = {
     listener: (...args: unknown[]) => void,
   ) => void;
 };
+type ProcessWorkerWireLockBuffers = Omit<
+  LockBuffers,
+  "headers" | "lockSector" | "payload" | "payloadSector"
+> & {
+  headers: ProcessSharedBufferMetadata;
+  lockSector: ProcessSharedBufferMetadata;
+  payload: ProcessSharedBufferMetadata;
+  payloadSector: ProcessSharedBufferMetadata;
+};
+type ProcessWorkerWireData = Omit<
+  WorkerData,
+  "sab" | "abortSignalSAB" | "lock" | "returnLock"
+> & {
+  sab: ProcessSharedBufferMetadata;
+  abortSignalSAB?: ProcessSharedBufferMetadata;
+  lock: ProcessWorkerWireLockBuffers;
+  returnLock: ProcessWorkerWireLockBuffers;
+};
+type ProcessWorkerBootPayload = {
+  version: typeof RUNTIME_PROCESS_WORKER_BOOT_VERSION;
+  workerData: ProcessWorkerWireData;
+};
+type BunSubprocessLike = {
+  exited: Promise<number>;
+  kill: (signal?: string | number) => unknown;
+  send?: (message: unknown) => void;
+};
+type BunSpawnOptions = {
+  cmd: string[];
+  cwd?: string;
+  env?: Record<string, string | undefined>;
+  stdin?: "ignore" | "inherit" | "pipe" | number | null;
+  stdout?: "ignore" | "inherit" | "pipe" | number | null;
+  stderr?: "ignore" | "inherit" | "pipe" | number | null;
+  ipc?: (message: unknown, subprocess: BunSubprocessLike) => void;
+  serialization?: "advanced" | "json";
+  onExit?: (
+    subprocess: BunSubprocessLike,
+    exitCode: number | null,
+    signalCode: number | null,
+    error?: unknown,
+  ) => void;
+};
+type BunRuntimeLike = {
+  argv?: string[];
+  spawn?: (options: BunSpawnOptions) => BunSubprocessLike;
+};
+type NodeChildProcessLike = {
+  kill: (signal?: string | number) => unknown;
+  send?: (message: unknown) => void;
+  on: (event: string, listener: (...args: unknown[]) => void) => void;
+};
+type NodeChildProcessModuleLike = {
+  spawn: (
+    command: string,
+    args?: readonly string[],
+    options?: Record<string, unknown>,
+  ) => NodeChildProcessLike;
+};
+type DenoFsFileLike = {
+  close?: () => void;
+  [key: symbol]: unknown;
+};
+type DenoCommandChildLike = {
+  status: Promise<{ code: number; signal: string | null; success: boolean }>;
+  kill: (signal?: string) => void;
+};
+type DenoCommandConstructorLike = new (
+  command: string,
+  options?: Record<string, unknown>,
+) => {
+  spawn: () => DenoCommandChildLike;
+};
+type DenoRuntimeLike = {
+  Command?: DenoCommandConstructorLike;
+  cwd?: () => string;
+  execPath?: () => string;
+  openSync?: (
+    path: string,
+    options: { read?: boolean; write?: boolean },
+  ) => DenoFsFileLike;
+};
+type ProcessWorkerMemoryLayout = {
+  mapping: SharedMemoryMapping<SharedMemoryBuffer>;
+  descriptor: FileDescriptor;
+  controlLayout: LockControlCarpet;
+  lockPayload: SharedBufferSource;
+  returnPayload: SharedBufferSource;
+};
+type ProcessWorkerRuntime = NonNullable<WorkerSettings["processRuntime"]>;
+type ProcessWorkerCommandPrefix = NonNullable<
+  WorkerSettings["processCommandPrefix"]
+>;
 const WORKER_FATAL_MESSAGE_KEY = "__knittingWorkerFatal";
 const execFlagKey = (flag: string): string => flag.split("=", 1)[0]!;
 const NODE_PERMISSION_EXEC_FLAGS = new Set<string>([
@@ -115,13 +240,6 @@ const toWorkerCompatExecArgv = (
   return compat.length > 0 ? compat : undefined;
 };
 
-type NodeWorkerResourceLimits = {
-  maxOldGenerationSizeMb?: number;
-  maxYoungGenerationSizeMb?: number;
-  codeRangeSizeMb?: number;
-  stackSizeMb?: number;
-};
-
 type NodeModuleBuiltin = {
   createRequire: (url: string) => (specifier: string) => unknown;
 };
@@ -151,29 +269,6 @@ type ProcessSharedMemoryAllocator = {
 
 // Keep idle workers self-healing if an Atomics.notify wake is missed.
 const DEFAULT_WORKER_PARK_MS = 1;
-
-const toPositiveInteger = (value: number | undefined): number | undefined => {
-  if (!Number.isFinite(value)) return undefined;
-  const int = Math.floor(value as number);
-  return int > 0 ? int : undefined;
-};
-
-const toNodeWorkerResourceLimits = (
-  limits: WorkerResourceLimits | undefined,
-): NodeWorkerResourceLimits | undefined => {
-  if (!limits) return undefined;
-  const out: NodeWorkerResourceLimits = {
-    maxOldGenerationSizeMb: toPositiveInteger(limits.maxOldGenerationSizeMb),
-    maxYoungGenerationSizeMb: toPositiveInteger(
-      limits.maxYoungGenerationSizeMb,
-    ),
-    codeRangeSizeMb: toPositiveInteger(limits.codeRangeSizeMb),
-    stackSizeMb: toPositiveInteger(limits.stackSizeMb),
-  };
-  return Object.values(out).some((value) => value !== undefined)
-    ? out
-    : undefined;
-};
 
 const withDefaultWorkerTimers = (
   options: WorkerSettings | undefined,
@@ -245,6 +340,608 @@ const createProcessSharedMemoryAllocator = (
   };
 };
 
+const PROCESS_WORKER_CHILD_FD = 0;
+const DEFAULT_BUN_BINARY = "bun";
+const DEFAULT_DENO_BINARY = "deno";
+const DEFAULT_NODE_BINARY = "node";
+const DENO_PROCESS_WORKER_BOOT_ENV_ALLOW = [
+  RUNTIME_PROCESS_WORKER_ENV,
+  RUNTIME_PROCESS_WORKER_BOOT_ENV,
+].join(",");
+const DENO_PROCESS_WORKER_INTERNAL_FLAGS = [
+  `--allow-env=${DENO_PROCESS_WORKER_BOOT_ENV_ALLOW}`,
+  "--allow-ffi",
+];
+const NODE_PROCESS_WORKER_EXEC_ARGV = [
+  "--no-warnings",
+  "--experimental-transform-types",
+];
+
+const withFixedPayloadConfig = (
+  config: ReturnType<typeof resolvePayloadBufferOptions>,
+): ReturnType<typeof resolvePayloadBufferOptions> => ({
+  ...config,
+  mode: "fixed",
+  payloadInitialBytes: config.payloadMaxByteLength,
+});
+
+const getProcessWorkerSharedMemoryPrimitives = () => {
+  switch (RUNTIME) {
+    case "bun":
+      return createBunConnectionPrimitives();
+    case "deno":
+      return createDenoConnectionPrimitives();
+    case "node":
+      return createNodeConnectionPrimitives();
+    default:
+      throw new Error(
+        "process worker runtime needs Node, Deno, or Bun shared memory primitives",
+      );
+  }
+};
+
+const createProcessWorkerMemoryLayout = ({
+  signalBytes,
+  abortBytes,
+  payloadBytes,
+  thread,
+}: {
+  signalBytes: number;
+  abortBytes: number;
+  payloadBytes: number;
+  thread: number;
+}): ProcessWorkerMemoryLayout => {
+  const carpet = createByteCarpet();
+  const signalsSlice = carpet.take("signals", signalBytes);
+  const requestLockSlice = carpet.take(
+    "requestLockSector",
+    LOCK_SECTOR_BYTE_LENGTH,
+  );
+  const returnLockSlice = carpet.take(
+    "returnLockSector",
+    LOCK_SECTOR_BYTE_LENGTH,
+  );
+  const requestHeadersSlice = carpet.take(
+    "requestHeaders",
+    getHeaderBlockByteLength({
+      slotCount: LockBound.slots,
+      slotStrideU32: HEADER_SLOT_STRIDE_U32,
+      alignTo: 64,
+    }),
+  );
+  const returnHeadersSlice = carpet.take(
+    "returnHeaders",
+    getHeaderBlockByteLength({
+      slotCount: LockBound.slots,
+      slotStrideU32: HEADER_SLOT_STRIDE_U32,
+      alignTo: 64,
+    }),
+  );
+  const abortSignalsSlice = carpet.take("abortSignals", abortBytes);
+  const requestPayloadSlice = carpet.take("requestPayload", payloadBytes);
+  const returnPayloadSlice = carpet.take("returnPayload", payloadBytes);
+
+  const primitives = getProcessWorkerSharedMemoryPrimitives();
+  const mapping = primitives.createSharedMemory({
+    size: carpet.byteLength(),
+    name: `knitting_process_worker_${thread}`,
+  });
+  const buffer = mapping.buffer;
+  const bind = (slice: ByteCarpetSlice) =>
+    makeSharedBufferRegion(buffer, slice.byteOffset, slice.byteLength);
+  const controlLayout: LockControlCarpet = {
+    controlSAB: buffer,
+    signals: bind(signalsSlice),
+    abortSignals: bind(abortSignalsSlice),
+    lock: {
+      headers: bind(requestHeadersSlice),
+      headerSlotStrideU32: HEADER_SLOT_STRIDE_U32,
+      lockSector: bind(requestLockSlice),
+      payloadSector: bind(requestLockSlice),
+    },
+    returnLock: {
+      headers: bind(returnHeadersSlice),
+      headerSlotStrideU32: HEADER_SLOT_STRIDE_U32,
+      lockSector: bind(returnLockSlice),
+      payloadSector: bind(returnLockSlice),
+    },
+    slices: carpet.slices,
+  };
+
+  return {
+    mapping,
+    descriptor: FileDescriptor.fromMapping(mapping),
+    controlLayout,
+    lockPayload: bind(requestPayloadSlice),
+    returnPayload: bind(returnPayloadSlice),
+  };
+};
+
+const toChildProcessSharedBufferMetadata = (
+  source: SharedBufferSource,
+  descriptor: FileDescriptor,
+): ProcessSharedBufferMetadata => {
+  const region = toSharedBufferRegion(source);
+  return ProcessSharedBuffer.fromDescriptor(
+    new FileDescriptor({
+      ...descriptor.toMetadata(),
+      fd: PROCESS_WORKER_CHILD_FD,
+    }),
+    {
+      byteOffset: region.byteOffset,
+      byteLength: region.byteLength,
+    },
+  ).toMetadata();
+};
+
+const toProcessWorkerWireLockBuffers = (
+  lock: LockBuffers,
+  descriptor: FileDescriptor,
+): ProcessWorkerWireLockBuffers => ({
+  ...lock,
+  headers: toChildProcessSharedBufferMetadata(lock.headers, descriptor),
+  lockSector: toChildProcessSharedBufferMetadata(lock.lockSector, descriptor),
+  payload: toChildProcessSharedBufferMetadata(lock.payload, descriptor),
+  payloadSector: toChildProcessSharedBufferMetadata(
+    lock.payloadSector,
+    descriptor,
+  ),
+});
+
+const toProcessWorkerBootPayload = (
+  workerData: WorkerData,
+  memory: ProcessWorkerMemoryLayout,
+): ProcessWorkerBootPayload => ({
+  version: RUNTIME_PROCESS_WORKER_BOOT_VERSION,
+  workerData: {
+    ...workerData,
+    sab: toChildProcessSharedBufferMetadata(workerData.sab, memory.descriptor),
+    abortSignalSAB: workerData.abortSignalSAB === undefined
+      ? undefined
+      : toChildProcessSharedBufferMetadata(
+        workerData.abortSignalSAB,
+        memory.descriptor,
+      ),
+    lock: toProcessWorkerWireLockBuffers(workerData.lock, memory.descriptor),
+    returnLock: toProcessWorkerWireLockBuffers(
+      workerData.returnLock,
+      memory.descriptor,
+    ),
+  },
+});
+
+const toProcessWorkerPath = (specifier: string | URL): string => {
+  const value = specifier instanceof URL ? specifier.href : specifier;
+  if (value.startsWith("file:")) return fileURLToPathCompat(value);
+  return value;
+};
+
+const readProcessWorkerRuntime = (
+  options: WorkerSettings | undefined,
+): ProcessWorkerRuntime => {
+  const runtime = options?.processRuntime ?? "bun";
+  if (runtime === "bun" || runtime === "deno" || runtime === "node") {
+    return runtime;
+  }
+  throw new TypeError(`Unsupported process worker runtime: ${String(runtime)}`);
+};
+
+const readProcessWorkerCommandPrefix = (
+  options: WorkerSettings | undefined,
+): ProcessWorkerCommandPrefix | undefined => {
+  const prefix = options?.processCommandPrefix;
+  if (prefix === undefined) return undefined;
+  if (!Array.isArray(prefix)) {
+    throw new TypeError("processCommandPrefix must be an argv array");
+  }
+  if (prefix.length === 0) return undefined;
+
+  const out: string[] = [];
+  for (const [index, value] of prefix.entries()) {
+    if (typeof value !== "string" || value.length === 0) {
+      throw new TypeError(
+        `processCommandPrefix[${index}] must be a non-empty string`,
+      );
+    }
+    out.push(value);
+  }
+  return out;
+};
+
+const currentProcessEnv = (): Record<string, string | undefined> => ({
+  ...getNodeProcess()?.env,
+});
+
+const processWorkerEnv = (
+  extra?: Record<string, string | undefined>,
+): Record<string, string | undefined> => ({
+  ...currentProcessEnv(),
+  [RUNTIME_PROCESS_WORKER_ENV]: "1",
+  ...extra,
+});
+
+const processWorkerBootEnv = (
+  bootPayload: ProcessWorkerBootPayload,
+): Record<string, string | undefined> =>
+  processWorkerEnv({
+    [RUNTIME_PROCESS_WORKER_BOOT_ENV]: JSON.stringify(bootPayload),
+  });
+
+const stringProcessEnv = (
+  input: Record<string, string | undefined>,
+): Record<string, string> => {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (value !== undefined) out[key] = value;
+  }
+  return out;
+};
+
+const processWorkerBunBinary = (bun?: BunRuntimeLike): string =>
+  getNodeProcess()?.env?.BUN_BINARY ??
+  bun?.argv?.[0] ??
+  DEFAULT_BUN_BINARY;
+
+const processWorkerDenoBinary = (deno?: DenoRuntimeLike): string =>
+  getNodeProcess()?.env?.DENO_BINARY ??
+  deno?.execPath?.() ??
+  DEFAULT_DENO_BINARY;
+
+const processWorkerDenoFlags = (
+  permission: WorkerData["permission"] | undefined,
+): string[] => {
+  if (permission?.enabled !== true || permission.unsafe === true) {
+    return ["-A"];
+  }
+  return [
+    ...DENO_PROCESS_WORKER_INTERNAL_FLAGS,
+    ...permission.deno.flags,
+  ];
+};
+
+const processWorkerNodeBinary = (): string => {
+  const nodeProcess = getNodeProcess();
+  return nodeProcess?.env?.NODE_BINARY ??
+    (RUNTIME === "node" ? nodeProcess?.execPath : undefined) ??
+    DEFAULT_NODE_BINARY;
+};
+
+const processWorkerNodeExecArgv = (): string[] => {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const add = (flag: string) => {
+    if (seen.has(flag)) return;
+    seen.add(flag);
+    out.push(flag);
+  };
+
+  for (const flag of toWorkerCompatExecArgv(getNodeProcess()?.execArgv) ?? []) {
+    add(flag);
+  }
+  for (const flag of NODE_PROCESS_WORKER_EXEC_ARGV) add(flag);
+  return out;
+};
+
+const processWorkerCommand = ({
+  processRuntime,
+  workerUrl,
+  bun,
+  deno,
+  commandPrefix,
+  permission,
+}: {
+  processRuntime: ProcessWorkerRuntime;
+  workerUrl: string | URL;
+  bun?: BunRuntimeLike;
+  deno?: DenoRuntimeLike;
+  commandPrefix?: ProcessWorkerCommandPrefix;
+  permission?: WorkerData["permission"];
+}): [string, ...string[]] => {
+  const workerPath = toProcessWorkerPath(workerUrl);
+  let command: [string, ...string[]];
+  if (processRuntime === "deno") {
+    command = [
+      processWorkerDenoBinary(deno),
+      "run",
+      ...processWorkerDenoFlags(permission),
+      workerPath,
+    ];
+  } else if (processRuntime === "node") {
+    command = [
+      processWorkerNodeBinary(),
+      ...processWorkerNodeExecArgv(),
+      workerPath,
+    ];
+  } else {
+    command = [processWorkerBunBinary(bun), workerPath];
+  }
+
+  return commandPrefix === undefined
+    ? command
+    : [...commandPrefix, ...command] as [string, ...string[]];
+};
+
+const createProcessWorkerNativeSignalNotifier = ({
+  processRuntime,
+  signal,
+}: {
+  processRuntime: ProcessWorkerRuntime | undefined;
+  signal: Int32Array;
+}): (() => void) | undefined => {
+  if (RUNTIME !== "node" || processRuntime !== "node") return undefined;
+
+  try {
+    const futex = loadNodeFutexAddon();
+    return () => {
+      futex.wakeU32(signal.buffer, signal.byteOffset, 1);
+    };
+  } catch {
+    return undefined;
+  }
+};
+
+const createProcessWorkerEventHub = () => {
+  const messageHandlers: Array<(message: unknown) => void> = [];
+  const errorHandlers: Array<(error: unknown) => void> = [];
+  const exitHandlers: Array<(code: unknown) => void> = [];
+
+  return {
+    emitMessage: (message: unknown) => {
+      for (const handler of messageHandlers) handler(message);
+    },
+    emitError: (error: unknown) => {
+      for (const handler of errorHandlers) handler(error);
+    },
+    emitExit: (code: unknown) => {
+      for (const handler of exitHandlers) handler(code);
+    },
+    on: (event: "error" | "exit" | "message", listener: (...args: unknown[]) => void) => {
+      if (event === "message") messageHandlers.push(listener);
+      if (event === "error") errorHandlers.push(listener);
+      if (event === "exit") exitHandlers.push(listener);
+    },
+  };
+};
+
+const spawnBunHostedProcessWorker = ({
+  workerUrl,
+  bootPayload,
+  memory,
+  processRuntime,
+  commandPrefix,
+  permission,
+}: {
+  workerUrl: string | URL;
+  bootPayload: ProcessWorkerBootPayload;
+  memory: ProcessWorkerMemoryLayout;
+  processRuntime: ProcessWorkerRuntime;
+  commandPrefix?: ProcessWorkerCommandPrefix;
+  permission?: WorkerData["permission"];
+}): SpawnedWorker & NodeWorkerLike => {
+  const bun = (globalThis as typeof globalThis & { Bun?: BunRuntimeLike }).Bun;
+  if (typeof bun?.spawn !== "function") {
+    throw new Error("Bun.spawn is not available for process workers");
+  }
+
+  const events = createProcessWorkerEventHub();
+  const nodeProcess = getNodeProcess();
+  const useIpcBoot = processRuntime === "bun" && commandPrefix === undefined;
+  const spawnOptions: BunSpawnOptions = {
+    cmd: processWorkerCommand({
+      processRuntime,
+      workerUrl,
+      bun,
+      commandPrefix,
+      permission,
+    }),
+    cwd: nodeProcess?.cwd?.(),
+    env: useIpcBoot
+      ? processWorkerEnv()
+      : processWorkerBootEnv(bootPayload),
+    stdin: memory.mapping.fd,
+    stdout: "inherit",
+    stderr: "inherit",
+    onExit: (_subprocess, exitCode, _signalCode, error) => {
+      if (error !== undefined) events.emitError(error);
+      events.emitExit(exitCode ?? -1);
+    },
+  };
+
+  if (useIpcBoot) {
+    spawnOptions.serialization = "advanced";
+    spawnOptions.ipc = (message) => {
+      events.emitMessage(message);
+    };
+  }
+
+  const child = bun.spawn(spawnOptions);
+
+  if (useIpcBoot) {
+    queueMicrotask(() => child.send?.(bootPayload));
+  }
+  child.exited.catch((error) => {
+    events.emitError(error);
+  });
+
+  return {
+    terminate: () => {
+      child.kill();
+      return child.exited.catch(() => undefined);
+    },
+    on: events.on,
+  };
+};
+
+const spawnNodeHostedProcessWorker = ({
+  workerUrl,
+  bootPayload,
+  memory,
+  processRuntime,
+  commandPrefix,
+  permission,
+}: {
+  workerUrl: string | URL;
+  bootPayload: ProcessWorkerBootPayload;
+  memory: ProcessWorkerMemoryLayout;
+  processRuntime: ProcessWorkerRuntime;
+  commandPrefix?: ProcessWorkerCommandPrefix;
+  permission?: WorkerData["permission"];
+}): SpawnedWorker & NodeWorkerLike => {
+  const childProcess =
+    getNodeBuiltinModule<NodeChildProcessModuleLike>("node:child_process");
+  if (typeof childProcess?.spawn !== "function") {
+    throw new Error("node:child_process.spawn is not available");
+  }
+
+  const events = createProcessWorkerEventHub();
+  const useIpcBoot = processRuntime === "bun" && commandPrefix === undefined;
+  const [command, ...args] = processWorkerCommand({
+    processRuntime,
+    workerUrl,
+    commandPrefix,
+    permission,
+  });
+  const child = childProcess.spawn(
+    command,
+    args,
+    {
+      cwd: getNodeProcess()?.cwd?.(),
+      env: useIpcBoot
+        ? processWorkerEnv()
+        : processWorkerBootEnv(bootPayload),
+      stdio: useIpcBoot
+        ? [memory.mapping.fd, "inherit", "inherit", "ipc"]
+        : [memory.mapping.fd, "inherit", "inherit"],
+    },
+  );
+
+  if (useIpcBoot) {
+    child.on("message", events.emitMessage);
+    queueMicrotask(() => child.send?.(bootPayload));
+  }
+  child.on("error", events.emitError);
+  child.on("exit", (code) => events.emitExit(code ?? -1));
+
+  return {
+    terminate: () => child.kill(),
+    on: events.on,
+  };
+};
+
+const getDenoRuntime = (): DenoRuntimeLike | undefined =>
+  (globalThis as typeof globalThis & { Deno?: DenoRuntimeLike }).Deno;
+
+const denoFileRid = (file: DenoFsFileLike): number => {
+  for (const symbol of Object.getOwnPropertySymbols(file)) {
+    if (String(symbol) === "Symbol(Deno.internal.rid)") {
+      const rid = file[symbol];
+      if (typeof rid === "number") return rid;
+    }
+  }
+  throw new Error("Deno FsFile resource id is not available");
+};
+
+const openDenoInheritedFd = (fd: number): DenoFsFileLike => {
+  const deno = getDenoRuntime();
+  if (typeof deno?.openSync !== "function") {
+    throw new Error("Deno.openSync is not available for process workers");
+  }
+  const fdPath = detectPosixPlatform() === "linux"
+    ? `/proc/self/fd/${fd}`
+    : `/dev/fd/${fd}`;
+  return deno.openSync(fdPath, { read: true, write: true });
+};
+
+const spawnDenoHostedProcessWorker = ({
+  workerUrl,
+  bootPayload,
+  memory,
+  processRuntime,
+  commandPrefix,
+  permission,
+}: {
+  workerUrl: string | URL;
+  bootPayload: ProcessWorkerBootPayload;
+  memory: ProcessWorkerMemoryLayout;
+  processRuntime: ProcessWorkerRuntime;
+  commandPrefix?: ProcessWorkerCommandPrefix;
+  permission?: WorkerData["permission"];
+}): SpawnedWorker & NodeWorkerLike => {
+  const deno = getDenoRuntime();
+  if (typeof deno?.Command !== "function") {
+    throw new Error("Deno.Command is not available for process workers");
+  }
+
+  const inheritedFd = openDenoInheritedFd(memory.mapping.fd);
+  const events = createProcessWorkerEventHub();
+  const [command, ...args] = processWorkerCommand({
+    processRuntime,
+    workerUrl,
+    deno,
+    commandPrefix,
+    permission,
+  });
+  const child = new deno.Command(command, {
+    args,
+    cwd: deno.cwd?.(),
+    env: stringProcessEnv(processWorkerBootEnv(bootPayload)),
+    stdin: denoFileRid(inheritedFd),
+    stdout: "inherit",
+    stderr: "inherit",
+  }).spawn();
+  const closeInheritedFd = () => {
+    try {
+      inheritedFd.close?.();
+    } catch {
+    }
+  };
+
+  child.status.then(
+    (status) => {
+      closeInheritedFd();
+      events.emitExit(status.code);
+    },
+    (error) => {
+      closeInheritedFd();
+      events.emitError(error);
+      events.emitExit(-1);
+    },
+  );
+
+  return {
+    terminate: () => {
+      try {
+        child.kill("SIGTERM");
+      } catch {
+      }
+      return child.status.finally(closeInheritedFd);
+    },
+    on: events.on,
+  };
+};
+
+const spawnProcessWorker = (
+  options: {
+    workerUrl: string | URL;
+    bootPayload: ProcessWorkerBootPayload;
+    memory: ProcessWorkerMemoryLayout;
+    processRuntime: ProcessWorkerRuntime;
+    commandPrefix?: ProcessWorkerCommandPrefix;
+    permission?: WorkerData["permission"];
+  },
+): SpawnedWorker & NodeWorkerLike => {
+  switch (RUNTIME) {
+    case "bun":
+      return spawnBunHostedProcessWorker(options);
+    case "node":
+      return spawnNodeHostedProcessWorker(options);
+    case "deno":
+      return spawnDenoHostedProcessWorker(options);
+    default:
+      throw new Error("process worker runtime is only available in Node, Deno, or Bun");
+  }
+};
+
 const terminateWorkerQuietly = (worker: SpawnedWorker): void => {
   try {
     void Promise.resolve(worker.terminate()).catch(() => {});
@@ -296,14 +993,23 @@ export const spawnWorkerContext = ({
 }) => {
   const tsFileUrl = new URL(import.meta.url);
   const poliWorker = RUNTIME_WORKER;
+  const resolvedWorkerOptions = withDefaultWorkerTimers(workerOptions);
+  const useProcessWorkerRuntime = resolvedWorkerOptions.runtime === "process";
+  const processWorkerRuntime = useProcessWorkerRuntime
+    ? readProcessWorkerRuntime(resolvedWorkerOptions)
+    : undefined;
+  const processWorkerCommandPrefix = useProcessWorkerRuntime
+    ? readProcessWorkerCommandPrefix(resolvedWorkerOptions)
+    : undefined;
 
   if (debug?.logHref === true) {
     console.log(tsFileUrl);
     jsrIsGreatAndWorkWithoutBugs();
   }
-  if (typeof poliWorker !== "function") {
+  if (!useProcessWorkerRuntime && typeof poliWorker !== "function") {
     throw new Error("Worker is not available in this runtime");
   }
+  const WorkerCtor = poliWorker as NonNullable<typeof poliWorker>;
 
   // Lock buffers must be shared between host and worker.
   const sanitizeBytes = (value: number | undefined) => {
@@ -311,7 +1017,7 @@ export const spawnWorkerContext = ({
     const bytes = Math.floor(value as number);
     return bytes > 0 ? bytes : undefined;
   };
-  const resolvedPayloadConfig = resolvePayloadBufferOptions({
+  const basePayloadConfig = resolvePayloadBufferOptions({
     options: {
       ...payload,
       mode: payload?.mode ?? bufferMode,
@@ -322,11 +1028,41 @@ export const spawnWorkerContext = ({
         sanitizeBytes(payloadMaxBytes),
     },
   });
-  const processSharedMemory = createProcessSharedMemoryAllocator(debug);
+  const resolvedPayloadConfig = useProcessWorkerRuntime
+    ? withFixedPayloadConfig(basePayloadConfig)
+    : basePayloadConfig;
+  const defaultAbortSignalCapacity = 258;
+  const requestedAbortSignalCapacity = sanitizeBytes(abortSignalCapacity);
+  const resolvedAbortSignalCapacity = requestedAbortSignalCapacity ??
+    defaultAbortSignalCapacity;
+  const abortSignalWords = Math.max(
+    1,
+    Math.ceil(resolvedAbortSignalCapacity / 32),
+  );
+  const requestedSignalBytes = sanitizeBytes(sab?.size);
+  const externalSignalSab = sab?.sharedSab;
+  if (useProcessWorkerRuntime && externalSignalSab != null) {
+    throw new Error("process worker runtime cannot use an external signal buffer");
+  }
+  const signalBytes = Math.max(
+    TRANSPORT_SIGNAL_BYTES,
+    requestedSignalBytes ?? TRANSPORT_SIGNAL_BYTES,
+  );
+  const abortBytes = abortSignalWords * Uint32Array.BYTES_PER_ELEMENT;
+  const processWorkerMemory = useProcessWorkerRuntime
+    ? createProcessWorkerMemoryLayout({
+      signalBytes,
+      abortBytes,
+      payloadBytes: resolvedPayloadConfig.payloadMaxByteLength,
+      thread,
+    })
+    : undefined;
+  const processSharedMemory = processWorkerMemory === undefined
+    ? createProcessSharedMemoryAllocator(debug)
+    : undefined;
   const createControlBuffer = processSharedMemory?.createBuffer ??
     createWasmSharedArrayBuffer;
   const createPayloadBuffer = processSharedMemory?.createBuffer;
-  const resolvedWorkerOptions = withDefaultWorkerTimers(workerOptions);
   const makePayloadBuffer = () =>
     createPayloadBuffer
       // ProcessSharedBuffer is fixed-size today, so reserve the configured
@@ -338,23 +1074,8 @@ export const spawnWorkerContext = ({
         resolvedPayloadConfig.payloadMaxByteLength,
       )
       : createSharedArrayBuffer(resolvedPayloadConfig.payloadInitialBytes);
-  const defaultAbortSignalCapacity = 258;
-  const requestedAbortSignalCapacity = sanitizeBytes(abortSignalCapacity);
-  const resolvedAbortSignalCapacity = requestedAbortSignalCapacity ??
-    defaultAbortSignalCapacity;
-  const abortSignalWords = Math.max(
-    1,
-    Math.ceil(resolvedAbortSignalCapacity / 32),
-  );
-  const requestedSignalBytes = sanitizeBytes(sab?.size);
-  const externalSignalSab = sab?.sharedSab;
 
   const makeLockControlLayout = () => {
-    const signalBytes = Math.max(
-      TRANSPORT_SIGNAL_BYTES,
-      requestedSignalBytes ?? TRANSPORT_SIGNAL_BYTES,
-    );
-    const abortBytes = abortSignalWords * Uint32Array.BYTES_PER_ELEMENT;
     // Keep the hottest control words in one compact front strip:
     // transport signals -> request lock -> return lock.
     // Request/return headers stay in separate contiguous slabs to preserve
@@ -371,8 +1092,9 @@ export const spawnWorkerContext = ({
     });
   };
 
-  const controlLayout = makeLockControlLayout();
-  const lockPayload = makePayloadBuffer();
+  const controlLayout = processWorkerMemory?.controlLayout ??
+    makeLockControlLayout();
+  const lockPayload = processWorkerMemory?.lockPayload ?? makePayloadBuffer();
   const lockBuffers: LockBuffers = {
     ...controlLayout.lock,
     payload: lockPayload,
@@ -381,7 +1103,8 @@ export const spawnWorkerContext = ({
       payload: lockPayload,
     }),
   };
-  const returnPayload = makePayloadBuffer();
+  const returnPayload = processWorkerMemory?.returnPayload ??
+    makePayloadBuffer();
   const returnLockBuffers: LockBuffers = {
     ...controlLayout.returnLock,
     payload: returnPayload,
@@ -431,6 +1154,10 @@ export const spawnWorkerContext = ({
     debug,
   });
   const signalBox = signals;
+  const nativeNotifySignal = createProcessWorkerNativeSignalNotifier({
+    processRuntime: processWorkerRuntime,
+    signal: signalBox.opView,
+  });
 
   const queue = createHostTxQueue({
     lock,
@@ -450,6 +1177,7 @@ export const spawnWorkerContext = ({
     queue,
     channelHandler,
     dispatcherOptions: host,
+    notifySignal: nativeNotifySignal,
     //thread,
     //debugSignal: debug?.logMain ?? false,
     //perf,
@@ -488,20 +1216,25 @@ export const spawnWorkerContext = ({
     type: "module";
     workerData: WorkerData;
     execArgv?: string[];
-    resourceLimits?: NodeWorkerResourceLimits;
   };
-  const nodeResourceLimits = toNodeWorkerResourceLimits(
-    resolvedWorkerOptions.resourceLimits,
-  );
-  const baseNodeWorkerOptions = nodeResourceLimits
-    ? { ...baseWorkerOptions, resourceLimits: nodeResourceLimits }
-    : baseWorkerOptions;
   const withExecArgv = workerExecArgv && workerExecArgv.length > 0
-    ? { ...baseNodeWorkerOptions, execArgv: workerExecArgv }
-    : baseNodeWorkerOptions;
-  if (HAS_NODE_WORKER_THREADS) {
+    ? { ...baseWorkerOptions, execArgv: workerExecArgv }
+    : baseWorkerOptions;
+  if (processWorkerMemory !== undefined) {
+    worker = spawnProcessWorker({
+      workerUrl,
+      bootPayload: toProcessWorkerBootPayload(
+        workerDataPayload,
+        processWorkerMemory,
+      ),
+      memory: processWorkerMemory,
+      processRuntime: processWorkerRuntime!,
+      commandPrefix: processWorkerCommandPrefix,
+      permission,
+    });
+  } else if (HAS_NODE_WORKER_THREADS) {
     try {
-      worker = new poliWorker(workerUrl, withExecArgv) as RuntimeWorkerLike;
+      worker = new WorkerCtor(workerUrl, withExecArgv) as RuntimeWorkerLike;
     } catch (error) {
       if (
         (error as { code?: string })?.code === "ERR_WORKER_INVALID_EXEC_ARGV"
@@ -509,9 +1242,9 @@ export const spawnWorkerContext = ({
         const fallbackExecArgv = toWorkerSafeExecArgv(withExecArgv.execArgv);
         if (fallbackExecArgv && fallbackExecArgv.length > 0) {
           try {
-            worker = new poliWorker(
+            worker = new WorkerCtor(
               workerUrl,
-              { ...baseNodeWorkerOptions, execArgv: fallbackExecArgv },
+              { ...baseWorkerOptions, execArgv: fallbackExecArgv },
             ) as RuntimeWorkerLike;
           } catch (fallbackError) {
             if (
@@ -521,20 +1254,20 @@ export const spawnWorkerContext = ({
               const compatExecArgv = toWorkerCompatExecArgv(fallbackExecArgv);
               if (compatExecArgv && compatExecArgv.length > 0) {
                 try {
-                  worker = new poliWorker(
+                  worker = new WorkerCtor(
                     workerUrl,
-                    { ...baseNodeWorkerOptions, execArgv: compatExecArgv },
+                    { ...baseWorkerOptions, execArgv: compatExecArgv },
                   ) as RuntimeWorkerLike;
                 } catch {
-                  worker = new poliWorker(
+                  worker = new WorkerCtor(
                     workerUrl,
-                    baseNodeWorkerOptions,
+                    baseWorkerOptions,
                   ) as RuntimeWorkerLike;
                 }
               } else {
-                worker = new poliWorker(
+                worker = new WorkerCtor(
                   workerUrl,
-                  baseNodeWorkerOptions,
+                  baseWorkerOptions,
                 ) as RuntimeWorkerLike;
               }
             } else {
@@ -542,9 +1275,9 @@ export const spawnWorkerContext = ({
             }
           }
         } else {
-          worker = new poliWorker(
+          worker = new WorkerCtor(
             workerUrl,
-            baseNodeWorkerOptions,
+            baseWorkerOptions,
           ) as RuntimeWorkerLike;
         }
       } else {
@@ -552,7 +1285,7 @@ export const spawnWorkerContext = ({
       }
     }
   } else {
-    worker = new poliWorker(
+    worker = new WorkerCtor(
       workerUrl,
       {
         type: "module",
@@ -620,6 +1353,9 @@ export const spawnWorkerContext = ({
   const a_add = Atomics.add;
   const a_load = Atomics.load;
   const a_notify = Atomics.notify;
+  const canNotifySignal = thisSignal.buffer instanceof SharedArrayBuffer;
+  const notifySignal = nativeNotifySignal ??
+    (canNotifySignal ? (() => a_notify(thisSignal, 0, 1)) : undefined);
   //const scheduleFastCheck = queueMicrotask;
 
   const send = () => {
@@ -632,7 +1368,7 @@ export const spawnWorkerContext = ({
     // Use opView as a wake counter in lock2 mode to avoid lost wakeups.
     if (a_load(signalBox.rxStatus, 0) === 0) {
       a_add(thisSignal, 0, 1);
-      a_notify(thisSignal, 0, 1);
+      notifySignal?.();
     }
   };
 

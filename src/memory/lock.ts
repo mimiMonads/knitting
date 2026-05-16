@@ -333,7 +333,7 @@ export const lock2 = ({
   headers?: SharedBufferSource;
   headerSlotStrideU32?: number;
   LockBoundSector?: SharedBufferSource;
-  payload?: SharedArrayBuffer;
+  payload?: SharedBufferSource;
   payloadConfig?: PayloadBufferOptions;
   payloadSector?: SharedBufferSource;
   textCompat?: LockBufferTextCompat;
@@ -383,7 +383,7 @@ export const lock2 = ({
     sab: payload,
     options: payloadConfig,
   });
-  const payloadSAB = payload ??
+  const payloadSAB: SharedBufferSource = payload ??
     (
       resolvedPayloadConfig.mode === "growable"
         ? createSharedArrayBuffer(

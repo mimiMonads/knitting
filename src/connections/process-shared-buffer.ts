@@ -1,13 +1,22 @@
-import type { SharedBufferRegion } from "../common/shared-buffer-region.ts";
+import type {
+  SharedBuffer,
+  SharedBufferRegion,
+} from "../common/shared-buffer-region.ts";
 import { getNodeBuiltinModule } from "../common/node-compat.ts";
 import {
   FileDescriptor,
   type FileDescriptorMetadata,
 } from "./file-descriptor.ts";
+import { RUNTIME } from "../common/runtime.ts";
+import { createBunConnectionPrimitives } from "./bun.ts";
+import { createDenoConnectionPrimitives } from "./deno.ts";
 import {
   type CreateSharedMemoryOptions,
   expectFd,
   expectPositiveSize,
+  readCreateMode,
+  readCreateName,
+  readRequiredCreateName,
   readCreateSize,
   type SharedMemoryConnectionPrimitives,
   type SharedMemoryMapping,
@@ -78,7 +87,7 @@ export type ProcessSharedBufferViewConstructor<
 > = {
   readonly BYTES_PER_ELEMENT: number;
   new (
-    buffer: SharedArrayBuffer,
+    buffer: SharedBuffer,
     byteOffset: number,
     length: number,
   ): View;
@@ -134,11 +143,16 @@ type DefaultNodeSharedMemoryNativeMapping = {
 };
 
 type DefaultNodeSharedMemoryAddon = {
-  createSharedMemory: (size: number) => DefaultNodeSharedMemoryNativeMapping;
+  createSharedMemory: (
+    size: number,
+    name?: string,
+    mode?: CreateSharedMemoryOptions["mode"],
+  ) => DefaultNodeSharedMemoryNativeMapping;
   mapSharedMemory: (
     fd: number,
     size: number,
   ) => DefaultNodeSharedMemoryNativeMapping;
+  unlinkSharedMemory?: (name: string) => boolean;
 };
 
 const DEFAULT_NODE_SHARED_MEMORY_ADDON =
@@ -175,7 +189,13 @@ const createDefaultNodePrimitives = (): ProcessSharedBufferPrimitives => {
   return {
     createSharedMemory: (options) => {
       const size = expectPositiveSize(readCreateSize(options));
-      return fromDefaultNodeNativeMapping(addon.createSharedMemory(size));
+      const mode = readCreateMode(options);
+      const name = mode === "anonymous"
+        ? readCreateName(options, "knitting_shared_memory")
+        : readRequiredCreateName(options);
+      return fromDefaultNodeNativeMapping(
+        addon.createSharedMemory(size, name, mode),
+      );
     },
     mapSharedMemory: (options) => {
       const fd = expectFd(options.fd);
@@ -183,6 +203,12 @@ const createDefaultNodePrimitives = (): ProcessSharedBufferPrimitives => {
       return fromDefaultNodeNativeMapping(addon.mapSharedMemory(fd, size));
     },
   };
+};
+
+const createDefaultPrimitives = (): ProcessSharedBufferPrimitives => {
+  if (RUNTIME === "bun") return createBunConnectionPrimitives();
+  if (RUNTIME === "deno") return createDenoConnectionPrimitives();
+  return createDefaultNodePrimitives();
 };
 
 export const setDefaultProcessSharedBufferPrimitives = (
@@ -193,7 +219,7 @@ export const setDefaultProcessSharedBufferPrimitives = (
 
 export const getDefaultProcessSharedBufferPrimitives =
   (): ProcessSharedBufferPrimitives => {
-    defaultPrimitives ??= createDefaultNodePrimitives();
+    defaultPrimitives ??= createDefaultPrimitives();
     return defaultPrimitives;
   };
 
@@ -365,9 +391,18 @@ export class ProcessSharedBuffer {
     return this.getSharedArrayBuffer(mapper);
   }
 
+  getBuffer(mapper?: ProcessSharedBufferMapper): SharedBuffer {
+    return this.descriptor.getBuffer(
+      mapper ??
+        (this.descriptor.mapping?.buffer === undefined
+          ? getDefaultProcessSharedBufferPrimitives()
+          : undefined),
+    );
+  }
+
   getRegion(mapper?: ProcessSharedBufferMapper): SharedBufferRegion {
     return {
-      sab: this.getSharedArrayBuffer(mapper),
+      sab: this.getBuffer(mapper),
       byteOffset: this.byteOffset,
       byteLength: this.byteLength,
     };
@@ -391,7 +426,7 @@ export class ProcessSharedBuffer {
     }
 
     return new constructor(
-      this.getSharedArrayBuffer(mapper),
+      this.getBuffer(mapper),
       this.byteOffset,
       this.byteLength / bytesPerElement,
     );
@@ -403,7 +438,7 @@ export class ProcessSharedBuffer {
 
   dataView(mapper?: ProcessSharedBufferMapper): DataView {
     return new DataView(
-      this.getSharedArrayBuffer(mapper),
+      this.getBuffer(mapper),
       this.byteOffset,
       this.byteLength,
     );

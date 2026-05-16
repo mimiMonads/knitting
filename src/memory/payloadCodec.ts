@@ -413,13 +413,13 @@ export const encodePayload = ({
 }: {
   lockSector?: SharedBufferSource;
   payload?: {
-    sab?: SharedArrayBuffer;
+    sab?: SharedBufferSource;
     config?: PayloadBufferOptions;
   };
   /**
    * @deprecated Use `payload.sab`.
    */
-  sab?: SharedArrayBuffer;
+  sab?: SharedBufferSource;
   /**
    * @deprecated Use `payload.config`.
    */
@@ -1336,13 +1336,13 @@ export const decodePayload = ({
 }: {
   lockSector?: SharedBufferSource;
   payload?: {
-    sab?: SharedArrayBuffer;
+    sab?: SharedBufferSource;
     config?: PayloadBufferOptions;
   };
   /**
    * @deprecated Use `payload.sab`.
    */
-  sab?: SharedArrayBuffer;
+  sab?: SharedBufferSource;
   /**
    * @deprecated Use `payload.config`.
    */

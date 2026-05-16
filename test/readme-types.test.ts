@@ -1,39 +1,43 @@
 import test from "node:test";
 import { createPool, importTask, task } from "../knitting.ts";
+import type { ProcessSharedBuffer } from "../process-shared-buffer.ts";
 
 type Assert<T extends true> = T;
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends
   (<T>() => T extends B ? 1 : 2) ? true
   : false;
 
-const hello = task({
-  f: async () => "hello",
+type ResizeInput = {
+  width: number;
+  height: number;
+};
+
+const square = task<number, number>({
+  f: (value) => value * value,
 });
 
-const world = task({
-  f: async () => "world",
+const greet = task<string, string>({
+  f: (name) => `hello ${name}`,
 });
 
-const slowTask = task({
-  abortSignal: { hasAborted: true },
-  f: async (value: string, signal) => {
-    if (signal.hasAborted()) return "aborted";
+const add = task<[number, number], number>({
+  f: ([a, b]) => a + b,
+});
+
+const pixels = task<ResizeInput, number>({
+  f: ({ width, height }) => width * height,
+});
+
+const maybeSlow = task<string, string>({
+  timeout: { time: 500, default: "timed out" },
+  f: async (value) => {
+    await new Promise((resolve) => setTimeout(resolve, 1));
     return value.toUpperCase();
   },
 });
 
-const abortMarkerTask = task({
-  abortSignal: true,
-  f: async (value: string) => value.toUpperCase(),
-});
-
 const numericTimeoutTask = task({
   timeout: 100,
-  f: async (value: string) => value.toUpperCase(),
-});
-
-const timeoutDefaultTask = task({
-  timeout: { time: 100, maybe: true, default: "timeout" },
   f: async (value: string) => value.toUpperCase(),
 });
 
@@ -54,122 +58,183 @@ task({
   f: async (value: string) => value.toUpperCase(),
 });
 
-const addFromWeb = importTask<[number, number], number>({
-  href: "https://knittingdocs.netlify.app/example-task.mjs",
+const countUntilStopped = task({
+  abortSignal: { hasAborted: true },
+  f: async (limit: number, signal) => {
+    for (let index = 0; index < limit; index += 1) {
+      if (signal.hasAborted()) return index;
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+
+    return limit;
+  },
+});
+
+const abortMarkerTask = task({
+  abortSignal: true,
+  f: async (value: string) => value.toUpperCase(),
+});
+
+const importedAdd = importTask<[number, number], number>({
+  href: new URL("./fixtures/worker-tasks.ts", import.meta.url).href,
   name: "add",
 });
 
-const wordStatsFromWeb = importTask<
-  { text: string },
-  { words: number; chars: number }
->({
-  href: "https://knittingdocs.netlify.app/example-task.mjs",
-  name: "wordStats",
-});
-
-const add = task<[number, number], number>({
-  f: async ([a, b]) => a + b,
+const readFirstCell = task<ProcessSharedBuffer, number>({
+  f: (buffer) => Atomics.load(buffer.view(Int32Array), 0),
 });
 
 const assertReadmeTypes = () => {
   const quickStartPool = createPool({ threads: 2 })({
-    hello,
-    world,
+    square,
+    greet,
   });
 
-  quickStartPool.call.hello();
-  quickStartPool.call.world();
-  // @ts-expect-error README zero-argument tasks should not accept host input.
-  quickStartPool.call.hello("extra");
+  quickStartPool.call.square(2);
+  quickStartPool.call.greet("knitting");
+  // @ts-expect-error README square task takes a number.
+  quickStartPool.call.square("2");
+  // @ts-expect-error README greet task takes a string.
+  quickStartPool.call.greet(42);
 
-  type _quickStartHelloReturn = Assert<
-    Equal<Awaited<ReturnType<typeof quickStartPool.call.hello>>, string>
+  type _quickStartSquareReturn = Assert<
+    Equal<Awaited<ReturnType<typeof quickStartPool.call.square>>, number>
+  >;
+  type _quickStartGreetReturn = Assert<
+    Equal<Awaited<ReturnType<typeof quickStartPool.call.greet>>, string>
   >;
 
-  const abortPool = createPool({ threads: 1 })({
-    slowTask,
-  });
+  const addPool = createPool({ threads: 4 })({ add });
 
-  abortPool.call.slowTask("hello");
-  abortPool.call.slowTask(Promise.resolve("hello"));
-  // @ts-expect-error README abort-aware task takes one string input.
-  abortPool.call.slowTask(1);
+  addPool.call.add([1, 2]);
+  addPool.call.add(Promise.resolve([1, 2] as [number, number]));
+  // @ts-expect-error README tuple task takes one tuple input.
+  addPool.call.add(1, 2);
 
-  type _abortTaskReturn = Assert<
-    Equal<Awaited<ReturnType<typeof abortPool.call.slowTask>>, string>
+  type _addReturn = Assert<
+    Equal<Awaited<ReturnType<typeof addPool.call.add>>, number>
   >;
 
-  const abortMarkerPool = createPool({ abortSignalCapacity: 8 })({
-    abortMarkerTask,
-  });
+  const pixelsPool = createPool({})({ pixels });
 
-  abortMarkerPool.call.abortMarkerTask("hello");
-  abortMarkerPool.call.abortMarkerTask(Promise.resolve("hello"));
-  // @ts-expect-error abortSignal true keeps the host input shape.
-  abortMarkerPool.call.abortMarkerTask();
+  pixelsPool.call.pixels({ width: 2, height: 3 });
+  // @ts-expect-error README object input requires width and height.
+  pixelsPool.call.pixels({ width: 2 });
 
-  type _abortMarkerReturn = Assert<
-    Equal<Awaited<ReturnType<typeof abortMarkerPool.call.abortMarkerTask>>, string>
+  type _pixelsReturn = Assert<
+    Equal<Awaited<ReturnType<typeof pixelsPool.call.pixels>>, number>
   >;
 
   const timeoutPool = createPool({ worker: { hardTimeoutMs: 1_000 } })({
+    maybeSlow,
     numericTimeoutTask,
-    timeoutDefaultTask,
     timeoutErrorTask,
   });
 
+  timeoutPool.call.maybeSlow("hello");
   timeoutPool.call.numericTimeoutTask("hello");
-  timeoutPool.call.timeoutDefaultTask("hello");
   timeoutPool.call.timeoutErrorTask("hello");
   // @ts-expect-error timeout metadata should not change the host input shape.
-  timeoutPool.call.numericTimeoutTask();
+  timeoutPool.call.maybeSlow();
 
+  type _maybeSlowReturn = Assert<
+    Equal<Awaited<ReturnType<typeof timeoutPool.call.maybeSlow>>, string>
+  >;
   type _numericTimeoutReturn = Assert<
     Equal<Awaited<ReturnType<typeof timeoutPool.call.numericTimeoutTask>>, string>
-  >;
-  type _timeoutDefaultReturn = Assert<
-    Equal<Awaited<ReturnType<typeof timeoutPool.call.timeoutDefaultTask>>, string>
   >;
   type _timeoutErrorReturn = Assert<
     Equal<Awaited<ReturnType<typeof timeoutPool.call.timeoutErrorTask>>, string>
   >;
 
-  const importPool = createPool({ threads: 2 })({
-    addFromWeb,
-    wordStatsFromWeb,
+  const abortPool = createPool({ abortSignalCapacity: 8 })({
+    countUntilStopped,
+    abortMarkerTask,
   });
 
-  importPool.call.addFromWeb([8, 5]);
-  importPool.call.addFromWeb(Promise.resolve([8, 5] as [number, number]));
-  // @ts-expect-error README importTask tuple input must be a tuple.
-  importPool.call.addFromWeb(8, 5);
+  abortPool.call.countUntilStopped(10);
+  abortPool.call.countUntilStopped(Promise.resolve(10));
+  // @ts-expect-error README abort-aware task takes one number input.
+  abortPool.call.countUntilStopped("10");
+
+  abortPool.call.abortMarkerTask("hello");
+  abortPool.call.abortMarkerTask(Promise.resolve("hello"));
+  // @ts-expect-error abortSignal true keeps the host input shape.
+  abortPool.call.abortMarkerTask();
+
+  type _abortTaskReturn = Assert<
+    Equal<Awaited<ReturnType<typeof abortPool.call.countUntilStopped>>, number>
+  >;
+  type _abortMarkerReturn = Assert<
+    Equal<Awaited<ReturnType<typeof abortPool.call.abortMarkerTask>>, string>
+  >;
+
+  const importPool = createPool({ threads: 2 })({
+    importedAdd,
+  });
+
+  importPool.call.importedAdd([2, 3]);
+  importPool.call.importedAdd(Promise.resolve([2, 3] as [number, number]));
+  // @ts-expect-error README importTask tuple input must be one tuple.
+  importPool.call.importedAdd(2, 3);
 
   type _importTupleReturn = Assert<
-    Equal<Awaited<ReturnType<typeof importPool.call.addFromWeb>>, number>
+    Equal<Awaited<ReturnType<typeof importPool.call.importedAdd>>, number>
   >;
 
-  importPool.call.wordStatsFromWeb({ text: "hello from remote tasks" });
-  importPool.call.wordStatsFromWeb(Promise.resolve({ text: "hello from remote tasks" }));
-  // @ts-expect-error README wordStats input requires a text property.
-  importPool.call.wordStatsFromWeb({});
+  const double = task<number, number>({
+    f: (value) => value * 2,
+  }).createPool({ threads: 2 });
 
-  type _importObjectReturn = Assert<
-    Equal<
-      Awaited<ReturnType<typeof importPool.call.wordStatsFromWeb>>,
-      { words: number; chars: number }
-    >
+  double.call(21);
+  // @ts-expect-error README single-task shorthand preserves input type.
+  double.call("21");
+
+  type _singleTaskReturn = Assert<
+    Equal<Awaited<ReturnType<typeof double.call>>, number>
   >;
 
-  const addPool = createPool({})({ add });
+  const sharedPool = createPool({ threads: 1 })({ readFirstCell });
+  const shared = null as unknown as ProcessSharedBuffer;
 
-  addPool.call.add([1, 2]);
-  addPool.call.add(Promise.resolve([1, 2] as [number, number]));
-  // @ts-expect-error README explicit tuple task takes one tuple input.
-  addPool.call.add(1, 2);
+  sharedPool.call.readFirstCell(shared);
+  // @ts-expect-error README shared-memory task expects ProcessSharedBuffer.
+  sharedPool.call.readFirstCell(new ArrayBuffer(4));
 
-  type _explicitTupleReturn = Assert<
-    Equal<Awaited<ReturnType<typeof addPool.call.add>>, number>
+  type _sharedReturn = Assert<
+    Equal<Awaited<ReturnType<typeof sharedPool.call.readFirstCell>>, number>
   >;
+
+  const configuredPool = createPool({
+    threads: 4,
+    balancer: "firstIdle",
+    payload: {
+      payloadMaxByteLength: 64 * 1024 * 1024,
+      maxPayloadBytes: 8 * 1024 * 1024,
+    },
+    worker: {
+      runtime: "process",
+      processRuntime: "node",
+      hardTimeoutMs: 1_000,
+      resolveAfterFinishingAll: true,
+    },
+    permission: {
+      mode: "strict",
+      allowImport: true,
+      read: ["./data"],
+      write: ["./out"],
+      net: ["api.example.com"],
+      env: { allow: ["NODE_ENV"] },
+      console: true,
+    },
+  })({ add });
+
+  configuredPool.call.add([1, 2]);
+
+  createPool({
+    // @ts-expect-error README balancer names are camelCase API strings.
+    balancer: "least-busy",
+  })({ add });
 };
 
 void assertReadmeTypes;

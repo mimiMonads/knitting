@@ -2,6 +2,13 @@ type PauseOptions = {
   pauseInNanoseconds?: number;
 };
 
+export type NativeWaitU32 = (
+  buffer: ArrayBuffer | SharedArrayBuffer,
+  byteOffset: number,
+  expected: number,
+  timeoutMs?: number,
+) => unknown;
+
 enum Comment {
   thisIsAHint = 0,
 }
@@ -44,6 +51,9 @@ const a_load = Atomics.load;
 const a_store = Atomics.store;
 const a_wait = typeof Atomics.wait === "function" ? Atomics.wait : undefined;
 const p_now = performance.now.bind(performance);
+const waitFallbackView = a_wait === undefined
+  ? undefined
+  : new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
 const a_pause: ((n: number) => void) | undefined = "pause" in Atomics
   ? (Atomics.pause as (n: number) => void)
   : undefined;
@@ -68,6 +78,8 @@ export const sleepUntilChanged = (
     txStatus,
     enqueueLock,
     write,
+    nativeWaitU32,
+    useSharedMemoryWait = true,
   }: {
     opView: Int32Array;
     rxStatus: Int32Array;
@@ -76,6 +88,8 @@ export const sleepUntilChanged = (
     at: number;
     enqueueLock: () => boolean;
     write?: () => number | boolean;
+    nativeWaitU32?: NativeWaitU32;
+    useSharedMemoryWait?: boolean;
   },
 ) => {
   const pause = pauseInNanoseconds
@@ -125,13 +139,28 @@ export const sleepUntilChanged = (
     if (tryProgress()) return;
 
     a_store(rxStatus, 0, 0);
-    
+
+    if (nativeWaitU32 !== undefined) {
+      nativeWaitU32(
+        opView.buffer,
+        opView.byteOffset + (at * Int32Array.BYTES_PER_ELEMENT),
+        value >>> 0,
+        parkMs ?? 60,
+      );
+    } else if (
+      useSharedMemoryWait &&
+      a_wait &&
+      opView.buffer instanceof SharedArrayBuffer
+    ) {
       a_wait!(
         opView,
         at,
         value,
         parkMs ?? 60,
       );
+    } else if (a_wait && waitFallbackView) {
+      a_wait(waitFallbackView, 0, 0, parkMs ?? 1);
+    }
   
 
     a_store(rxStatus, 0, 1);

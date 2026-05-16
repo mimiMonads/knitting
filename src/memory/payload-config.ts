@@ -3,6 +3,10 @@ import {
   isGrowableSharedArrayBuffer,
   sharedArrayBufferMaxByteLength,
 } from "../common/runtime.ts";
+import {
+  type SharedBufferSource,
+  toSharedBufferRegion,
+} from "../common/shared-buffer-region.ts";
 
 export const PAYLOAD_DEFAULT_MAX_BYTE_LENGTH = 64 * 1024 * 1024;
 export const PAYLOAD_DEFAULT_INITIAL_BYTES = 4 * 1024 * 1024;
@@ -29,16 +33,23 @@ const toPositiveInteger = (value: number | undefined): number | undefined => {
   return int > 0 ? int : undefined;
 };
 
-const canGrowSharedBuffer = (sab: SharedArrayBuffer | undefined): boolean => {
+type PayloadBackingBuffer = SharedArrayBuffer | ArrayBuffer;
+
+const canGrowSharedBuffer = (sab: PayloadBackingBuffer | undefined): boolean => {
   if (sab == null) return false;
-  return HAS_SAB_GROW && isGrowableSharedArrayBuffer(sab);
+  return sab instanceof SharedArrayBuffer &&
+    HAS_SAB_GROW &&
+    isGrowableSharedArrayBuffer(sab);
 };
 
 const sharedBufferMaxByteLength = (
-  sab: SharedArrayBuffer | undefined,
+  sab: PayloadBackingBuffer | undefined,
 ): number | undefined => {
   if (sab == null) return undefined;
-  return toPositiveInteger(sharedArrayBufferMaxByteLength(sab));
+  if (sab instanceof SharedArrayBuffer) {
+    return toPositiveInteger(sharedArrayBufferMaxByteLength(sab));
+  }
+  return toPositiveInteger(sab.byteLength);
 };
 
 export const resolvePayloadBufferOptions = ({
@@ -46,12 +57,14 @@ export const resolvePayloadBufferOptions = ({
   sab,
 }: {
   options?: PayloadBufferOptions;
-  sab?: SharedArrayBuffer;
+  sab?: PayloadBackingBuffer | SharedBufferSource;
 }): ResolvedPayloadBufferOptions => {
+  const sabRegion = sab === undefined ? undefined : toSharedBufferRegion(sab);
+  const backing = sabRegion?.sab;
   const requestedMode = options?.mode;
   const modeDefault: PayloadBufferMode = HAS_SAB_GROW ? "growable" : "fixed";
   let mode: PayloadBufferMode = requestedMode ?? modeDefault;
-  if (mode === "growable" && sab != null && !canGrowSharedBuffer(sab)) {
+  if (mode === "growable" && backing != null && !canGrowSharedBuffer(backing)) {
     mode = "fixed";
   }
   if (mode === "growable" && !HAS_SAB_GROW) {
@@ -60,7 +73,8 @@ export const resolvePayloadBufferOptions = ({
 
   const payloadMaxByteLength =
     toPositiveInteger(options?.payloadMaxByteLength) ??
-    sharedBufferMaxByteLength(sab) ??
+    toPositiveInteger(sabRegion?.byteLength) ??
+    sharedBufferMaxByteLength(backing) ??
     PAYLOAD_DEFAULT_MAX_BYTE_LENGTH;
 
   const requestedInitialBytes = toPositiveInteger(options?.payloadInitialBytes);

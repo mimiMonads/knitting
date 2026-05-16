@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import type { Buffer as NodeBuffer } from "node:buffer";
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
@@ -12,6 +12,12 @@ import {
   type SharedMemoryMapping,
 } from "../src/connections/index.ts";
 import { createNodeConnectionPrimitives } from "../src/connections/node.ts";
+import {
+  FD_CLOEXEC,
+  F_GETFD,
+  F_SETFD,
+  setCloseOnExec,
+} from "../src/connections/posix.ts";
 
 const addonPath = fileURLToPath(
   new URL("../build/Release/knitting_shared_memory.node", import.meta.url),
@@ -163,6 +169,26 @@ nativeFutexTest(
   },
 );
 
+test("close-on-exec helper programs shared-memory descriptors", () => {
+  const calls: Array<[number, number, number]> = [];
+  const libc = {
+    symbols: {
+      fcntl: (fd: number, cmd: number, arg: number) => {
+        calls.push([fd, cmd, arg]);
+        if (cmd === F_GETFD) return 0x20;
+        if (cmd === F_SETFD) return 0;
+        return -1;
+      },
+    },
+  };
+
+  assert.equal(setCloseOnExec(libc, 7), 7);
+  assert.deepEqual(calls, [
+    [7, F_GETFD, 0],
+    [7, F_SETFD, 0x20 | FD_CLOEXEC],
+  ]);
+});
+
 test("FileDescriptor stringifies and restores descriptor metadata", () => {
   const sab = new SharedArrayBuffer(64);
   const mapping: SharedMemoryMapping<SharedArrayBuffer> = {
@@ -231,6 +257,30 @@ nativeSharedMemoryTest(
 
     Atomics.store(restoredCells, 1, 42);
     assert.equal(Atomics.load(originalCells, 1), 42);
+  },
+);
+
+nativeSharedMemoryTest(
+  nativeTestName(
+    "shared memory fds are marked close-on-exec",
+    sharedMemoryAddonProbe,
+  ),
+  () => {
+    if (nodeProcess?.platform !== "linux") {
+      return;
+    }
+
+    const addon = sharedMemoryAddonProbe.addon;
+    assert.ok(addon !== undefined);
+
+    const primitives = createNodeConnectionPrimitives(addon);
+    const mapping = primitives.createSharedMemory(64);
+    const fdinfo = readFileSync(`/proc/self/fdinfo/${mapping.fd}`, "utf8");
+    const match = fdinfo.match(/^flags:\s+([0-7]+)/m);
+    assert.ok(match !== null, fdinfo);
+
+    const flags = Number.parseInt(match[1]!, 8);
+    assert.equal((flags & 0o2000000) !== 0, true, fdinfo);
   },
 );
 
