@@ -18,7 +18,6 @@ import {
   createSharedStaticBufferIO,
 } from "./createSharedBufferIO.ts";
 import { getStridedRegionSpanBytes } from "./byte-carpet.ts";
-import { IS_BROWSER } from "../common/runtime.ts";
 import { encoderError, ErrorKnitting } from "../error.ts";
 import { Envelope } from "../common/envelope.ts";
 import type { LockBufferTextCompat } from "../common/shared-buffer-text.ts";
@@ -55,33 +54,25 @@ const Float64View = new Float64Array(memory);
 const BigInt64View = new BigInt64Array(memory);
 const Uint32View = new Uint32Array(memory);
 const textEncode = new TextEncoder();
-const BROWSER_BUILD = (globalThis as typeof globalThis & {
-  __KNITTING_BROWSER_BUILD__?: boolean;
-}).__KNITTING_BROWSER_BUILD__ === true;
-const runtimeBufferClass = IS_BROWSER
-  ? undefined
-  : (globalThis as typeof globalThis & {
-    Buffer?: {
-      byteLength?: (value: string, encoding?: string) => number;
-      isBuffer?: (candidate: unknown) => boolean;
-    };
-  }).Buffer;
-const runtimeBufferByteLength = !IS_BROWSER &&
-    typeof runtimeBufferClass?.byteLength === "function"
+const runtimeBufferClass = (globalThis as typeof globalThis & {
+  Buffer?: {
+    byteLength?: (value: string, encoding?: string) => number;
+    isBuffer?: (candidate: unknown) => boolean;
+  };
+}).Buffer;
+const runtimeBufferByteLength = typeof runtimeBufferClass?.byteLength ===
+    "function"
   ? ((value: string, encoding?: string) =>
     runtimeBufferClass.byteLength!(value, encoding))
   : undefined;
 const isRuntimeBuffer = (value: unknown): value is Uint8Array =>
-  !IS_BROWSER &&
   typeof runtimeBufferClass?.isBuffer === "function" &&
   runtimeBufferClass.isBuffer(value);
-const isRuntimeUint8Array: (value: unknown) => value is Uint8Array = IS_BROWSER
-  ? ((value: unknown): value is Uint8Array => value instanceof Uint8Array)
-  : ((value: unknown): value is Uint8Array =>
-    value != null &&
-    typeof value === "object" &&
-    Object.getPrototypeOf(value) === Uint8Array.prototype);
-const utf8ByteLength = IS_BROWSER || !runtimeBufferByteLength
+const isRuntimeUint8Array = (value: unknown): value is Uint8Array =>
+  value != null &&
+  typeof value === "object" &&
+  Object.getPrototypeOf(value) === Uint8Array.prototype;
+const utf8ByteLength = !runtimeBufferByteLength
   ? (text: string): number => textEncode.encode(text).byteLength
   : (text: string): number => runtimeBufferByteLength(text, "utf8");
 const BIGINT64_MIN = -(1n << 63n);
@@ -117,7 +108,6 @@ const isPlainJsonObject = (value: object) => {
 };
 
 const readExternalPayloadCodecId = (value: object): string | undefined => {
-  if (BROWSER_BUILD) return undefined;
   const codecId = (value as Record<symbol, unknown>)[EXTERNAL_PAYLOAD_BRAND];
   return typeof codecId === "string" ? codecId : undefined;
 };
@@ -153,7 +143,6 @@ const isU32 = (value: unknown): value is number =>
   value <= 0xffffffff;
 
 const isExternalPayloadLike = (value: object): value is ExternalPayloadLike =>
-  !BROWSER_BUILD &&
   typeof (value as ExternalPayloadLike).toMetadata === "function" &&
   typeof (value as Record<symbol, unknown>)[EXTERNAL_PAYLOAD_BRAND] ===
     "string";
@@ -164,7 +153,7 @@ const decodeExternalPayload = (raw: string): unknown => {
 
   const codecId = payload[0];
   const metadata = payload[1];
-  if (typeof codecId !== "string" || BROWSER_BUILD || IS_BROWSER) {
+  if (typeof codecId !== "string") {
     return { codec: codecId, metadata };
   }
 
@@ -192,10 +181,6 @@ const readProcessSharedBufferNumericPayload = (
 
 const decodeProcessSharedBufferNumeric = (bytes: Uint8Array): unknown => {
   const metadata = readProcessSharedBufferNumericPayload(bytes);
-  if (BROWSER_BUILD || IS_BROWSER) {
-    return { codec: PROCESS_SHARED_BUFFER_CODEC_ID, metadata };
-  }
-
   const codec = externalPayloadGlobal.__KNITTING_PAYLOAD_CODECS__?.[
     PROCESS_SHARED_BUFFER_CODEC_ID
   ];
@@ -805,7 +790,6 @@ export const encodePayload = ({
     }
 
     if (
-      !BROWSER_BUILD &&
       codecId === PROCESS_SHARED_BUFFER_CODEC_ID &&
       tryEncodeProcessSharedBufferNumeric(
         task,

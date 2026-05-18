@@ -503,7 +503,6 @@ export const parseProcessSharedBufferMetadata = (
 };
 
 const processSharedBufferGlobal = globalThis as typeof globalThis & {
-  __KNITTING_BROWSER_BUILD__?: boolean;
   __KNITTING_PAYLOAD_CODECS__?: Record<
     string,
     {
@@ -513,20 +512,18 @@ const processSharedBufferGlobal = globalThis as typeof globalThis & {
   >;
 };
 
-if (processSharedBufferGlobal.__KNITTING_BROWSER_BUILD__ !== true) {
-  const codecs = processSharedBufferGlobal.__KNITTING_PAYLOAD_CODECS__ ??=
-    Object.create(null) as Record<
-      string,
-      {
-        decode: (metadata: unknown) => unknown;
-        decodeNumeric?: (metadata: ArrayLike<number>) => unknown;
-      } | undefined
-    >;
-  codecs[PROCESS_SHARED_BUFFER_CODEC_ID] = {
-    decode: (metadata) => ProcessSharedBuffer.fromMetadata(metadata),
-    decodeNumeric: (metadata) =>
-      ProcessSharedBuffer[PROCESS_SHARED_BUFFER_NUMERIC_TRANSFER](
-        metadata as ProcessSharedBufferNumericMetadata,
-      ),
-  };
-}
+const codecs = processSharedBufferGlobal.__KNITTING_PAYLOAD_CODECS__ ??=
+  Object.create(null) as Record<
+    string,
+    {
+      decode: (metadata: unknown) => unknown;
+      decodeNumeric?: (metadata: ArrayLike<number>) => unknown;
+    } | undefined
+  >;
+codecs[PROCESS_SHARED_BUFFER_CODEC_ID] = {
+  decode: (metadata) => ProcessSharedBuffer.fromMetadata(metadata),
+  decodeNumeric: (metadata) =>
+    ProcessSharedBuffer[PROCESS_SHARED_BUFFER_NUMERIC_TRANSFER](
+      metadata as ProcessSharedBufferNumericMetadata,
+    ),
+};

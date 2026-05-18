@@ -1,4 +1,4 @@
-import { pathToFileURLCompat } from "./node-compat.ts";
+import { pathToFileURL } from "node:url";
 
 const WINDOWS_DRIVE_PATH = /^[A-Za-z]:[\\/]/;
 const WINDOWS_UNC_PATH = /^\\\\[^\\/?]+\\[^\\/?]+/;
@@ -24,6 +24,6 @@ export const toModuleUrl = (specifier: string): string => {
   try {
     return new URL(specifier).href;
   } catch {
-    return pathToFileURLCompat(specifier).href;
+    return pathToFileURL(specifier).href;
   }
 };

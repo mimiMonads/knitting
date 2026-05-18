@@ -1,5 +1,6 @@
 // main.ts
 
+import { fileURLToPath as fileURLToPathCompat } from "node:url";
 import { createHostTxQueue } from "./tx-queue.ts";
 import {
   createSharedMemoryTransport,
@@ -56,7 +57,6 @@ import {
   resolvePayloadBufferOptions,
 } from "../memory/payload-config.ts";
 import {
-  fileURLToPathCompat,
   getNodeBuiltinModule,
   getNodeProcess,
 } from "../common/node-compat.ts";
@@ -1323,7 +1323,7 @@ export const spawnWorkerContext = ({
       markWorkerClosed(`Worker exited with code ${normalized}`);
     });
   } else {
-    const webWorker = worker as RuntimeWorkerLike & {
+    const eventWorker = worker as RuntimeWorkerLike & {
       addEventListener?: (
         type: string,
         listener: (
@@ -1332,18 +1332,18 @@ export const spawnWorkerContext = ({
       ) => void;
       onerror?: ((event: unknown) => void) | null;
     };
-    if (typeof webWorker.addEventListener === "function") {
-      webWorker.addEventListener("message", (event) => {
+    if (typeof eventWorker.addEventListener === "function") {
+      eventWorker.addEventListener("message", (event) => {
         onWorkerMessage(event?.data);
       });
-      webWorker.addEventListener("error", (event) => {
+      eventWorker.addEventListener("error", (event) => {
         onWorkerError(event?.error ?? event?.message ?? event);
       });
     } else {
-      webWorker.onmessage = (event) => {
+      eventWorker.onmessage = (event) => {
         onWorkerMessage(event?.data);
       };
-      webWorker.onerror = (event) => {
+      eventWorker.onerror = (event) => {
         onWorkerError(event);
       };
     }

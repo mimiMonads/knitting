@@ -328,11 +328,13 @@ const _pauseUntil = pauseUntil;
   scheduleMacro();
 }
 
-const isWebWorkerScope = (): boolean => {
-  const scopeCtor = (globalThis as { WorkerGlobalScope?: unknown }).WorkerGlobalScope;
+const isWorkerGlobalScope = (): boolean => {
+  const scopeCtor =
+    (globalThis as { WorkerGlobalScope?: unknown }).WorkerGlobalScope;
   if (typeof scopeCtor !== "function") return false;
   try {
-    return globalThis instanceof (scopeCtor as new (...args: unknown[]) => object);
+    return globalThis instanceof
+      (scopeCtor as new (...args: unknown[]) => object);
   } catch {
     return false;
   }
@@ -369,7 +371,7 @@ const isWorkerBootPayload = (value: unknown): value is WorkerData => {
     isLockBuffers(candidate.returnLock);
 };
 
-const installWebWorkerBootstrap = (): void => {
+const installWorkerGlobalBootstrap = (): void => {
   const g = globalThis as typeof globalThis & {
     addEventListener?: (
       type: string,
@@ -598,10 +600,13 @@ const installProcessWorkerBootstrap = (): void => {
 };
 
 
-if (RUNTIME_IS_MAIN_THREAD === false && isWorkerBootPayload(RUNTIME_WORKER_DATA)) {
+if (
+  RUNTIME_IS_MAIN_THREAD === false &&
+  isWorkerBootPayload(RUNTIME_WORKER_DATA)
+) {
   void workerMainLoop(RUNTIME_WORKER_DATA).catch(reportWorkerStartupFatal);
 } else if (RUNTIME_IS_PROCESS_WORKER) {
   installProcessWorkerBootstrap();
-} else if (isWebWorkerScope()) {
-  installWebWorkerBootstrap();
+} else if (isWorkerGlobalScope()) {
+  installWorkerGlobalBootstrap();
 }

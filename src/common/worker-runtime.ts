@@ -2,11 +2,6 @@ import { getNodeBuiltinModule, getNodeProcess } from "./node-compat.ts";
 
 type RuntimePortMessageHandler = (message: unknown) => void;
 
-const browserBuildFlag = () =>
-  (globalThis as typeof globalThis & {
-    __KNITTING_BROWSER_BUILD__?: boolean;
-  }).__KNITTING_BROWSER_BUILD__ === true;
-
 export type RuntimeMessagePortLike = {
   postMessage: (message: unknown) => void;
   close?: () => void;
@@ -60,13 +55,11 @@ const nodeProcess = getNodeProcess() as ProcessLikeWithIpc | undefined;
 export const RUNTIME_IS_PROCESS_WORKER =
   nodeProcess?.env?.[RUNTIME_PROCESS_WORKER_ENV] === "1";
 
-const workerThreads =
-  (globalThis as typeof globalThis & { __KNITTING_BROWSER_BUILD__?: boolean })
-      .__KNITTING_BROWSER_BUILD__ === true
-    ? undefined
-    : getNodeBuiltinModule<WorkerThreadsModuleLike>("node:worker_threads");
+const workerThreads = getNodeBuiltinModule<WorkerThreadsModuleLike>(
+  "node:worker_threads",
+);
 
-const isWebWorkerScope = (): boolean => {
+const isWorkerGlobalScope = (): boolean => {
   const scopeCtor =
     (globalThis as { WorkerGlobalScope?: unknown }).WorkerGlobalScope;
   if (typeof scopeCtor !== "function") return false;
@@ -85,44 +78,29 @@ type WorkerConstructorLike = new (
 
 type MessageChannelConstructorLike = new () => RuntimeMessageChannelLike;
 
-export const RUNTIME_WORKER = browserBuildFlag()
-  ? ((globalThis as unknown as { Worker?: WorkerConstructorLike }).Worker)
-  : workerThreads?.Worker ??
-    ((globalThis as unknown as { Worker?: WorkerConstructorLike }).Worker);
+export const RUNTIME_WORKER = workerThreads?.Worker ??
+  ((globalThis as unknown as { Worker?: WorkerConstructorLike }).Worker);
 
-export const RUNTIME_MESSAGE_CHANNEL = browserBuildFlag()
-  ? ((globalThis as unknown as {
+export const RUNTIME_MESSAGE_CHANNEL = workerThreads?.MessageChannel ??
+  ((globalThis as unknown as {
     MessageChannel?: MessageChannelConstructorLike;
   })
-    .MessageChannel)
-  : workerThreads?.MessageChannel ??
-    ((globalThis as unknown as {
-      MessageChannel?: MessageChannelConstructorLike;
-    })
-      .MessageChannel);
+    .MessageChannel);
 
-export const HAS_NODE_WORKER_THREADS = browserBuildFlag()
+export const HAS_NODE_WORKER_THREADS = workerThreads != null;
+
+export const RUNTIME_IS_MAIN_THREAD = RUNTIME_IS_PROCESS_WORKER
   ? false
-  : workerThreads != null;
+  : workerThreads?.isMainThread ?? !isWorkerGlobalScope();
 
-export const RUNTIME_IS_MAIN_THREAD = browserBuildFlag()
-  ? !isWebWorkerScope()
-  : RUNTIME_IS_PROCESS_WORKER
-  ? false
-  : workerThreads?.isMainThread ?? !isWebWorkerScope();
+export const RUNTIME_WORKER_DATA = workerThreads?.workerData;
 
-export const RUNTIME_WORKER_DATA = browserBuildFlag()
-  ? undefined
-  : workerThreads?.workerData;
-
-export const RUNTIME_PARENT_PORT = browserBuildFlag()
-  ? undefined
-  : workerThreads?.parentPort ??
-    (RUNTIME_IS_PROCESS_WORKER && typeof nodeProcess?.send === "function"
-      ? {
-        postMessage: (message: unknown) => nodeProcess.send!(message),
-      }
-      : undefined);
+export const RUNTIME_PARENT_PORT = workerThreads?.parentPort ??
+  (RUNTIME_IS_PROCESS_WORKER && typeof nodeProcess?.send === "function"
+    ? {
+      postMessage: (message: unknown) => nodeProcess.send!(message),
+    }
+    : undefined);
 
 export const createRuntimeMessageChannel = (): RuntimeMessageChannelLike => {
   if (typeof RUNTIME_MESSAGE_CHANNEL !== "function") {

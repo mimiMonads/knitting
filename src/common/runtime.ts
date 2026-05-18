@@ -6,9 +6,6 @@ type GlobalWithRuntimes = typeof globalThis & {
   Deno?: { version?: { deno?: string } };
   Bun?: { version?: string };
   setImmediate?: (cb: () => void) => void;
-  navigator?: { userAgent?: string };
-  document?: unknown;
-  WorkerGlobalScope?: unknown;
 };
 
 const globals = globalThis as GlobalWithRuntimes;
@@ -18,15 +15,6 @@ export const IS_DENO = typeof globals.Deno?.version?.deno === "string";
 export const IS_BUN = typeof globals.Bun?.version === "string";
 export const IS_NODE =
   typeof nodeProcess?.versions?.node === "string";
-export const IS_BROWSER =
-  !IS_DENO &&
-  !IS_BUN &&
-  !IS_NODE &&
-  (
-    typeof globals.document !== "undefined" ||
-    typeof globals.navigator !== "undefined" ||
-    typeof globals.WorkerGlobalScope === "function"
-  );
 
 export const RUNTIME = (
   IS_DENO ? "deno" : IS_BUN ? "bun" : IS_NODE ? "node" : "unknown"
