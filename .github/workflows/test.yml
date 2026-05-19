@@ -16,16 +16,25 @@ jobs:
       matrix:
         os:
           - ubuntu-latest
+          - macos-latest
           - windows-latest
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@v2
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
       - uses: denoland/setup-deno@v1
         with:
           deno-version: "2.x"
       - name: Install Deno dependencies
         run: deno install
+      - name: Build native addons
+        run: bun run build:native
       - name: Run Deno tests
         run: deno test -A --ignore=test/runtime.node.test.ts
 
@@ -37,9 +46,13 @@ jobs:
         include:
           - os: ubuntu-latest
             runtime: node
+          - os: macos-latest
+            runtime: node
           - os: windows-latest
             runtime: node
           - os: ubuntu-latest
+            runtime: bun
+          - os: macos-latest
             runtime: bun
     permissions:
       contents: read
@@ -49,7 +62,10 @@ jobs:
         with:
           node-version: "22"
       - uses: oven-sh/setup-bun@v2
-        if: matrix.runtime == 'bun'
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+      - name: Build native addons
+        run: bun run build:native
       - name: Run node:test suite on Node
         if: matrix.runtime == 'node'
         run: node --no-warnings --experimental-transform-types --test "./test/*.test.ts"
