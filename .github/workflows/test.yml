@@ -25,18 +25,13 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
-      - uses: oven-sh/setup-bun@v2
-      - uses: ilammy/msvc-dev-cmd@v1
-        if: runner.os == 'Windows'
       - uses: denoland/setup-deno@v1
         with:
           deno-version: "2.x"
       - name: Install Deno dependencies
         run: deno install
-      - name: Build native addons
-        run: bun run build:native
       - name: Run Deno tests
-        run: deno test -A --ignore=test/runtime.node.test.ts
+        run: npm run test:deno
 
   runtime-test:
     runs-on: ${{ matrix.os }}

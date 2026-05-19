@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 declare const Bun: {
@@ -19,6 +20,7 @@ type NodeInfo = {
   execPath: string;
   nodedir: string | null;
   platform: string;
+  version: string;
 };
 
 const textDecode = new TextDecoder();
@@ -64,9 +66,85 @@ const run = (cmd: string, args: string[]): void => {
 
 const nodeInfo = JSON.parse(runCapture(nodeBinary, [
   "-p",
-  "JSON.stringify({arch:process.arch,execPath:process.execPath,nodedir:process.config.variables.nodedir||null,platform:process.platform})",
+  "JSON.stringify({arch:process.arch,execPath:process.execPath,nodedir:process.config.variables.nodedir||null,platform:process.platform,version:process.versions.node})",
 ])) as NodeInfo;
 const isWindows = nodeInfo.platform === "win32";
+const cacheRoot = join(
+  resolve(
+    Bun.env.KNITTING_NODE_CACHE_DIR ??
+      Bun.env.RUNNER_TEMP ??
+      Bun.env.TEMP ??
+      Bun.env.TMPDIR ??
+      tmpdir(),
+  ),
+  "knitting-node",
+);
+
+const downloadFile = async (url: string, outputPath: string): Promise<void> => {
+  console.log(`Downloading ${url}`);
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(
+      `Download failed (${response.status} ${response.statusText}): ${url}`,
+    );
+  }
+
+  mkdirSync(dirname(outputPath), { recursive: true });
+  writeFileSync(outputPath, new Uint8Array(await response.arrayBuffer()));
+};
+
+const ensureDownloadedNodeHeaders = async (): Promise<string> => {
+  const version = `v${nodeInfo.version}`;
+  const headersRoot = join(cacheRoot, "headers", version);
+  const headersDir = join(
+    headersRoot,
+    `node-${version}`,
+    "include",
+    "node",
+  );
+
+  if (existsSync(join(headersDir, "node.h"))) {
+    return headersDir;
+  }
+
+  const archive = join(headersRoot, `node-${version}-headers.tar.gz`);
+  if (!existsSync(archive)) {
+    await downloadFile(
+      `https://nodejs.org/download/release/${version}/node-${version}-headers.tar.gz`,
+      archive,
+    );
+  }
+
+  mkdirSync(headersRoot, { recursive: true });
+  run("tar", ["-xzf", archive, "-C", headersRoot]);
+
+  if (!existsSync(join(headersDir, "node.h"))) {
+    throw new Error(`Downloaded Node headers did not contain ${headersDir}`);
+  }
+
+  return headersDir;
+};
+
+const nodeLibDownloadArch = (arch: string): string => {
+  if (arch === "x64" || arch === "arm64") return arch;
+  if (arch === "ia32") return "x86";
+  throw new Error(`Unsupported Windows Node architecture: ${arch}`);
+};
+
+const ensureDownloadedNodeLib = async (): Promise<string> => {
+  const version = `v${nodeInfo.version}`;
+  const arch = nodeLibDownloadArch(nodeInfo.arch);
+  const nodeLib = join(cacheRoot, "lib", version, `win-${arch}`, "node.lib");
+
+  if (!existsSync(nodeLib)) {
+    await downloadFile(
+      `https://nodejs.org/download/release/${version}/win-${arch}/node.lib`,
+      nodeLib,
+    );
+  }
+
+  return nodeLib;
+};
 
 const includeCandidates = [
   Bun.env.NODE_INCLUDE_DIR,
@@ -77,15 +155,12 @@ const includeCandidates = [
   "/usr/local/include/node",
 ].filter((value): value is string => typeof value === "string");
 
-const includeDir = includeCandidates.find((candidate) =>
+let includeDir = includeCandidates.find((candidate) =>
   existsSync(join(candidate, "node.h"))
 );
 
 if (includeDir === undefined) {
-  throw new Error(
-    `Unable to find Node headers for ${nodeInfo.execPath}. ` +
-      "Set NODE_INCLUDE_DIR=/path/to/include/node and retry.",
-  );
+  includeDir = await ensureDownloadedNodeHeaders();
 }
 
 const nodeLibCandidates = isWindows
@@ -104,15 +179,12 @@ const nodeLibCandidates = isWindows
     nodeInfo.nodedir ? join(nodeInfo.nodedir, "ia32", "node.lib") : undefined,
   ].filter((value): value is string => typeof value === "string")
   : [];
-const nodeLib = isWindows
+let nodeLib = isWindows
   ? nodeLibCandidates.find((candidate) => existsSync(candidate))
   : undefined;
 
 if (isWindows && nodeLib === undefined) {
-  throw new Error(
-    `Unable to find node.lib for ${nodeInfo.execPath}. ` +
-      "Set NODE_LIB_FILE=C:\\path\\to\\node.lib and retry.",
-  );
+  nodeLib = await ensureDownloadedNodeLib();
 }
 
 mkdirSync(outDir, { recursive: true });
