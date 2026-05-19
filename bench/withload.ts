@@ -1,6 +1,6 @@
 import { bench, boxplot, group, run as mitataRun, summary } from "mitata";
 import { createPool, isMain, task } from "../knitting.ts";
-import { format, print } from "./ulti/json-parse.ts";
+import { format, print } from "./util/json-parse.ts";
 
 export const fn = task({
   f: ([start, end]: [number, number]): number[] => {

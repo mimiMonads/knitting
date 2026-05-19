@@ -3,14 +3,14 @@ import { createPool, isMain, task } from "../knitting.ts";
 import { ProcessSharedBuffer } from "../process-shared-buffer.ts";
 import { TaskIndex } from "../src/memory/lock.ts";
 import type { Args } from "../src/types.ts";
-import { format, print } from "./ulti/json-parse.ts";
+import { format, print } from "./util/json-parse.ts";
 import {
   createPayloadSizeCases,
   createSharedTypePayloadCases,
   createStaticBoundaryCases,
   createStringLength3xCases,
   estimatePayloadBytes,
-} from "./ulti/type-payloads.ts";
+} from "./util/type-payloads.ts";
 
 export const echo = task<Args, Args>({
   f: (value) => value,

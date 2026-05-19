@@ -540,17 +540,13 @@ npm run test:bun
 npm run test:all
 ```
 
-Run smoke probes:
-
-```bash
-node smoke/runtime-probe.js
-```
-
 Emit JSON benchmark results:
 
 ```bash
 ./run.sh --json
 ```
+
+For a file-by-file orientation, see [map.md](./map.md).
 
 ## License
 

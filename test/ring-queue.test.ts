@@ -4,7 +4,7 @@ const assertEquals: (actual: unknown, expected: unknown) => void =
   (actual, expected) => {
     assert.deepStrictEqual(actual, expected);
   };
-import RingQueue from "../src/ipc/tools/RingQueue.ts";
+import RingQueue from "../src/ipc/tools/ring-queue.ts";
 
 test("shiftNoClear preserves FIFO order and size accounting", () => {
   const q = new RingQueue<number>(4);

@@ -1,6 +1,6 @@
 import { bench, do_not_optimize, group, run as mitataRun } from "mitata";
 import { createPool, isMain, task } from "../knitting.ts";
-import { format, print } from "./ulti/json-parse.ts";
+import { format, print } from "./util/json-parse.ts";
 
 const BATCH_SIZES = [1, 10, 100] as const;
 const WARMUP = 50;

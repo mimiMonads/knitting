@@ -1,11 +1,11 @@
-import RingQueue from "../ipc/tools/RingQueue.ts";
+import RingQueue from "../ipc/tools/ring-queue.ts";
 import {
   TaskFlag,
   TaskIndex,
   type Task,
   type Lock2,
 } from "../memory/lock.ts";
-import type { WorkerComposedWithKey } from "./get-functions.ts";
+import type { WorkerComposedWithKey } from "./task-loader.ts";
 import { composeWorkerRunner } from "./composable-runners.ts";
 import type {
   WorkerSettings,

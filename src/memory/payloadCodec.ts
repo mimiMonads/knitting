@@ -16,7 +16,7 @@ import { register } from "./regionRegistry.ts";
 import {
   createSharedDynamicBufferIO,
   createSharedStaticBufferIO,
-} from "./createSharedBufferIO.ts";
+} from "./shared-buffer-io.ts";
 import { getStridedRegionSpanBytes } from "./byte-carpet.ts";
 import { encoderError, ErrorKnitting } from "../error.ts";
 import { Envelope } from "../common/envelope.ts";

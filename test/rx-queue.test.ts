@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import RingQueue from "../src/ipc/tools/RingQueue.ts";
+import RingQueue from "../src/ipc/tools/ring-queue.ts";
 import { TaskFlag, TaskIndex, TASK_SLOT_META_VALUE_MASK, makeTask, setTaskSlotMeta, type Task } from "../src/memory/lock.ts";
 import { createWorkerRxQueue } from "../src/worker/rx-queue.ts";
 import { withResolvers } from "../src/common/with-resolvers.ts";

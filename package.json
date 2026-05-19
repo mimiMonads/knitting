@@ -13,6 +13,7 @@
   },
   "files": [
     "README.md",
+    "map.md",
     "LICENSE",
     "build/Release/*.node",
     "scripts/build-native-addons.ts",
@@ -33,7 +34,7 @@
     "test:runtimes": "npm run test:node && npm run test:bun",
     "test:all": "npm run test:deno && npm run test:runtimes",
     "coverage:node": "node --no-warnings --experimental-transform-types --experimental-test-coverage --test \"./test/*.test.ts\"",
-    "coverage:node:90": "node --no-warnings --experimental-transform-types --experimental-test-coverage --test-coverage-lines=90 --test-coverage-exclude=src/common/others.ts --test-coverage-exclude=src/ipc/protocol/parsers/NumericBuffer.ts --test-coverage-exclude=src/runtime/balancer.ts --test-coverage-exclude=src/worker/get-functions.ts --test \"./test/*.test.ts\"",
+    "coverage:node:90": "node --no-warnings --experimental-transform-types --experimental-test-coverage --test-coverage-lines=90 --test-coverage-exclude=src/common/task-source.ts --test-coverage-exclude=src/ipc/protocol/parsers/NumericBuffer.ts --test-coverage-exclude=src/runtime/balancer.ts --test-coverage-exclude=src/worker/task-loader.ts --test \"./test/*.test.ts\"",
     "bench": "./run.sh",
     "bench:json": "./run.sh --json"
   },

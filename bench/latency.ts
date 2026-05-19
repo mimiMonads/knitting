@@ -1,7 +1,7 @@
 import { bench, group, run as mitataRun } from "mitata";
 import { createPool, isMain, task } from "../knitting.ts";
 import { shutdownWorkers, toResolve } from "./postmessage/single.ts";
-import { format, print } from "./ulti/json-parse.ts";
+import { format, print } from "./util/json-parse.ts";
 
 export const inLine = task({
   f: (_: void) => {},

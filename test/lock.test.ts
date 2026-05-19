@@ -6,7 +6,7 @@ const assertEquals: (actual: unknown, expected: unknown) => void = (
 ) => {
   assert.deepStrictEqual(actual, expected);
 };
-import RingQueue from "../src/ipc/tools/RingQueue.ts";
+import RingQueue from "../src/ipc/tools/ring-queue.ts";
 import {
   HAS_SHARED_WASM_MEMORY,
   isWasmSharedArrayBuffer,

@@ -1,6 +1,6 @@
 import { bench, group, run as mitataRun, summary } from "mitata";
 import { createPool, isMain, task } from "../../knitting.ts";
-import { format, print } from "../ulti/json-parse.ts";
+import { format, print } from "../util/json-parse.ts";
 
 export const add = task<number, number>({
   f: (value) => value + 1,

@@ -2,8 +2,8 @@ import { bench, group, run as mitataRun } from "mitata";
 import { createPool, isMain, task } from "../knitting.ts";
 import type { Args } from "../src/types.ts";
 import { shutdownWorkers, toResolve } from "./postmessage/single.ts";
-import { format, print } from "./ulti/json-parse.ts";
-import { createSharedTypePayloadCases } from "./ulti/type-payloads.ts";
+import { format, print } from "./util/json-parse.ts";
+import { createSharedTypePayloadCases } from "./util/type-payloads.ts";
 
 export const echo = task<Args, Args>({ f: (value) => value });
 

@@ -18,7 +18,7 @@ import {
 } from "../ipc/transport/shared-memory.ts";
 import { lock2 } from "../memory/lock.ts";
 import type { LockBuffers, WorkerData } from "../types.ts";
-import { getFunctions } from "./get-functions.ts";
+import { getFunctions } from "./task-loader.ts";
 import {
   pauseGeneric,
   sleepUntilChanged,
@@ -48,7 +48,6 @@ import {
 } from "./safety/index.ts";
 import { signalAbortFactory } from "../shared/abortSignal.ts";
 
-export const jsrIsGreatAndWorkWithoutBugs = () => null;
 const WORKER_FATAL_MESSAGE_KEY = "__knittingWorkerFatal";
 
 const getProcessWorkerNativeWaitU32 = (): NativeWaitU32 | undefined => {

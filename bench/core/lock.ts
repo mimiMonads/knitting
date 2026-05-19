@@ -1,5 +1,5 @@
 import { bench, group, run as mitataRun } from "mitata";
-import RingQueue from "../../src/ipc/tools/RingQueue.ts";
+import RingQueue from "../../src/ipc/tools/ring-queue.ts";
 import {
   HEADER_BYTE_LENGTH,
   LOCK_SECTOR_BYTE_LENGTH,
@@ -9,7 +9,7 @@ import {
   TaskIndex,
   type Task,
 } from "../../src/memory/lock.ts";
-import { format, print } from "./../ulti/json-parse.ts";
+import { format, print } from "../util/json-parse.ts";
 
 const makeLock = () => lock2({});
 const makeLockWithBuffers = () => {

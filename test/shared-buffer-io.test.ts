@@ -10,7 +10,7 @@ const assertEquals: (actual: unknown, expected: unknown) => void = (
 import {
   createSharedDynamicBufferIO,
   createSharedStaticBufferIO,
-} from "../src/memory/createSharedBufferIO.ts";
+} from "../src/memory/shared-buffer-io.ts";
 import { probeSharedBufferTextCompat } from "../src/common/shared-buffer-text.ts";
 import {
   createLockControlCarpet,

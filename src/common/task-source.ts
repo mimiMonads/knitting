@@ -4,8 +4,8 @@ import type { NodeCallSiteLike } from "./node-compat.ts";
 export const genTaskID = ((counter: number) => () => counter++)(0);
 
 const INTERNAL_CALLER_HINTS = [
-  "/src/common/others.ts",
-  "\\src\\common\\others.ts",
+  "/src/common/task-source.ts",
+  "\\src\\common\\task-source.ts",
   "/src/api.ts",
   "\\src\\api.ts",
 ];

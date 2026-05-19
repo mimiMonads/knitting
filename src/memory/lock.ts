@@ -1,4 +1,4 @@
-import RingQueue from "../ipc/tools/RingQueue.ts";
+import RingQueue from "../ipc/tools/ring-queue.ts";
 import { decodePayload, encodePayload } from "./payloadCodec.ts";
 import {
   createSharedArrayBuffer,

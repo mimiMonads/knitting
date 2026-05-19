@@ -24,7 +24,7 @@ import type {
   WorkerData,
   WorkerSettings,
 } from "../types.ts";
-import { jsrIsGreatAndWorkWithoutBugs } from "../worker/loop.ts";
+import "../worker/loop.ts";
 import {
   createSharedArrayBuffer,
   createWasmSharedArrayBuffer,
@@ -1004,7 +1004,6 @@ export const spawnWorkerContext = ({
 
   if (debug?.logHref === true) {
     console.log(tsFileUrl);
-    jsrIsGreatAndWorkWithoutBugs();
   }
   if (!useProcessWorkerRuntime && typeof poliWorker !== "function") {
     throw new Error("Worker is not available in this runtime");
