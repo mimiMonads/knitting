@@ -42,6 +42,9 @@ import {
 
 const TEST_TIMEOUT_MS = 10_000;
 const NODE_BIN = process.versions.bun ? "node" : process.execPath;
+const WINDOWS_AWAKE_WORKER = process.platform === "win32"
+  ? { timers: { parkMs: 0 } }
+  : undefined;
 const NODE_CHILD_ARGS = (() => {
   const probe = spawnSync(
     NODE_BIN,
@@ -174,6 +177,7 @@ test("node:test pool round-trips core payloads", {
 }, async () => {
   const { call, shutdown } = createPool({
     threads: 2,
+    worker: WINDOWS_AWAKE_WORKER,
   })({
     toNumber,
     toString,
@@ -202,7 +206,10 @@ test("node:test pool awaits promise inputs", {
   concurrency: false,
   timeout: TEST_TIMEOUT_MS,
 }, async () => {
-  const pool = createPool({ threads: 1 })({ addOnePromise });
+  const pool = createPool({
+    threads: 1,
+    worker: WINDOWS_AWAKE_WORKER,
+  })({ addOnePromise });
 
   try {
     const value = await withTimeout(
@@ -219,7 +226,10 @@ test("node:test pool handles batched deferred object promise inputs", {
   concurrency: false,
   timeout: TEST_TIMEOUT_MS,
 }, async () => {
-  const pool = createPool({ threads: 1 })({ toObject });
+  const pool = createPool({
+    threads: 1,
+    worker: WINDOWS_AWAKE_WORKER,
+  })({ toObject });
 
   try {
     const inputs = Array.from({ length: 96 }, (_, i) => ({
@@ -245,7 +255,10 @@ test("node:test pool imports worker function via importTask href", {
   concurrency: false,
   timeout: TEST_TIMEOUT_MS,
 }, async () => {
-  const pool = createPool({ threads: 1 })({ addOneViaImportTask });
+  const pool = createPool({
+    threads: 1,
+    worker: WINDOWS_AWAKE_WORKER,
+  })({ addOneViaImportTask });
 
   try {
     const value = await withTimeout(
@@ -262,7 +275,10 @@ test("node:test pool rejects when worker cannot encode returned payload", {
   concurrency: false,
   timeout: TEST_TIMEOUT_MS,
 }, async () => {
-  const pool = createPool({ threads: 1 })({
+  const pool = createPool({
+    threads: 1,
+    worker: WINDOWS_AWAKE_WORKER,
+  })({
     returnLocalSymbol,
     returnFunction,
     returnWeakMap,
@@ -367,6 +383,7 @@ test("node:test permission unsafe mode allows unrestricted file access", {
   }
   const pool = createPool({
     threads: 1,
+    worker: WINDOWS_AWAKE_WORKER,
     permission: "unsafe",
   })({
     writeIntoNodeModules,
@@ -514,6 +531,7 @@ test("node:test default permission profile blocks child process execution", {
 
   const pool = createPool({
     threads: 1,
+    worker: WINDOWS_AWAKE_WORKER,
   })({
     spawnChildProcess,
   });
@@ -544,6 +562,7 @@ test("node:test worker keeps performance.now precise and tamper-resistant", {
 }, async () => {
   const pool = createPool({
     threads: 1,
+    worker: WINDOWS_AWAKE_WORKER,
   })({
     tamperPerformanceNow,
   });
@@ -570,6 +589,7 @@ test("node:test worker hard timeout force-shuts pool on runaway cpu loops", {
   const pool = createPool({
     threads: 1,
     worker: {
+      ...WINDOWS_AWAKE_WORKER,
       hardTimeoutMs: 100,
     },
   })({
