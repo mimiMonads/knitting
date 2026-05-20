@@ -45,6 +45,11 @@ const NODE_BIN = process.versions.bun ? "node" : process.execPath;
 const WINDOWS_AWAKE_WORKER = process.platform === "win32"
   ? { timers: { parkMs: 0 } }
   : undefined;
+const WINDOWS_HARD_TIMEOUT_SKIP_REASON = process.platform === "win32"
+  // The assertion passes on GitHub's Windows Node runner, but the terminated
+  // infinite-loop worker can stay alive afterward and stall the rest of CI.
+  ? "Windows Node can keep the terminated runaway worker alive"
+  : false;
 const NODE_CHILD_ARGS = (() => {
   const probe = spawnSync(
     NODE_BIN,
@@ -579,6 +584,7 @@ test("node:test worker keeps performance.now precise and tamper-resistant", {
 
 test("node:test worker hard timeout force-shuts pool on runaway cpu loops", {
   concurrency: false,
+  skip: WINDOWS_HARD_TIMEOUT_SKIP_REASON,
   timeout: TEST_TIMEOUT_MS,
 }, async () => {
   if (process.versions.bun) {
