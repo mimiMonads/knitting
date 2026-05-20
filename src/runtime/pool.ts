@@ -79,6 +79,7 @@ import type {
 
 type SpawnedWorker = {
   terminate: () => unknown;
+  unref?: () => unknown;
   postMessage?: (message: unknown) => void;
 };
 
@@ -138,6 +139,7 @@ type BunRuntimeLike = {
 type NodeChildProcessLike = {
   kill: (signal?: string | number) => unknown;
   send?: (message: unknown) => void;
+  unref?: () => unknown;
   on: (event: string, listener: (...args: unknown[]) => void) => void;
 };
 type NodeChildProcessModuleLike = {
@@ -824,6 +826,7 @@ const spawnNodeHostedProcessWorker = ({
 
   return {
     terminate: () => child.kill(),
+    unref: () => child.unref?.(),
     on: events.on,
   };
 };
@@ -944,6 +947,9 @@ const spawnProcessWorker = (
 
 const terminateWorkerQuietly = (worker: SpawnedWorker): void => {
   try {
+    // Runaway worker termination can be slow or stuck on some runtimes; once the
+    // pool is closing it must not keep the host process alive.
+    worker.unref?.();
     void Promise.resolve(worker.terminate()).catch(() => {});
   } catch {
   }
@@ -1394,10 +1400,7 @@ export const spawnWorkerContext = ({
     call,
     kills: async () => {
       markWorkerClosed("Thread closed");
-      try {
-        void Promise.resolve(worker.terminate()).catch(() => {});
-      } catch {
-      }
+      terminateWorkerQuietly(worker);
     },
     lock,
     processSharedMemoryBackings: processSharedMemory?.backings,
