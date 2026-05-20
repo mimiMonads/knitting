@@ -37,8 +37,12 @@ const hasCommand = (command: string): boolean => {
   }
 };
 
-const hasProcessRuntime = (command: "bun" | "deno" | "node"): boolean =>
-  hasCommand(command);
+const hasProcessRuntime = (command: "bun" | "deno" | "node"): boolean => {
+  // GitHub's Windows Node runner hangs when this suite spawns Bun as the
+  // process runtime, after the native-worker timeout test has already passed.
+  if (process.platform === "win32" && command === "bun") return false;
+  return hasCommand(command);
+};
 
 const runProcessWorkerSmoke = async (
   processRuntime: "bun" | "deno" | "node",
