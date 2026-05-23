@@ -210,15 +210,25 @@ signal storage when many abort-aware calls may be in flight.
 
 ### Importing worker-side functions
 
-`importTask` lets a worker import a function by URL or module path instead of
-shipping the function body through the task definition. This is handy when you
-want worker code to live in a normal module.
+`importTask` lets the worker import a normal function from another module. The
+host gets a typed task wrapper, but it does not import or evaluate that worker
+module itself.
+
+That matters for process workers and sandboxing: if the code is supposed to run
+inside the worker's permissions, keep it in a separate file and point
+`importTask()` at that file.
 
 ```ts
+// worker-tasks.ts
+export const add = ([left, right]: [number, number]) => left + right;
+```
+
+```ts
+// main.ts
 import { createPool, importTask, isMain } from "@vixeny/knitting";
 
 export const add = importTask<[number, number], number>({
-  href: new URL("./worker-tasks.ts", import.meta.url).href,
+  href: "./worker-tasks.ts",
   name: "add",
 });
 
@@ -232,6 +242,10 @@ if (isMain) {
   }
 }
 ```
+
+`href` can be a local relative path like `"./worker-tasks.ts"`, an absolute file
+path, or a URL. Relative paths are resolved from the module that calls
+`importTask()`.
 
 When workers import files, keep the pool's permission settings in mind. The
 default strict mode allows task imports, but custom permission policies can
@@ -314,6 +328,44 @@ const pool = createPool({
 `processRuntime` can be `"node"`, `"deno"`, or `"bun"`. You can also provide a
 `processCommandPrefix` when workers need to be launched through a wrapper such
 as a package manager, container command, or runtime shim.
+
+That prefix is also useful for sandbox and resource-control tools. The one
+important detail is that process workers receive their shared-memory handle on
+stdin, which is file descriptor 0. Wrappers that leave stdin alone usually work;
+wrappers that replace, close, or proxy stdin without passing the fd through will
+stop the worker from booting.
+
+When the goal is isolation, define the worker code with `importTask()` instead
+of importing the task function directly into the host. That keeps the code you
+want to isolate out of the host process; only the worker imports and runs it.
+
+For example, this runs Bun process workers through Bubblewrap while preserving
+the inherited fd:
+
+```ts
+const pool = createPool({
+  threads: 2,
+  worker: {
+    runtime: "process",
+    processRuntime: "bun",
+    processCommandPrefix: [
+      "bwrap",
+      "--unshare-all",
+      "--ro-bind",
+      "/",
+      "/",
+      "--dev-bind",
+      "/dev",
+      "/dev",
+      "--proc",
+      "/proc",
+      "--tmpfs",
+      "/tmp",
+      "--die-with-parent",
+    ],
+  },
+})({ add });
+```
 
 ## Permissions
 

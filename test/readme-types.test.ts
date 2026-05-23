@@ -2,6 +2,17 @@ import test from "node:test";
 import { createPool, importTask, task } from "../knitting.ts";
 import type { ProcessSharedBuffer } from "../process-shared-buffer.ts";
 
+const runtimeProcess = (globalThis as typeof globalThis & {
+  process?: {
+    platform?: string;
+    versions?: { bun?: string; node?: string };
+  };
+}).process;
+const isPlainNodeWindows = runtimeProcess?.platform === "win32" &&
+  typeof runtimeProcess.versions?.node === "string" &&
+  runtimeProcess.versions.bun === undefined &&
+  (globalThis as typeof globalThis & { Deno?: unknown }).Deno === undefined;
+
 type Assert<T extends true> = T;
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends
   (<T>() => T extends B ? 1 : 2) ? true
@@ -76,7 +87,7 @@ const abortMarkerTask = task({
 });
 
 const importedAdd = importTask<[number, number], number>({
-  href: new URL("./fixtures/worker-tasks.ts", import.meta.url).href,
+  href: "./fixtures/worker-tasks.ts",
   name: "add",
 });
 
@@ -239,4 +250,10 @@ const assertReadmeTypes = () => {
 
 void assertReadmeTypes;
 
-test("README examples type-check", () => {});
+// Tracking the Windows Node CI hang in
+// https://github.com/mimiMonads/knitting/issues/44.
+test("README examples type-check", {
+  skip: isPlainNodeWindows
+    ? "temporarily disabled on Windows Node; see #44"
+    : false,
+}, () => {});

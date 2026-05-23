@@ -393,6 +393,9 @@ type DispatcherSettings = {
 
 type CreatePool = {
   threads?: number;
+    /**
+   * @deprecated Too risky with processes, need to rewrite or delete.
+   */
   inliner?: Inliner;
   balancer?: Balancer;
   worker?: WorkerSettings;
