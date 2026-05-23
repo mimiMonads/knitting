@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import { createPool } from "../knitting.ts";
+import { loadNodeSharedMemoryAddon } from "../src/connections/node.ts";
 import {
   addOnePromise,
   reportIsMain,
@@ -10,6 +11,14 @@ import {
 import { spawnChildProcess } from "./fixtures/permission_tasks.ts";
 
 const TEST_TIMEOUT_MS = 10_000;
+const versions = (globalThis as typeof globalThis & {
+  process?: { versions?: { bun?: string; node?: string } };
+  Deno?: unknown;
+}).process?.versions;
+const isPlainNode = typeof versions?.node === "string" &&
+  versions.bun === undefined &&
+  (globalThis as typeof globalThis & { Deno?: unknown }).Deno === undefined;
+let nodeSharedMemoryAddonIsAvailable: boolean | undefined;
 
 const withTimeout = async <T>(promise: Promise<T>, ms: number): Promise<T> => {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -37,10 +46,23 @@ const hasCommand = (command: string): boolean => {
   }
 };
 
+const hasNodeSharedMemoryAddon = (): boolean => {
+  nodeSharedMemoryAddonIsAvailable ??= (() => {
+    try {
+      loadNodeSharedMemoryAddon();
+      return true;
+    } catch {
+      return false;
+    }
+  })();
+  return nodeSharedMemoryAddonIsAvailable;
+};
+
 const hasProcessRuntime = (command: "bun" | "deno" | "node"): boolean => {
   // GitHub's Windows Node runner hangs when this suite spawns Bun as the
   // process runtime, after the native-worker timeout test has already passed.
   if (process.platform === "win32" && command === "bun") return false;
+  if (isPlainNode && !hasNodeSharedMemoryAddon()) return false;
   return hasCommand(command);
 };
 
@@ -155,13 +177,6 @@ test("Node process worker wakes promptly from a parked native wait", {
   concurrency: false,
   timeout: TEST_TIMEOUT_MS,
 }, async () => {
-  const versions = (globalThis as typeof globalThis & {
-    process?: { versions?: { bun?: string; node?: string } };
-    Deno?: unknown;
-  }).process?.versions;
-  const isPlainNode = typeof versions?.node === "string" &&
-    versions.bun === undefined &&
-    (globalThis as typeof globalThis & { Deno?: unknown }).Deno === undefined;
   if (!isPlainNode || !hasProcessRuntime("node")) return;
 
   const pool = createPool({
