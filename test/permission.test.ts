@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import path from "node:path";
-import test from "node:test";
+import test from "./_runner.ts";
 import { pathToFileURL } from "node:url";
 import { resolvePermissionProtocol } from "../src/permission/index.ts";
 
@@ -336,7 +336,10 @@ test("resolvePermissionProtocol derives node booleans from top-level unified fie
   assert.equal(resolved.run.includes("node"), true);
   assert.equal(resolved.workers, true);
   assert.equal(resolved.ffiAll, false);
-  assert.equal(resolved.ffi.includes(path.resolve(cwd, "native-addon.node")), true);
+  assert.equal(
+    resolved.ffi.includes(path.resolve(cwd, "native-addon.node")),
+    true,
+  );
   assert.equal(resolved.wasi, true);
   assert.equal(resolved.node.allowChildProcess, true);
   assert.equal(resolved.node.allowWorker, true);
@@ -372,13 +375,18 @@ test("resolvePermissionProtocol emits deno flags for unified categories", () => 
   });
 
   assert.ok(resolved);
-  assert.equal(resolved.deno.flags.some((flag) => flag === "--allow-read"), true);
+  assert.equal(
+    resolved.deno.flags.some((flag) => flag === "--allow-read"),
+    true,
+  );
   assert.equal(
     resolved.deno.flags.some((flag) => flag.startsWith("--allow-write=")),
     true,
   );
   assert.equal(
-    resolved.deno.flags.some((flag) => flag === "--allow-net=api.example.com:443"),
+    resolved.deno.flags.some((flag) =>
+      flag === "--allow-net=api.example.com:443"
+    ),
     true,
   );
   assert.equal(
@@ -394,11 +402,15 @@ test("resolvePermissionProtocol emits deno flags for unified categories", () => 
     true,
   );
   assert.equal(
-    resolved.deno.flags.some((flag) => flag === "--deny-env=AWS_SECRET_ACCESS_KEY"),
+    resolved.deno.flags.some((flag) =>
+      flag === "--deny-env=AWS_SECRET_ACCESS_KEY"
+    ),
     true,
   );
   assert.equal(
-    resolved.deno.flags.some((flag) => flag.includes("--env-file=") && flag.includes(".env.production")),
+    resolved.deno.flags.some((flag) =>
+      flag.includes("--env-file=") && flag.includes(".env.production")
+    ),
     true,
   );
   assert.equal(

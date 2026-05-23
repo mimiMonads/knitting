@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test from "./_runner.ts";
 import { createPool } from "../knitting.ts";
 import { AbortSignalPoolExhausted } from "../src/shared/abortSignal.ts";
 import { abortA, abortB, abortC } from "./fixtures/abort_tasks.ts";

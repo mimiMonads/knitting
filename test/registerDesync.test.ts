@@ -1,15 +1,17 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test from "./_runner.ts";
 
-const assertEquals: (actual: unknown, expected: unknown) => void =
-  (actual, expected) => {
-    assert.deepStrictEqual(actual, expected);
-  };
+const assertEquals: (actual: unknown, expected: unknown) => void = (
+  actual,
+  expected,
+) => {
+  assert.deepStrictEqual(actual, expected);
+};
 
 import { register } from "../src/memory/regionRegistry.ts";
 import {
-  LockBound,
   LOCK_SECTOR_BYTE_LENGTH,
+  LockBound,
   makeTask,
   TaskIndex,
 } from "../src/memory/lock.ts";

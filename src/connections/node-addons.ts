@@ -4,9 +4,19 @@ export type NodeNativeAddonName =
   | "knitting_shared_memory"
   | "knitting_shm";
 
-const readNodePlatformArch = (): { platform: string; arch: string } | undefined => {
+type NodePlatformInfo = {
+  arch: string;
+  modules?: string;
+  platform: string;
+};
+
+const readNodePlatformInfo = (): NodePlatformInfo | undefined => {
   const processLike = (globalThis as typeof globalThis & {
-    process?: { platform?: string; arch?: string };
+    process?: {
+      platform?: string;
+      arch?: string;
+      versions?: { modules?: string };
+    };
   }).process;
   if (
     typeof processLike?.platform !== "string" ||
@@ -14,18 +24,30 @@ const readNodePlatformArch = (): { platform: string; arch: string } | undefined 
   ) {
     return undefined;
   }
-  return { platform: processLike.platform, arch: processLike.arch };
+  return {
+    arch: processLike.arch,
+    modules: processLike.versions?.modules,
+    platform: processLike.platform,
+  };
 };
 
 export const nodeNativeAddonSpecifiers = (
   name: NodeNativeAddonName,
 ): readonly string[] => {
-  const platformArch = readNodePlatformArch();
+  const platformInfo = readNodePlatformInfo();
   const fallback = `../../build/Release/${name}.node`;
-  if (platformArch === undefined) return [fallback];
+  if (platformInfo === undefined) return [fallback];
+
+  const nodeModuleAbi = platformInfo.modules;
+  if (typeof nodeModuleAbi === "string" && nodeModuleAbi.length > 0) {
+    return [
+      `../../prebuilds/${platformInfo.platform}-${platformInfo.arch}-node-${nodeModuleAbi}/${name}.node`,
+      fallback,
+    ];
+  }
 
   return [
-    `../../prebuilds/${platformArch.platform}-${platformArch.arch}/${name}.node`,
+    `../../prebuilds/${platformInfo.platform}-${platformInfo.arch}/${name}.node`,
     fallback,
   ];
 };

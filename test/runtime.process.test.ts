@@ -1,13 +1,10 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import test from "node:test";
+import test from "./_runner.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import { createPool } from "../knitting.ts";
 import { loadNodeSharedMemoryAddon } from "../src/connections/node.ts";
-import {
-  addOnePromise,
-  reportIsMain,
-} from "./fixtures/runtime_tasks.ts";
+import { addOnePromise, reportIsMain } from "./fixtures/runtime_tasks.ts";
 import { spawnChildProcess } from "./fixtures/permission_tasks.ts";
 
 const TEST_TIMEOUT_MS = 10_000;
@@ -19,6 +16,7 @@ const isPlainNode = typeof versions?.node === "string" &&
   versions.bun === undefined &&
   (globalThis as typeof globalThis & { Deno?: unknown }).Deno === undefined;
 let nodeSharedMemoryAddonIsAvailable: boolean | undefined;
+let nodeCommandSharedMemoryAddonIsAvailable: boolean | undefined;
 
 const withTimeout = async <T>(promise: Promise<T>, ms: number): Promise<T> => {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -58,12 +56,39 @@ const hasNodeSharedMemoryAddon = (): boolean => {
   return nodeSharedMemoryAddonIsAvailable;
 };
 
+const hasNodeCommandSharedMemoryAddon = (): boolean => {
+  nodeCommandSharedMemoryAddonIsAvailable ??= (() => {
+    const probe = spawnSync(
+      "node",
+      [
+        "--no-warnings",
+        "--experimental-transform-types",
+        "--input-type=module",
+        "--eval",
+        'const { loadNodeSharedMemoryAddon } = await import("./src/connections/node.ts"); loadNodeSharedMemoryAddon();',
+      ],
+      {
+        cwd: process.cwd(),
+        stdio: "ignore",
+      },
+    );
+    return probe.status === 0;
+  })();
+  return nodeCommandSharedMemoryAddonIsAvailable;
+};
+
 const hasProcessRuntime = (command: "bun" | "deno" | "node"): boolean => {
   // GitHub's Windows Node runner hangs when this suite spawns Bun as the
   // process runtime, after the native-worker timeout test has already passed.
   if (process.platform === "win32" && command === "bun") return false;
   if (isPlainNode && !hasNodeSharedMemoryAddon()) return false;
-  return hasCommand(command);
+  if (!hasCommand(command)) return false;
+  if (
+    command === "node" && !isPlainNode && !hasNodeCommandSharedMemoryAddon()
+  ) {
+    return false;
+  }
+  return true;
 };
 
 const runProcessWorkerSmoke = async (

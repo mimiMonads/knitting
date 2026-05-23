@@ -1,4 +1,4 @@
-import test from "node:test";
+import test from "./_runner.ts";
 import { createPool, importTask, task } from "../knitting.ts";
 import type { ProcessSharedBuffer } from "../process-shared-buffer.ts";
 
@@ -152,7 +152,10 @@ const assertReadmeTypes = () => {
     Equal<Awaited<ReturnType<typeof timeoutPool.call.maybeSlow>>, string>
   >;
   type _numericTimeoutReturn = Assert<
-    Equal<Awaited<ReturnType<typeof timeoutPool.call.numericTimeoutTask>>, string>
+    Equal<
+      Awaited<ReturnType<typeof timeoutPool.call.numericTimeoutTask>>,
+      string
+    >
   >;
   type _timeoutErrorReturn = Assert<
     Equal<Awaited<ReturnType<typeof timeoutPool.call.timeoutErrorTask>>, string>

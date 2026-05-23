@@ -15,20 +15,36 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            prebuild: linux-x64
+            node-version: "22"
+            prebuild: linux-x64-node-127
+          - os: ubuntu-latest
+            node-version: "24"
+            prebuild: linux-x64-node-137
           - os: windows-latest
-            prebuild: win32-x64
+            node-version: "22"
+            prebuild: win32-x64-node-127
+          - os: windows-latest
+            node-version: "24"
+            prebuild: win32-x64-node-137
           - os: macos-15-intel
-            prebuild: darwin-x64
+            node-version: "22"
+            prebuild: darwin-x64-node-127
+          - os: macos-15-intel
+            node-version: "24"
+            prebuild: darwin-x64-node-137
           - os: macos-latest
-            prebuild: darwin-arm64
+            node-version: "22"
+            prebuild: darwin-arm64-node-127
+          - os: macos-latest
+            node-version: "24"
+            prebuild: darwin-arm64-node-137
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          node-version: ${{ matrix.node-version }}
       - uses: oven-sh/setup-bun@v2
       - uses: ilammy/msvc-dev-cmd@v1
         if: runner.os == 'Windows'
@@ -55,19 +71,35 @@ jobs:
           deno-version: "2.x"
       - uses: actions/download-artifact@v4
         with:
-          name: native-linux-x64
-          path: prebuilds/linux-x64
+          name: native-linux-x64-node-127
+          path: prebuilds/linux-x64-node-127
       - uses: actions/download-artifact@v4
         with:
-          name: native-win32-x64
-          path: prebuilds/win32-x64
+          name: native-linux-x64-node-137
+          path: prebuilds/linux-x64-node-137
       - uses: actions/download-artifact@v4
         with:
-          name: native-darwin-x64
-          path: prebuilds/darwin-x64
+          name: native-win32-x64-node-127
+          path: prebuilds/win32-x64-node-127
       - uses: actions/download-artifact@v4
         with:
-          name: native-darwin-arm64
-          path: prebuilds/darwin-arm64
+          name: native-win32-x64-node-137
+          path: prebuilds/win32-x64-node-137
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-darwin-x64-node-127
+          path: prebuilds/darwin-x64-node-127
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-darwin-x64-node-137
+          path: prebuilds/darwin-x64-node-137
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-darwin-arm64-node-127
+          path: prebuilds/darwin-arm64-node-127
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-darwin-arm64-node-137
+          path: prebuilds/darwin-arm64-node-137
       - name: Publish
         run: deno publish --allow-dirty

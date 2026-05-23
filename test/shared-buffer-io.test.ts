@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { Buffer as NodeBuffer } from "node:buffer";
-import test from "node:test";
+import test from "./_runner.ts";
 const assertEquals: (actual: unknown, expected: unknown) => void = (
   actual,
   expected,
@@ -195,32 +195,36 @@ test("writeUtf8 handles long multibyte strings on the native path", () => {
   assertEquals(io.readUtf8(0, written), text);
 });
 
-test("probeSharedBufferTextCompat detects SAB rejection without mutating bytes", {
-  concurrency: false,
-}, async () => {
-  const sab = makeSab(16);
-  const probeStart = header + 3;
-  const view = new Uint8Array(sab, probeStart, 4);
-  view.set([9, 8, 7, 6]);
-  const before = Array.from(view);
+test(
+  "probeSharedBufferTextCompat detects SAB rejection without mutating bytes",
+  {
+    concurrency: false,
+  },
+  async () => {
+    const sab = makeSab(16);
+    const probeStart = header + 3;
+    const view = new Uint8Array(sab, probeStart, 4);
+    view.set([9, 8, 7, 6]);
+    const before = Array.from(view);
 
-  await withSharedMemoryEncodeIntoRejected(() =>
-    withSharedMemoryDecodeRejected(() => {
-      assertEquals(
-        probeSharedBufferTextCompat({
-          sab,
-          byteOffset: probeStart,
-          byteLength: view.byteLength,
-        }),
-        {
-          encodeInto: false,
-          decode: false,
-        },
-      );
-      assertEquals(Array.from(view), before);
-    })
-  );
-});
+    await withSharedMemoryEncodeIntoRejected(() =>
+      withSharedMemoryDecodeRejected(() => {
+        assertEquals(
+          probeSharedBufferTextCompat({
+            sab,
+            byteOffset: probeStart,
+            byteLength: view.byteLength,
+          }),
+          {
+            encodeInto: false,
+            decode: false,
+          },
+        );
+        assertEquals(Array.from(view), before);
+      })
+    );
+  },
+);
 
 test("dynamic fixed mode returns -1 on binary overflow", () => {
   const sab = new SharedArrayBuffer(header + 32);

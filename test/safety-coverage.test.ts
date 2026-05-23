@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import test from "node:test";
+import test from "./_runner.ts";
 import { fileURLToPath } from "node:url";
 import { withResolvers } from "../src/common/with-resolvers.ts";
 import {
@@ -29,7 +29,10 @@ const processGuardFallbackProbePath = fileURLToPath(
   new URL("./fixtures/probes/process_guard_fallback_probe.ts", import.meta.url),
 );
 const processGuardEarlyReturnProbePath = fileURLToPath(
-  new URL("./fixtures/probes/process_guard_early_return_probe.ts", import.meta.url),
+  new URL(
+    "./fixtures/probes/process_guard_early_return_probe.ts",
+    import.meta.url,
+  ),
 );
 
 const makeLockBuffers = (): LockBuffers => ({
@@ -60,7 +63,10 @@ test("withResolvers uses native Promise.withResolvers when available", {
     };
   };
   const descriptor = Object.getOwnPropertyDescriptor(ctor, "withResolvers");
-  if (!descriptor || (descriptor.configurable !== true && descriptor.writable !== true)) {
+  if (
+    !descriptor ||
+    (descriptor.configurable !== true && descriptor.writable !== true)
+  ) {
     return;
   }
 
@@ -92,35 +98,42 @@ test("withResolvers uses native Promise.withResolvers when available", {
   }
 });
 
-test("withResolvers falls back to Promise constructor when native helper is absent", {
-  concurrency: false,
-}, async () => {
-  const ctor = Promise as PromiseConstructor & { withResolvers?: unknown };
-  const descriptor = Object.getOwnPropertyDescriptor(ctor, "withResolvers");
-  if (!descriptor || (descriptor.configurable !== true && descriptor.writable !== true)) {
-    return;
-  }
+test(
+  "withResolvers falls back to Promise constructor when native helper is absent",
+  {
+    concurrency: false,
+  },
+  async () => {
+    const ctor = Promise as PromiseConstructor & { withResolvers?: unknown };
+    const descriptor = Object.getOwnPropertyDescriptor(ctor, "withResolvers");
+    if (
+      !descriptor ||
+      (descriptor.configurable !== true && descriptor.writable !== true)
+    ) {
+      return;
+    }
 
-  Object.defineProperty(ctor, "withResolvers", {
-    configurable: true,
-    writable: true,
-    value: undefined,
-  });
+    Object.defineProperty(ctor, "withResolvers", {
+      configurable: true,
+      writable: true,
+      value: undefined,
+    });
 
-  try {
-    const resolved = withResolvers<number>();
-    assert.equal(resolved.promise.reject, resolved.reject);
-    resolved.resolve(7);
-    assert.equal(await resolved.promise, 7);
+    try {
+      const resolved = withResolvers<number>();
+      assert.equal(resolved.promise.reject, resolved.reject);
+      resolved.resolve(7);
+      assert.equal(await resolved.promise, 7);
 
-    const rejected = withResolvers<void>();
-    assert.equal(rejected.promise.reject, rejected.reject);
-    rejected.promise.reject(new Error("fallback rejection"));
-    await assert.rejects(rejected.promise, /fallback rejection/);
-  } finally {
-    Object.defineProperty(ctor, "withResolvers", descriptor);
-  }
-});
+      const rejected = withResolvers<void>();
+      assert.equal(rejected.promise.reject, rejected.reject);
+      rejected.promise.reject(new Error("fallback rejection"));
+      await assert.rejects(rejected.promise, /fallback rejection/);
+    } finally {
+      Object.defineProperty(ctor, "withResolvers", descriptor);
+    }
+  },
+);
 
 test("startup guard accepts valid shared memory boot data", () => {
   assert.doesNotThrow(() => {
@@ -158,31 +171,35 @@ test("startup guard rejects missing shared memory boot buffers", () => {
   }, /worker missing return lock SABs/);
 });
 
-test("startup import assertion logs debug list and returns when imports exist", {
-  concurrency: false,
-}, () => {
-  const messages: unknown[] = [];
-  const originalLog = console.log;
-  console.log = (...args: unknown[]) => {
-    messages.push(...args);
-  };
+test(
+  "startup import assertion logs debug list and returns when imports exist",
+  {
+    concurrency: false,
+  },
+  () => {
+    const messages: unknown[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => {
+      messages.push(...args);
+    };
 
-  try {
-    assert.doesNotThrow(() => {
-      assertWorkerImportsResolved({
-        debug: { logImportedUrl: true },
-        list: ["./a.ts"],
-        ids: [1],
-        listOfFunctions: [() => 1],
+    try {
+      assert.doesNotThrow(() => {
+        assertWorkerImportsResolved({
+          debug: { logImportedUrl: true },
+          list: ["./a.ts"],
+          ids: [1],
+          listOfFunctions: [() => 1],
+        });
       });
-    });
-  } finally {
-    console.log = originalLog;
-  }
+    } finally {
+      console.log = originalLog;
+    }
 
-  assert.equal(messages.length, 1);
-  assert.deepEqual(messages[0], ["./a.ts"]);
-});
+    assert.equal(messages.length, 1);
+    assert.deepEqual(messages[0], ["./a.ts"]);
+  },
+);
 
 test("startup import assertion throws when no imports are resolved", {
   concurrency: false,
@@ -214,15 +231,27 @@ test("startup import assertion throws when no imports are resolved", {
 
 test("process guard probe covers direct install path", () => {
   const result = runProbe(processGuardDirectProbePath);
-  assert.equal(result.status, 0, `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+  assert.equal(
+    result.status,
+    0,
+    `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+  );
 });
 
 test("process guard probe covers Object.defineProperty fallback path", () => {
   const result = runProbe(processGuardFallbackProbePath);
-  assert.equal(result.status, 0, `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+  assert.equal(
+    result.status,
+    0,
+    `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+  );
 });
 
 test("process guard probe covers early-return path when process is unavailable", () => {
   const result = runProbe(processGuardEarlyReturnProbePath);
-  assert.equal(result.status, 0, `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`);
+  assert.equal(
+    result.status,
+    0,
+    `stdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+  );
 });

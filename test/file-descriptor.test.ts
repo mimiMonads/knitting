@@ -3,7 +3,7 @@ import type { Buffer as NodeBuffer } from "node:buffer";
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import test from "node:test";
+import test from "./_runner.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import {
@@ -13,9 +13,9 @@ import {
 } from "../src/connections/index.ts";
 import { createNodeConnectionPrimitives } from "../src/connections/node.ts";
 import {
-  FD_CLOEXEC,
   F_GETFD,
   F_SETFD,
+  FD_CLOEXEC,
   setCloseOnExec,
 } from "../src/connections/posix.ts";
 
@@ -42,9 +42,14 @@ const nativeFdTestsAreEnabled = nodeProcess?.platform === "linux" ||
 const nativeAddonPaths = (name: string): readonly string[] => {
   const platform = nodeProcess?.platform;
   const arch = nodeProcess?.arch;
-  const candidates = platform !== undefined && arch !== undefined
+  const modules = nodeProcess?.versions.modules;
+  const prebuildDir = platform !== undefined && arch !== undefined &&
+      modules !== undefined
+    ? `${platform}-${arch}-node-${modules}`
+    : undefined;
+  const candidates = prebuildDir !== undefined
     ? [
-      new URL(`../prebuilds/${platform}-${arch}/${name}.node`, import.meta.url),
+      new URL(`../prebuilds/${prebuildDir}/${name}.node`, import.meta.url),
       new URL(`../build/Release/${name}.node`, import.meta.url),
     ]
     : [new URL(`../build/Release/${name}.node`, import.meta.url)];

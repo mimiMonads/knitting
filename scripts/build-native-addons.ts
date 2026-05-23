@@ -18,6 +18,7 @@ declare const Bun: {
 type NodeInfo = {
   arch: string;
   execPath: string;
+  modules: string;
   nodedir: string | null;
   platform: string;
   version: string;
@@ -66,7 +67,7 @@ const run = (cmd: string, args: string[]): void => {
 
 const nodeInfo = JSON.parse(runCapture(nodeBinary, [
   "-p",
-  "JSON.stringify({arch:process.arch,execPath:process.execPath,nodedir:process.config.variables.nodedir||null,platform:process.platform,version:process.versions.node})",
+  "JSON.stringify({arch:process.arch,execPath:process.execPath,modules:process.versions.modules,nodedir:process.config.variables.nodedir||null,platform:process.platform,version:process.versions.node})",
 ])) as NodeInfo;
 const isWindows = nodeInfo.platform === "win32";
 const cacheRoot = join(
@@ -234,10 +235,11 @@ const addons = [
 const prebuildDir = join(
   root,
   "prebuilds",
-  `${nodeInfo.platform}-${nodeInfo.arch}`,
+  `${nodeInfo.platform}-${nodeInfo.arch}-node-${nodeInfo.modules}`,
 );
 
 console.log(`Using Node: ${nodeInfo.execPath}`);
+console.log(`Using Node module ABI: ${nodeInfo.modules}`);
 console.log(`Using headers: ${includeDir}`);
 console.log(`Using compiler: ${cxx}`);
 if (nodeLib !== undefined) console.log(`Using node.lib: ${nodeLib}`);

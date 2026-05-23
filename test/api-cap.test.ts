@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test from "./_runner.ts";
 import { createPool } from "../knitting.ts";
 
 test("createPool rejects more than Uint16 function ids", () => {

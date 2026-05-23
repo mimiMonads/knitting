@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test from "./_runner.ts";
 const assertEquals: (actual: unknown, expected: unknown) => void = (
   actual,
   expected,
