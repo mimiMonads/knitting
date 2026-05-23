@@ -10,6 +10,7 @@ import {
 import { RUNTIME } from "../common/runtime.ts";
 import { createBunConnectionPrimitives } from "./bun.ts";
 import { createDenoConnectionPrimitives } from "./deno.ts";
+import { loadNodeNativeAddon } from "./node-addons.ts";
 import {
   type CreateSharedMemoryOptions,
   expectFd,
@@ -155,9 +156,6 @@ type DefaultNodeSharedMemoryAddon = {
   unlinkSharedMemory?: (name: string) => boolean;
 };
 
-const DEFAULT_NODE_SHARED_MEMORY_ADDON =
-  "../../build/Release/knitting_shared_memory.node";
-
 let defaultPrimitives: ProcessSharedBufferPrimitives | undefined;
 
 const fromDefaultNodeNativeMapping = (
@@ -182,9 +180,10 @@ const createDefaultNodePrimitives = (): ProcessSharedBufferPrimitives => {
   }
 
   const require = nodeModule.createRequire(import.meta.url);
-  const addon = require(
-    DEFAULT_NODE_SHARED_MEMORY_ADDON,
-  ) as DefaultNodeSharedMemoryAddon;
+  const addon = loadNodeNativeAddon<DefaultNodeSharedMemoryAddon>(
+    require,
+    "knitting_shared_memory",
+  );
 
   return {
     createSharedMemory: (options) => {

@@ -19,12 +19,6 @@ import {
   setCloseOnExec,
 } from "../src/connections/posix.ts";
 
-const addonPath = fileURLToPath(
-  new URL("../build/Release/knitting_shared_memory.node", import.meta.url),
-);
-const futexAddonPath = fileURLToPath(
-  new URL("../build/Release/knitting_shm.node", import.meta.url),
-);
 const futexChildPath = fileURLToPath(
   new URL(
     "./fixtures/probes/file_descriptor_futex_child.ts",
@@ -45,6 +39,17 @@ const nodeProcess = isPlainNode
 const nativeFdTestsAreEnabled = nodeProcess?.platform === "linux" ||
   nodeProcess?.platform === "win32" ||
   nodeProcess?.env.KNITTING_EXPERIMENTAL_NATIVE_FD_TESTS === "1";
+const nativeAddonPaths = (name: string): readonly string[] => {
+  const platform = nodeProcess?.platform;
+  const arch = nodeProcess?.arch;
+  const candidates = platform !== undefined && arch !== undefined
+    ? [
+      new URL(`../prebuilds/${platform}-${arch}/${name}.node`, import.meta.url),
+      new URL(`../build/Release/${name}.node`, import.meta.url),
+    ]
+    : [new URL(`../build/Release/${name}.node`, import.meta.url)];
+  return candidates.map((url) => fileURLToPath(url));
+};
 
 type SharedMemoryAddon = {
   createSharedMemory: (size: number) => {
@@ -79,6 +84,7 @@ type FutexAddon = {
 
 type NativeAddonProbe<T> = {
   addon?: T;
+  path?: string;
   skipReason?: string;
 };
 
@@ -104,18 +110,19 @@ const nativeCrossProcessFdGateReason = (): string | undefined => {
 };
 
 const probeNativeAddon = <T>(
-  path: string,
+  paths: readonly string[],
   label: string,
   gateReason = nativeFdGateReason(),
 ): NativeAddonProbe<T> => {
   if (gateReason !== undefined) return { skipReason: gateReason };
 
-  if (!existsSync(path)) {
-    return { skipReason: `${label} addon is not built` };
+  const path = paths.find((candidate) => existsSync(candidate));
+  if (path === undefined) {
+    return { skipReason: `${label} addon is not prebuilt or built` };
   }
 
   try {
-    return { addon: require(path) as T };
+    return { addon: require(path) as T, path };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return { skipReason: `${label} addon could not load: ${message}` };
@@ -128,15 +135,15 @@ const nativeTestName = (name: string, probe: NativeAddonProbe<unknown>) =>
     : `${name} [native fd skipped: ${probe.skipReason}]`;
 
 const sharedMemoryAddonProbe = probeNativeAddon<SharedMemoryAddon>(
-  addonPath,
+  nativeAddonPaths("knitting_shared_memory"),
   "shared memory",
 );
 const futexAddonProbe = probeNativeAddon<FutexAddon>(
-  futexAddonPath,
+  nativeAddonPaths("knitting_shm"),
   "futex",
 );
 const crossProcessFutexAddonProbe = probeNativeAddon<FutexAddon>(
-  futexAddonPath,
+  nativeAddonPaths("knitting_shm"),
   "futex",
   nativeCrossProcessFdGateReason(),
 );
@@ -312,7 +319,12 @@ nativeCrossProcessFutexTest(
 
     const child = spawn(
       process.execPath,
-      [...process.execArgv, futexChildPath, childMetadata],
+      [
+        ...process.execArgv,
+        futexChildPath,
+        childMetadata,
+        crossProcessFutexAddonProbe.path!,
+      ],
       {
         cwd: process.cwd(),
         stdio: ["ignore", "pipe", "pipe", mapping.fd],

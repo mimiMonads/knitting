@@ -71,6 +71,7 @@ import {
   createNodeConnectionPrimitives,
   loadNodeFutexAddon,
 } from "../connections/node.ts";
+import { loadNodeNativeAddon } from "../connections/node-addons.ts";
 import { detectPosixPlatform } from "../connections/posix.ts";
 import type {
   SharedMemoryBuffer,
@@ -287,10 +288,6 @@ const withDefaultWorkerTimers = (
   };
 };
 
-const getProcessSharedMemoryAddonSpecifier = (): string =>
-  ["..", "..", "build", "Release", ["knitting", "shared", "memory"].join("_")]
-    .join("/") + ".node";
-
 const toProcessSharedMemorySize = (byteLength: number): number => {
   if (!Number.isFinite(byteLength) || byteLength <= 0) {
     throw new RangeError("process shared memory byteLength must be positive");
@@ -310,9 +307,10 @@ const createProcessSharedMemoryAllocator = (
     if (nodeModule === undefined) return undefined;
 
     const require = nodeModule.createRequire(import.meta.url);
-    addon = require(
-      getProcessSharedMemoryAddonSpecifier(),
-    ) as ProcessSharedMemoryAddon;
+    addon = loadNodeNativeAddon<ProcessSharedMemoryAddon>(
+      require,
+      "knitting_shared_memory",
+    );
   } catch (error) {
     if (debug?.extras === true) {
       console.warn(

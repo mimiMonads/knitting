@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
@@ -221,14 +221,21 @@ const extraLdFlags = splitFlags(Bun.env.LDFLAGS);
 
 const addons = [
   {
+    name: "knitting_shared_memory",
     source: "src/knitting_shared_memory.cc",
     output: "build/Release/knitting_shared_memory.node",
   },
   {
+    name: "knitting_shm",
     source: "src/knitting_shm.cc",
     output: "build/Release/knitting_shm.node",
   },
 ];
+const prebuildDir = join(
+  root,
+  "prebuilds",
+  `${nodeInfo.platform}-${nodeInfo.arch}`,
+);
 
 console.log(`Using Node: ${nodeInfo.execPath}`);
 console.log(`Using headers: ${includeDir}`);
@@ -236,6 +243,7 @@ console.log(`Using compiler: ${cxx}`);
 if (nodeLib !== undefined) console.log(`Using node.lib: ${nodeLib}`);
 
 const builtAddons: string[] = [];
+const copiedPrebuilds: string[] = [];
 
 for (const addon of addons) {
   const outputPath = join(root, addon.output);
@@ -259,6 +267,11 @@ for (const addon of addons) {
     ]);
   }
   builtAddons.push(addon.output);
+
+  mkdirSync(prebuildDir, { recursive: true });
+  const prebuildPath = join(prebuildDir, `${addon.name}.node`);
+  copyFileSync(outputPath, prebuildPath);
+  copiedPrebuilds.push(prebuildPath);
 }
 
 console.log(
@@ -266,4 +279,9 @@ console.log(
     builtAddons.length === 1 ? "" : "s"
   } ` +
     `for ${nodeInfo.platform}: ${builtAddons.join(", ")}`,
+);
+console.log(
+  `Updated ${copiedPrebuilds.length} prebuild${
+    copiedPrebuilds.length === 1 ? "" : "s"
+  } in ${prebuildDir}`,
 );

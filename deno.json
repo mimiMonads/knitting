@@ -11,6 +11,7 @@
     "include": [
       "README.md",
       "LICENSE",
+      "prebuilds/**/*.node",
       "src/**/*.ts",
       "./knitting.ts",
       "./process-shared-buffer.ts"

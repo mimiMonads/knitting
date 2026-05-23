@@ -1,4 +1,5 @@
 import { getNodeBuiltinModule } from "../common/node-compat.ts";
+import { loadNodeNativeAddon } from "./node-addons.ts";
 import {
   type CreateSharedMemoryOptions,
   expectFd,
@@ -66,7 +67,7 @@ export const DEFAULT_NODE_FUTEX_ADDON =
   "../../build/Release/knitting_shm.node";
 
 export const loadNodeSharedMemoryAddon = (
-  specifier = DEFAULT_NODE_SHARED_MEMORY_ADDON,
+  specifier?: string,
 ): NodeSharedMemoryAddon => {
   const nodeModule = getNodeBuiltinModule<NodeModuleBuiltin>("node:module");
   if (nodeModule === undefined) {
@@ -74,11 +75,15 @@ export const loadNodeSharedMemoryAddon = (
   }
 
   const require = nodeModule.createRequire(import.meta.url);
-  return require(specifier) as NodeSharedMemoryAddon;
+  return loadNodeNativeAddon<NodeSharedMemoryAddon>(
+    require,
+    "knitting_shared_memory",
+    specifier,
+  );
 };
 
 export const loadNodeFutexAddon = (
-  specifier = DEFAULT_NODE_FUTEX_ADDON,
+  specifier?: string,
 ): NodeFutexAddon => {
   const nodeModule = getNodeBuiltinModule<NodeModuleBuiltin>("node:module");
   if (nodeModule === undefined) {
@@ -86,7 +91,11 @@ export const loadNodeFutexAddon = (
   }
 
   const require = nodeModule.createRequire(import.meta.url);
-  return require(specifier) as NodeFutexAddon;
+  return loadNodeNativeAddon<NodeFutexAddon>(
+    require,
+    "knitting_shm",
+    specifier,
+  );
 };
 
 export const fromNodeNativeMapping = (

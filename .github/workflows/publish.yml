@@ -1,0 +1,73 @@
+name: Publish
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-native:
+    name: Build native prebuilds (${{ matrix.prebuild }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            prebuild: linux-x64
+          - os: windows-latest
+            prebuild: win32-x64
+          - os: macos-15-intel
+            prebuild: darwin-x64
+          - os: macos-latest
+            prebuild: darwin-arm64
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@v2
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+      - name: Build native prebuild
+        run: bun run build:native
+      - name: Upload native prebuild
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.prebuild }}
+          path: prebuilds/${{ matrix.prebuild }}/*.node
+          if-no-files-found: error
+
+  publish-jsr:
+    name: Publish to JSR
+    runs-on: ubuntu-latest
+    needs: build-native
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: denoland/setup-deno@v1
+        with:
+          deno-version: "2.x"
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-linux-x64
+          path: prebuilds/linux-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-win32-x64
+          path: prebuilds/win32-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-darwin-x64
+          path: prebuilds/darwin-x64
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-darwin-arm64
+          path: prebuilds/darwin-arm64
+      - name: Publish
+        run: deno publish --allow-dirty

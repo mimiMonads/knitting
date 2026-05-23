@@ -3,7 +3,8 @@ import { FileDescriptor } from "../../../src/connections/index.ts";
 import { createNodeConnectionPrimitives } from "../../../src/connections/node.ts";
 
 const require = createRequire(import.meta.url);
-const futex = require("../../../build/Release/knitting_shm.node") as {
+const futexAddonPath = process.argv[3] ?? "../../../build/Release/knitting_shm.node";
+const futex = require(futexAddonPath) as {
   waitU32: (
     buffer: ArrayBuffer | SharedArrayBuffer,
     byteOffset: number,

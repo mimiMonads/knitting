@@ -15,6 +15,7 @@
     "README.md",
     "map.md",
     "LICENSE",
+    "prebuilds/**/*.node",
     "build/Release/*.node",
     "scripts/build-native-addons.ts",
     "src/**/*.cc",

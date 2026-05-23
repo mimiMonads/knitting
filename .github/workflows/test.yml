@@ -57,10 +57,6 @@ jobs:
         with:
           node-version: "22"
       - uses: oven-sh/setup-bun@v2
-      - uses: ilammy/msvc-dev-cmd@v1
-        if: runner.os == 'Windows'
-      - name: Build native addons
-        run: bun run build:native
       - name: Run node:test suite on Node
         if: matrix.runtime == 'node'
         run: node --no-warnings --experimental-transform-types --test "./test/*.test.ts"
