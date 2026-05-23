@@ -5,7 +5,6 @@ import {
 } from "./lock.ts";
 import { getStridedSlotByteOffset } from "./byte-carpet.ts";
 import {
-  IS_BROWSER,
   IS_BUN,
   createSharedArrayBuffer,
   growSharedArrayBuffer,
@@ -14,6 +13,12 @@ import {
   type PayloadBufferOptions,
   resolvePayloadBufferOptions,
 } from "./payload-config.ts";
+import {
+  isSharedBuffer,
+  type SharedBuffer,
+  type SharedBufferSource,
+  toSharedBufferRegion,
+} from "../common/shared-buffer-region.ts";
 import type { SharedBufferTextCompat } from "../common/shared-buffer-text.ts";
 const page = 1024 * 4;
 const textEncode = new TextEncoder();
@@ -42,7 +47,7 @@ type BufferLike = Uint8Array & {
 };
 type BufferCtorLike = {
   from: (
-    source: SharedArrayBuffer | ArrayBuffer,
+    source: SharedBuffer,
     byteOffset?: number,
     length?: number,
   ) => BufferLike;
@@ -95,7 +100,7 @@ const fallbackEncodeInto = (str: string, target: Uint8Array) => {
   return result;
 };
 const fallbackDecode = (bytes: Uint8Array) => textDecode.decode(bytes.slice());
-const browserEncodeInto = (
+const sharedBufferEncodeInto = (
   str: string,
   target: Uint8Array,
   textCompat?: SharedBufferTextCompat,
@@ -114,7 +119,7 @@ const browserEncodeInto = (
     return fallbackEncodeInto(str, target);
   }
 };
-const browserDecode = (
+const sharedBufferDecode = (
   bytes: Uint8Array,
   textCompat?: SharedBufferTextCompat,
 ) => {
@@ -133,17 +138,39 @@ export const createSharedDynamicBufferIO = ({
   payloadConfig,
   textCompat,
 }: {
-  sab?: SharedArrayBuffer;
+  sab?: SharedBufferSource;
   payloadConfig?: PayloadBufferOptions;
   textCompat?: SharedBufferTextCompat;
 }) => {
-  const bufferCtor = IS_BROWSER ? undefined : getBufferCtor();
+  const payloadRegion = sab === undefined
+    ? undefined
+    : toSharedBufferRegion(sab);
+  const hasExplicitRegion = sab !== undefined && !isSharedBuffer(sab);
+  const hasExternalArrayBuffer = payloadRegion?.sab instanceof ArrayBuffer &&
+    !(payloadRegion.sab instanceof SharedArrayBuffer);
+  const forceFixedRegion = hasExplicitRegion || hasExternalArrayBuffer;
+  const regionByteLength = payloadRegion?.byteLength;
+  const bufferCtor =
+    (IS_BUN &&
+        payloadRegion?.sab instanceof ArrayBuffer &&
+        !(payloadRegion.sab instanceof SharedArrayBuffer))
+      ? undefined
+      : getBufferCtor();
   const resolvedPayload = resolvePayloadBufferOptions({
-    sab,
-    options: payloadConfig,
+    sab: payloadRegion?.sab,
+    options: !forceFixedRegion || regionByteLength === undefined
+      ? payloadConfig
+      : {
+        ...payloadConfig,
+        mode: "fixed",
+        payloadInitialBytes: payloadConfig?.payloadInitialBytes ??
+          regionByteLength,
+        payloadMaxByteLength: payloadConfig?.payloadMaxByteLength ??
+          regionByteLength,
+      },
   });
   const canGrow = resolvedPayload.mode === "growable";
-  let lockSAB = sab ??
+  let lockSAB: SharedBuffer = payloadRegion?.sab ??
     (
       canGrow
         ? createSharedArrayBuffer(
@@ -152,27 +179,38 @@ export const createSharedDynamicBufferIO = ({
         )
         : createSharedArrayBuffer(resolvedPayload.payloadInitialBytes)
     );
+  let baseByteOffset = payloadRegion?.byteOffset ?? 0;
+  let backingByteLength = payloadRegion?.byteLength ?? lockSAB.byteLength;
 
-  let u8 = new Uint8Array(lockSAB, DYNAMIC_HEADER_BYTES);
+  let u8 = new Uint8Array(
+    lockSAB,
+    baseByteOffset + DYNAMIC_HEADER_BYTES,
+    Math.max(0, backingByteLength - DYNAMIC_HEADER_BYTES),
+  );
   const requireBufferView = bufferCtor
-    ? (buffer: SharedArrayBuffer) => {
-      const view = bufferCtor.from(buffer, DYNAMIC_HEADER_BYTES);
+    ? (buffer: SharedBuffer, byteOffset: number) => {
+      const view = bufferCtor.from(buffer, byteOffset + DYNAMIC_HEADER_BYTES);
       if (view.buffer !== buffer) {
-        throw new Error("Buffer view does not alias SharedArrayBuffer");
+        throw new Error("Buffer view does not alias shared buffer");
       }
       return view;
     }
     : undefined;
-  let buf = requireBufferView?.(lockSAB);
-  let f64 = new Float64Array(lockSAB, DYNAMIC_HEADER_BYTES);
+  let buf = requireBufferView?.(lockSAB, baseByteOffset);
+  let f64 = new Float64Array(
+    lockSAB,
+    baseByteOffset + DYNAMIC_HEADER_BYTES,
+    Math.max(0, backingByteLength - DYNAMIC_HEADER_BYTES) >>> 3,
+  );
 
-  const capacityBytes = () => lockSAB.byteLength - DYNAMIC_HEADER_BYTES;
+  const capacityBytes = () => backingByteLength - DYNAMIC_HEADER_BYTES;
 
   const ensureCapacity = (neededBytes: number) => {
     if (capacityBytes() >= neededBytes) return true;
     if (!canGrow) return false;
 
     try {
+      if (!(lockSAB instanceof SharedArrayBuffer)) return false;
       lockSAB = growSharedArrayBuffer(
         lockSAB,
         alignUpto64(
@@ -183,23 +221,25 @@ export const createSharedDynamicBufferIO = ({
       return false;
     }
 
+    baseByteOffset = 0;
+    backingByteLength = lockSAB.byteLength;
     u8 = new Uint8Array(
       lockSAB,
-      DYNAMIC_HEADER_BYTES,
-      lockSAB.byteLength - DYNAMIC_HEADER_BYTES,
+      baseByteOffset + DYNAMIC_HEADER_BYTES,
+      backingByteLength - DYNAMIC_HEADER_BYTES,
     );
-    buf = requireBufferView?.(lockSAB);
+    buf = requireBufferView?.(lockSAB, baseByteOffset);
     f64 = new Float64Array(
       lockSAB,
-      DYNAMIC_HEADER_BYTES,
-      (lockSAB.byteLength - DYNAMIC_HEADER_BYTES) >>> 3,
+      baseByteOffset + DYNAMIC_HEADER_BYTES,
+      (backingByteLength - DYNAMIC_HEADER_BYTES) >>> 3,
     );
     return true;
   };
 
   const readUtf8 = (start: number, end: number) => {
-    if (IS_BROWSER) {
-      return browserDecode(u8.subarray(start, end), textCompat);
+    if (!buf) {
+      return sharedBufferDecode(u8.subarray(start, end), textCompat);
     }
     return buf!.toString("utf8", start, end);
   };
@@ -241,7 +281,7 @@ export const createSharedDynamicBufferIO = ({
   const readBytesCopy = (start: number, end: number) => u8.slice(start, end);
   const readBytesView = (start: number, end: number) => u8.subarray(start, end);
   const readBytesBufferCopy = (start: number, end: number) => {
-    if (IS_BROWSER || !bufferCtor || !buf) return readBytesCopy(start, end);
+    if (!bufferCtor || !buf) return readBytesCopy(start, end);
     const length = Math.max(0, (end - start) | 0);
     const out = bufferCtor.allocUnsafe(length);
     if (length === 0) return out;
@@ -252,7 +292,7 @@ export const createSharedDynamicBufferIO = ({
     start: number,
     end: number,
   ): ArrayBuffer => {
-    if (IS_BROWSER || !bufferCtor || !buf) {
+    if (!bufferCtor || !buf) {
       const out = readBytesCopy(start, end);
       return out.buffer as ArrayBuffer;
     }
@@ -278,8 +318,8 @@ export const createSharedDynamicBufferIO = ({
     }
 
     const target = u8.subarray(start, start + reservedBytes);
-    if (IS_BROWSER) {
-      const { read, written } = browserEncodeInto(str, target, textCompat);
+    if (!buf) {
+      const { read, written } = sharedBufferEncodeInto(str, target, textCompat);
       if (read !== str.length) return -1;
       return written;
     }
@@ -317,7 +357,7 @@ export const createSharedStaticBufferIO = ({
   slotStrideU32?: number;
   textCompat?: SharedBufferTextCompat;
 }) => {
-  const bufferCtor = IS_BROWSER ? undefined : getBufferCtor();
+  const bufferCtor = getBufferCtor();
   const buffer = headersBuffer instanceof Uint32Array
     ? headersBuffer.buffer as SharedArrayBuffer
     : headersBuffer;
@@ -354,8 +394,12 @@ export const createSharedStaticBufferIO = ({
   const writeUtf8 = (str: string, at: number) => {
     const start = slotByteOffsets[at]!;
     const target = baseU8.subarray(start, start + writableBytes);
-    if (IS_BROWSER) {
-      const { read, written } = browserEncodeInto(str, target, textCompat);
+    if (!baseBuf) {
+      const { read, written } = sharedBufferEncodeInto(
+        str,
+        target,
+        textCompat,
+      );
       if (read !== str.length) return -1;
       return written;
     }
@@ -367,8 +411,8 @@ export const createSharedStaticBufferIO = ({
 
   const readUtf8 = (start: number, end: number, at: number) => {
     const slotStart = slotByteOffsets[at]!;
-    if (IS_BROWSER) {
-      return browserDecode(
+    if (!baseBuf) {
+      return sharedBufferDecode(
         baseU8.subarray(slotStart + start, slotStart + end),
         textCompat,
       );
@@ -410,7 +454,7 @@ export const createSharedStaticBufferIO = ({
   const readBytesView = (start: number, end: number, at: number) =>
     baseU8.subarray(slotByteOffsets[at]! + start, slotByteOffsets[at]! + end);
   const readBytesBufferCopy = (start: number, end: number, at: number) => {
-    if (IS_BROWSER || !bufferCtor || !baseBuf) return readBytesCopy(start, end, at);
+    if (!bufferCtor || !baseBuf) return readBytesCopy(start, end, at);
     const length = end - start;
     const out = bufferCtor.allocUnsafe(length);
     const slotStart = slotByteOffsets[at]!;
@@ -422,7 +466,7 @@ export const createSharedStaticBufferIO = ({
     end: number,
     at: number,
   ) => {
-    if (IS_BROWSER || !bufferCtor) return readBytesCopy(start, end, at);
+    if (!bufferCtor) return readBytesCopy(start, end, at);
     const bytes = readBytesBufferCopy(start, end, at);
     return new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   };
@@ -440,7 +484,7 @@ export const createSharedStaticBufferIO = ({
     end: number,
     at: number,
   ): ArrayBuffer => {
-    if (IS_BROWSER || !bufferCtor || !baseBuf) {
+    if (!bufferCtor || !baseBuf) {
       const out = readBytesCopy(start, end, at);
       return out.buffer as ArrayBuffer;
     }

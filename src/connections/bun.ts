@@ -1,8 +1,8 @@
-import { dlopen, FFIType, toArrayBuffer } from "bun:ffi";
 import {
   DARWIN_O_CREAT,
   DARWIN_O_EXCL,
   DARWIN_SHM_MODE,
+  setCloseOnExec,
   detectPosixPlatform,
   encodeCString,
   getPosixLibcPath,
@@ -26,6 +26,41 @@ import {
 
 type BunPointer = number;
 
+type BunFFIApi = {
+  dlopen: (
+    path: string,
+    symbols: Record<string, unknown>,
+  ) => unknown;
+  toArrayBuffer: (
+    pointer: BunPointer,
+    byteOffset: number,
+    byteLength: number,
+  ) => ArrayBuffer;
+};
+
+const FFIType = {
+  i32: 5,
+  i64: 7,
+  u32: 6,
+  usize: 8,
+  ptr: 12,
+} as const;
+
+const getBunFFI = (): BunFFIApi => {
+  const ffi = (globalThis as typeof globalThis & {
+    Bun?: { FFI?: Partial<BunFFIApi> };
+  }).Bun?.FFI;
+
+  if (
+    typeof ffi?.dlopen !== "function" ||
+    typeof ffi?.toArrayBuffer !== "function"
+  ) {
+    throw new Error("Bun FFI is not available in this runtime");
+  }
+
+  return ffi as BunFFIApi;
+};
+
 type BunLibc = {
   symbols: {
     memfd_create?: (name: Uint8Array, flags: number) => number;
@@ -33,6 +68,7 @@ type BunLibc = {
     shm_unlink?: (name: Uint8Array) => number;
     ftruncate: (fd: number, length: bigint) => number;
     dup: (fd: number) => number;
+    fcntl: (fd: number, cmd: number, arg: number) => number;
     mmap: (
       address: null,
       length: number,
@@ -47,7 +83,7 @@ type BunLibc = {
 };
 
 export const openBunLibc = (): BunLibc =>
-  dlopen(getPosixLibcPath(), {
+  getBunFFI().dlopen(getPosixLibcPath(), {
     ...getBunCreateSymbols(),
     ftruncate: {
       args: [FFIType.i32, FFIType.i64],
@@ -55,6 +91,10 @@ export const openBunLibc = (): BunLibc =>
     },
     dup: {
       args: [FFIType.i32],
+      returns: FFIType.i32,
+    },
+    fcntl: {
+      args: [FFIType.i32, FFIType.i32, FFIType.i32],
       returns: FFIType.i32,
     },
     mmap: {
@@ -128,7 +168,12 @@ const createBunSharedMemoryFd = (
     );
 
     shmUnlink(shmName);
-    return fd;
+    try {
+      return setCloseOnExec(libc, fd);
+    } catch (error) {
+      libc.symbols.close(fd);
+      throw error;
+    }
   }
 
   const memfdCreate = libc.symbols.memfd_create;
@@ -136,10 +181,17 @@ const createBunSharedMemoryFd = (
     throw new Error("memfd_create symbol is not available");
   }
 
-  return checkResult(
+  const fd = checkResult(
     memfdCreate(encodeCString(name), 0),
     "memfd_create failed",
   );
+
+  try {
+    return setCloseOnExec(libc, fd);
+  } catch (error) {
+    libc.symbols.close(fd);
+    throw error;
+  }
 };
 
 export const mapBunSharedMemory = (
@@ -148,9 +200,16 @@ export const mapBunSharedMemory = (
 ): SharedMemoryMapping<ArrayBuffer> => {
   const sourceFd = expectFd(options.fd);
   const size = expectPositiveSize(options.size);
-  const fd = options.duplicateFd === false
-    ? sourceFd
-    : checkResult(libc.symbols.dup(sourceFd), "dup(fd) failed");
+  let fd = sourceFd;
+  if (options.duplicateFd !== false) {
+    fd = checkResult(libc.symbols.dup(sourceFd), "dup(fd) failed");
+    try {
+      setCloseOnExec(libc, fd);
+    } catch (error) {
+      libc.symbols.close(fd);
+      throw error;
+    }
+  }
   const pointer = libc.symbols.mmap(
     null,
     size,
@@ -165,7 +224,7 @@ export const mapBunSharedMemory = (
     throw new Error("mmap failed");
   }
 
-  const arrayBuffer = toArrayBuffer(pointer, 0, size);
+  const arrayBuffer = getBunFFI().toArrayBuffer(pointer, 0, size);
 
   return {
     runtime: "bun",

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test from "./_runner.ts";
 import { withResolvers } from "../src/common/with-resolvers.ts";
-import { OneShotDeferred, signalAbortFactory } from "../src/shared/abortSignal.ts";
+import {
+  OneShotDeferred,
+  signalAbortFactory,
+} from "../src/shared/abortSignal.ts";
 
 test("abort signal set/check/reset lifecycle", () => {
   const sab = new SharedArrayBuffer(Uint32Array.BYTES_PER_ELEMENT);

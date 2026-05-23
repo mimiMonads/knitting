@@ -4,6 +4,7 @@ import {
   expectPositiveSize,
   type MapSharedMemoryOptions,
   requireSharedArrayBuffer,
+  type SharedMemoryBuffer,
   type SharedMemoryConnectionPrimitives,
   type SharedMemoryMapping,
 } from "./types.ts";
@@ -154,6 +155,18 @@ export class FileDescriptor {
     };
     this.#mapping = mapper.mapSharedMemory(options);
     return this.#mapping;
+  }
+
+  getBuffer(mapper?: FileDescriptorMapper): SharedMemoryBuffer {
+    if (this.#mapping?.buffer !== undefined) return this.#mapping.buffer;
+
+    if (mapper === undefined) {
+      throw new TypeError(
+        "file descriptor is not attached to a shared memory mapping",
+      );
+    }
+
+    return this.map(mapper).buffer;
   }
 
   getSharedArrayBuffer(mapper?: FileDescriptorMapper): SharedArrayBuffer {

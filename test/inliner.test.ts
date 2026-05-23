@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-const assertEquals: (actual: unknown, expected: unknown) => void =
-  (actual, expected) => {
-    assert.deepStrictEqual(actual, expected);
-  };
+import test from "./_runner.ts";
+const assertEquals: (actual: unknown, expected: unknown) => void = (
+  actual,
+  expected,
+) => {
+  assert.deepStrictEqual(actual, expected);
+};
 import { createPool, task } from "../knitting.ts";
-import { genTaskID } from "../src/common/others.ts";
+import { genTaskID } from "../src/common/task-source.ts";
 import { createInlineExecutor } from "../src/runtime/inline-executor.ts";
 import { hello, world } from "./fixtures/hello_world.ts";
 import { laneFlag } from "./fixtures/inliner_threshold.ts";

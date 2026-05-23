@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-const assertEquals: (actual: unknown, expected: unknown) => void =
-  (actual, expected) => {
-    assert.deepStrictEqual(actual, expected);
-  };
-import { Envelope, createPool } from "../knitting.ts";
+import test from "./_runner.ts";
+const assertEquals: (actual: unknown, expected: unknown) => void = (
+  actual,
+  expected,
+) => {
+  assert.deepStrictEqual(actual, expected);
+};
+import { createPool, Envelope } from "../knitting.ts";
 import {
   toBigInt,
   toBoolean,

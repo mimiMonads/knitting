@@ -1,9 +1,13 @@
 import { getNodeBuiltinModule } from "../common/node-compat.ts";
+import { loadNodeNativeAddon } from "./node-addons.ts";
 import {
   type CreateSharedMemoryOptions,
   expectFd,
   expectPositiveSize,
   type MapSharedMemoryOptions,
+  readCreateMode,
+  readCreateName,
+  readRequiredCreateName,
   readCreateSize,
   type SharedMemoryConnectionPrimitives,
   type SharedMemoryMapping,
@@ -17,8 +21,40 @@ export type NodeSharedMemoryNativeMapping = {
 };
 
 export type NodeSharedMemoryAddon = {
-  createSharedMemory: (size: number) => NodeSharedMemoryNativeMapping;
+  createSharedMemory: (
+    size: number,
+    name?: string,
+    mode?: CreateSharedMemoryOptions["mode"],
+  ) => NodeSharedMemoryNativeMapping;
   mapSharedMemory: (fd: number, size: number) => NodeSharedMemoryNativeMapping;
+  unlinkSharedMemory?: (name: string) => boolean;
+};
+
+export type NodeFutexWaitResult =
+  | "woken"
+  | "changed"
+  | "interrupted"
+  | "timed-out";
+
+export type NodeFutexAddon = {
+  waitU32: (
+    buffer: ArrayBuffer | SharedArrayBuffer,
+    byteOffset: number,
+    expected: number,
+    timeoutMs?: number,
+  ) => NodeFutexWaitResult;
+  wakeU32: (
+    buffer: ArrayBuffer | SharedArrayBuffer,
+    byteOffset: number,
+    count?: number,
+  ) => number;
+  notifyU32?: (
+    buffer: ArrayBuffer | SharedArrayBuffer,
+    byteOffset: number,
+    count?: number,
+  ) => number;
+  sleep?: (milliseconds?: number) => void;
+  yield?: () => void;
 };
 
 type NodeModuleBuiltin = {
@@ -27,9 +63,11 @@ type NodeModuleBuiltin = {
 
 export const DEFAULT_NODE_SHARED_MEMORY_ADDON =
   "../../build/Release/knitting_shared_memory.node";
+export const DEFAULT_NODE_FUTEX_ADDON =
+  "../../build/Release/knitting_shm.node";
 
 export const loadNodeSharedMemoryAddon = (
-  specifier = DEFAULT_NODE_SHARED_MEMORY_ADDON,
+  specifier?: string,
 ): NodeSharedMemoryAddon => {
   const nodeModule = getNodeBuiltinModule<NodeModuleBuiltin>("node:module");
   if (nodeModule === undefined) {
@@ -37,7 +75,27 @@ export const loadNodeSharedMemoryAddon = (
   }
 
   const require = nodeModule.createRequire(import.meta.url);
-  return require(specifier) as NodeSharedMemoryAddon;
+  return loadNodeNativeAddon<NodeSharedMemoryAddon>(
+    require,
+    "knitting_shared_memory",
+    specifier,
+  );
+};
+
+export const loadNodeFutexAddon = (
+  specifier?: string,
+): NodeFutexAddon => {
+  const nodeModule = getNodeBuiltinModule<NodeModuleBuiltin>("node:module");
+  if (nodeModule === undefined) {
+    throw new Error("Node futex addon can only be loaded in Node");
+  }
+
+  const require = nodeModule.createRequire(import.meta.url);
+  return loadNodeNativeAddon<NodeFutexAddon>(
+    require,
+    "knitting_shm",
+    specifier,
+  );
 };
 
 export const fromNodeNativeMapping = (
@@ -58,7 +116,11 @@ export const createNodeSharedMemory = (
   addon = loadNodeSharedMemoryAddon(),
 ): SharedMemoryMapping<SharedArrayBuffer> => {
   const size = expectPositiveSize(readCreateSize(options));
-  return fromNodeNativeMapping(addon.createSharedMemory(size));
+  const mode = readCreateMode(options);
+  const name = mode === "anonymous"
+    ? readCreateName(options, "knitting_shared_memory")
+    : readRequiredCreateName(options);
+  return fromNodeNativeMapping(addon.createSharedMemory(size, name, mode));
 };
 
 export const mapNodeSharedMemory = (
@@ -78,4 +140,16 @@ export const createNodeConnectionPrimitives = (
   runtime: "node",
   createSharedMemory: (options) => createNodeSharedMemory(options, addon),
   mapSharedMemory: (options) => mapNodeSharedMemory(options, addon),
+  unlinkSharedMemory: (name) => unlinkNodeSharedMemory(name, addon),
 });
+
+export const unlinkNodeSharedMemory = (
+  name: string,
+  addon = loadNodeSharedMemoryAddon(),
+): boolean => {
+  if (typeof addon.unlinkSharedMemory !== "function") {
+    throw new Error("Node shared memory addon cannot unlink named mappings");
+  }
+
+  return addon.unlinkSharedMemory(name);
+};

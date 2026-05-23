@@ -6,7 +6,7 @@ import {
   TaskIndex,
   type Task,
 } from "../../src/memory/lock.ts";
-import { format, print } from "../ulti/json-parse.ts";
+import { format, print } from "../util/json-parse.ts";
 
 const BASELINE_BYTES = new Uint8Array(8).byteLength;
 

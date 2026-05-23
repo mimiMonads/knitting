@@ -1,17 +1,22 @@
+export type SharedBuffer = SharedArrayBuffer | ArrayBuffer;
+
 export type SharedBufferRegion = {
-  sab: SharedArrayBuffer;
+  sab: SharedBuffer;
   byteOffset: number;
   byteLength: number;
 };
 
-export type SharedBufferSource = SharedArrayBuffer | SharedBufferRegion;
+export type SharedBufferSource = SharedBuffer | SharedBufferRegion;
+
+export const isSharedBuffer = (value: unknown): value is SharedBuffer =>
+  value instanceof SharedArrayBuffer || value instanceof ArrayBuffer;
 
 export const isSharedBufferRegion = (
   value: unknown,
 ): value is SharedBufferRegion => {
   if (!value || typeof value !== "object") return false;
   const candidate = value as Partial<SharedBufferRegion>;
-  return candidate.sab instanceof SharedArrayBuffer &&
+  return isSharedBuffer(candidate.sab) &&
     typeof candidate.byteOffset === "number" &&
     Number.isInteger(candidate.byteOffset) &&
     candidate.byteOffset >= 0 &&
@@ -23,12 +28,12 @@ export const isSharedBufferRegion = (
 export const isSharedBufferSource = (
   value: unknown,
 ): value is SharedBufferSource =>
-  value instanceof SharedArrayBuffer || isSharedBufferRegion(value);
+  isSharedBuffer(value) || isSharedBufferRegion(value);
 
 export const toSharedBufferRegion = (
   value: SharedBufferSource,
 ): SharedBufferRegion =>
-  value instanceof SharedArrayBuffer
+  isSharedBuffer(value)
     ? {
       sab: value,
       byteOffset: 0,

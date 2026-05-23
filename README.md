@@ -1,499 +1,605 @@
 # knitting
+
+[![JSR Version](https://jsr.io/badges/@vixeny/knitting)](https://jsr.io/@vixeny/knitting)
+[![JSR Score](https://jsr.io/badges/@vixeny/knitting/score)](https://jsr.io/@vixeny/knitting)
 [![Tests](https://github.com/mimiMonads/knitting/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/mimiMonads/knitting/actions/workflows/test.yml)
 [![Coverage Workflow](https://github.com/mimiMonads/knitting/actions/workflows/coverage.yml/badge.svg?branch=main)](https://github.com/mimiMonads/knitting/actions/workflows/coverage.yml)
-[![Coverage (node lines)](https://img.shields.io/badge/coverage%20(node%20lines)-92.10%25-brightgreen)](https://github.com/mimiMonads/knitting/actions/workflows/coverage.yml)
+[![Coverage](https://img.shields.io/badge/coverage-92.10%25-brightgreen)](https://github.com/mimiMonads/knitting/actions/workflows/coverage.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
-[![Node >=22](https://img.shields.io/badge/node-%3E%3D22-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
-[![Deno >=2](https://img.shields.io/badge/deno-%3E%3D2-111111?logo=deno&logoColor=white)](https://deno.com/)
-[![Bun recent](https://img.shields.io/badge/bun-recent-f5f5dc?logo=bun&logoColor=black)](https://bun.sh/)
+[![Node](https://img.shields.io/badge/node-22%2B-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![Deno](https://img.shields.io/badge/deno-2%2B-000000?logo=deno&logoColor=white)](https://deno.com/)
+[![Bun](https://img.shields.io/badge/bun-1%2B-f472b6?logo=bun&logoColor=white)](https://bun.sh/)
 
-Shared-memory worker pool for Node.js, Deno, and Bun. Define tasks once, then
-call them from the main thread with a small, typed API.
+Knitting is a worker-pool over shared-memory IPC runtime for Node.js,
+Deno, and Bun. Which mission is make javascript a real multicore language,
+Thanks to its memory design, it can be from 5x to 25x faster than using `postMessages`
+bypassing OS sockect comunnication entielly with a novel protocol written from scratch.
+
+Use it for the parts of your program that should run somewhere else: CPU-heavy to small
+work, runtime-isolated jobs, long-running tools, or anything that needs to move
+speed and type felixbility.
+
+
+You define a task once, spin up a pool, and call it like a normal async
+function:
+
+```ts
+const result = await pool.call.resizeImage(file);
+```
+
+Under the hood, Knitting schedules work across worker threads or separate
+processes (depending on runtime and your settings), keeps arguments typed, and
+uses shared memory for transport.
+
+## So
+
+- Call worker code like `pool.call.myTask(arg)`.
+- Keep the resolved types end-to-end
+- Choose `threads` for speed or `processes` for stronger isolation.
+- Move supported payloads via shared memory (great for binary data).
+- Run on Node.js, Deno, or Bun.
+
+## Why use it?
+
+- Easy to use: Have a multi-thread enviroment or process with few lines of code.
+- Great type support: pass primitives, JSON, Promise of these and special types (typed arrays, Node
+  `Buffer`, `Envelope`, and `ProcessSharedBuffer`).
+- Runtime flexibility: the same API across Node.js, Deno, and Bun.
+- Worker choices: use threads for fast pools, or processes for stronger
+  isolation.
+- All out-of-the-box expierince: strict-by-default permissions, payload-size limits, task
+  timeouts, abort-aware tasks, and worker hard timeouts.
 
 ## Requirements
 
-- Node.js 22+
-- Deno 2+
-- Bun (recent)
+- Node.js 22+ 
+- Deno 2+ 
+- Bun 1+ 
+
+Process workers and `ProcessSharedBuffer` use the native shared-memory layer.
+For local development, build it before running process/shared-memory tests.
+If you're only using thread workers, you can typically ignore this and use
+Knitting without building native addons.
 
 ## Install
-
-This package is published on JSR:
 
 ```bash
 jsr add --npm @vixeny/knitting
 ```
 
+For Deno projects:
+
+```bash
+deno add jsr:@vixeny/knitting
+```
 
 ## Quick Start
 
 ```ts
 import { createPool, isMain, task } from "@vixeny/knitting";
 
-export const hello = task({
-  f: async () => "hello",
+export const square = task<number, number>({
+  f: (value) => value * value,
 });
 
-export const world = task({
-  f: async () => "world",
-});
-
-const { call, shutdown } = createPool({
-  threads: 2,
-})({
-  hello,
-  world,
+export const greet = task<string, string>({
+  f: (name) => `hello ${name}`,
 });
 
 if (isMain) {
-  const jobs = [
-    call.hello(),
-    call.world(),
-    call.hello(),
-    call.world(),
-  ];
+  const pool = createPool({ threads: 2 })({ square, greet });
 
+  try {
+    const [four, message] = await Promise.all([
+      pool.call.square(2),
+      pool.call.greet("knitting"),
+    ]);
 
-  const results = await Promise.all(jobs);
-  console.log("Results:", results);
-  await shutdown();
-}
-```
-
-## Batching Pattern
-
-`call.*()` enqueues work and dispatches automatically.
-For batches, create all calls first and then await them together.
-
-```ts
-const jobs = Array.from({ length: 1_000 }, () => call.hello());
-const results = await Promise.all(jobs);
-```
-
-## API Overview
-
-### `task({ f, timeout?, abortSignal? })`
-
-Wraps a function (sync or async) so it can be registered and executed in
-workers. `call.*()` always returns a promise. Inputs can also be native
-promises, they’ll be awaited before dispatch.
-Only native `Promise` values are awaited; thenables are treated as regular
-values.
-
-`abortSignal` opts a task into abort-aware call metadata.
-Accepted values:
-
-- `true`: mark the task as abort-aware.
-- `{ hasAborted: true }`: same as above, plus a worker-side toolkit as the
-  second task argument: `{ hasAborted(): boolean }`.
-
-Usage:
-
-```ts
-import { createPool, task } from "@vixeny/knitting";
-
-export const slowTask = task({
-  abortSignal: { hasAborted: true },
-  f: async (value: string, signal) => {
-    if (signal.hasAborted()) return "aborted";
-    return value.toUpperCase();
-  },
-});
-
-const { call, shutdown } = createPool({ threads: 1 })({
-  slowTask,
-});
-
-const pending = call.slowTask("hello"); // host call signature is unchanged
-await shutdown();
-await pending.catch((reason) => {
-  console.log(reason); // "Thread closed"
-});
-```
-
-What this means today:
-
-- Host allocates/recycles per-call signal ids for abort-aware tasks.
-- Workers can read signal state before execution and via `hasAborted()`.
-- Abort-aware pool capacity defaults to `258` in-flight calls (only when at
-  least one task uses `abortSignal`) and can be tuned with
-  `createPool({ abortSignalCapacity })`.
-
-### `importTask({ href, name?, timeout?, abortSignal? })`
-
-Defines a task whose function is imported dynamically inside the worker.
-
-- `href`: module URL/path to import.
-- `name`: named export to call (defaults to `default`).
-- This keeps import/evaluation in worker context, so worker permission policy
-  applies to that import path.
-
-Example:
-
-```ts
-import { createPool, importTask, isMain } from "@vixeny/knitting";
-
-const REMOTE_TASKS_URL = "https://knittingdocs.netlify.app/example-task.mjs";
-
-export const addFromWeb = importTask<[number, number], number>({
-  href: REMOTE_TASKS_URL,
-  name: "add",
-});
-
-export const wordStatsFromWeb = importTask<
-  { text: string },
-  { words: number; chars: number }
->({
-  href: REMOTE_TASKS_URL,
-  name: "wordStats",
-});
-
-const pool = createPool({ threads: 2 })({
-  addFromWeb,
-  wordStatsFromWeb,
-});
-
-if (isMain) {
-  const [sum, stats] = await Promise.all([
-    pool.call.addFromWeb([8, 5]),
-    pool.call.wordStatsFromWeb({ text: "hello from remote tasks" }),
-  ]);
-
-  console.log("sum from web:", sum); // 13
-  console.log("word stats from web:", stats); // { words: 4, chars: 23 }
-  await pool.shutdown();
-}
-```
-
-#### Deno lockfile workflow (no `--no-lock`)
-
-When `href` points to a remote URL, keep `deno.lock` updated and run with
-frozen lock checks.
-
-`deno.json` example:
-
-```json
-{
-  "imports": {
-    "@vixeny/knitting": "jsr:@vixeny/knitting"
-  },
-  "tasks": {
-    "lock:update": "deno cache --config deno.json --lock=deno.lock --frozen=false --reload uwu.ts",
-    "run:frozen": "deno run -A --config deno.json --lock=deno.lock --frozen=true uwu.ts"
+    console.log({ four, message });
+  } finally {
+    await pool.shutdown();
   }
 }
 ```
 
-Usage:
+The `isMain` guard when the same module is loaded by workers or process. Export
+exposes the tasks or functions at module scope, so knitting maps down the imports,
+then use and use the pool only from the main program.
 
-```bash
-deno task lock:update
-deno task run:frozen
+## The Mental Model
+
+There are three core pieces, plus `isMain` for modules that workers may import:
+
+```ts
+import { createPool, isMain, task } from "@vixeny/knitting";
 ```
 
-If the remote module content changes, rerun `lock:update` and commit the new
-`deno.lock`.
+- `task(...)` describes a callable worker function (types + implementation).
 
-Guidelines:
+- `createPool(options)({ tasks })` starts workers and gives you a typed `call`
+object for invoking tasks.
 
-- Define tasks at module scope.
-- Export tasks you want workers to discover.
-- Prefer a single argument. For multiple values, pass a tuple or object.
-
-Example with arguments:
+- `pool.shutdown()` stops workers when you're done.
 
 ```ts
 export const add = task<[number, number], number>({
-  f: async ([a, b]) => a + b,
-});
-```
-
-Single-task short mode:
-
-```ts
-export const world = task({
-  f: async () => "world",
-}).createPool({
-  threads: 2,
+  f: ([a, b]) => a + b,
 });
 
 if (isMain) {
-  const results = await Promise.all([world.call()]);
-  console.log("Results:", results);
-  await world.shutdown();
+  const pool = createPool({ threads: 4 })({ add });
+
+  try {
+    const value = await pool.call.add([1, 2]);
+    console.log(value);
+  } finally {
+    await pool.shutdown();
+  }
 }
 ```
 
-### `createPool(options)(tasks)`
-
-Creates a worker pool and returns:
-
-- `call.<task>(args)` enqueue a task call.
-- `shutdown(delayMs?): Promise<void>` terminates workers immediately or after
-  an optional delay.
-
-Key options:
-
-- `threads?: number` number of worker threads (default `1`).
-- `inliner?: { position?: "first" | "last"; batchSize?: number; dispatchThreshold?: number }`
-  run tasks on the main thread as an extra lane.
-- `balancer?: "roundRobin" | "robinRound" | "firstIdle" | "randomLane" | "firstIdleOrRandom"`
-  or `{ strategy?: "roundRobin" | "robinRound" | "firstIdle" | "randomLane" | "firstIdleOrRandom" }`
-  task routing strategy.
-- `worker?: { resolveAfterFinishingAll?: true; timers?: WorkerTimers; hardTimeoutMs?: number; resourceLimits?: WorkerResourceLimits }`
-- `payload?: { mode?: "growable" | "fixed"; payloadInitialBytes?: number; payloadMaxByteLength?: number; maxPayloadBytes?: number }`
-  payload transport settings.
-  - `mode`: defaults to `"growable"` when SAB growth is available, otherwise `"fixed"`.
-  - `payloadMaxByteLength`: defaults to `64 MiB`.
-  - `payloadInitialBytes`: defaults to `4 MiB` in growable mode; fixed mode uses the full max length.
-  - `maxPayloadBytes`: hard cap per dynamic payload. Must be `> 0` and `<= payloadMaxByteLength >> 3`.
-    Default is `payloadMaxByteLength >> 3` (`8 MiB` with defaults).
-- Deprecated payload aliases are still accepted:
-  `payloadInitialBytes` -> `payload.payloadInitialBytes`,
-  `payloadMaxBytes` -> `payload.payloadMaxByteLength`,
-  `bufferMode` -> `payload.mode`,
-  `maxPayloadBytes` -> `payload.maxPayloadBytes`.
-- `abortSignalCapacity?: number` max abort-aware in-flight signals (default `258`).
-  This applies only when at least one task declares `abortSignal`.
-- `host?: DispatcherSettings`
-- `workerExecArgv?: string[]` extra worker `execArgv` flags.
-- `permission?: "strict" | "unsafe" | PermissionProtocol`
-  for runtime permission flag policy:
-  - omitted `permission`: uses strict defaults plus `allowImport: true` (web imports allowed).
-  - `"strict"` (default when passing an object): computes conservative defaults.
-  - `"unsafe"`: disables permission flags and strips inherited Node permission flags.
-  Strict defaults include read/write rooted at current `cwd`, deny-write for
-  `node_modules`, deny read/write for sensitive paths (`.env`, `.git`,
-  `.npmrc`, `.docker`, `.secrets`, `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.azure`,
-  `~/.config/gcloud`, `~/.kube`, plus POSIX system paths `/proc`,
-  `/proc/self`, `/proc/self/environ`, `/proc/self/mem`, `/sys`, `/dev`, `/etc`),
-  and read support for `deno.lock` and `bun.lock*`.
-  Runtime mapping:
-  - Node workers receive `--permission`/`--experimental-permission` with
-    `--allow-fs-read`, `--allow-fs-write`, `--allow-worker`,
-    `--allow-child-process`, `--allow-addons`, `--allow-wasi`.
-    Node worker flags are allow-list based; protocol deny lists are not
-    expressible as Node worker flags.
-  - Deno workers receive `Worker.deno.permissions` when enabled (see below).
-  - Bun currently has no worker permission flags; protocol values are accepted
-    for API compatibility but are not enforced by Bun runtime flags.
-  Deno `Worker.deno.permissions` is only applied when `--unstable-worker-options`
-  is detected (Linux `/proc` probe) or `KNITTING_DENO_WORKER_PERMISSIONS=1` is set.
-  `console?: boolean` can be set in object mode for compatibility (`false` by
-  default in strict, `true` by default in unsafe).
-  Process execution overrides:
-  `node.allowChildProcess?: boolean`, `deno.allowRun?: boolean`
-  (both default to `false` in strict mode).
-- `dispatcher?: DispatcherSettings` deprecated alias of `host`.
-- `debug?: { extras?: boolean; logMain?: boolean; logHref?: boolean;
-  logImportedUrl?: boolean }`
-- `source?: string` override the worker entry module.
-
-Example with an inline executor lane:
+Once you have a pool, calls are just promises, so batching looks like normal
+JavaScript:
 
 ```ts
-const pool = createPool({
-  threads: 3,
-  inliner: { position: "last", batchSize: 1 },
-})({ add });
-```
-
-Permission examples:
-
-```ts
-// Default profile (strict + web imports allowed)
-createPool({})({ add });
-
-// Shorthand full-access mode
-createPool({ permission: "unsafe" })({ add });
-
-// Explicit strict mode + console enabled
-createPool({ permission: { mode: "strict", console: true } })({ add });
-```
-
-Timing note:
-
-- Worker timing paths capture a high-resolution `performance.now()` reference at
-  module load/startup time. This keeps scheduling/timeout precision stable without
-  freezing global `performance`.
-
-#### Safety hardening defaults
-
-- Startup-only guard layer: safety hooks are installed once before the worker
-  loop starts (no extra checks inside the hot task-processing loop).
-- Process termination APIs from task code are blocked (`process.exit`,
-  `process.kill`, `process.abort`, plus `Deno.exit` when present).
-- Worker timing uses captured high-resolution clock references to avoid
-  precision regressions from later task-level monkey-patching.
-- Permission enforcement is delegated to runtime-native mechanisms (Node worker
-  `--permission` flags and Deno worker permissions when available). In-process
-  FS/network/env monkey-patching is not performed.
-
-#### Runtime tuning options
-
-You can tune idle behavior and backoff:
-
-- `worker.timers.spinMicroseconds?: number` busy‑spin budget before parking (µs).
-- `worker.timers.parkMs?: number` `Atomics.wait` timeout when parked (ms).
-- `worker.timers.pauseNanoseconds?: number` `Atomics.pause` duration while spinning (ns). Set to
-  `0` to disable pause calls.
-- `worker.hardTimeoutMs?: number` hard wall-clock timeout for each task call.
-  On timeout, the pool force-shuts down to stop runaway CPU execution.
-- `worker.resourceLimits?: { maxOldGenerationSizeMb?, maxYoungGenerationSizeMb?, codeRangeSizeMb?, stackSizeMb? }`
-  Node worker memory/stack limits.
-- `payload.mode?: "growable" | "fixed"` select growable GSAB vs fixed SAB transport.
-- `payload.payloadInitialBytes?: number` initial payload buffer size in bytes.
-- `payload.payloadMaxByteLength?: number` max payload buffer size in bytes.
-- `payload.maxPayloadBytes?: number` hard cap per dynamic payload (defaults to `payloadMaxByteLength >> 3`).
-- `abortSignalCapacity?: number` max concurrent abort-aware in-flight calls
-  (default `258`).
-- `host.stallFreeLoops?: number` notify loops before backoff starts.
-- `host.maxBackoffMs?: number` max backoff delay (ms).
-- `inliner.dispatchThreshold?: number` minimum in-flight calls before routing can use the
-  inline host lane. Defaults to `1`.
-
-#### Payload hard cap
-
-Dynamic payload encoding now has a strict size ceiling to prevent out-of-range
-grow attempts:
-
-- Cap formula: `maxPayloadBytes <= payloadMaxByteLength >> 3`.
-- With defaults (`64 MiB` max payload buffer), the default hard cap is `8 MiB`.
-- Calls that exceed the hard cap are rejected with `KNT_ERROR_3` before dynamic
-  slot reservation.
-- In fixed mode, if the payload fits the cap but cannot fit current buffer
-  capacity, the call is rejected with a controlled encoder error instead of
-  crashing from GSAB range growth.
-
-Example:
-
-```ts
-const pool = createPool({
-  threads: 2,
-  inliner: {
-    position: "last",
-    batchSize: 1,
-    dispatchThreshold: 16, // keep host free at low load; join only on bigger bursts
-  },
-  worker: {
-    timers: { 
-      spinMicroseconds: 40, 
-      parkMs: 10, 
-      pauseNanoseconds: 200 
-      },
-  },
-  host: {
-    stallFreeLoops: 64,
-    maxBackoffMs: 5,
-  },
-})({ add });
-```
-
-### `isMain`
-
-Boolean flag to guard main-thread-only code.
-
-## Supported Payloads
-
-The transport supports these payloads:
-
-- `number` including `NaN`, `Infinity`, and `-Infinity`
-- `string`
-- `boolean`
-- `bigint`
-- `undefined` and `null`
-- plain JSON-like `Object` and `Array`
-- `Envelope<header, payload>` where `header` is JSON-like (or string) and
-  `payload` is `ArrayBuffer`
-- `Buffer` (Node.js), `ArrayBuffer`, `Uint8Array`, `Int32Array`, `Float64Array`, `BigInt64Array`,
-  `BigUint64Array`, and `DataView`
-- global `symbol` values (`Symbol.for(...)`)
-- `Error` and `Date`
-- native `Promise<supported>` (resolved on the host before dispatch; rejections
-  propagate to the caller)
-
-Thenables are not awaited by the transport.
-
-Not supported directly:
-
-- `Map`, `Set`, `WeakMap`, custom class instances (except `Envelope` and subclasses)
-- non-global symbols
-- `Blob`
-- functions
-
-`Envelope` is optimized for pair-like metadata + binary payload transport:
-
-```ts
-import { Envelope } from "@vixeny/knitting";
-
-const message = new Envelope(
-  { route: "/upload", contentType: "application/octet-stream" },
-  new Uint8Array([1, 2, 3]).buffer,
+const values = await Promise.all(
+  Array.from({ length: 1_000 }, (_, index) => pool.call.add([index, 1])),
 );
 ```
 
-If you need to pass several values, prefer a single object or tuple:
+## Defining Tasks
+
+### Arguments and return values
+
+Each task receives one argument and returns one value. If you need multiple
+inputs, pass an object or tuple.
 
 ```ts
-export const search = task<
-  { start: number; end: number },
-  number[]
->({
-  f: async ({ start, end }) => {
-    // ...
-    return [];
+type ResizeInput = {
+  width: number;
+  height: number;
+};
+
+export const pixels = task<ResizeInput, number>({
+  f: ({ width, height }) => width * height,
+});
+```
+
+Supported payloads are listed below. For large binary data, prefer
+`ArrayBuffer`, typed arrays, or `ProcessSharedBuffer` instead of serializing
+big objects.
+
+### Task timeouts
+
+Use a task timeout when a worker call should not wait forever.
+
+```ts
+export const maybeSlow = task<string, string>({
+  timeout: { time: 500, default: "timed out" },
+  f: async (value) => {
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    return value.toUpperCase();
   },
 });
 ```
 
-## Balancing Strategies
+Timeouts can reject the call, resolve with a default value, or use a custom
+error depending on the timeout options you choose.
 
-You can control how calls are routed:
+### Abort-aware tasks
 
-- `"roundRobin"` default round-robin
-- `"robinRound"` legacy alias of `"roundRobin"`
-- `"firstIdle"` prefer idle workers
-- `"randomLane"` choose a random worker
-- `"firstIdleOrRandom"` idle first, then random
+If a task is long-running, opt into an abort signal and check it inside the
+worker function.
 
-You can also pass `{}` or `{ strategy: "..." }` if you prefer an object form.
-When omitted, strategy defaults to `"roundRobin"`.
+```ts
+export const countUntilStopped = task({
+  abortSignal: { hasAborted: true },
+  f: async (limit: number, signal) => {
+    for (let index = 0; index < limit; index += 1) {
+      if (signal.hasAborted()) return index;
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
 
-## Best Practices
+    return limit;
+  },
+});
+```
 
-- Export tasks from the module where they are defined.
-- Keep task definitions at top level (avoid conditional exports).
-- Batch many calls, then await with `Promise.all`.
-- Use a tuple or object when you need multiple arguments.
+The pool also has an `abortSignalCapacity` option for sizing the shared abort
+signal storage when many abort-aware calls may be in flight.
+
+### Importing worker-side functions
+
+`importTask` lets the worker import a normal function from another module. The
+host gets a typed task wrapper, but it does not import or evaluate that worker
+module itself.
+
+That matters for process workers and sandboxing: if the code is supposed to run
+inside the worker's permissions, keep it in a separate file and point
+`importTask()` at that file.
+
+```ts
+// worker-tasks.ts
+export const add = ([left, right]: [number, number]) => left + right;
+```
+
+```ts
+// main.ts
+import { createPool, importTask, isMain } from "@vixeny/knitting";
+
+export const add = importTask<[number, number], number>({
+  href: "./worker-tasks.ts",
+  name: "add",
+});
+
+if (isMain) {
+  const pool = createPool({ threads: 2 })({ add });
+
+  try {
+    console.log(await pool.call.add([2, 3]));
+  } finally {
+    await pool.shutdown();
+  }
+}
+```
+
+`href` can be a local relative path like `"./worker-tasks.ts"`, an absolute file
+path, or a URL. Relative paths are resolved from the module that calls
+`importTask()`.
+
+When workers import files, keep the pool's permission settings in mind. The
+default strict mode allows task imports, but custom permission policies can
+limit reads, writes, environment access, networking, and process execution.
+
+### Single-task shorthand
+
+For quick scripts, a task can create its own pool:
+
+```ts
+import { isMain, task } from "@vixeny/knitting";
+
+export const double = task<number, number>({
+  f: (value) => value * 2,
+}).createPool({ threads: 2 });
+
+if (isMain) {
+  try {
+    console.log(await double.call(21));
+  } finally {
+    await double.shutdown();
+  }
+}
+```
+
+## Creating Pools
+
+You typically create one pool per set of tasks and reuse it.
+
+```ts
+const pool = createPool({
+  threads: 4,
+  balancer: "firstIdle",
+  payload: {
+    payloadMaxByteLength: 64 * 1024 * 1024,
+    maxPayloadBytes: 8 * 1024 * 1024,
+  },
+})({ add, pixels });
+```
+
+Common options you might tweak:
+
+| Option | What it does |
+| --- | --- |
+| `threads` | Number of workers to start. |
+| `balancer` | Scheduling strategy: `"roundRobin"`, `"firstIdle"`, `"randomLane"`, `"firstIdleOrRandom"`, or the legacy alias `"robinRound"`. |
+| `payload` | Shared payload-buffer settings: `mode`, `payloadInitialBytes`, `payloadMaxByteLength`, and `maxPayloadBytes`. |
+| `abortSignalCapacity` | Number of shared abort slots available to abort-aware calls. |
+| `worker.resolveAfterFinishingAll` | Let submitted calls finish before shutdown resolves. |
+| `worker.hardTimeoutMs` | Force pool shutdown when a task exceeds this many milliseconds. |
+| `worker.runtime` | Choose `"thread"` or `"process"` workers. |
+| `permission` | Runtime permission policy for workers. |
+| `debug` | Enable extra diagnostics. |
+| `source` | Worker source override for advanced runtimes. |
+
+## Worker Runtimes
+
+By default, workers use runtime-local threads where possible (the lowest
+overhead option).
+
+```ts
+const pool = createPool({
+  threads: 4,
+})({ add });
+```
+
+If you want stronger isolation, or you need to run workers through a specific
+runtime executable, use process workers.
+
+```ts
+const pool = createPool({
+  threads: 2,
+  worker: {
+    runtime: "process",
+    processRuntime: "node",
+  },
+})({ add });
+```
+
+`processRuntime` can be `"node"`, `"deno"`, or `"bun"`. You can also provide a
+`processCommandPrefix` when workers need to be launched through a wrapper such
+as a package manager, container command, or runtime shim.
+
+That prefix is also useful for sandbox and resource-control tools. The one
+important detail is that process workers receive their shared-memory handle on
+stdin, which is file descriptor 0. Wrappers that leave stdin alone usually work;
+wrappers that replace, close, or proxy stdin without passing the fd through will
+stop the worker from booting.
+
+When the goal is isolation, define the worker code with `importTask()` instead
+of importing the task function directly into the host. That keeps the code you
+want to isolate out of the host process; only the worker imports and runs it.
+
+For example, this runs Bun process workers through Bubblewrap while preserving
+the inherited fd:
+
+```ts
+const pool = createPool({
+  threads: 2,
+  worker: {
+    runtime: "process",
+    processRuntime: "bun",
+    processCommandPrefix: [
+      "bwrap",
+      "--unshare-all",
+      "--ro-bind",
+      "/",
+      "/",
+      "--dev-bind",
+      "/dev",
+      "/dev",
+      "--proc",
+      "/proc",
+      "--tmpfs",
+      "/tmp",
+      "--die-with-parent",
+    ],
+  },
+})({ add });
+```
+
+## Permissions
+
+Knitting defaults to a strict worker permission policy:
+
+```ts
+permission: { mode: "strict", allowImport: true }
+```
+
+That default is meant to be safe enough for normal task imports without giving
+workers broad ambient access.
+
+For trusted local scripts, you can opt out:
+
+```ts
+const pool = createPool({
+  permission: "unsafe",
+})({ add });
+```
+
+For production or plugin-like workloads, prefer an explicit policy:
+
+```ts
+const pool = createPool({
+  permission: {
+    mode: "strict",
+    allowImport: true,
+    read: ["./data"],
+    write: ["./out"],
+    net: ["api.example.com"],
+    env: { allow: ["NODE_ENV"] },
+    console: true,
+  },
+})({ add });
+```
+
+Permissions are enforced using the runtime features available in Node.js, Deno,
+and Bun. The exact mechanics vary by runtime, so treat them as a guardrail, not
+as the only security boundary for hostile code.
+
+## Payloads
+
+Worker calls can carry the following values across the shared-memory transport:
+
+- `string`, `number`, `boolean`, `bigint`, `null`, and `undefined`.
+- Plain objects and arrays made from supported values.
+- `ArrayBuffer`, Node `Buffer`, `DataView`, and supported typed arrays.
+- `ProcessSharedBuffer`.
+- `Envelope` for metadata plus binary payloads.
+- `Error`, `Date`, and global symbols created with `Symbol.for(...)`.
+- Native `Promise<supported-value>` inputs. The promise is awaited before
+  dispatch.
+- Thenables are not awaited by the transport.
+
+If it isn't on that list, assume it isn't portable. Some things don't (or
+shouldn't) cross the boundary:
+
+- DOM objects and platform handles.
+- Functions, unless they are part of a `task` or `importTask` definition.
+- Cyclic object graphs.
+- `Map`, `Set`, `WeakMap`, and non-global symbols.
+- Objects with behavior that depends on prototypes, getters, setters, or hidden
+  process-local state.
+
+If a payload is large, set `payload.maxPayloadBytes` deliberately and prefer
+binary/shared-memory shapes over deeply nested objects.
+
+## Shared Memory Channels
+
+`ProcessSharedBuffer` is the lower-level building block for process-safe shared
+memory. Use it when two workers or processes need to see the same bytes without
+copying the whole payload for every call.
+
+```ts
+import { ProcessSharedBuffer } from "@vixeny/knitting/process-shared-buffer";
+import { createPool, isMain, task } from "@vixeny/knitting";
+
+export const readFirstCell = task<ProcessSharedBuffer, number>({
+  f: (buffer) => Atomics.load(buffer.view(Int32Array), 0),
+});
+
+if (isMain) {
+  const pool = createPool({ threads: 1 })({ readFirstCell });
+  const shared = ProcessSharedBuffer.create(64);
+
+  try {
+    Atomics.store(shared.view(Int32Array), 0, 42);
+    console.log(await pool.call.readFirstCell(shared));
+  } finally {
+    shared.close();
+    await pool.shutdown();
+  }
+}
+```
+
+### Private parent-child buffers
+
+The default mode is anonymous:
+
+```ts
+const shared = ProcessSharedBuffer.create(64);
+```
+
+Anonymous buffers are the safest default. They are private handles that are
+passed intentionally through Knitting's transport. They are also created with
+close-on-exec style hardening where the platform supports it, so unrelated
+programs do not accidentally inherit them.
+
+### Named channels for independent processes
+
+Sometimes you do want two unrelated processes to rendezvous on purpose. Use a
+named channel for that.
+
+```ts
+import { ProcessSharedBuffer } from "@vixeny/knitting/process-shared-buffer";
+
+const name = "knitting-demo-channel";
+
+const owner = ProcessSharedBuffer.create({
+  name,
+  size: 64,
+  mode: "create",
+});
+
+try {
+  Atomics.store(owner.view(Int32Array), 0, 7);
+
+  const peer = ProcessSharedBuffer.create({
+    name,
+    size: 64,
+    mode: "open",
+  });
+
+  try {
+    console.log(Atomics.load(peer.view(Int32Array), 0));
+  } finally {
+    peer.close();
+  }
+} finally {
+  owner.close();
+  ProcessSharedBuffer.unlink(name);
+}
+```
+
+Use `"create"` for the process that owns the channel and `"open"` for peers.
+Treat the channel name like a capability: make it unique, do not accept it from
+untrusted input without validation, and clean it up when the channel is no
+longer needed. On POSIX runtimes `unlink` removes the name. On platforms where
+named mappings are lifetime-managed by the OS, closing the last handle is the
+important cleanup step.
+
+## Runtime Safety
+
+Knitting aims to make the safer path the default:
+
+- Strict worker permissions are the default.
+- Anonymous shared memory is the default.
+- Named shared memory requires an explicit `mode`.
+- Payload sizes are bounded.
+- Abort-aware tasks reserve shared abort slots.
+- Workers can be guarded with `worker.hardTimeoutMs`.
+- Shutdown can stop immediately or wait for submitted work with
+  `worker.resolveAfterFinishingAll`.
+
+That said, workers still run code. If you treat tasks like plugins, keep
+permissions tight, keep named shared-memory names hard to guess, and avoid
+passing broad capabilities into worker code.
+
+## Scheduling and Tuning
+
+Choose a balancer based on the shape of your work:
+
+- `"roundRobin"` is simple and works well for similarly sized tasks.
+- `"firstIdle"` helps when task durations vary.
+- `"randomLane"` is useful for simple spreading and experiments.
+- `"firstIdleOrRandom"` prefers an idle worker, then falls back to random.
+- `"robinRound"` is kept as a legacy alias of `"roundRobin"`.
+
+Useful tuning options:
+
+- Increase `threads` for parallel CPU-heavy work.
+- Increase `payload.payloadMaxByteLength` only when the transport buffer needs
+  more room.
+- Increase `payload.maxPayloadBytes` only when individual calls genuinely need
+  larger payloads.
+- Use process workers when isolation matters more than startup cost.
 
 ## Benchmarks
 
-There are several benchmarks under `bench/`. To run the top-level ones across
-Node, Deno, and Bun:
-
 ```bash
-./run.sh
+bun run bench
 ```
 
-Results are written into `results/`.
+The benchmark suite compares scheduling and payload behavior across supported
+runtimes. Treat numbers as local guidance: CPU, runtime version, payload shape,
+and worker type all matter.
 
-To emit JSON (useful for plotting scripts under `graphs/`):
+## Development
+
+Install dependencies:
+
+```bash
+bun install
+```
+
+Build the package:
+
+```bash
+bun run build
+```
+
+Build the native shared-memory addon:
+
+```bash
+bun run build:native
+```
+
+Run tests:
+
+```bash
+npm run test:node
+npm run test:deno
+npm run test:bun
+npm run test:all
+```
+
+Emit JSON benchmark results:
 
 ```bash
 ./run.sh --json
 ```
 
-## Development
-
-Common local commands:
-
-```bash
-deno test -A --ignore=test/runtime.node.test.ts
-node --no-warnings --experimental-transform-types --test "./test/*.test.ts"
-./run.sh
-bun run build.ts
-```
+For a file-by-file orientation, see [map.md](./map.md).
 
 ## License
 
-Apache 2.0
+Apache-2.0

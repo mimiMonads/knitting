@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test from "./_runner.ts";
 import {
+  getTaskSlotMeta,
   HEADER_BYTE_LENGTH,
-  LOCK_SECTOR_BYTE_LENGTH,
+  type Lock2,
   lock2,
+  LOCK_SECTOR_BYTE_LENGTH,
   makeTask,
   PAYLOAD_LOCK_SECTOR_BYTE_LENGTH,
-  TASK_SLOT_META_VALUE_MASK,
-  getTaskSlotMeta,
-  type Lock2,
   type Task,
+  TASK_SLOT_META_VALUE_MASK,
   TaskIndex,
 } from "../src/memory/lock.ts";
 import { createHostTxQueue } from "../src/runtime/tx-queue.ts";

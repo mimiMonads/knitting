@@ -1,14 +1,16 @@
+import {
+  existsSync as existsSyncCompat,
+  realpathSync as realpathSyncCompat,
+} from "node:fs";
+import {
+  isAbsolute as pathIsAbsolute,
+  relative as pathRelative,
+  resolve as pathResolve,
+} from "node:path";
+import { fileURLToPath as fileURLToPathCompat } from "node:url";
 import { RUNTIME } from "../common/runtime.ts";
 import { toCanonicalPath as toSharedCanonicalPath } from "../common/path-canonical.ts";
-import {
-  existsSyncCompat,
-  fileURLToPathCompat,
-  getNodeProcess,
-  pathIsAbsolute,
-  pathResolve,
-  pathRelative,
-  realpathSyncCompat,
-} from "../common/node-compat.ts";
+import { getNodeProcess } from "../common/node-compat.ts";
 
 type PermissionPath = string | URL;
 
@@ -418,7 +420,7 @@ const toEnvFiles = (
   return toUniquePathList(values, cwd, home);
 };
 
-const rawRealpathSync = realpathSyncCompat;
+const rawRealpathSync = realpathSyncCompat.native ?? realpathSyncCompat;
 
 const toCanonicalPath = (candidate: string): string => {
   return toSharedCanonicalPath(candidate, {

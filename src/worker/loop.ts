@@ -1,10 +1,16 @@
 import {
   RUNTIME_IS_MAIN_THREAD,
+  RUNTIME_IS_PROCESS_WORKER,
   RUNTIME_PARENT_PORT,
+  RUNTIME_PROCESS_WORKER_BOOT_ENV,
+  RUNTIME_PROCESS_WORKER_BOOT_VERSION,
   RUNTIME_WORKER_DATA,
   createRuntimeMessageChannel,
 } from "../common/worker-runtime.ts";
-import { isSharedBufferSource } from "../common/shared-buffer-region.ts";
+import {
+  isSharedBufferSource,
+  type SharedBufferSource,
+} from "../common/shared-buffer-region.ts";
 import { isLockBufferTextCompat } from "../common/shared-buffer-text.ts";
 import { createWorkerRxQueue } from "./rx-queue.ts";
 import {
@@ -12,9 +18,26 @@ import {
 } from "../ipc/transport/shared-memory.ts";
 import { lock2 } from "../memory/lock.ts";
 import type { LockBuffers, WorkerData } from "../types.ts";
-import { getFunctions } from "./get-functions.ts";
-import { pauseGeneric, sleepUntilChanged, whilePausing } from "./timers.ts";
-import { SET_IMMEDIATE } from "../common/runtime.ts";
+import { getFunctions } from "./task-loader.ts";
+import {
+  pauseGeneric,
+  sleepUntilChanged,
+  whilePausing,
+  type NativeWaitU32,
+} from "./timers.ts";
+import { RUNTIME, SET_IMMEDIATE } from "../common/runtime.ts";
+import { getNodeProcess } from "../common/node-compat.ts";
+import {
+  getDefaultProcessSharedBufferPrimitives,
+  ProcessSharedBuffer,
+  setDefaultProcessSharedBufferPrimitives,
+  type ProcessSharedBufferMetadata,
+  type ProcessSharedBufferPrimitives,
+} from "../connections/process-shared-buffer.ts";
+import { createBunConnectionPrimitives } from "../connections/bun.ts";
+import { createDenoConnectionPrimitives } from "../connections/deno.ts";
+import { loadNodeFutexAddon } from "../connections/node.ts";
+import type { SharedMemoryMapping } from "../connections/types.ts";
 import {
   installTerminationGuard,
   installUnhandledRejectionSilencer,
@@ -25,24 +48,51 @@ import {
 } from "./safety/index.ts";
 import { signalAbortFactory } from "../shared/abortSignal.ts";
 
-export const jsrIsGreatAndWorkWithoutBugs = () => null;
 const WORKER_FATAL_MESSAGE_KEY = "__knittingWorkerFatal";
+
+const getProcessWorkerNativeWaitU32 = (): NativeWaitU32 | undefined => {
+  if (!RUNTIME_IS_PROCESS_WORKER || RUNTIME !== "node") return undefined;
+
+  try {
+    return loadNodeFutexAddon().waitU32;
+  } catch {
+    return undefined;
+  }
+};
 
 const reportWorkerStartupFatal = (error: unknown): void => {
   const message = String((error as { message?: unknown })?.message ?? error);
   const payload = {
     [WORKER_FATAL_MESSAGE_KEY]: message,
   };
+  let reported = false;
   try {
     RUNTIME_PARENT_PORT?.postMessage?.(payload);
-    return;
+    reported = RUNTIME_PARENT_PORT !== undefined;
   } catch {
   }
-  try {
-    (globalThis as { postMessage?: (message: unknown) => void }).postMessage!(
-      payload,
-    );
-  } catch {
+  if (!reported) {
+    try {
+      (globalThis as { postMessage?: (message: unknown) => void }).postMessage!(
+        payload,
+      );
+      reported = true;
+    } catch {
+    }
+  }
+  if (!reported) {
+    try {
+      console.error(`Worker startup failed: ${message}`);
+    } catch {
+    }
+    if (RUNTIME_IS_PROCESS_WORKER) {
+      try {
+        (getNodeProcess() as ReturnType<typeof getNodeProcess> & {
+          exit?: (code?: number) => never;
+        } | undefined)?.exit?.(1);
+      } catch {
+      }
+    }
   }
 };
 
@@ -125,6 +175,7 @@ const pauseSpin = (() => {
   const { opView, rxStatus, txStatus } = signals;
   const a_store = Atomics.store;
   const a_load = Atomics.load;
+  const nativeWaitU32 = getProcessWorkerNativeWaitU32();
 
   const listOfFunctions = await getFunctions({
     list,
@@ -168,6 +219,12 @@ const pauseSpin = (() => {
     pauseInNanoseconds: timers?.pauseNanoseconds,
     enqueueLock,
     write: () => hasCompleted() ? writeBatch(WRITE_MAX) : 0,
+    nativeWaitU32,
+    useSharedMemoryWait: !(
+      RUNTIME_IS_PROCESS_WORKER &&
+      RUNTIME === "node" &&
+      nativeWaitU32 === undefined
+    ),
   });
 
   const channel = createRuntimeMessageChannel();
@@ -270,11 +327,13 @@ const _pauseUntil = pauseUntil;
   scheduleMacro();
 }
 
-const isWebWorkerScope = (): boolean => {
-  const scopeCtor = (globalThis as { WorkerGlobalScope?: unknown }).WorkerGlobalScope;
+const isWorkerGlobalScope = (): boolean => {
+  const scopeCtor =
+    (globalThis as { WorkerGlobalScope?: unknown }).WorkerGlobalScope;
   if (typeof scopeCtor !== "function") return false;
   try {
-    return globalThis instanceof (scopeCtor as new (...args: unknown[]) => object);
+    return globalThis instanceof
+      (scopeCtor as new (...args: unknown[]) => object);
   } catch {
     return false;
   }
@@ -285,7 +344,7 @@ const isLockBuffers = (value: unknown): value is LockBuffers => {
   const candidate = value as Partial<LockBuffers>;
   return isSharedBufferSource(candidate.headers) &&
     isSharedBufferSource(candidate.lockSector) &&
-    candidate.payload instanceof SharedArrayBuffer &&
+    isSharedBufferSource(candidate.payload) &&
     isSharedBufferSource(candidate.payloadSector) &&
     (
       candidate.textCompat === undefined ||
@@ -311,7 +370,7 @@ const isWorkerBootPayload = (value: unknown): value is WorkerData => {
     isLockBuffers(candidate.returnLock);
 };
 
-const installWebWorkerBootstrap = (): void => {
+const installWorkerGlobalBootstrap = (): void => {
   const g = globalThis as typeof globalThis & {
     addEventListener?: (
       type: string,
@@ -353,9 +412,200 @@ const installWebWorkerBootstrap = (): void => {
   };
 };
 
+type ProcessWorkerWireLockBuffers = Omit<
+  LockBuffers,
+  "headers" | "lockSector" | "payload" | "payloadSector"
+> & {
+  headers: ProcessSharedBufferMetadata;
+  lockSector: ProcessSharedBufferMetadata;
+  payload: ProcessSharedBufferMetadata;
+  payloadSector: ProcessSharedBufferMetadata;
+};
 
-if (RUNTIME_IS_MAIN_THREAD === false && isWorkerBootPayload(RUNTIME_WORKER_DATA)) {
+type ProcessWorkerWireData = Omit<
+  WorkerData,
+  "sab" | "abortSignalSAB" | "lock" | "returnLock"
+> & {
+  sab: ProcessSharedBufferMetadata;
+  abortSignalSAB?: ProcessSharedBufferMetadata;
+  lock: ProcessWorkerWireLockBuffers;
+  returnLock: ProcessWorkerWireLockBuffers;
+};
+
+type ProcessWorkerBootPayload = {
+  version: typeof RUNTIME_PROCESS_WORKER_BOOT_VERSION;
+  workerData: ProcessWorkerWireData;
+};
+
+type ProcessLikeWithIpc = NonNullable<ReturnType<typeof getNodeProcess>> & {
+  off?: (event: string, handler: (...args: unknown[]) => void) => unknown;
+  removeListener?: (
+    event: string,
+    handler: (...args: unknown[]) => void,
+  ) => unknown;
+};
+
+const isProcessSharedBufferMetadata = (
+  value: unknown,
+): value is ProcessSharedBufferMetadata => {
+  try {
+    ProcessSharedBuffer.fromMetadata(value);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const isProcessWorkerWireLockBuffers = (
+  value: unknown,
+): value is ProcessWorkerWireLockBuffers => {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<ProcessWorkerWireLockBuffers>;
+  return isProcessSharedBufferMetadata(candidate.headers) &&
+    isProcessSharedBufferMetadata(candidate.lockSector) &&
+    isProcessSharedBufferMetadata(candidate.payload) &&
+    isProcessSharedBufferMetadata(candidate.payloadSector) &&
+    (
+      candidate.textCompat === undefined ||
+      isLockBufferTextCompat(candidate.textCompat)
+    );
+};
+
+const isProcessWorkerBootPayload = (
+  value: unknown,
+): value is ProcessWorkerBootPayload => {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<ProcessWorkerBootPayload>;
+  const workerData = candidate.workerData as Partial<ProcessWorkerWireData> |
+    undefined;
+  return candidate.version === RUNTIME_PROCESS_WORKER_BOOT_VERSION &&
+    !!workerData &&
+    isProcessSharedBufferMetadata(workerData.sab) &&
+    Array.isArray(workerData.list) &&
+    Array.isArray(workerData.ids) &&
+    Array.isArray(workerData.at) &&
+    typeof workerData.thread === "number" &&
+    typeof workerData.totalNumberOfThread === "number" &&
+    typeof workerData.startAt === "number" &&
+    (
+      workerData.abortSignalSAB === undefined ||
+      isProcessSharedBufferMetadata(workerData.abortSignalSAB)
+    ) &&
+    isProcessWorkerWireLockBuffers(workerData.lock) &&
+    isProcessWorkerWireLockBuffers(workerData.returnLock);
+};
+
+const getProcessWorkerPrimitives = (): ProcessSharedBufferPrimitives => {
+  const primitives = RUNTIME === "bun"
+    ? createBunConnectionPrimitives()
+    : RUNTIME === "deno"
+    ? createDenoConnectionPrimitives()
+    : getDefaultProcessSharedBufferPrimitives();
+  setDefaultProcessSharedBufferPrimitives(primitives);
+  return primitives;
+};
+
+const reviveProcessWorkerData = (
+  wire: ProcessWorkerWireData,
+): WorkerData => {
+  const primitives = getProcessWorkerPrimitives();
+  const mappings = new Map<string, SharedMemoryMapping>();
+  const reviveRegion = (
+    metadata: ProcessSharedBufferMetadata,
+  ): SharedBufferSource => {
+    const processBuffer = ProcessSharedBuffer.fromMetadata(metadata);
+    const descriptor = processBuffer.descriptor;
+    const key = `${descriptor.fd}:${descriptor.size}:${descriptor.runtime ?? ""}`;
+    let mapping = mappings.get(key);
+    if (mapping === undefined) {
+      mapping = descriptor.map(primitives);
+      mappings.set(key, mapping);
+    } else {
+      descriptor.attach(mapping);
+    }
+
+    return {
+      sab: mapping.buffer,
+      byteOffset: processBuffer.byteOffset,
+      byteLength: processBuffer.byteLength,
+    };
+  };
+  const reviveLockBuffers = (
+    lock: ProcessWorkerWireLockBuffers,
+  ): LockBuffers => ({
+    ...lock,
+    headers: reviveRegion(lock.headers),
+    lockSector: reviveRegion(lock.lockSector),
+    payload: reviveRegion(lock.payload),
+    payloadSector: reviveRegion(lock.payloadSector),
+  });
+
+  return {
+    ...wire,
+    sab: reviveRegion(wire.sab),
+    abortSignalSAB: wire.abortSignalSAB === undefined
+      ? undefined
+      : reviveRegion(wire.abortSignalSAB),
+    lock: reviveLockBuffers(wire.lock),
+    returnLock: reviveLockBuffers(wire.returnLock),
+  };
+};
+
+const installProcessWorkerBootstrap = (): void => {
+  const processLike = getNodeProcess() as ProcessLikeWithIpc | undefined;
+
+  const start = (payload: ProcessWorkerBootPayload) => {
+    const data = reviveProcessWorkerData(payload.workerData);
+    if (!isWorkerBootPayload(data)) {
+      throw new TypeError("invalid process worker boot payload");
+    }
+    void workerMainLoop(data).catch(reportWorkerStartupFatal);
+  };
+  const envBoot = processLike?.env?.[RUNTIME_PROCESS_WORKER_BOOT_ENV];
+  if (typeof envBoot === "string" && envBoot.length > 0) {
+    try {
+      const payload = JSON.parse(envBoot);
+      if (!isProcessWorkerBootPayload(payload)) {
+        throw new TypeError("invalid process worker boot payload");
+      }
+      try {
+        delete processLike?.env?.[RUNTIME_PROCESS_WORKER_BOOT_ENV];
+      } catch {
+      }
+      start(payload);
+    } catch (error) {
+      reportWorkerStartupFatal(error);
+    }
+    return;
+  }
+
+  if (typeof processLike?.on !== "function") return;
+
+  const onMessage = (message: unknown) => {
+    if (!isProcessWorkerBootPayload(message)) return;
+    try {
+      processLike.off?.("message", onMessage);
+      processLike.removeListener?.("message", onMessage);
+    } catch {
+    }
+    try {
+      start(message);
+    } catch (error) {
+      reportWorkerStartupFatal(error);
+    }
+  };
+
+  processLike.on("message", onMessage);
+};
+
+
+if (
+  RUNTIME_IS_MAIN_THREAD === false &&
+  isWorkerBootPayload(RUNTIME_WORKER_DATA)
+) {
   void workerMainLoop(RUNTIME_WORKER_DATA).catch(reportWorkerStartupFatal);
-} else if (isWebWorkerScope()) {
-  installWebWorkerBootstrap();
+} else if (RUNTIME_IS_PROCESS_WORKER) {
+  installProcessWorkerBootstrap();
+} else if (isWorkerGlobalScope()) {
+  installWorkerGlobalBootstrap();
 }

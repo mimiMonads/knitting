@@ -1,5 +1,5 @@
-import { getCallerFilePath } from "./common/others.ts";
-import { genTaskID } from "./common/others.ts";
+import { getCallerFilePath } from "./common/task-source.ts";
+import { genTaskID } from "./common/task-source.ts";
 import { toModuleUrl } from "./common/module-url.ts";
 import { endpointSymbol } from "./common/task-symbol.ts";
 import { spawnWorkerContext } from "./runtime/pool.ts";

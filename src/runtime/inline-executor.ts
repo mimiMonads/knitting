@@ -1,6 +1,6 @@
 import type { TaskTimeout, WorkerCall, tasks } from "../types.ts";
 import { withResolvers } from "../common/with-resolvers.ts";
-import RingQueue from "../ipc/tools/RingQueue.ts";
+import RingQueue from "../ipc/tools/ring-queue.ts";
 import { createRuntimeMessageChannel } from "../common/worker-runtime.ts";
 
 type WorkerCallable = (args: unknown, abortToolkit?: unknown) => unknown;

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import type { Buffer as NodeBuffer } from "node:buffer";
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import test from "node:test";
+import test from "./_runner.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import {
@@ -12,13 +12,13 @@ import {
   type SharedMemoryMapping,
 } from "../src/connections/index.ts";
 import { createNodeConnectionPrimitives } from "../src/connections/node.ts";
+import {
+  F_GETFD,
+  F_SETFD,
+  FD_CLOEXEC,
+  setCloseOnExec,
+} from "../src/connections/posix.ts";
 
-const addonPath = fileURLToPath(
-  new URL("../build/Release/knitting_shared_memory.node", import.meta.url),
-);
-const futexAddonPath = fileURLToPath(
-  new URL("../build/Release/knitting_shm.node", import.meta.url),
-);
 const futexChildPath = fileURLToPath(
   new URL(
     "./fixtures/probes/file_descriptor_futex_child.ts",
@@ -37,7 +37,24 @@ const nodeProcess = isPlainNode
   ? (globalThis as typeof globalThis & { process: NodeJS.Process }).process
   : undefined;
 const nativeFdTestsAreEnabled = nodeProcess?.platform === "linux" ||
+  nodeProcess?.platform === "win32" ||
   nodeProcess?.env.KNITTING_EXPERIMENTAL_NATIVE_FD_TESTS === "1";
+const nativeAddonPaths = (name: string): readonly string[] => {
+  const platform = nodeProcess?.platform;
+  const arch = nodeProcess?.arch;
+  const modules = nodeProcess?.versions.modules;
+  const prebuildDir = platform !== undefined && arch !== undefined &&
+      modules !== undefined
+    ? `${platform}-${arch}-node-${modules}`
+    : undefined;
+  const candidates = prebuildDir !== undefined
+    ? [
+      new URL(`../prebuilds/${prebuildDir}/${name}.node`, import.meta.url),
+      new URL(`../build/Release/${name}.node`, import.meta.url),
+    ]
+    : [new URL(`../build/Release/${name}.node`, import.meta.url)];
+  return candidates.map((url) => fileURLToPath(url));
+};
 
 type SharedMemoryAddon = {
   createSharedMemory: (size: number) => {
@@ -55,6 +72,8 @@ type SharedMemoryAddon = {
 };
 
 type FutexAddon = {
+  sleep: (milliseconds?: number) => void;
+  yield: () => void;
   wakeU32: (
     buffer: ArrayBuffer | SharedArrayBuffer,
     byteOffset: number,
@@ -70,6 +89,7 @@ type FutexAddon = {
 
 type NativeAddonProbe<T> = {
   addon?: T;
+  path?: string;
   skipReason?: string;
 };
 
@@ -85,19 +105,29 @@ const nativeFdGateReason = (): string | undefined => {
   return undefined;
 };
 
+const nativeCrossProcessFdGateReason = (): string | undefined => {
+  const baseReason = nativeFdGateReason();
+  if (baseReason !== undefined) return baseReason;
+  if (nodeProcess?.platform === "win32") {
+    return "cross-process fd inheritance is POSIX-only";
+  }
+  return undefined;
+};
+
 const probeNativeAddon = <T>(
-  path: string,
+  paths: readonly string[],
   label: string,
+  gateReason = nativeFdGateReason(),
 ): NativeAddonProbe<T> => {
-  const gateReason = nativeFdGateReason();
   if (gateReason !== undefined) return { skipReason: gateReason };
 
-  if (!existsSync(path)) {
-    return { skipReason: `${label} addon is not built` };
+  const path = paths.find((candidate) => existsSync(candidate));
+  if (path === undefined) {
+    return { skipReason: `${label} addon is not prebuilt or built` };
   }
 
   try {
-    return { addon: require(path) as T };
+    return { addon: require(path) as T, path };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return { skipReason: `${label} addon could not load: ${message}` };
@@ -110,12 +140,17 @@ const nativeTestName = (name: string, probe: NativeAddonProbe<unknown>) =>
     : `${name} [native fd skipped: ${probe.skipReason}]`;
 
 const sharedMemoryAddonProbe = probeNativeAddon<SharedMemoryAddon>(
-  addonPath,
+  nativeAddonPaths("knitting_shared_memory"),
   "shared memory",
 );
 const futexAddonProbe = probeNativeAddon<FutexAddon>(
-  futexAddonPath,
+  nativeAddonPaths("knitting_shm"),
   "futex",
+);
+const crossProcessFutexAddonProbe = probeNativeAddon<FutexAddon>(
+  nativeAddonPaths("knitting_shm"),
+  "futex",
+  nativeCrossProcessFdGateReason(),
 );
 
 const nativeSharedMemoryTest = sharedMemoryAddonProbe.addon === undefined
@@ -125,6 +160,46 @@ const nativeFutexTest = sharedMemoryAddonProbe.addon === undefined ||
     futexAddonProbe.addon === undefined
   ? test.skip
   : test;
+const nativeCrossProcessFutexTest =
+  sharedMemoryAddonProbe.addon === undefined ||
+    crossProcessFutexAddonProbe.addon === undefined
+    ? test.skip
+    : test;
+
+nativeFutexTest(
+  nativeTestName(
+    "futex addon exposes sleep and yield helpers",
+    futexAddonProbe,
+  ),
+  () => {
+    const futex = futexAddonProbe.addon;
+    assert.ok(futex !== undefined);
+
+    futex.yield();
+    futex.sleep(0);
+    futex.sleep(1);
+  },
+);
+
+test("close-on-exec helper programs shared-memory descriptors", () => {
+  const calls: Array<[number, number, number]> = [];
+  const libc = {
+    symbols: {
+      fcntl: (fd: number, cmd: number, arg: number) => {
+        calls.push([fd, cmd, arg]);
+        if (cmd === F_GETFD) return 0x20;
+        if (cmd === F_SETFD) return 0;
+        return -1;
+      },
+    },
+  };
+
+  assert.equal(setCloseOnExec(libc, 7), 7);
+  assert.deepEqual(calls, [
+    [7, F_GETFD, 0],
+    [7, F_SETFD, 0x20 | FD_CLOEXEC],
+  ]);
+});
 
 test("FileDescriptor stringifies and restores descriptor metadata", () => {
   const sab = new SharedArrayBuffer(64);
@@ -197,16 +272,40 @@ nativeSharedMemoryTest(
   },
 );
 
-nativeFutexTest(
+nativeSharedMemoryTest(
+  nativeTestName(
+    "shared memory fds are marked close-on-exec",
+    sharedMemoryAddonProbe,
+  ),
+  () => {
+    if (nodeProcess?.platform !== "linux") {
+      return;
+    }
+
+    const addon = sharedMemoryAddonProbe.addon;
+    assert.ok(addon !== undefined);
+
+    const primitives = createNodeConnectionPrimitives(addon);
+    const mapping = primitives.createSharedMemory(64);
+    const fdinfo = readFileSync(`/proc/self/fdinfo/${mapping.fd}`, "utf8");
+    const match = fdinfo.match(/^flags:\s+([0-7]+)/m);
+    assert.ok(match !== null, fdinfo);
+
+    const flags = Number.parseInt(match[1]!, 8);
+    assert.equal((flags & 0o2000000) !== 0, true, fdinfo);
+  },
+);
+
+nativeCrossProcessFutexTest(
   nativeTestName(
     "FileDescriptor metadata can be remapped and woken with native futex",
     sharedMemoryAddonProbe.addon === undefined
       ? sharedMemoryAddonProbe
-      : futexAddonProbe,
+      : crossProcessFutexAddonProbe,
   ),
   async () => {
     const addon = sharedMemoryAddonProbe.addon;
-    const futex = futexAddonProbe.addon;
+    const futex = crossProcessFutexAddonProbe.addon;
     assert.ok(addon !== undefined);
     assert.ok(futex !== undefined);
 
@@ -225,7 +324,12 @@ nativeFutexTest(
 
     const child = spawn(
       process.execPath,
-      [...process.execArgv, futexChildPath, childMetadata],
+      [
+        ...process.execArgv,
+        futexChildPath,
+        childMetadata,
+        crossProcessFutexAddonProbe.path!,
+      ],
       {
         cwd: process.cwd(),
         stdio: ["ignore", "pipe", "pipe", mapping.fd],

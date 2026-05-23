@@ -1,7 +1,7 @@
 import { bench, group, run as mitataRun, summary } from "mitata";
 import { Buffer as NodeBuffer } from "node:buffer";
 import { lock2, makeTask } from "../../src/memory/lock.ts";
-import { format, print } from "../ulti/json-parse.ts";
+import { format, print } from "../util/json-parse.ts";
 
 const lock = lock2({});
 

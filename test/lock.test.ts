@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test from "./_runner.ts";
 const assertEquals: (actual: unknown, expected: unknown) => void = (
   actual,
   expected,
 ) => {
   assert.deepStrictEqual(actual, expected);
 };
-import RingQueue from "../src/ipc/tools/RingQueue.ts";
+import RingQueue from "../src/ipc/tools/ring-queue.ts";
 import {
   HAS_SHARED_WASM_MEMORY,
   isWasmSharedArrayBuffer,

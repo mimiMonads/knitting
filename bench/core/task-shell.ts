@@ -1,5 +1,5 @@
 import { bench, group, run as mitataRun } from "mitata";
-import { format, print } from "../ulti/json-parse.ts";
+import { format, print } from "../util/json-parse.ts";
 
 type TaskLike = Uint32Array & {
   value: unknown;

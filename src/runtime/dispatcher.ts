@@ -21,15 +21,22 @@ export const hostDispatcherLoop = ({
   },
   channelHandler,
   dispatcherOptions,
+  notifySignal,
 }: {
   queue: MultiQueue;
   signalBox: MainSignal;
   channelHandler: ChannelHandler;
   dispatcherOptions?: DispatcherSettings;
+  notifySignal?: () => void;
 }) => {
   const a_load = Atomics.load;
   const a_store = Atomics.store;
   const a_notify = Atomics.notify;
+  const canNotifySignal = opView.buffer instanceof SharedArrayBuffer;
+  const wakeSignal = notifySignal ??
+    (() => {
+      if (canNotifySignal) a_notify(opView, 0, 1);
+    });
   const notify = () => channelHandler.notify();
   let stallCount = 0 | 0;
   const STALL_FREE_LOOPS = Math.max(
@@ -67,7 +74,7 @@ export const hostDispatcherLoop = ({
       // Wake the worker before draining so it can start processing while we flush.
       if (a_load(rxStatus, 0) === 0) {
         a_store(opView, 0, 1);
-        a_notify(opView, 0, 1);
+        wakeSignal();
       }
 
       // Drain loop: local vars so V8 keeps them as unboxed int32.

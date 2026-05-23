@@ -8,6 +8,8 @@ export type SharedMemoryBufferKind =
   | "shared-array-buffer"
   | "external-array-buffer";
 
+export type SharedMemoryCreateMode = "anonymous" | "create" | "open";
+
 export type SharedMemoryMapping<
   Buffer extends SharedMemoryBuffer = SharedMemoryBuffer,
 > = {
@@ -26,6 +28,12 @@ export type SharedMemoryMapping<
 
 export type CreateSharedMemoryOptions = {
   size: number;
+  /**
+   * `anonymous` keeps the current fd-backed private mapping behavior.
+   * `create` and `open` use a named shared-memory object so independent
+   * processes can rendezvous by name.
+   */
+  mode?: SharedMemoryCreateMode;
   name?: string;
 };
 
@@ -45,6 +53,7 @@ export type SharedMemoryConnectionPrimitives<
   mapSharedMemory: (
     options: MapSharedMemoryOptions,
   ) => Mapping;
+  unlinkSharedMemory?: (name: string) => boolean;
 };
 
 export const alignToCacheLine = (size: number): number =>
@@ -58,6 +67,32 @@ export const readCreateName = (
   options: number | CreateSharedMemoryOptions,
   fallback: string,
 ): string => typeof options === "number" ? fallback : options.name ?? fallback;
+
+export const readCreateMode = (
+  options: number | CreateSharedMemoryOptions,
+): SharedMemoryCreateMode =>
+  typeof options === "number" ? "anonymous" : options.mode ?? "anonymous";
+
+export const expectSharedMemoryName = (name: string): string => {
+  if (typeof name !== "string" || name.length === 0) {
+    throw new TypeError("shared memory name must be a non-empty string");
+  }
+  if (name.includes("\0")) {
+    throw new TypeError("shared memory name must not contain NUL bytes");
+  }
+
+  return name;
+};
+
+export const readRequiredCreateName = (
+  options: number | CreateSharedMemoryOptions,
+): string => {
+  if (typeof options === "number" || options.name === undefined) {
+    throw new TypeError("named shared memory requires a name");
+  }
+
+  return expectSharedMemoryName(options.name);
+};
 
 export const expectPositiveSize = (size: number): number => {
   if (!Number.isFinite(size) || size <= 0) {

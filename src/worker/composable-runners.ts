@@ -4,7 +4,7 @@ import {
   TASK_SLOT_META_VALUE_MASK,
   type Task,
 } from "../memory/lock.ts";
-import type { TimeoutSpec } from "./get-functions.ts";
+import type { TimeoutSpec } from "./task-loader.ts";
 
 type WorkerJob = (args: unknown, abortToolkit?: unknown) => unknown;
 type SlotRunner = (slot: Task) => unknown;

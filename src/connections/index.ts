@@ -17,3 +17,17 @@ export {
   type FileDescriptorMetadata,
   parseFileDescriptorMetadata,
 } from "./file-descriptor.ts";
+export {
+  getDefaultProcessSharedBufferPrimitives,
+  parseProcessSharedBufferMetadata,
+  PROCESS_SHARED_BUFFER_BRAND,
+  ProcessSharedBuffer,
+  type ProcessSharedBufferCreator,
+  type ProcessSharedBufferMapper,
+  type ProcessSharedBufferMetadata,
+  type ProcessSharedBufferPrimitives,
+  type ProcessSharedBufferRange,
+  type ProcessSharedBufferView,
+  type ProcessSharedBufferViewConstructor,
+  setDefaultProcessSharedBufferPrimitives,
+} from "./process-shared-buffer.ts";

@@ -2,26 +2,31 @@
 #define _GNU_SOURCE
 #endif
 
-#if !defined(__linux__) && !defined(__APPLE__)
-#error "knitting_shm.cc currently supports Linux futex and macOS ulock wait/wake."
+#if !defined(__linux__) && !defined(__APPLE__) && !defined(_WIN32)
+#error "knitting_shm.cc currently supports Linux, macOS, and Windows best-effort wait/wake."
 #endif
 
 #include <node.h>
 #include <v8.h>
 
+#include <atomic>
 #include <cerrno>
+#include <chrono>
 #include <climits>
 #include <cstdint>
 #include <cstring>
 #include <memory>
 #include <string>
+#include <thread>
 
 #ifdef __linux__
 #include <linux/futex.h>
 #include <sys/syscall.h>
 #endif
 #include <time.h>
+#ifndef _WIN32
 #include <unistd.h>
+#endif
 
 namespace knitting_shm {
 
@@ -49,6 +54,21 @@ extern "C" int __ulock_wake(
 #endif
 #endif
 
+#ifdef _WIN32
+uint32_t AtomicLoadU32(uint32_t* addr) {
+  return std::atomic_ref<uint32_t>(*addr).load(std::memory_order_acquire);
+}
+
+uint64_t TimeoutToMillis(const struct timespec* timeout) {
+  if (timeout == nullptr) return UINT64_MAX;
+
+  uint64_t millis = static_cast<uint64_t>(timeout->tv_sec) * 1000ULL;
+  millis += static_cast<uint64_t>(timeout->tv_nsec) / 1000000ULL;
+  if ((timeout->tv_nsec % 1000000L) != 0) millis += 1;
+  return millis;
+}
+#endif
+
 int FutexWait(uint32_t* addr, uint32_t expected, const struct timespec* timeout) {
 #ifdef __linux__
   return static_cast<int>(syscall(
@@ -60,6 +80,42 @@ int FutexWait(uint32_t* addr, uint32_t expected, const struct timespec* timeout)
     nullptr,
     0
   ));
+#elif defined(_WIN32)
+  if (AtomicLoadU32(addr) != expected) {
+    errno = EAGAIN;
+    return -1;
+  }
+
+  uint64_t timeout_ms = TimeoutToMillis(timeout);
+  const bool infinite = timeout_ms == UINT64_MAX;
+  const auto started = std::chrono::steady_clock::now();
+  const auto deadline = infinite
+    ? std::chrono::steady_clock::time_point::max()
+    : started + std::chrono::milliseconds(timeout_ms);
+
+  while (AtomicLoadU32(addr) == expected) {
+    if (!infinite && std::chrono::steady_clock::now() >= deadline) {
+      errno = ETIMEDOUT;
+      return -1;
+    }
+
+    if (infinite) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+      continue;
+    }
+
+    auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) {
+      errno = ETIMEDOUT;
+      return -1;
+    }
+
+    auto remaining = deadline - now;
+    auto one_ms = std::chrono::milliseconds(1);
+    std::this_thread::sleep_for(remaining < one_ms ? remaining : one_ms);
+  }
+
+  return 0;
 #else
   uint32_t timeout_us = 0;
   if (timeout != nullptr) {
@@ -92,6 +148,9 @@ int FutexWake(uint32_t* addr, int count) {
     nullptr,
     0
   ));
+#elif defined(_WIN32)
+  (void)addr;
+  return count <= 0 ? 0 : 1;
 #else
   uint32_t operation = UL_COMPARE_AND_WAIT_SHARED;
   if (count <= 0 || count == INT_MAX) {
@@ -173,6 +232,42 @@ bool ReadSizeArgument(
   }
 
   *out = static_cast<size_t>(maybe.FromJust());
+  return true;
+}
+
+bool ReadOptionalMillis(
+  const v8::FunctionCallbackInfo<v8::Value>& args,
+  int index,
+  double fallback,
+  double* out
+) {
+  *out = fallback;
+
+  if (args.Length() <= index || args[index]->IsUndefined() || args[index]->IsNull()) {
+    return true;
+  }
+
+  v8::Isolate* isolate = args.GetIsolate();
+  v8::Local<v8::Context> context = isolate->GetCurrentContext();
+
+  if (!args[index]->IsNumber()) {
+    ThrowType(isolate, "milliseconds must be a number");
+    return false;
+  }
+
+  v8::Maybe<double> maybe = args[index]->NumberValue(context);
+  if (maybe.IsNothing()) {
+    ThrowType(isolate, "milliseconds must be a valid number");
+    return false;
+  }
+
+  double value = maybe.FromJust();
+  if (value != value) {
+    ThrowRange(isolate, "milliseconds must not be NaN");
+    return false;
+  }
+
+  *out = value < 0 ? 0 : value;
   return true;
 }
 
@@ -352,10 +447,28 @@ void WakeU32(const v8::FunctionCallbackInfo<v8::Value>& args) {
   args.GetReturnValue().Set(v8::Integer::New(isolate, woken));
 }
 
+void Sleep(const v8::FunctionCallbackInfo<v8::Value>& args) {
+  double milliseconds = 1;
+  if (!ReadOptionalMillis(args, 0, 1, &milliseconds)) {
+    return;
+  }
+
+  std::this_thread::sleep_for(
+    std::chrono::duration<double, std::milli>(milliseconds)
+  );
+}
+
+void Yield(const v8::FunctionCallbackInfo<v8::Value>& args) {
+  (void)args;
+  std::this_thread::yield();
+}
+
 void Initialize(v8::Local<v8::Object> exports) {
   NODE_SET_METHOD(exports, "waitU32", WaitU32);
   NODE_SET_METHOD(exports, "wakeU32", WakeU32);
   NODE_SET_METHOD(exports, "notifyU32", WakeU32);
+  NODE_SET_METHOD(exports, "sleep", Sleep);
+  NODE_SET_METHOD(exports, "yield", Yield);
 }
 
 NODE_MODULE(NODE_GYP_MODULE_NAME, Initialize)

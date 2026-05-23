@@ -4,8 +4,8 @@ import type { NodeCallSiteLike } from "./node-compat.ts";
 export const genTaskID = ((counter: number) => () => counter++)(0);
 
 const INTERNAL_CALLER_HINTS = [
-  "/src/common/others.ts",
-  "\\src\\common\\others.ts",
+  "/src/common/task-source.ts",
+  "\\src\\common\\task-source.ts",
   "/src/api.ts",
   "\\src\\api.ts",
 ];
@@ -27,29 +27,6 @@ type StackFrameInfo = {
 };
 
 const isDefined = <T>(value: T | undefined): value is T => value !== undefined;
-
-const looksLikeStackFile = (value: string): boolean =>
-  value.startsWith("file:") ||
-  value.startsWith("http:") ||
-  value.startsWith("https:") ||
-  value.startsWith("blob:") ||
-  value.startsWith("webpack-internal:") ||
-  value.startsWith("/") ||
-  value.startsWith("\\") ||
-  /^[A-Za-z]:[\\/]/.test(value);
-
-const extractStackFile = (line: string): string | undefined => {
-  const trimmed = line.trim();
-  if (trimmed.length === 0) return undefined;
-  const candidates = [
-    trimmed.match(/\((.+?):\d+:\d+\)$/)?.[1],
-    trimmed.match(/at (.+?):\d+:\d+$/)?.[1],
-    trimmed.match(/^(?:.+@)?(.+?):\d+:\d+$/)?.[1],
-  ];
-  return candidates.find((value) =>
-    typeof value === "string" && looksLikeStackFile(value)
-  );
-};
 
 const isInternalCallerFrame = (file: string): boolean =>
   INTERNAL_CALLER_HINTS.some((hint) => file.includes(hint));
@@ -76,21 +53,6 @@ const collectStackFrames = (): StackFrameInfo[] => {
   try {
     ErrorCtor.prepareStackTrace = (_error, stack) => stack;
     const stack = new Error().stack as unknown;
-    if (typeof stack === "string") {
-      return stack
-        .split("\n")
-        .map((line) => {
-          const file = extractStackFile(line);
-          return file
-            ? {
-              file,
-              functionName: undefined,
-              methodName: undefined,
-            } satisfies StackFrameInfo
-            : undefined;
-        })
-        .filter(isDefined);
-    }
     if (!Array.isArray(stack)) return [];
 
     const frames = (stack as NodeCallSiteLike[])

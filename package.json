@@ -1,39 +1,41 @@
 {
   "name": "@vixeny/knitting",
-  "version": "0.1.42",
-  "description": "Shared-memory worker pool for Node.js, Deno, and Bun.",
+  "version": "0.1.44",
+  "description": "Shared-memory IPC runtime for Node.js, Deno, and Bun.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./knitting.ts",
   "module": "./knitting.ts",
   "types": "./knitting.ts",
   "exports": {
-    ".": "./knitting.ts"
+    ".": "./knitting.ts",
+    "./process-shared-buffer": "./process-shared-buffer.ts"
   },
   "files": [
     "README.md",
+    "map.md",
     "LICENSE",
+    "prebuilds/**/*.node",
     "build/Release/*.node",
     "scripts/build-native-addons.ts",
     "src/**/*.cc",
     "src/**/*.ts",
-    "knitting.ts"
+    "knitting.ts",
+    "process-shared-buffer.ts"
   ],
   "scripts": {
     "build": "bun run build.ts",
     "build:native": "bun run scripts/build-native-addons.ts",
     "build:release": "bun run build:native && bun run build",
-    "build:web": "bun run build.ts --web",
     "build:node": "bun build knitting.ts --outdir dest --target node --format esm",
-    "smoke:browser": "bun run smoke/browser/build.ts",
     "test": "npm run test:deno",
-    "test:deno": "deno test -A --ignore=test/runtime.node.test.ts",
+    "test:deno": "deno test -A --ignore=test/runtime.node.test.ts --ignore=test/runtime.process.test.ts",
     "test:node": "node --no-warnings --experimental-transform-types --test \"./test/*.test.ts\"",
-    "test:bun": "bun test ./test/*.test.ts",
+    "test:bun": "bun test ./test/*.test.ts --path-ignore-patterns=**/tx-queue.test.ts",
     "test:runtimes": "npm run test:node && npm run test:bun",
     "test:all": "npm run test:deno && npm run test:runtimes",
     "coverage:node": "node --no-warnings --experimental-transform-types --experimental-test-coverage --test \"./test/*.test.ts\"",
-    "coverage:node:90": "node --no-warnings --experimental-transform-types --experimental-test-coverage --test-coverage-lines=90 --test-coverage-exclude=src/common/others.ts --test-coverage-exclude=src/ipc/protocol/parsers/NumericBuffer.ts --test-coverage-exclude=src/runtime/balancer.ts --test-coverage-exclude=src/worker/get-functions.ts --test \"./test/*.test.ts\"",
+    "coverage:node:90": "node --no-warnings --experimental-transform-types --experimental-test-coverage --test-coverage-lines=90 --test-coverage-exclude=src/common/task-source.ts --test-coverage-exclude=src/ipc/protocol/parsers/NumericBuffer.ts --test-coverage-exclude=src/runtime/balancer.ts --test-coverage-exclude=src/worker/task-loader.ts --test \"./test/*.test.ts\"",
     "bench": "./run.sh",
     "bench:json": "./run.sh --json"
   },

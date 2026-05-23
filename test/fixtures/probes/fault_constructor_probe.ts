@@ -24,7 +24,10 @@ const withTimeout = async <T>(promise: Promise<T>, ms: number): Promise<T> => {
   }
 };
 
-const pool = createPool({ threads: 1 })({
+const pool = createPool({
+  threads: 1,
+  worker: process.platform === "win32" ? { timers: { parkMs: 0 } } : undefined,
+})({
   returnPoisonedConstructorObject,
   returnReflectPoisonedConstructorObject,
   passthroughNumber,

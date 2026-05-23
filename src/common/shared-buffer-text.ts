@@ -87,7 +87,7 @@ export const probeLockBufferTextCompat = ({
   payload,
 }: {
   headers: SharedBufferSource;
-  payload: SharedArrayBuffer;
+  payload: SharedBufferSource;
 }): LockBufferTextCompat => ({
   headers: probeSharedBufferTextCompat(headers),
   payload: probeSharedBufferTextCompat(payload),

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import test from "./_runner.ts";
 import { createPool, task } from "../knitting.ts";
 import { pooledSlowHello } from "./fixtures/type_inference_tasks.ts";
 
@@ -13,7 +13,9 @@ const hello = task({
 });
 
 type HelloCall = ReturnType<typeof hello.createPool>["call"];
-type _helloCallArgs = Assert<["world"] extends Parameters<HelloCall> ? true : false>;
+type _helloCallArgs = Assert<
+  ["world"] extends Parameters<HelloCall> ? true : false
+>;
 type _helloCallReturn = Assert<Equal<Awaited<ReturnType<HelloCall>>, string>>;
 
 const slowHello = task({
@@ -38,7 +40,9 @@ const abortOnly = task({
 });
 
 type AbortOnlyCall = ReturnType<typeof abortOnly.createPool>["call"];
-type _abortOnlyCallArgs = Assert<[] extends Parameters<AbortOnlyCall> ? true : false>;
+type _abortOnlyCallArgs = Assert<
+  [] extends Parameters<AbortOnlyCall> ? true : false
+>;
 type _abortOnlyCallReturn = Assert<
   ReturnType<AbortOnlyCall> extends Promise<string> ? true : false
 >;

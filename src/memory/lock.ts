@@ -1,4 +1,4 @@
-import RingQueue from "../ipc/tools/RingQueue.ts";
+import RingQueue from "../ipc/tools/ring-queue.ts";
 import { decodePayload, encodePayload } from "./payloadCodec.ts";
 import {
   createSharedArrayBuffer,
@@ -65,6 +65,9 @@ export enum PayloadBuffer {
   EnvelopeDynamicHeader = 41,
   EnvelopeStaticHeaderString = 42,
   EnvelopeDynamicHeaderString = 43,
+  ExternalPayload = 44,
+  StaticExternalPayload = 45,
+  ProcessSharedBuffer = 46,
 }
 
 export enum LockBound {
@@ -330,7 +333,7 @@ export const lock2 = ({
   headers?: SharedBufferSource;
   headerSlotStrideU32?: number;
   LockBoundSector?: SharedBufferSource;
-  payload?: SharedArrayBuffer;
+  payload?: SharedBufferSource;
   payloadConfig?: PayloadBufferOptions;
   payloadSector?: SharedBufferSource;
   textCompat?: LockBufferTextCompat;
@@ -380,7 +383,7 @@ export const lock2 = ({
     sab: payload,
     options: payloadConfig,
   });
-  const payloadSAB = payload ??
+  const payloadSAB: SharedBufferSource = payload ??
     (
       resolvedPayloadConfig.mode === "growable"
         ? createSharedArrayBuffer(

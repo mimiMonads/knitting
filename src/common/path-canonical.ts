@@ -1,11 +1,13 @@
 import {
-  existsSyncCompat,
-  pathBasename,
-  pathDirname,
-  pathJoin,
-  pathResolve,
-  realpathSyncCompat,
-} from "./node-compat.ts";
+  existsSync,
+  realpathSync,
+} from "node:fs";
+import {
+  basename as pathBasename,
+  dirname as pathDirname,
+  join as pathJoin,
+  resolve as pathResolve,
+} from "node:path";
 
 type CanonicalPathFsApi = {
   existsSync?: (candidate: string) => boolean;
@@ -15,8 +17,8 @@ type CanonicalPathFsApi = {
 export const toCanonicalPath = (
   candidate: string,
   fsApi: CanonicalPathFsApi = {
-    existsSync: existsSyncCompat,
-    realpathSync: realpathSyncCompat,
+    existsSync,
+    realpathSync: realpathSync.native ?? realpathSync,
   },
 ): string => {
   const absolute = pathResolve(candidate);

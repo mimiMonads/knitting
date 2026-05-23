@@ -3,7 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import type { Buffer as NodeBuffer } from "node:buffer";
 import { existsSync, mkdirSync, rmSync, unlinkSync } from "node:fs";
 import path from "node:path";
-import test from "node:test";
+import test from "./_runner.ts";
 import { fileURLToPath } from "node:url";
 import { createPool } from "../knitting.ts";
 import {
@@ -13,15 +13,15 @@ import {
   toString,
 } from "./fixtures/parameter_tasks.ts";
 import {
-  addOneViaImportTask,
   addOnePromise,
+  addOneViaImportTask,
 } from "./fixtures/runtime_tasks.ts";
 import {
   fetchNetworkProbe,
   nodeHttpNetworkProbe,
   nodeNetNetworkProbe,
-  readEnvVar,
   readDeniedViaSymlink,
+  readEnvVar,
   readGitDirectory,
   spawnChildProcess,
   spawnChildProcessLegacySpecifier,
@@ -35,13 +35,18 @@ import {
   returnLocalSymbol,
   returnWeakMap,
 } from "./fixtures/error_tasks.ts";
-import {
-  addOneLimitProbe,
-  runawayCpuLoop,
-} from "./fixtures/limit_tasks.ts";
+import { addOneLimitProbe, runawayCpuLoop } from "./fixtures/limit_tasks.ts";
 
 const TEST_TIMEOUT_MS = 10_000;
 const NODE_BIN = process.versions.bun ? "node" : process.execPath;
+const WINDOWS_AWAKE_WORKER = process.platform === "win32"
+  ? { timers: { parkMs: 0 } }
+  : undefined;
+const WINDOWS_HARD_TIMEOUT_SKIP_REASON = process.platform === "win32"
+  // The assertion passes on GitHub's Windows Node runner, but the terminated
+  // infinite-loop worker can stay alive afterward and stall the rest of CI.
+  ? "Windows Node can keep the terminated runaway worker alive"
+  : false;
 const NODE_CHILD_ARGS = (() => {
   const probe = spawnSync(
     NODE_BIN,
@@ -62,7 +67,10 @@ const processGuardProbePath = fileURLToPath(
   new URL("./fixtures/probes/process_guard_probe.ts", import.meta.url),
 );
 const sharedMemoryCorruptionProbePath = fileURLToPath(
-  new URL("./fixtures/probes/shared_memory_corruption_probe.ts", import.meta.url),
+  new URL(
+    "./fixtures/probes/shared_memory_corruption_probe.ts",
+    import.meta.url,
+  ),
 );
 
 type ChildResult = {
@@ -102,7 +110,10 @@ const createDeferred = <T>() => {
   return { promise, resolve, reject };
 };
 
-const runProbe = (scriptPath: string, timeoutMs = 4_000): Promise<ChildResult> =>
+const runProbe = (
+  scriptPath: string,
+  timeoutMs = 4_000,
+): Promise<ChildResult> =>
   new Promise((resolve, reject) => {
     const child = spawn(
       NODE_BIN,
@@ -174,6 +185,7 @@ test("node:test pool round-trips core payloads", {
 }, async () => {
   const { call, shutdown } = createPool({
     threads: 2,
+    worker: WINDOWS_AWAKE_WORKER,
   })({
     toNumber,
     toString,
@@ -202,7 +214,10 @@ test("node:test pool awaits promise inputs", {
   concurrency: false,
   timeout: TEST_TIMEOUT_MS,
 }, async () => {
-  const pool = createPool({ threads: 1 })({ addOnePromise });
+  const pool = createPool({
+    threads: 1,
+    worker: WINDOWS_AWAKE_WORKER,
+  })({ addOnePromise });
 
   try {
     const value = await withTimeout(
@@ -219,7 +234,10 @@ test("node:test pool handles batched deferred object promise inputs", {
   concurrency: false,
   timeout: TEST_TIMEOUT_MS,
 }, async () => {
-  const pool = createPool({ threads: 1 })({ toObject });
+  const pool = createPool({
+    threads: 1,
+    worker: WINDOWS_AWAKE_WORKER,
+  })({ toObject });
 
   try {
     const inputs = Array.from({ length: 96 }, (_, i) => ({
@@ -227,8 +245,12 @@ test("node:test pool handles batched deferred object promise inputs", {
       payload: "x".repeat(900 + (i % 5)),
       nested: { ok: true, value: i * 3 },
     }));
-    const deferredInputs = inputs.map(() => createDeferred<typeof inputs[number]>());
-    const pending = deferredInputs.map((item) => pool.call.toObject(item.promise));
+    const deferredInputs = inputs.map(() =>
+      createDeferred<typeof inputs[number]>()
+    );
+    const pending = deferredInputs.map((item) =>
+      pool.call.toObject(item.promise)
+    );
 
     for (let i = deferredInputs.length - 1; i >= 0; i--) {
       deferredInputs[i]!.resolve(inputs[i]!);
@@ -245,7 +267,10 @@ test("node:test pool imports worker function via importTask href", {
   concurrency: false,
   timeout: TEST_TIMEOUT_MS,
 }, async () => {
-  const pool = createPool({ threads: 1 })({ addOneViaImportTask });
+  const pool = createPool({
+    threads: 1,
+    worker: WINDOWS_AWAKE_WORKER,
+  })({ addOneViaImportTask });
 
   try {
     const value = await withTimeout(
@@ -262,7 +287,10 @@ test("node:test pool rejects when worker cannot encode returned payload", {
   concurrency: false,
   timeout: TEST_TIMEOUT_MS,
 }, async () => {
-  const pool = createPool({ threads: 1 })({
+  const pool = createPool({
+    threads: 1,
+    worker: WINDOWS_AWAKE_WORKER,
+  })({
     returnLocalSymbol,
     returnFunction,
     returnWeakMap,
@@ -306,23 +334,27 @@ test("node:test constructor poisoning is neutralized and worker stays alive", {
   );
 });
 
-test("node:test worker blocks direct process termination APIs in task functions", {
-  concurrency: false,
-  timeout: TEST_TIMEOUT_MS,
-}, async () => {
-  const result = await runProbe(processGuardProbePath);
+test(
+  "node:test worker blocks direct process termination APIs in task functions",
+  {
+    concurrency: false,
+    timeout: TEST_TIMEOUT_MS,
+  },
+  async () => {
+    const result = await runProbe(processGuardProbePath);
 
-  assert.equal(
-    result.timedOut,
-    false,
-    `probe timed out\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
-  );
-  assert.equal(
-    result.code,
-    0,
-    `process guard probe failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
-  );
-});
+    assert.equal(
+      result.timedOut,
+      false,
+      `probe timed out\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+    );
+    assert.equal(
+      result.code,
+      0,
+      `process guard probe failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+    );
+  },
+);
 
 test("node:test workerData lock buffers are hidden from task code", {
   concurrency: false,
@@ -367,6 +399,7 @@ test("node:test permission unsafe mode allows unrestricted file access", {
   }
   const pool = createPool({
     threads: 1,
+    worker: WINDOWS_AWAKE_WORKER,
     permission: "unsafe",
   })({
     writeIntoNodeModules,
@@ -387,14 +420,23 @@ test("node:test permission unsafe mode allows unrestricted file access", {
       unlinkSync(nodeModulesOutput);
     }
 
-    const out = await withTimeout(pool.call.writeIntoNodeModules(), TEST_TIMEOUT_MS);
+    const out = await withTimeout(
+      pool.call.writeIntoNodeModules(),
+      TEST_TIMEOUT_MS,
+    );
     assert.equal(out, nodeModulesOutput);
     assert.equal(existsSync(nodeModulesOutput), true);
 
-    const gitEntries = await withTimeout(pool.call.readGitDirectory(), TEST_TIMEOUT_MS);
+    const gitEntries = await withTimeout(
+      pool.call.readGitDirectory(),
+      TEST_TIMEOUT_MS,
+    );
     assert.equal(gitEntries > 0, true);
 
-    const envProbe = await withTimeout(pool.call.readEnvVar(envProbeKey), TEST_TIMEOUT_MS);
+    const envProbe = await withTimeout(
+      pool.call.readEnvVar(envProbeKey),
+      TEST_TIMEOUT_MS,
+    );
     assert.equal(envProbe, "probe-value");
 
     const fetchResult = await withTimeout(
@@ -483,7 +525,10 @@ test("node:test permission unsafe mode allows unrestricted file access", {
     }
 
     if (process.platform !== "win32") {
-      const hosts = await withTimeout(pool.call.readDeniedViaSymlink(), TEST_TIMEOUT_MS);
+      const hosts = await withTimeout(
+        pool.call.readDeniedViaSymlink(),
+        TEST_TIMEOUT_MS,
+      );
       assert.equal(typeof hosts, "string");
       assert.equal(hosts.length > 0, true);
     }
@@ -514,6 +559,7 @@ test("node:test default permission profile blocks child process execution", {
 
   const pool = createPool({
     threads: 1,
+    worker: WINDOWS_AWAKE_WORKER,
   })({
     spawnChildProcess,
   });
@@ -530,7 +576,8 @@ test("node:test default permission profile blocks child process execution", {
       return;
     }
     assert.equal(
-      isPermissionDenied(result.error) || String(result.error).includes(" EPERM"),
+      isPermissionDenied(result.error) ||
+        String(result.error).includes(" EPERM"),
       true,
     );
   } finally {
@@ -544,12 +591,16 @@ test("node:test worker keeps performance.now precise and tamper-resistant", {
 }, async () => {
   const pool = createPool({
     threads: 1,
+    worker: WINDOWS_AWAKE_WORKER,
   })({
     tamperPerformanceNow,
   });
 
   try {
-    const result = await withTimeout(pool.call.tamperPerformanceNow(), TEST_TIMEOUT_MS);
+    const result = await withTimeout(
+      pool.call.tamperPerformanceNow(),
+      TEST_TIMEOUT_MS,
+    );
     assert.equal(typeof result.changedToZero, "boolean");
     assert.equal(typeof result.replacedObject, "boolean");
     assert.equal(result.stableSample > 0, true);
@@ -560,6 +611,7 @@ test("node:test worker keeps performance.now precise and tamper-resistant", {
 
 test("node:test worker hard timeout force-shuts pool on runaway cpu loops", {
   concurrency: false,
+  skip: WINDOWS_HARD_TIMEOUT_SKIP_REASON,
   timeout: TEST_TIMEOUT_MS,
 }, async () => {
   if (process.versions.bun) {
@@ -570,6 +622,7 @@ test("node:test worker hard timeout force-shuts pool on runaway cpu loops", {
   const pool = createPool({
     threads: 1,
     worker: {
+      ...WINDOWS_AWAKE_WORKER,
       hardTimeoutMs: 100,
     },
   })({

@@ -2,7 +2,7 @@ import { bench, group, run as mitataRun } from "mitata";
 import { Buffer } from "node:buffer";
 import { createPool, isMain, task } from "../knitting.ts";
 import { toResolve, shutdownWorkers } from "./postmessage/single.ts";
-import { format, print } from "./ulti/json-parse.ts";
+import { format, print } from "./util/json-parse.ts";
 
 const payloadObject = {
   msg: "hello world",

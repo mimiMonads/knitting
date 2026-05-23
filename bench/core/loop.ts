@@ -1,6 +1,6 @@
 import { bench, group, run as mitataRun, summary } from "mitata";
-import { createPool, isMain, task } from "../knitting.ts";
-import { format, print } from "./ulti/json-parse.ts";
+import { createPool, isMain, task } from "../../knitting.ts";
+import { format, print } from "../util/json-parse.ts";
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 

@@ -1,16 +1,18 @@
 import assert from "node:assert/strict";
-import test from "node:test";
-const assertEquals: (actual: unknown, expected: unknown) => void =
-  (actual, expected) => {
-    assert.deepStrictEqual(actual, expected);
-  };
+import test from "./_runner.ts";
+const assertEquals: (actual: unknown, expected: unknown) => void = (
+  actual,
+  expected,
+) => {
+  assert.deepStrictEqual(actual, expected);
+};
 import { createPool } from "../knitting.ts";
 import { addOne, delayedEcho } from "./fixtures/loop_tasks.ts";
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const withTimeout = async <T>(promise: Promise<T>, ms: number) => {
-  let timeoutId ;
+  let timeoutId;
   try {
     return await Promise.race([
       promise,
@@ -93,8 +95,9 @@ test("dispatcher drains oversubscribed batches without stalling", async () => {
     const batch = 100; // greater than lock slot count (32)
 
     for (let round = 0; round < rounds; round++) {
-      const jobs = Array.from({ length: batch }, (_, index) =>
-        call.addOne(round + index)
+      const jobs = Array.from(
+        { length: batch },
+        (_, index) => call.addOne(round + index),
       );
       const values = await withTimeout(Promise.all(jobs), 3000);
       assert.equal(values.length, batch);
