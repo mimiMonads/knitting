@@ -1,14 +1,14 @@
-name: Publish
+name: Build Native Prebuilds
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - "v*"
+
+permissions:
+  contents: read
 
 jobs:
   build-native:
-    name: Build native prebuilds (${{ matrix.prebuild }})
+    name: Build native prebuild (${{ matrix.prebuild }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -57,49 +57,67 @@ jobs:
           path: prebuilds/${{ matrix.prebuild }}/*.node
           if-no-files-found: error
 
-  publish-jsr:
-    name: Publish to JSR
+  commit-prebuilds:
+    name: Commit native prebuilds
     runs-on: ubuntu-latest
     needs: build-native
+    if: github.ref_type == 'branch'
     permissions:
-      contents: read
-      id-token: write
+      contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
       - uses: denoland/setup-deno@v1
         with:
           deno-version: "2.x"
       - uses: actions/download-artifact@v4
         with:
-          name: native-linux-x64-node-127
-          path: prebuilds/linux-x64-node-127
-      - uses: actions/download-artifact@v4
-        with:
-          name: native-linux-x64-node-137
-          path: prebuilds/linux-x64-node-137
-      - uses: actions/download-artifact@v4
-        with:
-          name: native-win32-x64-node-127
-          path: prebuilds/win32-x64-node-127
-      - uses: actions/download-artifact@v4
-        with:
-          name: native-win32-x64-node-137
-          path: prebuilds/win32-x64-node-137
-      - uses: actions/download-artifact@v4
-        with:
-          name: native-darwin-x64-node-127
-          path: prebuilds/darwin-x64-node-127
-      - uses: actions/download-artifact@v4
-        with:
-          name: native-darwin-x64-node-137
-          path: prebuilds/darwin-x64-node-137
-      - uses: actions/download-artifact@v4
-        with:
-          name: native-darwin-arm64-node-127
-          path: prebuilds/darwin-arm64-node-127
-      - uses: actions/download-artifact@v4
-        with:
-          name: native-darwin-arm64-node-137
-          path: prebuilds/darwin-arm64-node-137
-      - name: Publish
-        run: deno publish --allow-dirty
+          pattern: native-*
+          path: native-artifacts
+      - name: Prepare prebuild tree
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf prebuilds
+          mkdir -p prebuilds
+
+          for artifact in native-artifacts/native-*; do
+            if [ ! -d "$artifact" ]; then
+              continue
+            fi
+
+            prebuild="${artifact##*/native-}"
+            target="prebuilds/$prebuild"
+            mkdir -p "$target"
+            find "$artifact" -type f -name '*.node' -exec cp '{}' "$target/" ';'
+
+            count="$(find "$target" -maxdepth 1 -type f -name '*.node' | wc -l)"
+            if [ "$count" -eq 0 ]; then
+              echo "::error::No native addons found for $prebuild"
+              exit 1
+            fi
+          done
+
+          find prebuilds -maxdepth 2 -type f -name '*.node' | sort
+      - name: Check JSR package contents
+        run: deno publish --dry-run --allow-dirty
+      - name: Commit prebuilds to branch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add prebuilds
+
+          if git diff --cached --quiet -- prebuilds; then
+            echo "No prebuild changes to commit." >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          git commit -m "build: update native prebuilds"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+          echo "Committed native prebuilds to ${GITHUB_REF_NAME}." >> "$GITHUB_STEP_SUMMARY"
