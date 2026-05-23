@@ -947,8 +947,8 @@ const spawnProcessWorker = (
 
 const terminateWorkerQuietly = (worker: SpawnedWorker): void => {
   try {
-    // Runaway worker termination can be slow or stuck on some runtimes; once the
-    // pool is closing it must not keep the host process alive.
+    // Used for crashed workers whose state is unknown. Unref first so a stuck
+    // or runaway worker does not block the host process from exiting.
     worker.unref?.();
     void Promise.resolve(worker.terminate()).catch(() => {});
   } catch {
@@ -1400,7 +1400,14 @@ export const spawnWorkerContext = ({
     call,
     kills: async () => {
       markWorkerClosed("Thread closed");
-      terminateWorkerQuietly(worker);
+      // Do NOT unref() before terminate(). On Windows, unref() + terminate()
+      // leaves the process hanging for ~105 s because terminate() internally
+      // re-refs the worker handle, negating the unref. Without the unref call
+      // the ref'd worker keeps the process alive only until the OS finishes
+      // the termination (milliseconds for idle workers). The unref fallback
+      // in terminateWorkerQuietly() is reserved for crashed/runaway workers
+      // where we must not block the host process.
+      void Promise.resolve(worker.terminate()).catch(() => {});
     },
     lock,
     processSharedMemoryBackings: processSharedMemory?.backings,
