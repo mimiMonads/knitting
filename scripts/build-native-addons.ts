@@ -196,6 +196,7 @@ const compileFlags = isWindows
   ? [
     "/nologo",
     "/std:c++20",
+    "/Zc:__cplusplus",
     "/O2",
     "/EHsc",
     "/LD",
