@@ -72,7 +72,10 @@ import {
   loadNodeFutexAddon,
 } from "../connections/node.ts";
 import { loadNodeNativeAddon } from "../connections/node-addons.ts";
-import { detectPosixPlatform } from "../connections/posix.ts";
+import {
+  assertPosixSharedMemoryPlatform,
+  detectPosixPlatform,
+} from "../connections/posix.ts";
 import type {
   SharedMemoryBuffer,
   SharedMemoryMapping,
@@ -300,6 +303,11 @@ const createProcessSharedMemoryAllocator = (
   debug: DebugOptions | undefined,
 ): ProcessSharedMemoryAllocator | undefined => {
   if (RUNTIME !== "node") return undefined;
+  try {
+    assertPosixSharedMemoryPlatform("Process-shared memory allocator");
+  } catch {
+    return undefined;
+  }
 
   let addon: ProcessSharedMemoryAddon;
   try {
@@ -366,6 +374,8 @@ const withFixedPayloadConfig = (
 });
 
 const getProcessWorkerSharedMemoryPrimitives = () => {
+  assertPosixSharedMemoryPlatform("Process worker runtime");
+
   switch (RUNTIME) {
     case "bun":
       return createBunConnectionPrimitives();
@@ -999,6 +1009,9 @@ export const spawnWorkerContext = ({
   const poliWorker = RUNTIME_WORKER;
   const resolvedWorkerOptions = withDefaultWorkerTimers(workerOptions);
   const useProcessWorkerRuntime = resolvedWorkerOptions.runtime === "process";
+  if (useProcessWorkerRuntime) {
+    assertPosixSharedMemoryPlatform("Process worker runtime");
+  }
   const processWorkerRuntime = useProcessWorkerRuntime
     ? readProcessWorkerRuntime(resolvedWorkerOptions)
     : undefined;

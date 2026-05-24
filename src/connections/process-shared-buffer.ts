@@ -11,6 +11,7 @@ import { RUNTIME } from "../common/runtime.ts";
 import { createBunConnectionPrimitives } from "./bun.ts";
 import { createDenoConnectionPrimitives } from "./deno.ts";
 import { loadNodeNativeAddon } from "./node-addons.ts";
+import { assertPosixSharedMemoryPlatform } from "./posix.ts";
 import {
   type CreateSharedMemoryOptions,
   expectFd,
@@ -205,6 +206,8 @@ const createDefaultNodePrimitives = (): ProcessSharedBufferPrimitives => {
 };
 
 const createDefaultPrimitives = (): ProcessSharedBufferPrimitives => {
+  assertPosixSharedMemoryPlatform("ProcessSharedBuffer");
+
   if (RUNTIME === "bun") return createBunConnectionPrimitives();
   if (RUNTIME === "deno") return createDenoConnectionPrimitives();
   return createDefaultNodePrimitives();

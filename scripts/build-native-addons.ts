@@ -70,6 +70,11 @@ const nodeInfo = JSON.parse(runCapture(nodeBinary, [
   "JSON.stringify({arch:process.arch,execPath:process.execPath,modules:process.versions.modules,nodedir:process.config.variables.nodedir||null,platform:process.platform,version:process.versions.node})",
 ])) as NodeInfo;
 const isWindows = nodeInfo.platform === "win32";
+if (isWindows) {
+  throw new Error(
+    "Knitting native shared-memory addons are supported on Linux and macOS only",
+  );
+}
 const cacheRoot = join(
   resolve(
     Bun.env.KNITTING_NODE_CACHE_DIR ??
