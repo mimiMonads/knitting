@@ -1,5 +1,6 @@
 import { getNodeBuiltinModule } from "../common/node-compat.ts";
 import { loadNodeNativeAddon } from "./node-addons.ts";
+import { assertPosixSharedMemoryPlatform } from "./posix.ts";
 import {
   type CreateSharedMemoryOptions,
   expectFd,
@@ -69,6 +70,8 @@ export const DEFAULT_NODE_FUTEX_ADDON =
 export const loadNodeSharedMemoryAddon = (
   specifier?: string,
 ): NodeSharedMemoryAddon => {
+  assertPosixSharedMemoryPlatform("Node native shared memory");
+
   const nodeModule = getNodeBuiltinModule<NodeModuleBuiltin>("node:module");
   if (nodeModule === undefined) {
     throw new Error("Node shared memory addon can only be loaded in Node");
@@ -85,6 +88,8 @@ export const loadNodeSharedMemoryAddon = (
 export const loadNodeFutexAddon = (
   specifier?: string,
 ): NodeFutexAddon => {
+  assertPosixSharedMemoryPlatform("Node native futex helpers");
+
   const nodeModule = getNodeBuiltinModule<NodeModuleBuiltin>("node:module");
   if (nodeModule === undefined) {
     throw new Error("Node futex addon can only be loaded in Node");

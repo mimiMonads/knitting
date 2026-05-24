@@ -57,7 +57,7 @@ uses shared memory for transport.
 - Bun 1+ 
 
 Process workers and `ProcessSharedBuffer` use the native shared-memory layer.
-For local development, build it before running process/shared-memory tests.
+On Linux and macOS, build it before running process/shared-memory tests.
 If you're only using thread workers, you can typically ignore this and use
 Knitting without building native addons.
 
@@ -517,6 +517,27 @@ longer needed. On POSIX runtimes `unlink` removes the name. On platforms where
 named mappings are lifetime-managed by the OS, closing the last handle is the
 important cleanup step.
 
+### Current support
+
+Thread workers are the broadest path: they do not need native prebuilds or FFI.
+Process workers and `ProcessSharedBuffer` both use OS-backed shared memory, so
+their support follows the native backend for each runtime.
+
+For now, Windows support means thread workers only. Process workers and
+`ProcessSharedBuffer` are supported on POSIX targets: Linux and macOS.
+
+| Runtime and target | Thread workers | Process workers | `ProcessSharedBuffer` | Native path |
+| --- | --- | --- | --- | --- |
+| Node.js 22 / 24 on Linux x64 | Supported | Supported | Supported | Shipped Node `.node` prebuilds. |
+| Node.js 22 / 24 on macOS x64 | Supported | Supported | Supported | Shipped Node `.node` prebuilds. |
+| Node.js 22 / 24 on macOS arm64 | Supported | Supported | Supported | Shipped Node `.node` prebuilds. |
+| Node.js 22 / 24 on Windows x64 | Supported | Not supported | Not supported | Native shared memory is POSIX-only. |
+| Other POSIX Node.js ABI or arch | Supported | Local native build needed | Local native build needed | Run `bun run build:native` before using native shared memory. |
+| Deno 2+ on Linux/macOS, runtime-supported arch | Supported | Supported | Supported | Uses Deno FFI into libc; allow FFI permission when permissions are enabled. |
+| Deno 2+ on Windows | Supported | Not supported | Not supported | Current Deno backend is POSIX-only. |
+| Bun 1+ on Linux/macOS, runtime-supported arch | Supported | Supported | Supported | Uses Bun FFI into libc. |
+| Bun 1+ on Windows | Supported | Not supported | Not supported | Current Bun backend is POSIX-only. |
+
 ## Runtime Safety
 
 Knitting aims to make the safer path the default:
@@ -577,7 +598,7 @@ Build the package:
 bun run build
 ```
 
-Build the native shared-memory addon:
+Build the native shared-memory addon on Linux or macOS:
 
 ```bash
 bun run build:native

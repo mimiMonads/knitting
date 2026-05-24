@@ -78,9 +78,7 @@ const hasNodeCommandSharedMemoryAddon = (): boolean => {
 };
 
 const hasProcessRuntime = (command: "bun" | "deno" | "node"): boolean => {
-  // GitHub's Windows Node runner hangs when this suite spawns Bun as the
-  // process runtime, after the native-worker timeout test has already passed.
-  if (process.platform === "win32" && command === "bun") return false;
+  if (process.platform === "win32") return false;
   if (isPlainNode && !hasNodeSharedMemoryAddon()) return false;
   if (!hasCommand(command)) return false;
   if (
@@ -90,6 +88,22 @@ const hasProcessRuntime = (command: "bun" | "deno" | "node"): boolean => {
   }
   return true;
 };
+
+test("process worker runtime is POSIX-only", () => {
+  if (process.platform !== "win32") return;
+
+  assert.throws(
+    () =>
+      createPool({
+        threads: 1,
+        worker: {
+          runtime: "process",
+          processRuntime: "node",
+        },
+      })({ addOnePromise }),
+    /Process worker runtime is supported on Linux and macOS only/,
+  );
+});
 
 const runProcessWorkerSmoke = async (
   processRuntime: "bun" | "deno" | "node",

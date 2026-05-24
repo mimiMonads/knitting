@@ -1,11 +1,21 @@
 import assert from "node:assert/strict";
 import test from "./_runner.ts";
 import {
+  getDefaultProcessSharedBufferPrimitives,
   parseProcessSharedBufferMetadata,
   ProcessSharedBuffer,
   setDefaultProcessSharedBufferPrimitives,
   type SharedMemoryMapping,
 } from "../src/connections/index.ts";
+
+const runtimePlatform = String(
+  (globalThis as typeof globalThis & { Deno?: { build?: { os?: string } } })
+    .Deno?.build?.os ??
+  (globalThis as typeof globalThis & { process?: { platform?: string } })
+    .process?.platform ??
+    "",
+);
+const isWindows = runtimePlatform === "windows" || runtimePlatform === "win32";
 
 const makeMapping = (
   sab = new SharedArrayBuffer(128),
@@ -19,6 +29,20 @@ const makeMapping = (
   kind: "shared-array-buffer",
   sab,
   baseAddressMod64: 0,
+});
+
+test("ProcessSharedBuffer default primitives are POSIX-only on Windows", () => {
+  if (!isWindows) return;
+
+  try {
+    setDefaultProcessSharedBufferPrimitives(undefined);
+    assert.throws(
+      () => getDefaultProcessSharedBufferPrimitives(),
+      /ProcessSharedBuffer is supported on Linux and macOS only/,
+    );
+  } finally {
+    setDefaultProcessSharedBufferPrimitives(undefined);
+  }
 });
 
 test("ProcessSharedBuffer creates typed views over logical byte regions", () => {

@@ -84,6 +84,14 @@ export const detectPosixPlatform = (): PosixPlatform => {
   throw new Error("shared memory connections support Linux and macOS only");
 };
 
+export const assertPosixSharedMemoryPlatform = (feature: string): void => {
+  try {
+    detectPosixPlatform();
+  } catch {
+    throw new Error(`${feature} is supported on Linux and macOS only`);
+  }
+};
+
 export const getPosixLibcPath = (platform = detectPosixPlatform()): string =>
   platform === "darwin" ? DARWIN_LIBSYSTEM : LINUX_LIBC_SO;
 

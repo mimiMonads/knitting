@@ -37,7 +37,6 @@ const nodeProcess = isPlainNode
   ? (globalThis as typeof globalThis & { process: NodeJS.Process }).process
   : undefined;
 const nativeFdTestsAreEnabled = nodeProcess?.platform === "linux" ||
-  nodeProcess?.platform === "win32" ||
   nodeProcess?.env.KNITTING_EXPERIMENTAL_NATIVE_FD_TESTS === "1";
 const nativeAddonPaths = (name: string): readonly string[] => {
   const platform = nodeProcess?.platform;

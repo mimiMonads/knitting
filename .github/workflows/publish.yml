@@ -20,12 +20,6 @@ jobs:
           - os: ubuntu-latest
             node-version: "24"
             prebuild: linux-x64-node-137
-          - os: windows-latest
-            node-version: "22"
-            prebuild: win32-x64-node-127
-          - os: windows-latest
-            node-version: "24"
-            prebuild: win32-x64-node-137
           - os: macos-15-intel
             node-version: "22"
             prebuild: darwin-x64-node-127
@@ -46,8 +40,6 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
       - uses: oven-sh/setup-bun@v2
-      - uses: ilammy/msvc-dev-cmd@v1
-        if: runner.os == 'Windows'
       - name: Build native prebuild
         run: bun run build:native
       - name: Upload native prebuild

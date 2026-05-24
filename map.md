@@ -33,8 +33,8 @@ The core flow is:
 
 - `build.ts`: Bundles `knitting.ts` to `out/` with Bun for a Node ESM target.
 - `scripts/build-native-addons.ts`: Compiles the native Node addons into
-  `build/Release/`. It finds Node headers/libs, splits user flags, and builds
-  the shared-memory and futex addons.
+  `build/Release/` on Linux and macOS. It finds Node headers/libs, splits user
+  flags, and builds the shared-memory and futex addons.
 - `run.sh`: Runs every top-level benchmark in `bench/` across Node, Deno, and
   Bun. `--json` writes JSON result files.
 
@@ -153,8 +153,8 @@ The core flow is:
   payload-codec registration.
 - `src/connections/file-descriptor.ts`: File descriptor wrapper, metadata
   parsing, mapping support, and descriptor lifecycle helpers.
-- `src/connections/node.ts`: Loads Node native addons and exposes Node shared
-  memory, mapping, unlink, and futex primitives.
+- `src/connections/node.ts`: Loads POSIX Node native addons and exposes Node
+  shared memory, mapping, unlink, and futex primitives.
 - `src/connections/bun.ts`: Bun FFI implementation for POSIX shared memory.
 - `src/connections/deno.ts`: Deno FFI implementation for POSIX shared memory.
 - `src/connections/posix.ts`: POSIX constants, shared-memory naming, libc path
