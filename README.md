@@ -64,6 +64,12 @@ Knitting without building native addons.
 ## Install
 
 ```bash
+npm install @vixeny/knitting
+```
+
+Via JSR's npm compatibility:
+
+```bash
 jsr add --npm @vixeny/knitting
 ```
 

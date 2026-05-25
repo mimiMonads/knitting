@@ -3,6 +3,17 @@
   "version": "0.1.44",
   "description": "Shared-memory IPC runtime for Node.js, Deno, and Bun.",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mimiMonads/knitting.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mimiMonads/knitting/issues"
+  },
+  "homepage": "https://github.com/mimiMonads/knitting#readme",
+  "publishConfig": {
+    "access": "public"
+  },
   "type": "module",
   "main": "./knitting.ts",
   "module": "./knitting.ts",
@@ -16,7 +27,6 @@
     "map.md",
     "LICENSE",
     "prebuilds/**/*.node",
-    "build/Release/*.node",
     "scripts/build-native-addons.ts",
     "src/**/*.cc",
     "src/**/*.ts",
