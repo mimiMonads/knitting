@@ -1,0 +1,283 @@
+import { endpointSymbol } from "./common/task-symbol.js";
+import type { Envelope } from "./common/envelope.js";
+import type { LockBufferTextCompat, SharedBufferTextCompat } from "./common/shared-buffer-text.js";
+import type { SharedBufferRegion, SharedBufferSource } from "./common/shared-buffer-region.js";
+import type { PayloadBufferMode, PayloadBufferOptions } from "./memory/payload-config.js";
+import type { PermissionProtocol, PermissionProtocolInput, ResolvedPermissionProtocol } from "./permission/protocol.js";
+type WorkerCall = {
+    fnNumber: number;
+    timeout?: TaskTimeout;
+    abortSignal?: AbortSignalOption;
+};
+type WorkerInvoke = (args: Uint8Array) => Promise<unknown>;
+interface WorkerContext {
+    txIdle(): boolean;
+    call(descriptor: WorkerCall): WorkerInvoke;
+    kills(): Promise<void>;
+}
+type CreateContext = WorkerContext;
+type WorkerData = {
+    sab: SharedBufferSource;
+    abortSignalSAB?: SharedBufferSource;
+    abortSignalMax?: number;
+    list: string[];
+    ids: number[];
+    thread: number;
+    totalNumberOfThread: number;
+    debug?: DebugOptions;
+    startAt: number;
+    workerOptions?: WorkerSettings;
+    at: number[];
+    lock: LockBuffers;
+    returnLock: LockBuffers;
+    payloadConfig?: PayloadBufferOptions;
+    permission?: ResolvedPermissionProtocol;
+};
+type LockBuffers = {
+    headers: SharedBufferSource;
+    headerSlotStrideU32?: number;
+    lockSector: SharedBufferSource;
+    payload: SharedBufferSource;
+    payloadSector: SharedBufferSource;
+    textCompat?: LockBufferTextCompat;
+};
+type JSONValue = string | number | boolean | null | JSONArray | JSONObject;
+interface JSONObject {
+    [key: string]: JSONValue;
+}
+interface JSONArray extends Array<JSONValue> {
+}
+type Serializable = string | object | number | boolean | bigint;
+type ValidInput = bigint | void | JSONValue | symbol | ArrayBuffer | Uint8Array | Int32Array | Float64Array | BigInt64Array | BigUint64Array | DataView | Error | Date | Envelope;
+type Args = ValidInput | Serializable;
+type MaybePromise<T> = T | Promise<T>;
+type NoBlob<T> = T extends Blob ? never : T;
+type TaskInput = NoBlob<Args> | Promise<NoBlob<Args>>;
+type TaskTimeout = number | {
+    time: number;
+    maybe?: true;
+    default?: unknown;
+    error?: unknown;
+};
+type BivariantCallback<Args extends unknown[], R> = {
+    bivarianceHack(...args: Args): R;
+}["bivarianceHack"];
+type AbortSignalConfig = {
+    readonly hasAborted: true;
+};
+type AbortSignalOption = true | AbortSignalConfig | undefined;
+type AbortSignalMethods<AS extends AbortSignalOption> = AS extends undefined ? never : {
+    hasAborted: () => boolean;
+};
+type AbortSignalToolkit<AS extends AbortSignalOption> = AbortSignalMethods<AS>;
+type TaskFn<A extends TaskInput, B extends Args, AS extends AbortSignalOption = undefined> = BivariantCallback<AS extends undefined ? [NoBlob<Awaited<A>>] : [NoBlob<Awaited<A>>, AbortSignalToolkit<AS>], MaybePromise<NoBlob<B>>>;
+type PromiseWithMaybeReject<T> = Promise<T> & {
+    reject: (reason?: unknown) => void;
+};
+type TaskLike<AS extends AbortSignalOption = AbortSignalOption> = {
+    readonly f: (...args: any[]) => any;
+} & (AS extends undefined ? {
+    readonly abortSignal?: undefined;
+} : {
+    readonly abortSignal: AS;
+});
+type Composed<A extends TaskInput = Args, B extends Args = Args, AS extends AbortSignalOption = undefined> = FixPoint<A, B, AS> & SecondPart;
+type tasks = Record<string, Composed<any, any, AbortSignalOption>>;
+type ComposedWithKey = Composed<any, any, AbortSignalOption> & {
+    name: string;
+};
+type PromiseWrapped<F extends (...args: any[]) => any, AS extends AbortSignalOption = undefined> = (...args: PromisifyCallArgs<F, AS>) => (AS extends undefined ? Promise<Awaited<ReturnType<F>>> : PromiseWithMaybeReject<Awaited<ReturnType<F>>>);
+type PromiseInput<T> = T | Promise<T>;
+type PromisifyArgs<T extends unknown[]> = {
+    [K in keyof T]: PromiseInput<T[K]>;
+};
+type NormalizeUndefinedSingleArg<T extends unknown[]> = T extends [undefined] ? [] | [undefined] : T;
+type AbortAwareCallArgs<T extends unknown[]> = T extends [...infer Head, AbortSignalToolkit<any>] ? NormalizeUndefinedSingleArg<Head> : NormalizeUndefinedSingleArg<T>;
+type HostCallArgs<F extends (...args: any[]) => any, AS extends AbortSignalOption> = AS extends undefined ? Parameters<F> : AbortAwareCallArgs<Parameters<F>>;
+type PromisifyCallArgs<F extends (...args: any[]) => any, AS extends AbortSignalOption> = HostCallArgs<F, AS> extends infer T ? T extends unknown[] ? PromisifyArgs<T> : never : never;
+type AbortSignalOfTask<T extends TaskLike<any>> = T extends {
+    readonly abortSignal: infer AS;
+} ? Extract<AS, AbortSignalOption> : undefined;
+type FunctionMapType<T extends Record<string, TaskLike<any>>> = {
+    [K in keyof T]: PromiseWrapped<T[K]["f"], AbortSignalOfTask<T[K]>>;
+};
+interface FixPointBase<A extends TaskInput, B extends Args, AS extends AbortSignalOption = undefined> {
+    readonly f: TaskFn<A, B, AS>;
+    readonly timeout?: TaskTimeout;
+}
+type FixPoint<A extends TaskInput, B extends Args, AS extends AbortSignalOption = undefined> = FixPointBase<A, B, AS> & (AS extends undefined ? {
+    readonly abortSignal?: undefined;
+} : {
+    readonly abortSignal: AS;
+});
+type ImportTaskOptions<A extends TaskInput = void, B extends Args = void, AS extends AbortSignalOption = undefined> = Omit<FixPoint<A, B, AS>, "f"> & {
+    readonly href: string;
+    readonly name?: string;
+};
+type SecondPart = {
+    readonly [endpointSymbol]: true;
+    readonly id: number;
+    /**
+     * IMPORTANT: `at` helps to create a `createPool` because we dont know
+     * the name of the variable at runtime, so basically this gets the logical order
+     * of the exported file, so no matter the name the worker can track which ` task `
+     * to track
+     */
+    readonly at: number;
+    readonly importedFrom: string;
+};
+type SingleTaskPool<A extends TaskInput = Args, B extends Args = Args, AS extends AbortSignalOption = undefined> = {
+    call: PromiseWrapped<TaskFn<A, B, AS>, AS>;
+    shutdown: (delayMs?: number) => Promise<void>;
+};
+type Pool<T extends Record<string, TaskLike<any>>> = {
+    shutdown: (delayMs?: number) => Promise<void>;
+    call: FunctionMapType<T>;
+};
+type ReturnFixed<A extends TaskInput = undefined, B extends Args = undefined, AS extends AbortSignalOption = undefined> = FixPoint<A, B, AS> & SecondPart & {
+    createPool: (options?: CreatePool) => SingleTaskPool<A, B, AS>;
+};
+type External = unknown;
+type Inliner = {
+    position?: "first" | "last";
+    /**
+     * Inline tasks per event loop tick.
+     * Defaults to 1 when inliner is enabled.
+     */
+    batchSize?: number;
+    /**
+     * Minimum in-flight calls before routing can use the inline host lane.
+     * Defaults to 1 (inline lane available immediately).
+     */
+    dispatchThreshold?: number;
+};
+type BalancerStrategy = "roundRobin" | "robinRound" | "firstIdle" | "randomLane" | "firstIdleOrRandom";
+type Balancer = BalancerStrategy | {
+    /**
+     * Optional. Defaults to "roundRobin".
+     */
+    strategy?: BalancerStrategy;
+};
+type DebugOptions = {
+    extras?: boolean;
+    logMain?: boolean;
+    logHref?: boolean;
+    logImportedUrl?: boolean;
+};
+type WorkerSettings = {
+    resolveAfterFinishingAll?: true;
+    /**
+     * Experimental worker runtime.
+     * "thread" uses Worker/worker_threads. "process" spawns another JavaScript
+     * runtime and shares one inherited fd-backed memory mapping.
+     */
+    runtime?: "thread" | "process";
+    /**
+     * Runtime executable to use when runtime is "process". Defaults to "bun".
+     */
+    processRuntime?: "bun" | "deno" | "node";
+    /**
+     * Command argv to prepend before the process worker runtime command.
+     * Useful for wrappers such as systemd-run, cgexec, nice, or taskset.
+     *
+     * Example:
+     * ["systemd-run", "--scope", "-p", "MemoryMax=500M", "-p", "CPUQuota=25%"]
+     */
+    processCommandPrefix?: string[];
+    timers?: WorkerTimers;
+    /**
+     * Hard task execution timeout in milliseconds.
+     * When exceeded, the pool is force-shutdown to stop runaway CPU tasks.
+     */
+    hardTimeoutMs?: number;
+};
+type WorkerTimers = {
+    /**
+     * Busy-spin budget before parking (microseconds).
+     */
+    spinMicroseconds?: number;
+    /**
+     * Atomics.wait timeout when parked (milliseconds).
+     */
+    parkMs?: number;
+    /**
+     * Atomics.pause duration during spin (nanoseconds).
+     * Set to 0 (or less) to disable pause calls.
+     */
+    pauseNanoseconds?: number;
+};
+type DispatcherSettings = {
+    /**
+     * How many immediate notify loops before backoff kicks in.
+     */
+    stallFreeLoops?: number;
+    /**
+     * Max backoff delay (milliseconds).
+     */
+    maxBackoffMs?: number;
+};
+type CreatePool = {
+    threads?: number;
+    /**
+   * @deprecated Too risky with processes, need to rewrite or delete.
+   */
+    inliner?: Inliner;
+    balancer?: Balancer;
+    worker?: WorkerSettings;
+    /**
+     * Payload transport settings.
+     */
+    payload?: PayloadBufferOptions;
+    /**
+     * Initial payload SharedArrayBuffer size (bytes) per worker direction.
+     * Defaults to 4 MiB when growable SAB is available, otherwise defaults to
+     * `payloadMaxBytes`.
+     * @deprecated Use `payload.payloadInitialBytes`.
+     */
+    payloadInitialBytes?: number;
+    /**
+     * Maximum payload SharedArrayBuffer size (bytes) per worker direction.
+     * Defaults to 64 MiB.
+     * @deprecated Use `payload.payloadMaxByteLength`.
+     */
+    payloadMaxBytes?: number;
+    /**
+     * @deprecated Use `payload.mode`.
+     */
+    bufferMode?: PayloadBufferMode;
+    /**
+     * @deprecated Use `payload.maxPayloadBytes`.
+     */
+    maxPayloadBytes?: number;
+    /**
+     * Abort-aware signal pool capacity.
+     * Defaults to `258`.
+     */
+    abortSignalCapacity?: number;
+    /**
+     * Host dispatcher backoff and scheduling options.
+     */
+    host?: DispatcherSettings;
+    /**
+     * Extra Node.js execArgv flags for worker threads (e.g. ["--expose-gc"]).
+     * Defaults to process.execArgv plus "--expose-gc" when allowed.
+     */
+    workerExecArgv?: string[];
+    /**
+     * Runtime permission protocol.
+     * Omit to use strict defaults with `allowImport: true`.
+     * Use `"strict"` (default for object mode) or `"unsafe"`.
+     * Accepts object form for fine-grained permission controls.
+     */
+    permission?: PermissionProtocolInput;
+    /**
+     * @deprecated Use `host` instead.
+     */
+    dispatcher?: DispatcherSettings;
+    debug?: DebugOptions;
+    source?: string;
+};
+export type { WorkerCall as WorkerCall, WorkerInvoke as WorkerInvoke, WorkerContext as WorkerContext, CreateContext as CreateContext, WorkerData as WorkerData, LockBuffers as LockBuffers, ValidInput as ValidInput, Args as Args, MaybePromise as MaybePromise, TaskInput as TaskInput, TaskTimeout as TaskTimeout, TaskFn as TaskFn, AbortSignalConfig as AbortSignalConfig, AbortSignalOption as AbortSignalOption, AbortSignalMethods as AbortSignalMethods, AbortSignalToolkit as AbortSignalToolkit, Composed as Composed, tasks as tasks, ComposedWithKey as ComposedWithKey, FunctionMapType as FunctionMapType, FixPoint as FixPoint, ImportTaskOptions as ImportTaskOptions, SecondPart as SecondPart, SingleTaskPool as SingleTaskPool, Pool as Pool, ReturnFixed as ReturnFixed, External as External, Inliner as Inliner, BalancerStrategy as BalancerStrategy, Balancer as Balancer, DebugOptions as DebugOptions, WorkerSettings as WorkerSettings, WorkerTimers as WorkerTimers, DispatcherSettings as DispatcherSettings, CreatePool as CreatePool, PayloadBufferMode as PayloadBufferMode, PayloadBufferOptions as PayloadBufferOptions, PermissionProtocol as PermissionProtocol, PermissionProtocolInput as PermissionProtocolInput, ResolvedPermissionProtocol as ResolvedPermissionProtocol, Envelope as Envelope, SharedBufferTextCompat as SharedBufferTextCompat, LockBufferTextCompat as LockBufferTextCompat, SharedBufferRegion as SharedBufferRegion, SharedBufferSource as SharedBufferSource, };
+export type { Task as Task } from "./memory/lock.js";
+export { LockBound as LockBound, PayloadBuffer as PayloadBuffer, PayloadSignal as PayloadSignal, TaskIndex as TaskIndex, } from "./memory/lock.js";
+export type { RegisterMalloc as RegisterMalloc } from "./memory/regionRegistry.js";

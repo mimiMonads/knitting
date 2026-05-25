@@ -1,0 +1,31 @@
+export type PosixPlatform = "linux" | "darwin";
+export declare const LINUX_LIBC_SO = "libc.so.6";
+export declare const DARWIN_LIBSYSTEM = "/usr/lib/libSystem.B.dylib";
+export declare const PROT_READ = 1;
+export declare const PROT_WRITE = 2;
+export declare const MAP_SHARED = 1;
+export declare const O_RDWR = 2;
+export declare const LINUX_O_CREAT = 64;
+export declare const LINUX_O_EXCL = 128;
+export declare const DARWIN_O_CREAT = 512;
+export declare const DARWIN_O_EXCL = 2048;
+export declare const DARWIN_SHM_MODE = 384;
+export declare const POSIX_SHM_MODE = 384;
+export declare const F_GETFD = 1;
+export declare const F_SETFD = 2;
+export declare const FD_CLOEXEC = 1;
+export declare const encodeCString: (value: string) => Uint8Array;
+type FcntlLibc = {
+    symbols: {
+        fcntl: (fd: number, cmd: number, arg: number) => number;
+    };
+};
+export declare const setCloseOnExec: <T extends FcntlLibc>(libc: T, fd: number) => number;
+export declare const shmOpenCreateFlag: (platform: PosixPlatform) => number;
+export declare const shmOpenExclusiveFlag: (platform: PosixPlatform) => number;
+export declare const toPosixSharedMemoryName: (name: string) => string;
+export declare const detectPosixPlatform: () => PosixPlatform;
+export declare const assertPosixSharedMemoryPlatform: (feature: string) => void;
+export declare const getPosixLibcPath: (platform?: PosixPlatform) => string;
+export declare const makeDarwinSharedMemoryName: (_name: string, runtime: string) => string;
+export {};

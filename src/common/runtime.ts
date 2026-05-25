@@ -58,7 +58,7 @@ const createSharedWasmBuffer = (
     maximum: Math.max(roundupWasmPages(byteLength), roundupWasmPages(maxByteLength)),
     shared: true,
   });
-  const buffer = memory.buffer as SharedArrayBuffer;
+  const buffer = memory.buffer as unknown as SharedArrayBuffer;
   wasmSharedBufferMemory.set(buffer, memory);
   wasmSharedBufferMaxByteLength.set(buffer, maxByteLength);
   return buffer;
@@ -129,7 +129,7 @@ export const growSharedArrayBuffer = (
     throw new TypeError("SharedArrayBuffer is not growable");
   }
 
-  const currentBuffer = memory.buffer as SharedArrayBuffer;
+  const currentBuffer = memory.buffer as unknown as SharedArrayBuffer;
   if (currentBuffer.byteLength >= byteLength) {
     return currentBuffer;
   }
@@ -138,7 +138,7 @@ export const growSharedArrayBuffer = (
   const currentPages = roundupWasmPages(currentBuffer.byteLength);
   memory.grow(targetPages - currentPages);
 
-  const nextBuffer = memory.buffer as SharedArrayBuffer;
+  const nextBuffer = memory.buffer as unknown as SharedArrayBuffer;
   const maxByteLength =
     wasmSharedBufferMaxByteLength.get(sab) ?? currentBuffer.byteLength;
   wasmSharedBufferMemory.set(nextBuffer, memory);

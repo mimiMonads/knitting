@@ -1,0 +1,1 @@
+export { getDefaultProcessSharedBufferPrimitives, parseProcessSharedBufferMetadata, PROCESS_SHARED_BUFFER_BRAND, ProcessSharedBuffer, setDefaultProcessSharedBufferPrimitives, } from "./src/connections/process-shared-buffer.js";

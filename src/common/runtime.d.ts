@@ -1,0 +1,15 @@
+type RuntimeName = "deno" | "bun" | "node" | "unknown";
+export declare const IS_DENO: boolean;
+export declare const IS_BUN: boolean;
+export declare const IS_NODE: boolean;
+export declare const RUNTIME: RuntimeName;
+export declare const SET_IMMEDIATE: typeof setImmediate & ((cb: () => void) => void);
+export declare const HAS_SHARED_WASM_MEMORY: boolean;
+export declare const createWasmSharedArrayBuffer: (byteLength: number, maxByteLength?: number) => SharedArrayBuffer;
+export declare const HAS_SAB_GROW: boolean;
+export declare const createSharedArrayBuffer: (byteLength: number, maxByteLength?: number) => SharedArrayBuffer;
+export declare const isWasmSharedArrayBuffer: (sab: SharedArrayBuffer) => boolean;
+export declare const isGrowableSharedArrayBuffer: (sab: SharedArrayBuffer) => boolean;
+export declare const sharedArrayBufferMaxByteLength: (sab: SharedArrayBuffer) => number;
+export declare const growSharedArrayBuffer: (sab: SharedArrayBuffer, byteLength: number) => SharedArrayBuffer;
+export {};
