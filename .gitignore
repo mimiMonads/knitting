@@ -63,6 +63,14 @@ bower_components
 
 build/Release
 
+# npm release build artifacts
+/knitting.d.ts
+/knitting.js
+/process-shared-buffer.d.ts
+/process-shared-buffer.js
+/src/**/*.d.ts
+/src/**/*.js
+
 # Dependency directories
 
 node_modules/

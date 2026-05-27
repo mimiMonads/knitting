@@ -64,6 +64,12 @@ Knitting without building native addons.
 ## Install
 
 ```bash
+npm install knitting
+```
+
+Via JSR's npm compatibility:
+
+```bash
 jsr add --npm @vixeny/knitting
 ```
 
@@ -76,7 +82,7 @@ deno add jsr:@vixeny/knitting
 ## Quick Start
 
 ```ts
-import { createPool, isMain, task } from "@vixeny/knitting";
+import { createPool, isMain, task } from "knitting";
 
 export const square = task<number, number>({
   f: (value) => value * value,
@@ -111,7 +117,7 @@ then use and use the pool only from the main program.
 There are three core pieces, plus `isMain` for modules that workers may import:
 
 ```ts
-import { createPool, isMain, task } from "@vixeny/knitting";
+import { createPool, isMain, task } from "knitting";
 ```
 
 - `task(...)` describes a callable worker function (types + implementation).
@@ -225,7 +231,7 @@ export const add = ([left, right]: [number, number]) => left + right;
 
 ```ts
 // main.ts
-import { createPool, importTask, isMain } from "@vixeny/knitting";
+import { createPool, importTask, isMain } from "knitting";
 
 export const add = importTask<[number, number], number>({
   href: "./worker-tasks.ts",
@@ -256,7 +262,7 @@ limit reads, writes, environment access, networking, and process execution.
 For quick scripts, a task can create its own pool:
 
 ```ts
-import { isMain, task } from "@vixeny/knitting";
+import { isMain, task } from "knitting";
 
 export const double = task<number, number>({
   f: (value) => value * 2,
@@ -440,8 +446,8 @@ memory. Use it when two workers or processes need to see the same bytes without
 copying the whole payload for every call.
 
 ```ts
-import { ProcessSharedBuffer } from "@vixeny/knitting/process-shared-buffer";
-import { createPool, isMain, task } from "@vixeny/knitting";
+import { ProcessSharedBuffer } from "knitting/process-shared-buffer";
+import { createPool, isMain, task } from "knitting";
 
 export const readFirstCell = task<ProcessSharedBuffer, number>({
   f: (buffer) => Atomics.load(buffer.view(Int32Array), 0),
@@ -480,7 +486,7 @@ Sometimes you do want two unrelated processes to rendezvous on purpose. Use a
 named channel for that.
 
 ```ts
-import { ProcessSharedBuffer } from "@vixeny/knitting/process-shared-buffer";
+import { ProcessSharedBuffer } from "knitting/process-shared-buffer";
 
 const name = "knitting-demo-channel";
 

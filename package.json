@@ -1,33 +1,53 @@
 {
-  "name": "@vixeny/knitting",
-  "version": "0.1.44",
+  "name": "knitting",
+  "version": "0.1.46",
   "description": "Shared-memory IPC runtime for Node.js, Deno, and Bun.",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mimiMonads/knitting.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mimiMonads/knitting/issues"
+  },
+  "homepage": "https://github.com/mimiMonads/knitting#readme",
   "type": "module",
-  "main": "./knitting.ts",
-  "module": "./knitting.ts",
-  "types": "./knitting.ts",
+  "main": "./knitting.js",
+  "module": "./knitting.js",
+  "types": "./knitting.d.ts",
   "exports": {
-    ".": "./knitting.ts",
-    "./process-shared-buffer": "./process-shared-buffer.ts"
+    ".": {
+      "types": "./knitting.d.ts",
+      "default": "./knitting.js"
+    },
+    "./process-shared-buffer": {
+      "types": "./process-shared-buffer.d.ts",
+      "default": "./process-shared-buffer.js"
+    }
   },
   "files": [
     "README.md",
     "map.md",
     "LICENSE",
     "prebuilds/**/*.node",
-    "build/Release/*.node",
     "scripts/build-native-addons.ts",
     "src/**/*.cc",
-    "src/**/*.ts",
-    "knitting.ts",
-    "process-shared-buffer.ts"
+    "src/**/*.d.ts",
+    "src/**/*.js",
+    "knitting.d.ts",
+    "knitting.js",
+    "process-shared-buffer.d.ts",
+    "process-shared-buffer.js"
   ],
   "scripts": {
     "build": "bun run build.ts",
+    "build:npm": "tsc -p tsconfig.npm.json && node scripts/rewrite-declaration-imports.mjs",
     "build:native": "bun run scripts/build-native-addons.ts",
-    "build:release": "bun run build:native && bun run build",
+    "build:release": "bun run build:native && bun run build && npm run build:npm",
     "build:node": "bun build knitting.ts --outdir dest --target node --format esm",
+    "prepack": "npm run build:npm",
+    "release:npm": "npm run test:all && npm publish",
+    "release:npm:dry-run": "npm publish --dry-run",
     "test": "npm run test:deno",
     "test:deno": "deno test -A --ignore=test/runtime.node.test.ts --ignore=test/runtime.process.test.ts",
     "test:node": "node --no-warnings --experimental-transform-types --test \"./test/*.test.ts\"",
