@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "declaration": true,
+    "lib": ["ES2023", "DOM", "WebWorker"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "rewriteRelativeImportExtensions": true,
+    "skipLibCheck": true,
+    "target": "ES2023",
+    "types": ["bun-types", "node"]
+  },
+  "include": [
+    "knitting.ts",
+    "process-shared-buffer.ts",
+    "src/**/*.ts"
+  ]
+}
