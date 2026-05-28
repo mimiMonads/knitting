@@ -510,12 +510,18 @@ const reviveProcessWorkerData = (
 ): WorkerData => {
   const primitives = getProcessWorkerPrimitives();
   const mappings = new Map<string, SharedMemoryMapping>();
+  const mappingKey = (descriptor: ProcessSharedBuffer["descriptor"]) =>
+    descriptor.name === undefined
+      ? `fd:${descriptor.fd}:${descriptor.size}:${descriptor.runtime ?? ""}`
+      : `name:${descriptor.name}:${descriptor.size}:${
+        descriptor.runtime ?? ""
+      }`;
   const reviveRegion = (
     metadata: ProcessSharedBufferMetadata,
   ): SharedBufferSource => {
     const processBuffer = ProcessSharedBuffer.fromMetadata(metadata);
     const descriptor = processBuffer.descriptor;
-    const key = `${descriptor.fd}:${descriptor.size}:${descriptor.runtime ?? ""}`;
+    const key = mappingKey(descriptor);
     let mapping = mappings.get(key);
     if (mapping === undefined) {
       mapping = descriptor.map(primitives);

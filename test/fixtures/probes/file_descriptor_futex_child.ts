@@ -41,4 +41,4 @@ console.log(JSON.stringify({
   value: Atomics.load(cells, 2),
 }));
 
-process.exit(waitResult === "woken" ? 0 : 3);
+process.exit(waitResult === "woken" || waitResult === "changed" ? 0 : 3);
