@@ -585,6 +585,13 @@ const installProcessWorkerBootstrap = (): void => {
     return;
   }
 
+  if (RUNTIME_PARENT_PORT === undefined) {
+    reportWorkerStartupFatal(
+      new TypeError("missing process worker boot payload"),
+    );
+    return;
+  }
+
   if (typeof processLike?.on !== "function") return;
 
   const onMessage = (message: unknown) => {

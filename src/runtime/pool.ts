@@ -275,6 +275,7 @@ type ProcessSharedMemoryAllocator = {
 
 // Keep idle workers self-healing if an Atomics.notify wake is missed.
 const DEFAULT_WORKER_PARK_MS = 1;
+let processWorkerMemoryNameCounter = 0;
 
 const withDefaultWorkerTimers = (
   options: WorkerSettings | undefined,
@@ -387,6 +388,30 @@ const processWorkerNeedsInheritedFd = (
   descriptor: FileDescriptor,
 ): boolean => descriptor.name === undefined;
 
+const isWindowsRuntimeHost = (): boolean => {
+  const denoOs = (globalThis as typeof globalThis & {
+    Deno?: { build?: { os?: string } };
+  }).Deno?.build?.os;
+  if (denoOs !== undefined) return denoOs === "windows";
+
+  return (globalThis as typeof globalThis & {
+    process?: { platform?: string };
+  }).process?.platform === "win32";
+};
+
+const makeProcessWorkerMemoryName = (thread: number): string => {
+  const processId = (globalThis as typeof globalThis & {
+    process?: { pid?: number };
+    Deno?: { pid?: number };
+  }).process?.pid ??
+    (globalThis as typeof globalThis & { Deno?: { pid?: number } }).Deno?.pid ??
+    0;
+  const next = processWorkerMemoryNameCounter++;
+  const timeTag = Date.now().toString(36);
+  const randomTag = Math.random().toString(36).slice(2, 10);
+  return `knitting_process_worker_${processId}_${thread}_${timeTag}_${next}_${randomTag}`;
+};
+
 const createProcessWorkerMemoryLayout = ({
   signalBytes,
   abortBytes,
@@ -431,8 +456,15 @@ const createProcessWorkerMemoryLayout = ({
   const primitives = getProcessWorkerSharedMemoryPrimitives();
   const mapping = primitives.createSharedMemory({
     size: carpet.byteLength(),
-    name: `knitting_process_worker_${thread}`,
+    mode: "create",
+    name: makeProcessWorkerMemoryName(thread),
   });
+  const descriptor = FileDescriptor.fromMapping(mapping);
+  if (isWindowsRuntimeHost() && descriptor.name === undefined) {
+    throw new Error(
+      "Windows process worker shared memory must use a named mapping",
+    );
+  }
   const buffer = mapping.buffer;
   const bind = (slice: ByteCarpetSlice) =>
     makeSharedBufferRegion(buffer, slice.byteOffset, slice.byteLength);
@@ -457,7 +489,7 @@ const createProcessWorkerMemoryLayout = ({
 
   return {
     mapping,
-    descriptor: FileDescriptor.fromMapping(mapping),
+    descriptor,
     controlLayout,
     lockPayload: bind(requestPayloadSlice),
     returnPayload: bind(returnPayloadSlice),
@@ -805,7 +837,9 @@ const spawnNodeHostedProcessWorker = ({
   }
 
   const events = createProcessWorkerEventHub();
-  const useIpcBoot = processRuntime === "bun" && commandPrefix === undefined;
+  const useIpcBoot =
+    (processRuntime === "bun" || processRuntime === "node") &&
+    commandPrefix === undefined;
   const [command, ...args] = processWorkerCommand({
     processRuntime,
     workerUrl,
