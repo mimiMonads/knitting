@@ -51,6 +51,40 @@ jobs:
         if: runner.os == 'Windows'
       - name: Build native prebuild
         run: bun run build:native
+      - name: Verify Node native prebuild
+        shell: bash
+        env:
+          KNITTING_PREBUILD: ${{ matrix.prebuild }}
+        run: |
+          set -euo pipefail
+
+          node --input-type=module <<'EOF'
+          import { createRequire } from "node:module";
+
+          const require = createRequire(import.meta.url);
+          const prebuild = process.env.KNITTING_PREBUILD;
+          const shared = require(`./prebuilds/${prebuild}/knitting_shared_memory.node`);
+          const futex = require(`./prebuilds/${prebuild}/knitting_shm.node`);
+          const first = shared.createSharedMemory(64);
+          const second = shared.mapSharedMemory(first.fd, first.size, first.name);
+
+          const firstCells = new Int32Array(first.sab);
+          const secondCells = new Int32Array(second.sab);
+          Atomics.store(firstCells, 0, 123);
+          if (Atomics.load(secondCells, 0) !== 123) {
+            throw new Error("shared memory remap did not observe writes");
+          }
+          if (typeof futex.wakeU32 !== "function") {
+            throw new Error("futex addon did not expose wakeU32");
+          }
+          EOF
+      - name: Verify Windows FFI prebuild
+        if: runner.os == 'Windows' && matrix.ffi-prebuild == 'win32-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          bun --eval 'import { createBunWindowsSharedMemory, mapBunWindowsSharedMemory } from "./src/connections/windows.ts"; const first = createBunWindowsSharedMemory(64); const second = mapBunWindowsSharedMemory({ fd: first.fd, name: first.name, size: first.size }); const firstCells = new Int32Array(first.buffer); const secondCells = new Int32Array(second.buffer); firstCells[0] = 321; if (secondCells[0] !== 321) throw new Error("Windows FFI remap did not observe writes"); second.close?.(); first.close?.();'
       - name: Upload native prebuild
         uses: actions/upload-artifact@v4
         with:
