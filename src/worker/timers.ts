@@ -57,6 +57,22 @@ const waitFallbackView = a_wait === undefined
 const a_pause: ((n: number) => void) | undefined = "pause" in Atomics
   ? (Atomics.pause as (n: number) => void)
   : undefined;
+const runtimeGlobals = globalThis as typeof globalThis & {
+  Deno?: unknown;
+  process?: {
+    platform?: string;
+    versions?: { bun?: string; node?: string };
+  };
+};
+const isPlainNodeWindows = runtimeGlobals.process?.platform === "win32" &&
+  typeof runtimeGlobals.process?.versions?.node === "string" &&
+  runtimeGlobals.process?.versions?.bun === undefined &&
+  runtimeGlobals.Deno === undefined;
+
+// The Windows Node native wait polls internally; keep it in short slices so
+// process workers cannot disappear into a long park with no useful diagnostics.
+const nativeWaitTimeoutMs = (parkMs?: number): number =>
+  isPlainNodeWindows ? 1 : parkMs ?? 60;
 
 export const whilePausing = ({ pauseInNanoseconds }: PauseOptions) => {
   const forNanoseconds = pauseInNanoseconds ?? DEFAULT_PAUSE_TIME;
@@ -64,8 +80,6 @@ export const whilePausing = ({ pauseInNanoseconds }: PauseOptions) => {
 
   return () => a_pause(forNanoseconds);
 };
-
-
 
 export const pauseGeneric = whilePausing({});
 
@@ -92,10 +106,9 @@ export const sleepUntilChanged = (
     useSharedMemoryWait?: boolean;
   },
 ) => {
-  const pause = pauseInNanoseconds
-    !== undefined
-    ? whilePausing({ pauseInNanoseconds })
-    : pauseGeneric;
+  const pause = pauseInNanoseconds === undefined
+    ? pauseGeneric
+    : whilePausing({ pauseInNanoseconds });
 
   const tryProgress = () => {
     let progressed = false;
@@ -135,7 +148,6 @@ export const sleepUntilChanged = (
       if ((spinChecks++ & 63) === 0 && p_now() >= until) break;
     }
 
-
     if (tryProgress()) return;
 
     a_store(rxStatus, 0, 0);
@@ -145,7 +157,7 @@ export const sleepUntilChanged = (
         opView.buffer,
         opView.byteOffset + (at * Int32Array.BYTES_PER_ELEMENT),
         value >>> 0,
-        parkMs ?? 60,
+        nativeWaitTimeoutMs(parkMs),
       );
     } else if (
       useSharedMemoryWait &&
@@ -161,9 +173,7 @@ export const sleepUntilChanged = (
     } else if (a_wait && waitFallbackView) {
       a_wait(waitFallbackView, 0, 0, parkMs ?? 1);
     }
-  
 
     a_store(rxStatus, 0, 1);
-
   };
 };
