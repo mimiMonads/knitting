@@ -422,6 +422,9 @@ void CreateSharedMemory(const v8::FunctionCallbackInfo<v8::Value>& args) {
   if (!ReadOptionalUtf8String(isolate, args, 2, &mode)) {
     return;
   }
+  if (mode.empty()) {
+    mode = "anonymous";
+  }
 
   const bool open_existing = mode == "open";
   const bool create_named = mode == "create";
