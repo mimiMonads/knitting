@@ -31,15 +31,17 @@ const makeMapping = (
   baseAddressMod64: 0,
 });
 
-test("ProcessSharedBuffer default primitives are POSIX-only on Windows", () => {
+test("ProcessSharedBuffer default primitives do not reject Windows as POSIX-only", () => {
   if (!isWindows) return;
 
   try {
     setDefaultProcessSharedBufferPrimitives(undefined);
-    assert.throws(
-      () => getDefaultProcessSharedBufferPrimitives(),
-      /ProcessSharedBuffer is supported on Linux and macOS only/,
-    );
+    try {
+      getDefaultProcessSharedBufferPrimitives();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      assert.doesNotMatch(message, /Linux and macOS only/);
+    }
   } finally {
     setDefaultProcessSharedBufferPrimitives(undefined);
   }

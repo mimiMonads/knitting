@@ -30,6 +30,7 @@
     "map.md",
     "LICENSE",
     "prebuilds/**/*.node",
+    "prebuilds/**/*.dll",
     "scripts/build-native-addons.ts",
     "src/**/*.cc",
     "src/**/*.d.ts",

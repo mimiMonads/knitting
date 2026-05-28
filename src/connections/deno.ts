@@ -23,6 +23,10 @@ import {
   type SharedMemoryConnectionPrimitives,
   type SharedMemoryMapping,
 } from "./types.ts";
+import {
+  createDenoWindowsConnectionPrimitives,
+  isWindowsRuntime,
+} from "./windows.ts";
 
 type DenoLibc = {
   symbols: {
@@ -245,10 +249,17 @@ export const createDenoSharedMemory = (
   }
 };
 
-export const createDenoConnectionPrimitives = (
+export const createDenoPosixConnectionPrimitives = (
   libc = openDenoLibc(),
 ): SharedMemoryConnectionPrimitives<SharedMemoryMapping<ArrayBuffer>> => ({
   runtime: "deno",
   createSharedMemory: (options) => createDenoSharedMemory(options, libc),
   mapSharedMemory: (options) => mapDenoSharedMemory(options, libc),
 });
+
+export const createDenoConnectionPrimitives = (
+  libc?: DenoLibc,
+): SharedMemoryConnectionPrimitives<SharedMemoryMapping<ArrayBuffer>> =>
+  isWindowsRuntime()
+    ? createDenoWindowsConnectionPrimitives()
+    : createDenoPosixConnectionPrimitives(libc);

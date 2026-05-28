@@ -240,6 +240,45 @@ test("FileDescriptor stringifies and restores descriptor metadata", () => {
   assert.equal(descriptor.getSAB(), sab);
 });
 
+test("FileDescriptor preserves named mapping metadata", () => {
+  const sab = new SharedArrayBuffer(64);
+  const mapping: SharedMemoryMapping<SharedArrayBuffer> = {
+    runtime: "node",
+    fd: 11,
+    name: "Local\\knitting-test-channel",
+    size: 64,
+    byteLength: 64,
+    buffer: sab,
+    kind: "shared-array-buffer",
+    sab,
+    baseAddressMod64: 0,
+  };
+
+  const descriptor = FileDescriptor.fromMapping(mapping);
+  assert.deepEqual(descriptor.toMetadata(), {
+    version: 1,
+    fd: 11,
+    name: "Local\\knitting-test-channel",
+    size: 64,
+    byteLength: 64,
+    runtime: "node",
+    kind: "shared-array-buffer",
+    baseAddressMod64: 0,
+  });
+
+  const restored = FileDescriptor.parse(descriptor.stringifyMetadata());
+  assert.equal(restored.name, "Local\\knitting-test-channel");
+
+  let mappedName: string | undefined;
+  restored.map({
+    mapSharedMemory: (options) => {
+      mappedName = options.name;
+      return mapping;
+    },
+  });
+  assert.equal(mappedName, "Local\\knitting-test-channel");
+});
+
 nativeSharedMemoryTest(
   nativeTestName(
     "FileDescriptor maps serialized metadata back into a Node SharedArrayBuffer",

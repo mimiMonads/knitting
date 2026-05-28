@@ -20,6 +20,13 @@ jobs:
           - os: ubuntu-latest
             node-version: "24"
             prebuild: linux-x64-node-137
+          - os: windows-latest
+            node-version: "22"
+            prebuild: win32-x64-node-127
+            ffi-prebuild: win32-x64
+          - os: windows-latest
+            node-version: "24"
+            prebuild: win32-x64-node-137
           - os: macos-15-intel
             node-version: "22"
             prebuild: darwin-x64-node-127
@@ -40,6 +47,8 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
       - uses: oven-sh/setup-bun@v2
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
       - name: Build native prebuild
         run: bun run build:native
       - name: Upload native prebuild
@@ -47,6 +56,13 @@ jobs:
         with:
           name: native-${{ matrix.prebuild }}
           path: prebuilds/${{ matrix.prebuild }}/*.node
+          if-no-files-found: error
+      - name: Upload Windows FFI prebuild
+        if: runner.os == 'Windows' && matrix.ffi-prebuild == 'win32-x64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.ffi-prebuild }}
+          path: prebuilds/${{ matrix.ffi-prebuild }}/*.dll
           if-no-files-found: error
 
   commit-prebuilds:
@@ -84,16 +100,16 @@ jobs:
             prebuild="${artifact##*/native-}"
             target="prebuilds/$prebuild"
             mkdir -p "$target"
-            find "$artifact" -type f -name '*.node' -exec cp '{}' "$target/" ';'
+            find "$artifact" -type f \( -name '*.node' -o -name '*.dll' \) -exec cp '{}' "$target/" ';'
 
-            count="$(find "$target" -maxdepth 1 -type f -name '*.node' | wc -l)"
+            count="$(find "$target" -maxdepth 1 -type f \( -name '*.node' -o -name '*.dll' \) | wc -l)"
             if [ "$count" -eq 0 ]; then
-              echo "::error::No native addons found for $prebuild"
+              echo "::error::No native prebuilds found for $prebuild"
               exit 1
             fi
           done
 
-          find prebuilds -maxdepth 2 -type f -name '*.node' | sort
+          find prebuilds -maxdepth 2 -type f \( -name '*.node' -o -name '*.dll' \) | sort
       - name: Check JSR package contents
         run: deno publish --dry-run --allow-dirty
       - name: Commit prebuilds to branch

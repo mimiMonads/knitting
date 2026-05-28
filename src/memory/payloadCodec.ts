@@ -39,6 +39,7 @@ type ExternalPayloadCodec = {
 type ProcessSharedBufferPayloadLike = ExternalPayloadLike & {
   descriptor?: {
     fd?: number;
+    name?: string;
     size?: number;
     byteLength?: number;
     runtime?: unknown;
@@ -737,6 +738,7 @@ export const encodePayload = ({
     const descriptor = value.descriptor;
     if (
       descriptor === undefined ||
+      descriptor.name !== undefined ||
       !isU32(descriptor.fd) ||
       !isU32(descriptor.size) ||
       !isU32(descriptor.byteLength) ||

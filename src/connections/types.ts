@@ -15,6 +15,7 @@ export type SharedMemoryMapping<
 > = {
   runtime: ConnectionRuntime;
   fd: number;
+  name?: string;
   size: number;
   byteLength: number;
   buffer: Buffer;
@@ -39,6 +40,7 @@ export type CreateSharedMemoryOptions = {
 
 export type MapSharedMemoryOptions = {
   fd: number;
+  name?: string;
   size: number;
   duplicateFd?: boolean;
 };

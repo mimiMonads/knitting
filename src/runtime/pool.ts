@@ -253,6 +253,7 @@ type NodeModuleBuiltin = {
 type ProcessSharedMemoryNativeMapping = {
   sab: SharedArrayBuffer;
   fd: number;
+  name?: string;
   size: number;
   baseAddressMod64?: number;
 };
@@ -303,11 +304,6 @@ const createProcessSharedMemoryAllocator = (
   debug: DebugOptions | undefined,
 ): ProcessSharedMemoryAllocator | undefined => {
   if (RUNTIME !== "node") return undefined;
-  try {
-    assertPosixSharedMemoryPlatform("Process-shared memory allocator");
-  } catch {
-    return undefined;
-  }
 
   let addon: ProcessSharedMemoryAddon;
   try {

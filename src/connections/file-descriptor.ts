@@ -13,7 +13,10 @@ export type FileDescriptorMetadata = {
   version: 1;
   // fd values are process-local; across processes this assumes fd inheritance
   // or another fd-passing mechanism has made the same descriptor number valid.
+  // Windows mappings can instead carry a name, because HANDLE values are
+  // process-local and cannot be reopened from their numeric value alone.
   fd: number;
+  name?: string;
   size: number;
   byteLength: number;
   runtime?: ConnectionRuntime;
@@ -64,8 +67,23 @@ const readOptionalNumber = (
   return Math.trunc(value);
 };
 
+const readOptionalName = (value: unknown): string | undefined => {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.length === 0) {
+    throw new TypeError(
+      "file descriptor name must be a non-empty string when provided",
+    );
+  }
+  if (value.includes("\0")) {
+    throw new TypeError("file descriptor name must not contain NUL bytes");
+  }
+
+  return value;
+};
+
 export class FileDescriptor {
   readonly fd: number;
+  readonly name?: string;
   readonly size: number;
   readonly byteLength: number;
   readonly runtime?: ConnectionRuntime;
@@ -79,6 +97,7 @@ export class FileDescriptor {
     mapping?: SharedMemoryMapping,
   ) {
     this.fd = expectFd(metadata.fd);
+    this.name = metadata.name;
     this.size = expectPositiveSize(metadata.size);
     this.byteLength = expectPositiveSize(metadata.byteLength);
     this.runtime = metadata.runtime;
@@ -92,6 +111,7 @@ export class FileDescriptor {
       {
         version: 1,
         fd: mapping.fd,
+        name: mapping.name,
         size: mapping.size,
         byteLength: mapping.byteLength,
         runtime: mapping.runtime,
@@ -111,7 +131,7 @@ export class FileDescriptor {
   }
 
   toMetadata(): FileDescriptorMetadata {
-    return {
+    const metadata: FileDescriptorMetadata = {
       version: 1,
       fd: this.fd,
       size: this.size,
@@ -120,6 +140,8 @@ export class FileDescriptor {
       kind: this.kind,
       baseAddressMod64: this.baseAddressMod64,
     };
+    if (this.name !== undefined) metadata.name = this.name;
+    return metadata;
   }
 
   toJSON(): FileDescriptorMetadata {
@@ -151,6 +173,7 @@ export class FileDescriptor {
   map(mapper: FileDescriptorMapper): SharedMemoryMapping {
     const options: MapSharedMemoryOptions = {
       fd: this.fd,
+      name: this.name,
       size: this.size,
     };
     this.#mapping = mapper.mapSharedMemory(options);
@@ -198,7 +221,7 @@ export const parseFileDescriptorMetadata = (
     throw new TypeError("unsupported file descriptor metadata version");
   }
 
-  return {
+  const parsed: FileDescriptorMetadata = {
     version: 1,
     fd: expectFd(readOptionalNumber(value.fd, "fd") ?? -1),
     size: expectPositiveSize(readOptionalNumber(value.size, "size") ?? 0),
@@ -214,4 +237,7 @@ export const parseFileDescriptorMetadata = (
       "baseAddressMod64",
     ),
   };
+  const name = readOptionalName(value.name);
+  if (name !== undefined) parsed.name = name;
+  return parsed;
 };

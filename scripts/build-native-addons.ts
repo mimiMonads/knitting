@@ -70,11 +70,6 @@ const nodeInfo = JSON.parse(runCapture(nodeBinary, [
   "JSON.stringify({arch:process.arch,execPath:process.execPath,modules:process.versions.modules,nodedir:process.config.variables.nodedir||null,platform:process.platform,version:process.versions.node})",
 ])) as NodeInfo;
 const isWindows = nodeInfo.platform === "win32";
-if (isWindows) {
-  throw new Error(
-    "Knitting native shared-memory addons are supported on Linux and macOS only",
-  );
-}
 const cacheRoot = join(
   resolve(
     Bun.env.KNITTING_NODE_CACHE_DIR ??
@@ -238,10 +233,24 @@ const addons = [
     output: "build/Release/knitting_shm.node",
   },
 ];
+const ffiLibraries = isWindows
+  ? [
+    {
+      name: "knitting_windows_shared_memory",
+      source: "src/knitting_windows_shared_memory.cc",
+      output: "build/Release/knitting_windows_shared_memory.dll",
+    },
+  ]
+  : [];
 const prebuildDir = join(
   root,
   "prebuilds",
   `${nodeInfo.platform}-${nodeInfo.arch}-node-${nodeInfo.modules}`,
+);
+const ffiPrebuildDir = join(
+  root,
+  "prebuilds",
+  `${nodeInfo.platform}-${nodeInfo.arch}`,
 );
 
 console.log(`Using Node: ${nodeInfo.execPath}`);
@@ -278,6 +287,23 @@ for (const addon of addons) {
 
   mkdirSync(prebuildDir, { recursive: true });
   const prebuildPath = join(prebuildDir, `${addon.name}.node`);
+  copyFileSync(outputPath, prebuildPath);
+  copiedPrebuilds.push(prebuildPath);
+}
+
+for (const library of ffiLibraries) {
+  const outputPath = join(root, library.output);
+  run(cxx, [
+    ...compileFlags,
+    join(root, library.source),
+    "/link",
+    `/OUT:${outputPath}`,
+    ...extraLdFlags,
+  ]);
+  builtAddons.push(library.output);
+
+  mkdirSync(ffiPrebuildDir, { recursive: true });
+  const prebuildPath = join(ffiPrebuildDir, `${library.name}.dll`);
   copyFileSync(outputPath, prebuildPath);
   copiedPrebuilds.push(prebuildPath);
 }
