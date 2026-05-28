@@ -7,7 +7,8 @@ import { loadNodeSharedMemoryAddon } from "../src/connections/node.ts";
 import { addOnePromise, reportIsMain } from "./fixtures/runtime_tasks.ts";
 import { spawnChildProcess } from "./fixtures/permission_tasks.ts";
 
-const TEST_TIMEOUT_MS = 10_000;
+const PROMISE_TIMEOUT_MS = 5_000;
+const TEST_TIMEOUT_MS = PROMISE_TIMEOUT_MS * 6;
 const versions = (globalThis as typeof globalThis & {
   process?: { versions?: { bun?: string; node?: string } };
   Deno?: unknown;
@@ -18,14 +19,18 @@ const isPlainNode = typeof versions?.node === "string" &&
 let nodeSharedMemoryAddonIsAvailable: boolean | undefined;
 let nodeCommandSharedMemoryAddonIsAvailable: boolean | undefined;
 
-const withTimeout = async <T>(promise: Promise<T>, ms: number): Promise<T> => {
+const withTimeout = async <T>(
+  label: string,
+  promise: Promise<T>,
+  ms = PROMISE_TIMEOUT_MS,
+): Promise<T> => {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
       promise,
       new Promise<T>((_, reject) => {
         timeoutId = setTimeout(
-          () => reject(new Error(`test timeout after ${ms}ms`)),
+          () => reject(new Error(`${label} timed out after ${ms}ms`)),
           ms,
         );
       }),
@@ -35,10 +40,34 @@ const withTimeout = async <T>(promise: Promise<T>, ms: number): Promise<T> => {
   }
 };
 
+const errorMessage = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+const shutdownWithTimeout = async (
+  label: string,
+  shutdown: Promise<void>,
+  priorError?: unknown,
+): Promise<void> => {
+  try {
+    await withTimeout(label, shutdown);
+  } catch (shutdownError) {
+    if (priorError !== undefined) {
+      throw new AggregateError(
+        [priorError, shutdownError],
+        `${errorMessage(priorError)}; ${errorMessage(shutdownError)}`,
+      );
+    }
+    throw shutdownError;
+  }
+};
+
 const hasCommand = (command: string): boolean => {
   try {
     const args = command === "env" ? [] : ["--version"];
-    return spawnSync(command, args, { stdio: "ignore" }).status === 0;
+    return spawnSync(command, args, {
+      stdio: "ignore",
+      timeout: PROMISE_TIMEOUT_MS,
+    }).status === 0;
   } catch {
     return false;
   }
@@ -70,6 +99,7 @@ const hasNodeCommandSharedMemoryAddon = (): boolean => {
       {
         cwd: process.cwd(),
         stdio: "ignore",
+        timeout: PROMISE_TIMEOUT_MS,
       },
     );
     return probe.status === 0;
@@ -94,6 +124,9 @@ const runProcessWorkerSmoke = async (
     processCommandPrefix?: string[];
   },
 ): Promise<void> => {
+  const workerLabel = worker?.processCommandPrefix === undefined
+    ? `${processRuntime} process worker`
+    : `${processRuntime} process worker with command prefix`;
   const pool = createPool({
     threads: 1,
     worker: {
@@ -109,21 +142,36 @@ const runProcessWorkerSmoke = async (
     reportIsMain,
   });
 
+  let testError: unknown;
   try {
-    const [value, workerIsMain] = await withTimeout(
-      Promise.all([
+    const [value, workerIsMain] = await Promise.all([
+      withTimeout(
+        `${workerLabel} addOnePromise`,
         pool.call.addOnePromise(41),
+      ),
+      withTimeout(
+        `${workerLabel} reportIsMain`,
         pool.call.reportIsMain(),
-      ]),
-      TEST_TIMEOUT_MS,
-    );
+      ),
+    ]);
 
     assert.equal(value, 42);
     assert.equal(workerIsMain, false);
+  } catch (error) {
+    testError = error;
+    throw error;
   } finally {
-    await pool.shutdown();
+    await shutdownWithTimeout(
+      `${workerLabel} shutdown`,
+      pool.shutdown(),
+      testError,
+    );
   }
 };
+
+test("process worker diagnostics harness is alive", () => {
+  assert.equal(true, true);
+});
 
 test("process worker spawns a Bun child from this runtime", {
   concurrency: false,
@@ -185,13 +233,28 @@ test("Deno process worker honors runtime permission flags", {
     spawnChildProcess,
   });
 
+  let testError: unknown;
   try {
-    await assert.rejects(
-      () => withTimeout(pool.call.spawnChildProcess(), TEST_TIMEOUT_MS),
-      /permission|notcapable|requires.*run/i,
+    await withTimeout(
+      "Deno process worker permission rejection assertion",
+      assert.rejects(
+        () =>
+          withTimeout(
+            "Deno process worker spawnChildProcess",
+            pool.call.spawnChildProcess(),
+          ),
+        /permission|notcapable|requires.*run/i,
+      ),
     );
+  } catch (error) {
+    testError = error;
+    throw error;
   } finally {
-    await pool.shutdown();
+    await shutdownWithTimeout(
+      "Deno process worker permission test shutdown",
+      pool.shutdown(),
+      testError,
+    );
   }
 });
 
@@ -218,12 +281,13 @@ test("Node process worker wakes promptly from a parked native wait", {
     addOnePromise,
   });
 
+  let testError: unknown;
   try {
-    await delay(50);
+    await withTimeout("parked Node process worker startup delay", delay(50));
     const started = performance.now();
     const value = await withTimeout(
+      "parked Node process worker addOnePromise",
       pool.call.addOnePromise(41),
-      1_000,
     );
 
     assert.equal(value, 42);
@@ -231,7 +295,14 @@ test("Node process worker wakes promptly from a parked native wait", {
       performance.now() - started < 1_000,
       "parked Node process worker was not woken promptly",
     );
+  } catch (error) {
+    testError = error;
+    throw error;
   } finally {
-    await pool.shutdown();
+    await shutdownWithTimeout(
+      "parked Node process worker shutdown",
+      pool.shutdown(),
+      testError,
+    );
   }
 });
