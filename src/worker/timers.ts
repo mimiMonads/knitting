@@ -69,8 +69,15 @@ const isPlainNodeWindows = runtimeGlobals.process?.platform === "win32" &&
   runtimeGlobals.process?.versions?.bun === undefined &&
   runtimeGlobals.Deno === undefined;
 
-// The Windows Node native wait polls internally; keep it in short slices so
-// process workers cannot disappear into a long park with no useful diagnostics.
+// Windows has no working cross-process wake. The native wake (WakeByAddress)
+// is keyed to a virtual address, so a host cannot wake a process worker parked
+// on the same physical page mapped at a different address in the child — the
+// addon's FutexWake is a no-op there. A parked Windows Node process worker can
+// therefore never be signalled and must rediscover work by polling. Cap the
+// native wait at 1ms so it re-checks every millisecond instead of sleeping the
+// full parkMs (up to seconds); the long park with no wake is what made CI
+// runners appear to hang. The native wait already polls internally, so this is
+// just bounding each poll slice.
 const nativeWaitTimeoutMs = (parkMs?: number): number =>
   isPlainNodeWindows ? 1 : parkMs ?? 60;
 
