@@ -563,6 +563,27 @@ test("ProcessSharedBuffer payload round-trips descriptor metadata", () => {
   }
 });
 
+test("named ProcessSharedBuffer payload keeps its mapping name", () => {
+  const { encode, decode } = makeCodec();
+  const task = makeTask();
+  const original = ProcessSharedBuffer.fromMapping({
+    ...makeSharedMemoryMapping(),
+    name: "Local\\knitting-payload-test",
+  }).subbuffer(32, 32);
+
+  task.value = original;
+
+  assertEquals(encode(task, 0), true);
+  assert.notEqual(task[TaskIndex.Type], PayloadBuffer.ProcessSharedBuffer);
+  assertEquals(task.value, null);
+
+  decode(task, 0);
+
+  assertEquals(task.value instanceof ProcessSharedBuffer, true);
+  const restored = task.value as ProcessSharedBuffer;
+  assertEquals(restored.toMetadata(), original.toMetadata());
+});
+
 test("static Buffer payload round-trips with Buffer type", () => {
   const { encode, decode } = makeCodec();
   const task = makeTask();

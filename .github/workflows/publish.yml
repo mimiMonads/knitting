@@ -20,6 +20,13 @@ jobs:
           - os: ubuntu-latest
             node-version: "24"
             prebuild: linux-x64-node-137
+          - os: windows-latest
+            node-version: "22"
+            prebuild: win32-x64-node-127
+            ffi-prebuild: win32-x64
+          - os: windows-latest
+            node-version: "24"
+            prebuild: win32-x64-node-137
           - os: macos-15-intel
             node-version: "22"
             prebuild: darwin-x64-node-127
@@ -40,13 +47,56 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
       - uses: oven-sh/setup-bun@v2
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
       - name: Build native prebuild
         run: bun run build:native
+      - name: Verify Node native prebuild
+        shell: bash
+        env:
+          KNITTING_PREBUILD: ${{ matrix.prebuild }}
+        run: |
+          set -euo pipefail
+
+          node --input-type=module <<'EOF'
+          import { createRequire } from "node:module";
+
+          const require = createRequire(import.meta.url);
+          const prebuild = process.env.KNITTING_PREBUILD;
+          const shared = require(`./prebuilds/${prebuild}/knitting_shared_memory.node`);
+          const futex = require(`./prebuilds/${prebuild}/knitting_shm.node`);
+          const first = shared.createSharedMemory(64);
+          const second = shared.mapSharedMemory(first.fd, first.size, first.name);
+
+          const firstCells = new Int32Array(first.sab);
+          const secondCells = new Int32Array(second.sab);
+          Atomics.store(firstCells, 0, 123);
+          if (Atomics.load(secondCells, 0) !== 123) {
+            throw new Error("shared memory remap did not observe writes");
+          }
+          if (typeof futex.wakeU32 !== "function") {
+            throw new Error("futex addon did not expose wakeU32");
+          }
+          EOF
+      - name: Verify Windows FFI prebuild
+        if: runner.os == 'Windows' && matrix.ffi-prebuild == 'win32-x64'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          bun --eval 'import { createBunWindowsSharedMemory, mapBunWindowsSharedMemory } from "./src/connections/windows.ts"; const first = createBunWindowsSharedMemory(64); const second = mapBunWindowsSharedMemory({ fd: first.fd, name: first.name, size: first.size }); const firstCells = new Int32Array(first.buffer); const secondCells = new Int32Array(second.buffer); firstCells[0] = 321; if (secondCells[0] !== 321) throw new Error("Windows FFI remap did not observe writes"); second.close?.(); first.close?.();'
       - name: Upload native prebuild
         uses: actions/upload-artifact@v4
         with:
           name: native-${{ matrix.prebuild }}
           path: prebuilds/${{ matrix.prebuild }}/*.node
+          if-no-files-found: error
+      - name: Upload Windows FFI prebuild
+        if: runner.os == 'Windows' && matrix.ffi-prebuild == 'win32-x64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.ffi-prebuild }}
+          path: prebuilds/${{ matrix.ffi-prebuild }}/*.dll
           if-no-files-found: error
 
   commit-prebuilds:
@@ -84,16 +134,16 @@ jobs:
             prebuild="${artifact##*/native-}"
             target="prebuilds/$prebuild"
             mkdir -p "$target"
-            find "$artifact" -type f -name '*.node' -exec cp '{}' "$target/" ';'
+            find "$artifact" -type f \( -name '*.node' -o -name '*.dll' \) -exec cp '{}' "$target/" ';'
 
-            count="$(find "$target" -maxdepth 1 -type f -name '*.node' | wc -l)"
+            count="$(find "$target" -maxdepth 1 -type f \( -name '*.node' -o -name '*.dll' \) | wc -l)"
             if [ "$count" -eq 0 ]; then
-              echo "::error::No native addons found for $prebuild"
+              echo "::error::No native prebuilds found for $prebuild"
               exit 1
             fi
           done
 
-          find prebuilds -maxdepth 2 -type f -name '*.node' | sort
+          find prebuilds -maxdepth 2 -type f \( -name '*.node' -o -name '*.dll' \) | sort
       - name: Check JSR package contents
         run: deno publish --dry-run --allow-dirty
       - name: Commit prebuilds to branch

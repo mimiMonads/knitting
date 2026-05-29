@@ -205,6 +205,76 @@ HANDLE DuplicateRegisteredMappingHandle(int id) {
   }
   return duplicate;
 }
+
+bool ReadOptionalUtf8String(
+  v8::Isolate* isolate,
+  const v8::FunctionCallbackInfo<v8::Value>& args,
+  int index,
+  std::string* out
+) {
+  out->clear();
+  if (
+    args.Length() <= index ||
+    args[index]->IsUndefined() ||
+    args[index]->IsNull()
+  ) {
+    return true;
+  }
+
+  if (!args[index]->IsString()) {
+    ThrowType(isolate, "expected a string argument");
+    return false;
+  }
+
+  v8::String::Utf8Value value(isolate, args[index]);
+  if (*value == nullptr) {
+    ThrowType(isolate, "expected a valid UTF-8 string");
+    return false;
+  }
+
+  out->assign(*value, value.length());
+  return true;
+}
+
+std::wstring Utf8ToWide(const std::string& value) {
+  if (value.empty()) return std::wstring();
+
+  int wide_len = MultiByteToWideChar(
+    CP_UTF8,
+    MB_ERR_INVALID_CHARS,
+    value.data(),
+    static_cast<int>(value.size()),
+    nullptr,
+    0
+  );
+  if (wide_len <= 0) return std::wstring();
+
+  std::wstring wide(static_cast<size_t>(wide_len), L'\0');
+  MultiByteToWideChar(
+    CP_UTF8,
+    MB_ERR_INVALID_CHARS,
+    value.data(),
+    static_cast<int>(value.size()),
+    wide.data(),
+    wide_len
+  );
+  return wide;
+}
+
+std::string MakeAnonymousMappingName() {
+  static std::atomic<unsigned long> counter{0};
+  unsigned long next = counter.fetch_add(1);
+  char name[128];
+  std::snprintf(
+    name,
+    sizeof(name),
+    "Local\\knit_node_%lu_%llu_%lu",
+    static_cast<unsigned long>(GetCurrentProcessId()),
+    static_cast<unsigned long long>(GetTickCount64()),
+    next
+  );
+  return std::string(name);
+}
 #endif
 
 void MappingDeleter(void* data, size_t length, void* deleter_data) {
@@ -248,6 +318,7 @@ void ReturnMappedRegion(
 #ifdef _WIN32
   HANDLE handle,
   int fd,
+  const std::string& name,
 #else
   int fd,
 #endif
@@ -294,6 +365,15 @@ void ReturnMappedRegion(
   v8::Local<v8::Object> out = v8::Object::New(isolate);
   SetValue(isolate, context, out, "sab", sab);
   SetValue(isolate, context, out, "fd", v8::Integer::New(isolate, fd));
+#ifdef _WIN32
+  SetValue(
+    isolate,
+    context,
+    out,
+    "name",
+    v8::String::NewFromUtf8(isolate, name.c_str()).ToLocalChecked()
+  );
+#endif
   SetValue(
     isolate,
     context,
@@ -333,17 +413,66 @@ void CreateSharedMemory(const v8::FunctionCallbackInfo<v8::Value>& args) {
   size_t size = AlignUp(static_cast<size_t>(maybe_size.FromJust()), CACHE_LINE_SIZE);
 
 #ifdef _WIN32
+  std::string name;
+  if (!ReadOptionalUtf8String(isolate, args, 1, &name)) {
+    return;
+  }
+
+  std::string mode = "anonymous";
+  if (!ReadOptionalUtf8String(isolate, args, 2, &mode)) {
+    return;
+  }
+  if (mode.empty()) {
+    mode = "anonymous";
+  }
+
+  const bool open_existing = mode == "open";
+  const bool create_named = mode == "create";
+  const bool anonymous = mode == "anonymous";
+  if (!open_existing && !create_named && !anonymous) {
+    ThrowType(isolate, "mode must be anonymous, create, or open");
+    return;
+  }
+
+  if (anonymous || name.empty()) {
+    name = MakeAnonymousMappingName();
+  }
+
+  std::wstring wide_name = Utf8ToWide(name);
+  if (wide_name.empty()) {
+    ThrowType(isolate, "shared memory name must be valid UTF-8");
+    return;
+  }
+
   uint64_t wide_size = static_cast<uint64_t>(size);
-  HANDLE handle = CreateFileMappingW(
-    INVALID_HANDLE_VALUE,
-    nullptr,
-    PAGE_READWRITE,
-    static_cast<DWORD>(wide_size >> 32),
-    static_cast<DWORD>(wide_size & 0xffffffffULL),
-    nullptr
-  );
+  HANDLE handle = nullptr;
+  if (open_existing) {
+    handle = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, wide_name.c_str());
+  } else {
+    handle = CreateFileMappingW(
+      INVALID_HANDLE_VALUE,
+      nullptr,
+      PAGE_READWRITE,
+      static_cast<DWORD>(wide_size >> 32),
+      static_cast<DWORD>(wide_size & 0xffffffffULL),
+      wide_name.c_str()
+    );
+  }
   if (handle == nullptr) {
-    ThrowWindowsError(isolate, "CreateFileMappingW failed");
+    ThrowWindowsError(
+      isolate,
+      open_existing ? "OpenFileMappingW failed" : "CreateFileMappingW failed"
+    );
+    return;
+  }
+
+  if (create_named && GetLastError() == ERROR_ALREADY_EXISTS) {
+    CloseHandle(handle);
+    ThrowWindowsError(
+      isolate,
+      "CreateFileMappingW failed",
+      ERROR_ALREADY_EXISTS
+    );
     return;
   }
 
@@ -355,7 +484,7 @@ void CreateSharedMemory(const v8::FunctionCallbackInfo<v8::Value>& args) {
     return;
   }
 
-  ReturnMappedRegion(args, handle, fd, size);
+  ReturnMappedRegion(args, handle, fd, name, size);
 #else
   int fd = CreateSharedMemoryFd("knitting_shared_memory");
   if (fd == -1) {
@@ -399,13 +528,32 @@ void MapSharedMemory(const v8::FunctionCallbackInfo<v8::Value>& args) {
 
 #ifdef _WIN32
   int fd = maybe_fd.FromJust();
-  HANDLE handle = DuplicateRegisteredMappingHandle(fd);
-  if (handle == nullptr) {
-    ThrowWindowsError(isolate, "DuplicateHandle failed");
+  std::string name;
+  if (!ReadOptionalUtf8String(isolate, args, 2, &name)) {
     return;
   }
 
-  ReturnMappedRegion(args, handle, fd, size);
+  HANDLE handle = nullptr;
+  if (!name.empty()) {
+    std::wstring wide_name = Utf8ToWide(name);
+    if (wide_name.empty()) {
+      ThrowType(isolate, "shared memory name must be valid UTF-8");
+      return;
+    }
+    handle = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, wide_name.c_str());
+  } else {
+    handle = DuplicateRegisteredMappingHandle(fd);
+  }
+
+  if (handle == nullptr) {
+    ThrowWindowsError(
+      isolate,
+      name.empty() ? "DuplicateHandle failed" : "OpenFileMappingW failed"
+    );
+    return;
+  }
+
+  ReturnMappedRegion(args, handle, fd, name, size);
 #else
   // Duplicate so each returned SAB owns exactly one fd. The caller can keep
   // using or transferring its original descriptor independently.

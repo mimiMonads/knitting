@@ -73,7 +73,6 @@ import {
 } from "../connections/node.ts";
 import { loadNodeNativeAddon } from "../connections/node-addons.ts";
 import {
-  assertPosixSharedMemoryPlatform,
   detectPosixPlatform,
 } from "../connections/posix.ts";
 import type {
@@ -253,6 +252,7 @@ type NodeModuleBuiltin = {
 type ProcessSharedMemoryNativeMapping = {
   sab: SharedArrayBuffer;
   fd: number;
+  name?: string;
   size: number;
   baseAddressMod64?: number;
 };
@@ -275,6 +275,7 @@ type ProcessSharedMemoryAllocator = {
 
 // Keep idle workers self-healing if an Atomics.notify wake is missed.
 const DEFAULT_WORKER_PARK_MS = 1;
+let processWorkerMemoryNameCounter = 0;
 
 const withDefaultWorkerTimers = (
   options: WorkerSettings | undefined,
@@ -303,11 +304,6 @@ const createProcessSharedMemoryAllocator = (
   debug: DebugOptions | undefined,
 ): ProcessSharedMemoryAllocator | undefined => {
   if (RUNTIME !== "node") return undefined;
-  try {
-    assertPosixSharedMemoryPlatform("Process-shared memory allocator");
-  } catch {
-    return undefined;
-  }
 
   let addon: ProcessSharedMemoryAddon;
   try {
@@ -374,8 +370,6 @@ const withFixedPayloadConfig = (
 });
 
 const getProcessWorkerSharedMemoryPrimitives = () => {
-  assertPosixSharedMemoryPlatform("Process worker runtime");
-
   switch (RUNTIME) {
     case "bun":
       return createBunConnectionPrimitives();
@@ -388,6 +382,34 @@ const getProcessWorkerSharedMemoryPrimitives = () => {
         "process worker runtime needs Node, Deno, or Bun shared memory primitives",
       );
   }
+};
+
+const processWorkerNeedsInheritedFd = (
+  descriptor: FileDescriptor,
+): boolean => descriptor.name === undefined;
+
+const isWindowsRuntimeHost = (): boolean => {
+  const denoOs = (globalThis as typeof globalThis & {
+    Deno?: { build?: { os?: string } };
+  }).Deno?.build?.os;
+  if (denoOs !== undefined) return denoOs === "windows";
+
+  return (globalThis as typeof globalThis & {
+    process?: { platform?: string };
+  }).process?.platform === "win32";
+};
+
+const makeProcessWorkerMemoryName = (thread: number): string => {
+  const processId = (globalThis as typeof globalThis & {
+    process?: { pid?: number };
+    Deno?: { pid?: number };
+  }).process?.pid ??
+    (globalThis as typeof globalThis & { Deno?: { pid?: number } }).Deno?.pid ??
+    0;
+  const next = processWorkerMemoryNameCounter++;
+  const timeTag = Date.now().toString(36);
+  const randomTag = Math.random().toString(36).slice(2, 10);
+  return `knitting_process_worker_${processId}_${thread}_${timeTag}_${next}_${randomTag}`;
 };
 
 const createProcessWorkerMemoryLayout = ({
@@ -434,8 +456,15 @@ const createProcessWorkerMemoryLayout = ({
   const primitives = getProcessWorkerSharedMemoryPrimitives();
   const mapping = primitives.createSharedMemory({
     size: carpet.byteLength(),
-    name: `knitting_process_worker_${thread}`,
+    mode: "create",
+    name: makeProcessWorkerMemoryName(thread),
   });
+  const descriptor = FileDescriptor.fromMapping(mapping);
+  if (isWindowsRuntimeHost() && descriptor.name === undefined) {
+    throw new Error(
+      "Windows process worker shared memory must use a named mapping",
+    );
+  }
   const buffer = mapping.buffer;
   const bind = (slice: ByteCarpetSlice) =>
     makeSharedBufferRegion(buffer, slice.byteOffset, slice.byteLength);
@@ -460,7 +489,7 @@ const createProcessWorkerMemoryLayout = ({
 
   return {
     mapping,
-    descriptor: FileDescriptor.fromMapping(mapping),
+    descriptor,
     controlLayout,
     lockPayload: bind(requestPayloadSlice),
     returnPayload: bind(returnPayloadSlice),
@@ -472,11 +501,13 @@ const toChildProcessSharedBufferMetadata = (
   descriptor: FileDescriptor,
 ): ProcessSharedBufferMetadata => {
   const region = toSharedBufferRegion(source);
+  const metadata = descriptor.toMetadata();
+  const childMetadata = processWorkerNeedsInheritedFd(descriptor)
+    ? { ...metadata, fd: PROCESS_WORKER_CHILD_FD }
+    : metadata;
+
   return ProcessSharedBuffer.fromDescriptor(
-    new FileDescriptor({
-      ...descriptor.toMetadata(),
-      fd: PROCESS_WORKER_CHILD_FD,
-    }),
+    new FileDescriptor(childMetadata),
     {
       byteOffset: region.byteOffset,
       byteLength: region.byteLength,
@@ -748,7 +779,9 @@ const spawnBunHostedProcessWorker = ({
     env: useIpcBoot
       ? processWorkerEnv()
       : processWorkerBootEnv(bootPayload),
-    stdin: memory.mapping.fd,
+    stdin: processWorkerNeedsInheritedFd(memory.descriptor)
+      ? memory.mapping.fd
+      : "ignore",
     stdout: "inherit",
     stderr: "inherit",
     onExit: (_subprocess, exitCode, _signalCode, error) => {
@@ -804,7 +837,9 @@ const spawnNodeHostedProcessWorker = ({
   }
 
   const events = createProcessWorkerEventHub();
-  const useIpcBoot = processRuntime === "bun" && commandPrefix === undefined;
+  const useIpcBoot =
+    (processRuntime === "bun" || processRuntime === "node") &&
+    commandPrefix === undefined;
   const [command, ...args] = processWorkerCommand({
     processRuntime,
     workerUrl,
@@ -820,8 +855,21 @@ const spawnNodeHostedProcessWorker = ({
         ? processWorkerEnv()
         : processWorkerBootEnv(bootPayload),
       stdio: useIpcBoot
-        ? [memory.mapping.fd, "inherit", "inherit", "ipc"]
-        : [memory.mapping.fd, "inherit", "inherit"],
+        ? [
+          processWorkerNeedsInheritedFd(memory.descriptor)
+            ? memory.mapping.fd
+            : "ignore",
+          "inherit",
+          "inherit",
+          "ipc",
+        ]
+        : [
+          processWorkerNeedsInheritedFd(memory.descriptor)
+            ? memory.mapping.fd
+            : "ignore",
+          "inherit",
+          "inherit",
+        ],
     },
   );
 
@@ -883,7 +931,9 @@ const spawnDenoHostedProcessWorker = ({
     throw new Error("Deno.Command is not available for process workers");
   }
 
-  const inheritedFd = openDenoInheritedFd(memory.mapping.fd);
+  const inheritedFd = processWorkerNeedsInheritedFd(memory.descriptor)
+    ? openDenoInheritedFd(memory.mapping.fd)
+    : undefined;
   const events = createProcessWorkerEventHub();
   const [command, ...args] = processWorkerCommand({
     processRuntime,
@@ -896,13 +946,13 @@ const spawnDenoHostedProcessWorker = ({
     args,
     cwd: deno.cwd?.(),
     env: stringProcessEnv(processWorkerBootEnv(bootPayload)),
-    stdin: denoFileRid(inheritedFd),
+    stdin: inheritedFd === undefined ? "null" : denoFileRid(inheritedFd),
     stdout: "inherit",
     stderr: "inherit",
   }).spawn();
   const closeInheritedFd = () => {
     try {
-      inheritedFd.close?.();
+      inheritedFd?.close?.();
     } catch {
     }
   };
@@ -1009,9 +1059,6 @@ export const spawnWorkerContext = ({
   const poliWorker = RUNTIME_WORKER;
   const resolvedWorkerOptions = withDefaultWorkerTimers(workerOptions);
   const useProcessWorkerRuntime = resolvedWorkerOptions.runtime === "process";
-  if (useProcessWorkerRuntime) {
-    assertPosixSharedMemoryPlatform("Process worker runtime");
-  }
   const processWorkerRuntime = useProcessWorkerRuntime
     ? readProcessWorkerRuntime(resolvedWorkerOptions)
     : undefined;

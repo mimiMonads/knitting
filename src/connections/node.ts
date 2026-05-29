@@ -1,6 +1,5 @@
 import { getNodeBuiltinModule } from "../common/node-compat.ts";
 import { loadNodeNativeAddon } from "./node-addons.ts";
-import { assertPosixSharedMemoryPlatform } from "./posix.ts";
 import {
   type CreateSharedMemoryOptions,
   expectFd,
@@ -17,6 +16,7 @@ import {
 export type NodeSharedMemoryNativeMapping = {
   sab: SharedArrayBuffer;
   fd: number;
+  name?: string;
   size: number;
   baseAddressMod64?: number;
 };
@@ -27,7 +27,11 @@ export type NodeSharedMemoryAddon = {
     name?: string,
     mode?: CreateSharedMemoryOptions["mode"],
   ) => NodeSharedMemoryNativeMapping;
-  mapSharedMemory: (fd: number, size: number) => NodeSharedMemoryNativeMapping;
+  mapSharedMemory: (
+    fd: number,
+    size: number,
+    name?: string,
+  ) => NodeSharedMemoryNativeMapping;
   unlinkSharedMemory?: (name: string) => boolean;
 };
 
@@ -70,8 +74,6 @@ export const DEFAULT_NODE_FUTEX_ADDON =
 export const loadNodeSharedMemoryAddon = (
   specifier?: string,
 ): NodeSharedMemoryAddon => {
-  assertPosixSharedMemoryPlatform("Node native shared memory");
-
   const nodeModule = getNodeBuiltinModule<NodeModuleBuiltin>("node:module");
   if (nodeModule === undefined) {
     throw new Error("Node shared memory addon can only be loaded in Node");
@@ -88,8 +90,6 @@ export const loadNodeSharedMemoryAddon = (
 export const loadNodeFutexAddon = (
   specifier?: string,
 ): NodeFutexAddon => {
-  assertPosixSharedMemoryPlatform("Node native futex helpers");
-
   const nodeModule = getNodeBuiltinModule<NodeModuleBuiltin>("node:module");
   if (nodeModule === undefined) {
     throw new Error("Node futex addon can only be loaded in Node");
@@ -105,16 +105,22 @@ export const loadNodeFutexAddon = (
 
 export const fromNodeNativeMapping = (
   mapped: NodeSharedMemoryNativeMapping,
-): SharedMemoryMapping<SharedArrayBuffer> => ({
-  runtime: "node",
-  fd: mapped.fd,
-  size: mapped.size,
-  byteLength: mapped.sab.byteLength,
-  buffer: mapped.sab,
-  kind: "shared-array-buffer",
-  sab: mapped.sab,
-  baseAddressMod64: mapped.baseAddressMod64,
-});
+): SharedMemoryMapping<SharedArrayBuffer> => {
+  const mapping: SharedMemoryMapping<SharedArrayBuffer> = {
+    runtime: "node",
+    fd: mapped.fd,
+    size: mapped.size,
+    byteLength: mapped.sab.byteLength,
+    buffer: mapped.sab,
+    kind: "shared-array-buffer",
+    sab: mapped.sab,
+    baseAddressMod64: mapped.baseAddressMod64,
+  };
+  if (mapped.name !== undefined && mapped.name.length > 0) {
+    mapping.name = mapped.name;
+  }
+  return mapping;
+};
 
 export const createNodeSharedMemory = (
   options: number | CreateSharedMemoryOptions,
@@ -134,7 +140,7 @@ export const mapNodeSharedMemory = (
 ): SharedMemoryMapping<SharedArrayBuffer> => {
   const fd = expectFd(options.fd);
   const size = expectPositiveSize(options.size);
-  return fromNodeNativeMapping(addon.mapSharedMemory(fd, size));
+  return fromNodeNativeMapping(addon.mapSharedMemory(fd, size, options.name));
 };
 
 export const createNodeConnectionPrimitives = (

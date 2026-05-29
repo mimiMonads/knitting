@@ -12,6 +12,7 @@
       "README.md",
       "LICENSE",
       "prebuilds/**/*.node",
+      "prebuilds/**/*.dll",
       "src/**/*.ts",
       "./knitting.ts",
       "./process-shared-buffer.ts"

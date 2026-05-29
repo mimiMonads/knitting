@@ -23,6 +23,10 @@ import {
   type SharedMemoryConnectionPrimitives,
   type SharedMemoryMapping,
 } from "./types.ts";
+import {
+  createBunWindowsConnectionPrimitives,
+  isWindowsRuntime,
+} from "./windows.ts";
 
 type BunPointer = number;
 
@@ -263,10 +267,17 @@ export const createBunSharedMemory = (
   }
 };
 
-export const createBunConnectionPrimitives = (
+export const createBunPosixConnectionPrimitives = (
   libc = openBunLibc(),
 ): SharedMemoryConnectionPrimitives<SharedMemoryMapping<ArrayBuffer>> => ({
   runtime: "bun",
   createSharedMemory: (options) => createBunSharedMemory(options, libc),
   mapSharedMemory: (options) => mapBunSharedMemory(options, libc),
 });
+
+export const createBunConnectionPrimitives = (
+  libc?: BunLibc,
+): SharedMemoryConnectionPrimitives<SharedMemoryMapping<ArrayBuffer>> =>
+  isWindowsRuntime()
+    ? createBunWindowsConnectionPrimitives()
+    : createBunPosixConnectionPrimitives(libc);

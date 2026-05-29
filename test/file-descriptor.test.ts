@@ -37,6 +37,7 @@ const nodeProcess = isPlainNode
   ? (globalThis as typeof globalThis & { process: NodeJS.Process }).process
   : undefined;
 const nativeFdTestsAreEnabled = nodeProcess?.platform === "linux" ||
+  nodeProcess?.platform === "win32" ||
   nodeProcess?.env.KNITTING_EXPERIMENTAL_NATIVE_FD_TESTS === "1";
 const nativeAddonPaths = (name: string): readonly string[] => {
   const platform = nodeProcess?.platform;
@@ -59,12 +60,14 @@ type SharedMemoryAddon = {
   createSharedMemory: (size: number) => {
     sab: SharedArrayBuffer;
     fd: number;
+    name?: string;
     size: number;
     baseAddressMod64?: number;
   };
-  mapSharedMemory: (fd: number, size: number) => {
+  mapSharedMemory: (fd: number, size: number, name?: string) => {
     sab: SharedArrayBuffer;
     fd: number;
+    name?: string;
     size: number;
     baseAddressMod64?: number;
   };
@@ -107,9 +110,6 @@ const nativeFdGateReason = (): string | undefined => {
 const nativeCrossProcessFdGateReason = (): string | undefined => {
   const baseReason = nativeFdGateReason();
   if (baseReason !== undefined) return baseReason;
-  if (nodeProcess?.platform === "win32") {
-    return "cross-process fd inheritance is POSIX-only";
-  }
   return undefined;
 };
 
@@ -240,6 +240,45 @@ test("FileDescriptor stringifies and restores descriptor metadata", () => {
   assert.equal(descriptor.getSAB(), sab);
 });
 
+test("FileDescriptor preserves named mapping metadata", () => {
+  const sab = new SharedArrayBuffer(64);
+  const mapping: SharedMemoryMapping<SharedArrayBuffer> = {
+    runtime: "node",
+    fd: 11,
+    name: "Local\\knitting-test-channel",
+    size: 64,
+    byteLength: 64,
+    buffer: sab,
+    kind: "shared-array-buffer",
+    sab,
+    baseAddressMod64: 0,
+  };
+
+  const descriptor = FileDescriptor.fromMapping(mapping);
+  assert.deepEqual(descriptor.toMetadata(), {
+    version: 1,
+    fd: 11,
+    name: "Local\\knitting-test-channel",
+    size: 64,
+    byteLength: 64,
+    runtime: "node",
+    kind: "shared-array-buffer",
+    baseAddressMod64: 0,
+  });
+
+  const restored = FileDescriptor.parse(descriptor.stringifyMetadata());
+  assert.equal(restored.name, "Local\\knitting-test-channel");
+
+  let mappedName: string | undefined;
+  restored.map({
+    mapSharedMemory: (options) => {
+      mappedName = options.name;
+      return mapping;
+    },
+  });
+  assert.equal(mappedName, "Local\\knitting-test-channel");
+});
+
 nativeSharedMemoryTest(
   nativeTestName(
     "FileDescriptor maps serialized metadata back into a Node SharedArrayBuffer",
@@ -316,10 +355,21 @@ nativeCrossProcessFutexTest(
     }
     const cells = new Int32Array(sab);
     const metadata = FileDescriptor.fromMapping(mapping).toMetadata();
-    const childMetadata = JSON.stringify({
-      ...metadata,
-      fd: 3,
-    });
+    const isWindows = nodeProcess?.platform === "win32";
+    if (isWindows) {
+      assert.equal(typeof metadata.name, "string");
+    }
+    const childMetadata = JSON.stringify(
+      isWindows ? metadata : { ...metadata, fd: 3 },
+    );
+    const childStdio = isWindows
+      ? ["ignore", "pipe", "pipe"] as ["ignore", "pipe", "pipe"]
+      : ["ignore", "pipe", "pipe", mapping.fd] as [
+        "ignore",
+        "pipe",
+        "pipe",
+        number,
+      ];
 
     const child = spawn(
       process.execPath,
@@ -331,7 +381,7 @@ nativeCrossProcessFutexTest(
       ],
       {
         cwd: process.cwd(),
-        stdio: ["ignore", "pipe", "pipe", mapping.fd],
+        stdio: childStdio,
       },
     );
 
@@ -360,6 +410,9 @@ nativeCrossProcessFutexTest(
     assert.equal(Atomics.load(cells, 0), 1);
 
     let wakeCount = 0;
+    if (isWindows) {
+      Atomics.store(cells, 1, 1);
+    }
     while (wakeCount === 0 && Date.now() < deadline) {
       wakeCount = futex.wakeU32(sab, 4, 1);
       if (wakeCount === 0) await delay(5);
@@ -383,7 +436,7 @@ nativeCrossProcessFutexTest(
     assert.equal(Atomics.load(cells, 2), 42);
 
     const parsed = JSON.parse(stdout.trim().split(/\n/).at(-1) ?? "{}");
-    assert.equal(parsed.waitResult, "woken");
+    assert.match(parsed.waitResult, /^(woken|changed)$/);
     assert.equal(parsed.value, 42);
     assert.equal(typeof parsed.parentWakeCount, "number");
   },

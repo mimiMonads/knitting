@@ -33,8 +33,9 @@ The core flow is:
 
 - `build.ts`: Bundles `knitting.ts` to `out/` with Bun for a Node ESM target.
 - `scripts/build-native-addons.ts`: Compiles the native Node addons into
-  `build/Release/` on Linux and macOS. It finds Node headers/libs, splits user
-  flags, and builds the shared-memory and futex addons.
+  `build/Release/` on Linux, macOS, and Windows. It finds Node headers/libs,
+  splits user flags, builds the shared-memory and futex addons, and emits the
+  Windows FFI DLL used by Deno and Bun.
 - `run.sh`: Runs every top-level benchmark in `bench/` across Node, Deno, and
   Bun. `--json` writes JSON result files.
 
@@ -159,10 +160,15 @@ The core flow is:
 - `src/connections/deno.ts`: Deno FFI implementation for POSIX shared memory.
 - `src/connections/posix.ts`: POSIX constants, shared-memory naming, libc path
   detection, and close-on-exec helpers.
+- `src/connections/windows.ts`: Windows FFI loader and named file-mapping
+  primitives used by Deno and Bun.
 - `src/knitting_shared_memory.cc`: Native Node addon for shared-memory create,
-  map, unlink, and descriptor operations.
+  map, unlink, and descriptor operations, including Windows named mappings.
 - `src/knitting_shm.cc`: Native Node addon for futex/wait helpers used by parked
   workers.
+- `src/knitting_windows_shared_memory.cc`: Runtime-neutral Windows DLL exports
+  for creating, opening, mapping, and closing named shared-memory objects from
+  FFI runtimes.
 
 ## Permissions
 

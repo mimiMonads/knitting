@@ -11,7 +11,6 @@ import { RUNTIME } from "../common/runtime.ts";
 import { createBunConnectionPrimitives } from "./bun.ts";
 import { createDenoConnectionPrimitives } from "./deno.ts";
 import { loadNodeNativeAddon } from "./node-addons.ts";
-import { assertPosixSharedMemoryPlatform } from "./posix.ts";
 import {
   type CreateSharedMemoryOptions,
   expectFd,
@@ -140,6 +139,7 @@ type NodeModuleBuiltin = {
 type DefaultNodeSharedMemoryNativeMapping = {
   sab: SharedArrayBuffer;
   fd: number;
+  name?: string;
   size: number;
   baseAddressMod64?: number;
 };
@@ -153,6 +153,7 @@ type DefaultNodeSharedMemoryAddon = {
   mapSharedMemory: (
     fd: number,
     size: number,
+    name?: string,
   ) => DefaultNodeSharedMemoryNativeMapping;
   unlinkSharedMemory?: (name: string) => boolean;
 };
@@ -161,16 +162,22 @@ let defaultPrimitives: ProcessSharedBufferPrimitives | undefined;
 
 const fromDefaultNodeNativeMapping = (
   mapped: DefaultNodeSharedMemoryNativeMapping,
-): SharedMemoryMapping<SharedArrayBuffer> => ({
-  runtime: "node",
-  fd: mapped.fd,
-  size: mapped.size,
-  byteLength: mapped.sab.byteLength,
-  buffer: mapped.sab,
-  kind: "shared-array-buffer",
-  sab: mapped.sab,
-  baseAddressMod64: mapped.baseAddressMod64,
-});
+): SharedMemoryMapping<SharedArrayBuffer> => {
+  const mapping: SharedMemoryMapping<SharedArrayBuffer> = {
+    runtime: "node",
+    fd: mapped.fd,
+    size: mapped.size,
+    byteLength: mapped.sab.byteLength,
+    buffer: mapped.sab,
+    kind: "shared-array-buffer",
+    sab: mapped.sab,
+    baseAddressMod64: mapped.baseAddressMod64,
+  };
+  if (mapped.name !== undefined && mapped.name.length > 0) {
+    mapping.name = mapped.name;
+  }
+  return mapping;
+};
 
 const createDefaultNodePrimitives = (): ProcessSharedBufferPrimitives => {
   const nodeModule = getNodeBuiltinModule<NodeModuleBuiltin>("node:module");
@@ -200,14 +207,14 @@ const createDefaultNodePrimitives = (): ProcessSharedBufferPrimitives => {
     mapSharedMemory: (options) => {
       const fd = expectFd(options.fd);
       const size = expectPositiveSize(options.size);
-      return fromDefaultNodeNativeMapping(addon.mapSharedMemory(fd, size));
+      return fromDefaultNodeNativeMapping(
+        addon.mapSharedMemory(fd, size, options.name),
+      );
     },
   };
 };
 
 const createDefaultPrimitives = (): ProcessSharedBufferPrimitives => {
-  assertPosixSharedMemoryPlatform("ProcessSharedBuffer");
-
   if (RUNTIME === "bun") return createBunConnectionPrimitives();
   if (RUNTIME === "deno") return createDenoConnectionPrimitives();
   return createDefaultNodePrimitives();
