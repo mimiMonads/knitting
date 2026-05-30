@@ -148,41 +148,43 @@ test("ProcessSharedBuffer creates mappings with default primitives", () => {
   }
 });
 
-test("ProcessSharedBuffer named mappings can reopen by name", {
-  skip: bunMacOSNamedSharedMemorySkip,
-}, () => {
-  const primitives = getDefaultProcessSharedBufferPrimitives();
-  if (typeof primitives.unlinkSharedMemory !== "function") return;
+if (bunMacOSNamedSharedMemorySkip) {
+  test.skip("ProcessSharedBuffer named mappings can reopen by name", () => {});
+} else {
+  test("ProcessSharedBuffer named mappings can reopen by name", () => {
+    const primitives = getDefaultProcessSharedBufferPrimitives();
+    if (typeof primitives.unlinkSharedMemory !== "function") return;
 
-  // Keep name ≤ 30 chars for macOS POSIX shm_open limit.
-  const name = `kpsb_${Date.now().toString(36).slice(-6)}_${
-    Math.random().toString(36).slice(2, 8)
-  }`;
-  const owner = ProcessSharedBuffer.create({
-    mode: "create",
-    name,
-    size: 64,
-  }, primitives);
-
-  try {
-    Atomics.store(owner.view(Int32Array), 0, 42);
-    const peer = ProcessSharedBuffer.create({
-      mode: "open",
+    // Keep name ≤ 30 chars for macOS POSIX shm_open limit.
+    const name = `kpsb_${Date.now().toString(36).slice(-6)}_${
+      Math.random().toString(36).slice(2, 8)
+    }`;
+    const owner = ProcessSharedBuffer.create({
+      mode: "create",
       name,
       size: 64,
     }, primitives);
 
     try {
-      assert.equal(Atomics.load(peer.view(Int32Array), 0), 42);
-      assert.equal(peer.descriptor.name, name);
+      Atomics.store(owner.view(Int32Array), 0, 42);
+      const peer = ProcessSharedBuffer.create({
+        mode: "open",
+        name,
+        size: 64,
+      }, primitives);
+
+      try {
+        assert.equal(Atomics.load(peer.view(Int32Array), 0), 42);
+        assert.equal(peer.descriptor.name, name);
+      } finally {
+        peer.descriptor.mapping?.close?.();
+      }
     } finally {
-      peer.descriptor.mapping?.close?.();
+      owner.descriptor.mapping?.close?.();
+      primitives.unlinkSharedMemory(name);
     }
-  } finally {
-    owner.descriptor.mapping?.close?.();
-    primitives.unlinkSharedMemory(name);
-  }
-});
+  });
+}
 
 test("ProcessSharedBuffer rejects out-of-bounds and unaligned views", () => {
   const whole = ProcessSharedBuffer.fromMapping(makeMapping());
