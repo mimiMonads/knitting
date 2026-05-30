@@ -143,9 +143,8 @@ test("ProcessSharedBuffer named mappings can reopen by name", () => {
   const primitives = getDefaultProcessSharedBufferPrimitives();
   if (typeof primitives.unlinkSharedMemory !== "function") return;
 
-  const name = `knit_test_psb_${Date.now()}_${Math.random()
-    .toString(36)
-    .slice(2)}`;
+  // Keep name ≤ 30 chars for macOS POSIX shm_open limit.
+  const name = `kpsb_${Date.now().toString(36).slice(-6)}_${Math.random().toString(36).slice(2, 8)}`;
   const owner = ProcessSharedBuffer.create({
     mode: "create",
     name,

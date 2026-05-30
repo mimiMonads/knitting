@@ -50,6 +50,10 @@ export const shmOpenCreateFlag = (platform: PosixPlatform): number =>
 export const shmOpenExclusiveFlag = (platform: PosixPlatform): number =>
   platform === "darwin" ? DARWIN_O_EXCL : LINUX_O_EXCL;
 
+// macOS limits POSIX shared memory names to 31 characters including the
+// leading "/", so the usable name portion is at most 30 characters.
+export const POSIX_SHM_MAX_NAME_LEN = 30;
+
 export const toPosixSharedMemoryName = (name: string): string => {
   if (name.length === 0) {
     throw new TypeError("shared memory name must be non-empty");
@@ -62,6 +66,11 @@ export const toPosixSharedMemoryName = (name: string): string => {
   if (out.length < 2 || out.slice(1).includes("/")) {
     throw new TypeError(
       "POSIX shared memory name must not contain path separators",
+    );
+  }
+  if (out.length > POSIX_SHM_MAX_NAME_LEN + 1) {
+    throw new TypeError(
+      `POSIX shared memory name must be at most ${POSIX_SHM_MAX_NAME_LEN} characters (macOS limit); got ${out.length - 1}`,
     );
   }
 

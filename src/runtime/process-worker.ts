@@ -363,7 +363,7 @@ let processWorkerMemoryNameCounter = 0;
 
 const makeProcessWorkerMemoryName = (
   thread: number,
-  prefix = "knitting_process_worker",
+  prefix = "kpw",
 ): string => {
   const processId = (globalThis as typeof globalThis & {
     process?: { pid?: number };
@@ -372,10 +372,13 @@ const makeProcessWorkerMemoryName = (
     (globalThis as typeof globalThis & { Deno?: { pid?: number } }).Deno?.pid ??
     0;
   const next = processWorkerMemoryNameCounter++;
-  const timeTag = Date.now().toString(36);
-  const randomTag = Math.random().toString(36).slice(2, 10);
-  const safePrefix = prefix.replace(/[^a-z0-9_-]/gi, "_") || "knit";
-  return `${safePrefix}_${processId}_${thread}_${timeTag}_${next}_${randomTag}`;
+  // Keep total ≤ 30 chars: macOS POSIX shm_open limit is 31 including the leading /.
+  const pidTag = Math.abs(processId).toString(36).slice(-4);
+  const threadTag = (thread % 4096).toString(36);
+  const nextTag = (next % 1296).toString(36);
+  const randomTag = Math.random().toString(36).slice(2, 7);
+  const safePrefix = (prefix.replace(/[^a-z0-9_-]/gi, "_") || "kpw").slice(0, 8);
+  return `${safePrefix}_${pidTag}_${threadTag}_${nextTag}_${randomTag}`;
 };
 
 export const createProcessWorkerMemoryLayout = ({

@@ -179,6 +179,15 @@ bool ToPosixSharedMemoryName(
     );
     return false;
   }
+  // macOS limits POSIX shared memory names to 31 characters including the
+  // leading "/", so the usable name portion is at most 30 characters.
+  if (out->size() > 31) {
+    ThrowType(
+      isolate,
+      "POSIX shared memory name must be at most 30 characters (macOS limit)"
+    );
+    return false;
+  }
   return true;
 }
 
