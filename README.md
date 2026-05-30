@@ -335,14 +335,15 @@ const pool = createPool({
   threads: 2,
   worker: {
     runtime: "process",
-    processRuntime: "node",
+    processRuntime: "deno",
   },
 })({ add });
 ```
 
-`processRuntime` can be `"node"`, `"deno"`, or `"bun"`. You can also provide a
-`processCommandPrefix` when workers need to be launched through a wrapper such
-as a package manager, container command, or runtime shim.
+`processRuntime` can be `"node"`, `"deno"`, or `"bun"` and defaults to
+`"deno"`. You can also provide a `processCommandPrefix` when workers need to be
+launched through a wrapper such as a package manager, container command, or
+runtime shim.
 
 That prefix is also useful for sandbox and resource-control tools. The one
 important detail is that process workers receive their shared-memory handle on
@@ -388,6 +389,29 @@ const pool = createPool({
   },
 })({ add });
 ```
+
+### Windows process workers
+
+On Windows, Knitting automatically uses named shared memory for the
+process-worker control channel. You do not need to set
+`processSharedMemory: "named"` yourself — the runtime detects Windows and
+forces it.
+
+```ts
+// Works on Windows without extra options.
+const pool = createPool({
+  threads: 2,
+  worker: {
+    runtime: "process",
+    processRuntime: "node",
+  },
+})({ add });
+```
+
+If you also pass `ProcessSharedBuffer` payloads to Docker workers running on
+Windows, create the payload buffer with `mode: "create"` and a name, and add
+`--ipc=host` to the Docker prefix — the pool-level control channel is already
+named, but the payload buffer needs its own name so the container can reopen it.
 
 When the goal is isolation, define the worker code with `importTask()` instead
 of importing the task function directly into the host. That keeps the code you
@@ -483,6 +507,41 @@ shouldn't) cross the boundary:
 - `Map`, `Set`, `WeakMap`, and non-global symbols.
 - Objects with behavior that depends on prototypes, getters, setters, or hidden
   process-local state.
+
+### Envelope
+
+`Envelope` pairs a JSON-serializable header with a binary `ArrayBuffer`
+payload. Use it when a call needs both structured metadata and raw bytes in a
+single argument.
+
+```ts
+import { Envelope, createPool, isMain, task } from "knitting";
+
+export const processImage = task<
+  Envelope<{ format: string }>,
+  Envelope<{ width: number; height: number }>
+>({
+  f: (envelope) => {
+    const pixels = new Uint8Array(envelope.payload);
+    // ... process pixels
+    return new Envelope({ width: 800, height: 600 }, pixels.buffer);
+  },
+});
+
+if (isMain) {
+  const pool = createPool({ threads: 2 })({ processImage });
+
+  try {
+    const buffer = new ArrayBuffer(1024);
+    const result = await pool.call.processImage(
+      new Envelope({ format: "png" }, buffer),
+    );
+    console.log(result.header); // { width: 800, height: 600 }
+  } finally {
+    await pool.shutdown();
+  }
+}
+```
 
 If a payload is large, set `payload.maxPayloadBytes` deliberately and prefer
 binary/shared-memory shapes over deeply nested objects.

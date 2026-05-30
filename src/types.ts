@@ -377,7 +377,7 @@ type WorkerSettings = {
    */
   runtime?: "thread" | "process";
   /**
-   * Runtime executable to use when runtime is "process". Defaults to "bun".
+   * Runtime executable to use when runtime is "process". Defaults to "deno".
    */
   processRuntime?: "bun" | "deno" | "node";
   /**

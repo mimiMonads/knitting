@@ -1,5 +1,5 @@
 import test from "./_runner.ts";
-import { createPool, importTask, task } from "../knitting.ts";
+import { createPool, Envelope, importTask, task } from "../knitting.ts";
 import type { ProcessSharedBuffer } from "../process-shared-buffer.ts";
 
 const runtimeProcess = (globalThis as typeof globalThis & {
@@ -93,6 +93,16 @@ const importedAdd = importTask<[number, number], number>({
 
 const readFirstCell = task<ProcessSharedBuffer, number>({
   f: (buffer) => Atomics.load(buffer.view(Int32Array), 0),
+});
+
+const processImage = task<
+  Envelope<{ format: string }>,
+  Envelope<{ width: number; height: number }>
+>({
+  f: (envelope) => {
+    const pixels = new Uint8Array(envelope.payload);
+    return new Envelope({ width: 800, height: 600 }, pixels.buffer);
+  },
 });
 
 const assertReadmeTypes = () => {
@@ -219,6 +229,20 @@ const assertReadmeTypes = () => {
     Equal<Awaited<ReturnType<typeof sharedPool.call.readFirstCell>>, number>
   >;
 
+  const envelopePool = createPool({ threads: 2 })({ processImage });
+  const buf = new ArrayBuffer(1024);
+
+  envelopePool.call.processImage(new Envelope({ format: "png" }, buf));
+  // @ts-expect-error README Envelope task expects an Envelope, not a plain object.
+  envelopePool.call.processImage({ format: "png" });
+
+  type _envelopeReturn = Assert<
+    Equal<
+      Awaited<ReturnType<typeof envelopePool.call.processImage>>,
+      Envelope<{ width: number; height: number }>
+    >
+  >;
+
   const configuredPool = createPool({
     threads: 4,
     balancer: "firstIdle",
@@ -233,7 +257,7 @@ const assertReadmeTypes = () => {
         data: { value: "ready" },
       },
       runtime: "process",
-      processRuntime: "node",
+      processRuntime: "deno",
       hardTimeoutMs: 1_000,
       resolveAfterFinishingAll: true,
     },

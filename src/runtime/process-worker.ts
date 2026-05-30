@@ -594,7 +594,7 @@ const toProcessWorkerPath = (specifier: string | URL): string => {
 export const readProcessWorkerRuntime = (
   options: WorkerSettings | undefined,
 ): ProcessWorkerRuntime => {
-  const runtime = options?.processRuntime ?? "bun";
+  const runtime = options?.processRuntime ?? "deno";
   if (runtime === "bun" || runtime === "deno" || runtime === "node") {
     return runtime;
   }
