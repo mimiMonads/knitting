@@ -124,3 +124,56 @@ test("OneShotDeferred reject wrapper is single-fire", async () => {
   await assert.rejects(deferred.promise, (reason) => reason === "first");
   assert.equal(settles, 1);
 });
+
+test("OneShotDeferred empty promise reject signals without settling", async () => {
+  const deferred = withResolvers<unknown>();
+  let settles = 0;
+  let emptyRejects = 0;
+  new OneShotDeferred(
+    deferred,
+    () => {
+      settles++;
+    },
+    () => {
+      emptyRejects++;
+    },
+  );
+
+  deferred.promise.reject();
+  deferred.promise.reject(undefined);
+
+  const early = await Promise.race([
+    deferred.promise.then(() => "settled", () => "rejected"),
+    Promise.resolve("pending"),
+  ]);
+
+  assert.equal(early, "pending");
+  assert.equal(emptyRejects, 2);
+  assert.equal(settles, 0);
+
+  deferred.resolve("worker-result");
+
+  assert.equal(await deferred.promise, "worker-result");
+  assert.equal(settles, 1);
+});
+
+test("OneShotDeferred internal undefined reject still settles", async () => {
+  const deferred = withResolvers<unknown>();
+  let settles = 0;
+  let emptyRejects = 0;
+  new OneShotDeferred(
+    deferred,
+    () => {
+      settles++;
+    },
+    () => {
+      emptyRejects++;
+    },
+  );
+
+  deferred.reject(undefined);
+
+  await assert.rejects(deferred.promise, (reason) => reason === undefined);
+  assert.equal(emptyRejects, 0);
+  assert.equal(settles, 1);
+});

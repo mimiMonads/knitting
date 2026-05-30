@@ -33,7 +33,10 @@ type CreateHostTxQueueArgs = {
   max?: number;
   lock: Lock2;
   returnLock: Lock2;
-  abortSignals?: Pick<SignalAbortStore, "getSignal" | "resetSignal" | "closeNow">;
+  abortSignals?: Pick<
+    SignalAbortStore,
+    "getSignal" | "setSignal" | "resetSignal" | "closeNow"
+  >;
   now?: () => number;
 };
 
@@ -171,7 +174,13 @@ export function createHostTxQueue({
             return Promise.reject(AbortSignalPoolExhausted);
           }
 
-          new OneShotDeferred(deferred, () => resetSignal!(maybeSignal));
+          new OneShotDeferred(
+            deferred,
+            () => resetSignal!(maybeSignal),
+            () => {
+              abortSignals.setSignal(maybeSignal);
+            },
+          );
           const encodedSignalMeta =
             ((maybeSignal + ABORT_SIGNAL_META_OFFSET) & FUNCTION_META_MASK) >>> 0;
           slot[TaskIndex.FunctionID] =

@@ -255,3 +255,71 @@ test("tx queue clears slot value after a response settles", async () => {
   assert.equal(await promise, "done");
   assert.equal(capturedQueue?.[0]?.value, null);
 });
+
+test("abort-aware promise reject with no reason signals and waits for worker", async () => {
+  const requestLock = {
+    publish: () => true,
+    flushPending: () => false,
+    hasPendingFrames: () => false,
+    getPendingFrameCount: () => 0,
+    getPendingPromiseCount: () => 0,
+    resetPendingState: () => {},
+  } as unknown as Lock2;
+
+  const setSignals: number[] = [];
+  const resetSignals: number[] = [];
+  const abortSignals = {
+    closeNow: 99,
+    getSignal: () => 7,
+    setSignal: (signal: number) => {
+      setSignals.push(signal);
+      return 1 as const;
+    },
+    resetSignal: (signal: number) => {
+      resetSignals.push(signal);
+      return true;
+    },
+  };
+
+  let capturedQueue: Task[] | undefined;
+  const returnLock = {
+    resolveHost: ({ queue, onResolved }: {
+      queue: Task[];
+      onResolved?: (task: Task) => void;
+    }) => {
+      capturedQueue = queue;
+      return () => {
+        const task = queue[0]!;
+        task.value = "worker-result";
+        task.resolve(task.value);
+        onResolved?.(task);
+        return 1;
+      };
+    },
+  } as unknown as Lock2;
+
+  const tx = createHostTxQueue({
+    lock: requestLock,
+    returnLock,
+    max: 1,
+    abortSignals,
+  });
+
+  const promise = tx.enqueue(0, undefined, true)("request") as
+    & Promise<unknown>
+    & { reject: (reason?: unknown) => void };
+  promise.reject();
+
+  const early = await Promise.race([
+    promise.then(() => "settled", () => "rejected"),
+    Promise.resolve("pending"),
+  ]);
+
+  assert.equal(early, "pending");
+  assert.deepEqual(setSignals, [7]);
+
+  assert.equal(tx.completeFrame(), 1);
+  assert.equal(await promise, "worker-result");
+  assert.deepEqual(resetSignals, [7]);
+  assert.equal(capturedQueue?.[0]?.value, null);
+});

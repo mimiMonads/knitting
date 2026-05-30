@@ -123,7 +123,7 @@ test("worker timeout subtracts queue wait using enqueue timestamp", async () => 
   assert.equal(queue.getAwaiting(), 0);
 });
 
-test("worker abort check rejects before invoking task function", () => {
+test("worker abort check passes aborted toolkit into task function", () => {
   const resolved = new RingQueue<Task>();
   const recyclecList = new RingQueue<Task>();
   const lock = {
@@ -149,9 +149,12 @@ test("worker abort check rejects before invoking task function", () => {
   let called = 0;
   const queue = createWorkerRxQueue({
     listOfFunctions: [{
-      run: (value: unknown) => {
+      run: (value: unknown, tbh?: { hasAborted: () => boolean }) => {
         called++;
-        return value;
+        return {
+          value,
+          aborted: tbh?.hasAborted(),
+        };
       },
     }] as unknown as Array<{ run: (args: unknown) => unknown }>,
     lock: lock as any,
@@ -169,9 +172,12 @@ test("worker abort check rejects before invoking task function", () => {
   assert.equal(queue.serviceBatchImmediate(), 1);
 
   assert.ok(sent);
-  assert.equal(sent![TaskIndex.FlagsToHost], TaskFlag.Reject);
-  assert.equal((sent!.value as Error).message, "Task aborted");
-  assert.equal(called, 0);
+  assert.equal(sent![TaskIndex.FlagsToHost], 0);
+  assert.deepEqual(sent!.value, {
+    value: 123,
+    aborted: true,
+  });
+  assert.equal(called, 1);
 });
 
 test("worker abort toolkit exposes shorthand hasAborted accessor", () => {
@@ -228,7 +234,7 @@ test("worker abort toolkit exposes shorthand hasAborted accessor", () => {
     value: 123,
     short: false,
   });
-  assert.deepEqual(seenSignals, [0, 0]);
+  assert.deepEqual(seenSignals, [0]);
 });
 
 test("worker queue drops original args once async work has been invoked", () => {
