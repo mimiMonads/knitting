@@ -139,7 +139,7 @@ export const signalAbortFactory = ({
 export class OneShotDeferred<T> {  
 
   #triggered = false;
-
+  
   constructor(
     deferred: ReturnType<typeof withResolvers<T>>,
     onSettle: () => void,

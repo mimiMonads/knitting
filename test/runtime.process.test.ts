@@ -131,11 +131,17 @@ const runProcessWorkerSmoke = async (
   processRuntime: "bun" | "deno" | "node",
   worker?: {
     processCommandPrefix?: string[];
+    processSharedMemory?: "inherit" | "named" | {
+      mode?: "inherit" | "named";
+      namePrefix?: string;
+      unlinkOnShutdown?: boolean;
+    };
   },
 ): Promise<void> => {
-  const workerLabel = worker?.processCommandPrefix === undefined
-    ? `${processRuntime} process worker`
-    : `${processRuntime} process worker with command prefix`;
+  const labels = [`${processRuntime} process worker`];
+  if (worker?.processCommandPrefix !== undefined) labels.push("command prefix");
+  if (worker?.processSharedMemory !== undefined) labels.push("named shm");
+  const workerLabel = labels.join(" with ");
   const pool = createPool({
     threads: 1,
     worker: {
@@ -209,6 +215,22 @@ test("process worker spawns a Node child from this runtime", {
 }, async () => {
   if (!hasProcessRuntime("node")) return;
   await runProcessWorkerSmoke("node");
+});
+
+test("process worker supports named shared memory", {
+  concurrency: false,
+  skip: processRuntimeTestSkip,
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
+  for (const processRuntime of ["bun", "deno", "node"] as const) {
+    if (!hasProcessRuntime(processRuntime)) continue;
+    await runProcessWorkerSmoke(processRuntime, {
+      processSharedMemory: {
+        mode: "named",
+        namePrefix: `knit_test_${processRuntime}`,
+      },
+    });
+  }
 });
 
 test("process worker supports a command prefix wrapper", {

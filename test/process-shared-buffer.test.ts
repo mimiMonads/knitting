@@ -139,6 +139,39 @@ test("ProcessSharedBuffer creates mappings with default primitives", () => {
   }
 });
 
+test("ProcessSharedBuffer named mappings can reopen by name", () => {
+  const primitives = getDefaultProcessSharedBufferPrimitives();
+  if (typeof primitives.unlinkSharedMemory !== "function") return;
+
+  const name = `knit_test_psb_${Date.now()}_${Math.random()
+    .toString(36)
+    .slice(2)}`;
+  const owner = ProcessSharedBuffer.create({
+    mode: "create",
+    name,
+    size: 64,
+  }, primitives);
+
+  try {
+    Atomics.store(owner.view(Int32Array), 0, 42);
+    const peer = ProcessSharedBuffer.create({
+      mode: "open",
+      name,
+      size: 64,
+    }, primitives);
+
+    try {
+      assert.equal(Atomics.load(peer.view(Int32Array), 0), 42);
+      assert.equal(peer.descriptor.name, name);
+    } finally {
+      peer.descriptor.mapping?.close?.();
+    }
+  } finally {
+    owner.descriptor.mapping?.close?.();
+    primitives.unlinkSharedMemory(name);
+  }
+});
+
 test("ProcessSharedBuffer rejects out-of-bounds and unaligned views", () => {
   const whole = ProcessSharedBuffer.fromMapping(makeMapping());
 

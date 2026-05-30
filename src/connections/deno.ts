@@ -2,6 +2,8 @@ import {
   DARWIN_O_CREAT,
   DARWIN_O_EXCL,
   DARWIN_SHM_MODE,
+  LINUX_O_CREAT,
+  LINUX_O_EXCL,
   setCloseOnExec,
   detectPosixPlatform,
   encodeCString,
@@ -9,9 +11,11 @@ import {
   makeDarwinSharedMemoryName,
   MAP_SHARED,
   O_RDWR,
+  POSIX_SHM_MODE,
   type PosixPlatform,
   PROT_READ,
   PROT_WRITE,
+  toPosixSharedMemoryName,
 } from "./posix.ts";
 import {
   type CreateSharedMemoryOptions,
@@ -19,6 +23,8 @@ import {
   expectPositiveSize,
   type MapSharedMemoryOptions,
   readCreateName,
+  readCreateMode,
+  readRequiredCreateName,
   readCreateSize,
   type SharedMemoryConnectionPrimitives,
   type SharedMemoryMapping,
@@ -116,6 +122,14 @@ const getDenoCreateSymbols = (platform = detectPosixPlatform()) =>
         parameters: ["buffer", "u32"],
         result: "i32",
       },
+      shm_open: {
+        parameters: ["buffer", "i32", "u32"],
+        result: "i32",
+      },
+      shm_unlink: {
+        parameters: ["buffer"],
+        result: "i32",
+      },
     };
 
 const checkResult = (result: number, message: string): number => {
@@ -179,14 +193,54 @@ const createDenoSharedMemoryFd = (
   }
 };
 
+const createNamedDenoSharedMemoryFd = (
+  name: string,
+  mode: "create" | "open",
+  platform: PosixPlatform,
+  libc: DenoLibc,
+): number => {
+  const shmOpen = libc.symbols.shm_open;
+  if (shmOpen === undefined) {
+    throw new Error("shm_open symbol is not available");
+  }
+
+  const createFlags = platform === "darwin" ? DARWIN_O_CREAT : LINUX_O_CREAT;
+  const exclusiveFlags = platform === "darwin" ? DARWIN_O_EXCL : LINUX_O_EXCL;
+  const flags = mode === "create"
+    ? O_RDWR | createFlags | exclusiveFlags
+    : O_RDWR;
+  const fd = checkResult(
+    shmOpen(
+      encodeCString(toPosixSharedMemoryName(name)),
+      flags,
+      platform === "darwin" ? DARWIN_SHM_MODE : POSIX_SHM_MODE,
+    ),
+    "shm_open failed",
+  );
+
+  try {
+    return setCloseOnExec(libc, fd);
+  } catch (error) {
+    libc.symbols.close(fd);
+    throw error;
+  }
+};
+
 export const mapDenoSharedMemory = (
   options: MapSharedMemoryOptions,
   libc = openDenoLibc(),
 ): SharedMemoryMapping<ArrayBuffer> => {
-  const sourceFd = expectFd(options.fd);
+  const sourceFd = options.name === undefined ? expectFd(options.fd) : -1;
   const size = expectPositiveSize(options.size);
   let fd = sourceFd;
-  if (options.duplicateFd !== false) {
+  if (options.name !== undefined) {
+    fd = createNamedDenoSharedMemoryFd(
+      options.name,
+      "open",
+      detectPosixPlatform(),
+      libc,
+    );
+  } else if (options.duplicateFd !== false) {
     fd = checkResult(libc.symbols.dup(sourceFd), "dup(fd) failed");
     try {
       setCloseOnExec(libc, fd);
@@ -215,6 +269,7 @@ export const mapDenoSharedMemory = (
   return {
     runtime: "deno",
     fd,
+    name: options.name,
     size,
     byteLength: arrayBuffer.byteLength,
     buffer: arrayBuffer,
@@ -233,20 +288,43 @@ export const createDenoSharedMemory = (
   libc = openDenoLibc(),
 ): SharedMemoryMapping<ArrayBuffer> => {
   const size = expectPositiveSize(readCreateSize(options));
-  const name = readCreateName(options, "knitting_shared_memory");
-  const fd = createDenoSharedMemoryFd(name, detectPosixPlatform(), libc);
+  const mode = readCreateMode(options);
+  const name = mode === "anonymous"
+    ? readCreateName(options, "knitting_shared_memory")
+    : readRequiredCreateName(options);
+  const platform = detectPosixPlatform();
+  const fd = mode === "anonymous"
+    ? createDenoSharedMemoryFd(name, platform, libc)
+    : createNamedDenoSharedMemoryFd(name, mode, platform, libc);
 
   try {
-    checkResult(
-      libc.symbols.ftruncate(fd, BigInt(size)),
-      "ftruncate failed",
-    );
+    if (mode !== "open") {
+      checkResult(
+        libc.symbols.ftruncate(fd, BigInt(size)),
+        "ftruncate failed",
+      );
+    }
 
-    return mapDenoSharedMemory({ fd, size, duplicateFd: false }, libc);
+    const mapping = mapDenoSharedMemory({ fd, size, duplicateFd: false }, libc);
+    if (mode !== "anonymous") {
+      return { ...mapping, name };
+    }
+    return mapping;
   } catch (error) {
     libc.symbols.close(fd);
     throw error;
   }
+};
+
+export const unlinkDenoSharedMemory = (
+  name: string,
+  libc = openDenoLibc(),
+): boolean => {
+  const shmUnlink = libc.symbols.shm_unlink;
+  if (shmUnlink === undefined) {
+    throw new Error("shm_unlink symbol is not available");
+  }
+  return shmUnlink(encodeCString(toPosixSharedMemoryName(name))) === 0;
 };
 
 export const createDenoPosixConnectionPrimitives = (
@@ -255,6 +333,7 @@ export const createDenoPosixConnectionPrimitives = (
   runtime: "deno",
   createSharedMemory: (options) => createDenoSharedMemory(options, libc),
   mapSharedMemory: (options) => mapDenoSharedMemory(options, libc),
+  unlinkSharedMemory: (name) => unlinkDenoSharedMemory(name, libc),
 });
 
 export const createDenoConnectionPrimitives = (

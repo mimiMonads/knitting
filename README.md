@@ -2,6 +2,7 @@
 
 [![JSR Version](https://jsr.io/badges/@vixeny/knitting)](https://jsr.io/@vixeny/knitting)
 [![JSR Score](https://jsr.io/badges/@vixeny/knitting/score)](https://jsr.io/@vixeny/knitting)
+[![npm Version](https://img.shields.io/npm/v/knitting?logo=npm&logoColor=white)](https://www.npmjs.com/package/knitting)
 [![Tests](https://github.com/mimiMonads/knitting/actions/workflows/test.yml/badge.svg?branch=main)](https://github.com/mimiMonads/knitting/actions/workflows/test.yml)
 [![Coverage Workflow](https://github.com/mimiMonads/knitting/actions/workflows/coverage.yml/badge.svg?branch=main)](https://github.com/mimiMonads/knitting/actions/workflows/coverage.yml)
 [![Coverage](https://img.shields.io/badge/coverage-92.10%25-brightgreen)](https://github.com/mimiMonads/knitting/actions/workflows/coverage.yml)
@@ -10,45 +11,37 @@
 [![Deno](https://img.shields.io/badge/deno-2%2B-000000?logo=deno&logoColor=white)](https://deno.com/)
 [![Bun](https://img.shields.io/badge/bun-1%2B-f472b6?logo=bun&logoColor=white)](https://bun.sh/)
 
-Knitting is a worker-pool over shared-memory IPC runtime for Node.js,
-Deno, and Bun. Which mission is make javascript a real multicore language,
-Thanks to its memory design, it can be from 5x to 25x faster than using `postMessages`
-bypassing OS sockect comunnication entielly with a novel protocol written from scratch.
+Knitting is a worker pool over a shared-memory IPC runtime for Node.js, Deno, and Bun. Our mission is to make JavaScript a multicore language with real inter-runtime communication. 
 
-Use it for the parts of your program that should run somewhere else: CPU-heavy to small
-work, runtime-isolated jobs, long-running tools, or anything that needs to move
-speed and type felixbility.
+Thanks to its memory design, it can be 5x to 25x faster than using `postMessages` , bypassing OS socket communication entirely with a novel protocol written from scratch.
 
+Use it for parts of your program that should run in different environments, such as CPU-intensive tasks, small jobs, runtime-isolated tasks, custom isolation for workers in Docker or bwrap environments, long-running tools, or any processes that require speed and type flexibility.
 
-You define a task once, spin up a pool, and call it like a normal async
-function:
+You define a task once, spin up a pool, and call it like a normal async function:
 
 ```ts
+
 const result = await pool.call.resizeImage(file);
+
 ```
 
-Under the hood, Knitting schedules work across worker threads or separate
-processes (depending on runtime and your settings), keeps arguments typed, and
-uses shared memory for transport.
+So you only have to take care of 4 things:
+ - Create a task
+ - Create a pool
+ - Call your task
+ - Terminate the pool
 
-## So
 
-- Call worker code like `pool.call.myTask(arg)`.
-- Keep the resolved types end-to-end
-- Choose `threads` for speed or `processes` for stronger isolation.
-- Move supported payloads via shared memory (great for binary data).
-- Run on Node.js, Deno, or Bun.
+Under the hood, we take care of scheduling and orchestration across worker threads or separate processes, also handling signals, timeouts, life cycles, memory allocation, garbage collection, and cross-runtime memory over the processes.
+
 
 ## Why use it?
 
-- Easy to use: Have a multi-thread enviroment or process with few lines of code.
-- Great type support: pass primitives, JSON, Promise of these and special types (typed arrays, Node
-  `Buffer`, `Envelope`, and `ProcessSharedBuffer`).
+- Easy to use: Have a multithreaded environment or process with few lines of code.
+- Great type support: pass primitives, JSON, Promise of these, and special types (typed arrays, `Node Buffer`, `Envelope`, and `ProcessSharedBuffer`).
 - Runtime flexibility: the same API across Node.js, Deno, and Bun.
-- Worker choices: use threads for fast pools, or processes for stronger
-  isolation.
-- All out-of-the-box expierince: strict-by-default permissions, payload-size limits, task
-  timeouts, abort-aware tasks, and worker hard timeouts.
+- Worker choices: use threads for fast pools or processes for stronger isolation.
+- All out-of-the-box experiences: strict-by-default permissions, payload-size limits, task timeouts, abort-aware tasks, and worker hard timeouts.
 
 ## Requirements
 
@@ -56,30 +49,18 @@ uses shared memory for transport.
 - Deno 2+ 
 - Bun 1+ 
 
-Process workers and `ProcessSharedBuffer` use the native shared-memory layer.
-Release packages ship native prebuilds for the supported Node targets and the
-Windows FFI DLL used by Deno and Bun. During local development, run
-`bun run build:native` before process/shared-memory tests when the matching
-prebuild is not present yet.
-If you're only using thread workers, you can typically ignore this and use
-Knitting without building native addons.
-
 ## Install
+
+From npm:
 
 ```bash
 npm install knitting
 ```
 
-Via JSR's npm compatibility:
-
-```bash
-jsr add --npm @vixeny/knitting
-```
-
 For Deno projects:
 
 ```bash
-deno add jsr:@vixeny/knitting
+deno add --npm jsr:@vixeny/knitting
 ```
 
 ## Quick Start
@@ -306,6 +287,7 @@ Common options you might tweak:
 | `worker.resolveAfterFinishingAll` | Let submitted calls finish before shutdown resolves. |
 | `worker.hardTimeoutMs` | Force pool shutdown when a task exceeds this many milliseconds. |
 | `worker.runtime` | Choose `"thread"` or `"process"` workers. |
+| `worker.processSharedMemory` | Process-worker memory discovery: `"inherit"` by default on POSIX, or `"named"` for wrappers/containers that cannot preserve fd 0. |
 | `permission` | Runtime permission policy for workers. |
 | `debug` | Enable extra diagnostics. |
 | `source` | Worker source override for advanced runtimes. |
@@ -343,6 +325,45 @@ important detail is that process workers receive their shared-memory handle on
 stdin, which is file descriptor 0. Wrappers that leave stdin alone usually work;
 wrappers that replace, close, or proxy stdin without passing the fd through will
 stop the worker from booting.
+
+For wrappers that cannot preserve fd 0, use named process-worker memory instead.
+The worker process must share the same OS IPC namespace as the host so it can
+reopen the named mapping.
+
+```ts
+const pool = createPool({
+  threads: 2,
+  worker: {
+    runtime: "process",
+    processRuntime: "node",
+    processSharedMemory: {
+      mode: "named",
+      namePrefix: "knit_worker",
+    },
+    processCommandPrefix: [
+      // The prefix runs before Knitting appends:
+      // node --no-warnings --experimental-transform-types <worker-file>
+      "docker",
+      "run",
+      // Remove the container when the worker exits.
+      "--rm",
+      // Required for named POSIX shared memory across host/container.
+      "--ipc=host",
+      // The worker imports the same files as the host, at the same path.
+      "-v",
+      `${process.cwd()}:${process.cwd()}`,
+      "-w",
+      process.cwd(),
+      // Forward Knitting's process-worker boot metadata into the container.
+      "-e",
+      "KNITTING_PROCESS_WORKER",
+      "-e",
+      "KNITTING_PROCESS_WORKER_BOOT",
+      "knitting-node-worker",
+    ],
+  },
+})({ add });
+```
 
 When the goal is isolation, define the worker code with `importTask()` instead
 of importing the task function directly into the host. That keeps the code you
@@ -449,7 +470,10 @@ memory. Use it when two workers or processes need to see the same bytes without
 copying the whole payload for every call.
 
 ```ts
-import { ProcessSharedBuffer } from "knitting/process-shared-buffer";
+import {
+  getDefaultProcessSharedBufferPrimitives,
+  ProcessSharedBuffer,
+} from "knitting/process-shared-buffer";
 import { createPool, isMain, task } from "knitting";
 
 export const readFirstCell = task<ProcessSharedBuffer, number>({
@@ -458,13 +482,14 @@ export const readFirstCell = task<ProcessSharedBuffer, number>({
 
 if (isMain) {
   const pool = createPool({ threads: 1 })({ readFirstCell });
-  const shared = ProcessSharedBuffer.create(64);
+  const primitives = getDefaultProcessSharedBufferPrimitives();
+  const shared = ProcessSharedBuffer.create(64, primitives);
 
   try {
     Atomics.store(shared.view(Int32Array), 0, 42);
     console.log(await pool.call.readFirstCell(shared));
   } finally {
-    shared.close();
+    shared.descriptor.mapping?.close?.();
     await pool.shutdown();
   }
 }
@@ -485,19 +510,24 @@ programs do not accidentally inherit them.
 
 ### Named channels for independent processes
 
-Sometimes you do want two unrelated processes to rendezvous on purpose. Use a
-named channel for that.
+Use a named channel when two processes need to find the same shared memory
+without inheriting an fd from each other. One process creates the channel by
+name; the other opens that same name.
 
 ```ts
-import { ProcessSharedBuffer } from "knitting/process-shared-buffer";
+import {
+  getDefaultProcessSharedBufferPrimitives,
+  ProcessSharedBuffer,
+} from "knitting/process-shared-buffer";
 
 const name = "knitting-demo-channel";
+const primitives = getDefaultProcessSharedBufferPrimitives();
 
 const owner = ProcessSharedBuffer.create({
   name,
   size: 64,
   mode: "create",
-});
+}, primitives);
 
 try {
   Atomics.store(owner.view(Int32Array), 0, 7);
@@ -506,47 +536,121 @@ try {
     name,
     size: 64,
     mode: "open",
-  });
+  }, primitives);
 
   try {
     console.log(Atomics.load(peer.view(Int32Array), 0));
   } finally {
-    peer.close();
+    peer.descriptor.mapping?.close?.();
   }
 } finally {
-  owner.close();
-  ProcessSharedBuffer.unlink(name);
+  owner.descriptor.mapping?.close?.();
+  primitives.unlinkSharedMemory?.(name);
 }
 ```
 
-Use `"create"` for the process that owns the channel and `"open"` for peers.
-Treat the channel name like a capability: make it unique, do not accept it from
-untrusted input without validation, and clean it up when the channel is no
-longer needed. On POSIX runtimes `unlink` removes the name. On platforms where
-named mappings are lifetime-managed by the OS, closing the last handle is the
-important cleanup step.
+Use `"create"` on the owner side and `"open"` on the peer side. The name is the
+thing that grants access, so generate a hard-to-guess name and keep it private.
+When you are done, close the mappings and unlink the name where the runtime
+supports it.
+
+### Sending `ProcessSharedBuffer` to Docker workers
+
+Docker process workers can receive a `ProcessSharedBuffer`, but it needs to be
+named. The default anonymous form is fd-backed and private to the parent-child
+process path; Docker does not inherit that fd in a way the worker can reopen.
+
+Use a named buffer for the payload and named process-worker memory for the pool:
+
+```ts
+import { createPool, isMain, task } from "knitting";
+import {
+  getDefaultProcessSharedBufferPrimitives,
+  ProcessSharedBuffer,
+} from "knitting/process-shared-buffer";
+
+export const readCounter = task<ProcessSharedBuffer, number>({
+  f: (shared) => Atomics.load(shared.view(Int32Array), 0),
+});
+
+if (isMain) {
+  const cwd = process.cwd();
+  const name = `knitting-docker-counter-${process.pid}`;
+  const primitives = getDefaultProcessSharedBufferPrimitives();
+  const shared = ProcessSharedBuffer.create({
+    mode: "create",
+    name,
+    size: 64,
+  }, primitives);
+
+  const pool = createPool({
+    threads: 1,
+    worker: {
+      runtime: "process",
+      processRuntime: "node",
+      processSharedMemory: "named",
+      processCommandPrefix: [
+        // Knitting appends the actual Node worker command after this prefix.
+        "docker",
+        "run",
+        // Named shared memory needs a shared IPC namespace.
+        "--ipc=host",
+        // Mount the project so the container can import the worker module.
+        "-v",
+        `${cwd}:${cwd}`,
+        "-w",
+        cwd,
+        // Pass Knitting's boot payload through Docker.
+        "-e",
+        "KNITTING_PROCESS_WORKER",
+        "-e",
+        "KNITTING_PROCESS_WORKER_BOOT",
+        "node:24-trixie-slim",
+      ],
+    },
+    permission: "unsafe",
+  })({ readCounter });
+
+  try {
+    Atomics.store(shared.view(Int32Array), 0, 42);
+    console.log(await pool.call.readCounter(shared));
+  } finally {
+    await pool.shutdown();
+    shared.descriptor.mapping?.close?.();
+    primitives.unlinkSharedMemory?.(name);
+  }
+}
+```
+
+There are three moving parts:
+
+- `processSharedMemory: "named"` lets the Docker worker find Knitting's control
+  channel.
+- `ProcessSharedBuffer.create({ mode: "create", name, size })` makes the
+  payload buffer reopenable by name.
+- `--ipc=host` lets the container see the same POSIX shared-memory namespace.
+
+This is same-host communication. It is fast because both sides map the same
+bytes, but it is not a network transport and it deliberately shares IPC with the
+container. Use names like capabilities: generate them, keep them private, and
+unlink them when the shared memory is no longer needed.
 
 ### Current support
 
-Thread workers are the broadest path: they do not need native prebuilds or FFI.
-Process workers and `ProcessSharedBuffer` both use OS-backed shared memory, so
-their support follows the native backend for each runtime.
+Knitting supports Node.js 22+, Deno 2+, and Bun 1+ on Linux, macOS, and
+Windows.
 
-On Windows, process workers and `ProcessSharedBuffer` use named file mappings.
-The first Windows process-worker path uses short polling waits instead of a
-cross-process futex wake.
+Thread workers work without native pieces. Process workers and
+`ProcessSharedBuffer` use the platform's shared-memory APIs. Release packages
+include the native prebuilds needed for the supported Node targets and Windows
+FFI path; if you are developing locally on a new Node ABI or architecture, run:
 
-| Runtime and target | Thread workers | Process workers | `ProcessSharedBuffer` | Native path |
-| --- | --- | --- | --- | --- |
-| Node.js 22 / 24 on Linux x64 | Supported | Supported | Supported | Shipped Node `.node` prebuilds. |
-| Node.js 22 / 24 on macOS x64 | Supported | Supported | Supported | Shipped Node `.node` prebuilds. |
-| Node.js 22 / 24 on macOS arm64 | Supported | Supported | Supported | Shipped Node `.node` prebuilds. |
-| Node.js 22 / 24 on Windows x64 | Supported | Supported | Supported | Shipped Node `.node` prebuilds; process-worker waits poll briefly. |
-| Other POSIX Node.js ABI or arch | Supported | Local native build needed | Local native build needed | Run `bun run build:native` before using native shared memory. |
-| Deno 2+ on Linux/macOS, runtime-supported arch | Supported | Supported | Supported | Uses Deno FFI into libc; allow FFI permission when permissions are enabled. |
-| Deno 2+ on Windows x64 | Supported | Supported | Supported | Shipped Windows FFI `.dll` prebuild; allow FFI permission when permissions are enabled; process-worker waits poll briefly. |
-| Bun 1+ on Linux/macOS, runtime-supported arch | Supported | Supported | Supported | Uses Bun FFI into libc. |
-| Bun 1+ on Windows x64 | Supported | Supported | Supported | Shipped Windows FFI `.dll` prebuild; process-worker waits poll briefly. |
+```bash
+bun run build:native
+```
+
+For Deno projects with permissions enabled, allow FFI when using process
+workers or `ProcessSharedBuffer`.
 
 ## Runtime Safety
 
@@ -627,6 +731,12 @@ Emit JSON benchmark results:
 
 ```bash
 ./run.sh --json
+```
+
+Compare inherited-fd and named-shared-memory process-worker startup:
+
+```bash
+node --no-warnings --experimental-transform-types bench/startup.ts --named-process-shm
 ```
 
 For a file-by-file orientation, see [map.md](./map.md).

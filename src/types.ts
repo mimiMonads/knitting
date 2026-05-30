@@ -350,18 +350,40 @@ type WorkerSettings = {
   processRuntime?: "bun" | "deno" | "node";
   /**
    * Command argv to prepend before the process worker runtime command.
-   * Useful for wrappers such as systemd-run, cgexec, nice, or taskset.
+   * Useful for wrappers such as systemd-run, cgexec, nice, taskset, or
+   * docker. Knitting appends the runtime command after this prefix.
    *
    * Example:
    * ["systemd-run", "--scope", "-p", "MemoryMax=500M", "-p", "CPUQuota=25%"]
+   *
+   * With containers, use processSharedMemory: "named", share the IPC
+   * namespace, mount the worker files at the same path, and forward
+   * KNITTING_PROCESS_WORKER plus KNITTING_PROCESS_WORKER_BOOT.
    */
   processCommandPrefix?: string[];
+  /**
+   * How process workers discover their shared-memory control channel.
+   *
+   * "inherit" keeps the POSIX fd-inheritance path and is the default outside
+   * Windows. "named" creates an OS-named shared-memory object that wrappers
+   * such as containers can reopen by name when they share the same IPC
+   * namespace.
+   */
+  processSharedMemory?: ProcessSharedMemoryMode | ProcessSharedMemorySettings;
   timers?: WorkerTimers;
   /**
    * Hard task execution timeout in milliseconds.
    * When exceeded, the pool is force-shutdown to stop runaway CPU tasks.
    */
   hardTimeoutMs?: number;
+};
+
+type ProcessSharedMemoryMode = "inherit" | "named";
+
+type ProcessSharedMemorySettings = {
+  mode?: ProcessSharedMemoryMode;
+  namePrefix?: string;
+  unlinkOnShutdown?: boolean;
 };
 
 type WorkerTimers = {
@@ -488,6 +510,8 @@ export type {
   Balancer as Balancer,
   DebugOptions as DebugOptions,
   WorkerSettings as WorkerSettings,
+  ProcessSharedMemoryMode as ProcessSharedMemoryMode,
+  ProcessSharedMemorySettings as ProcessSharedMemorySettings,
   WorkerTimers as WorkerTimers,
   DispatcherSettings as DispatcherSettings,
   CreatePool as CreatePool,

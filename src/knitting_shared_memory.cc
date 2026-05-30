@@ -63,7 +63,7 @@ bool SetCloseOnExec(int fd) {
   return fcntl(fd, F_SETFD, flags | FD_CLOEXEC) != -1;
 }
 
-int CreateSharedMemoryFd(const char* name) {
+int CreateAnonymousSharedMemoryFd(const char* name) {
 #ifdef __linux__
   return static_cast<int>(syscall(SYS_memfd_create, name, MFD_CLOEXEC));
 #else
@@ -156,6 +156,71 @@ void ThrowRange(v8::Isolate* isolate, const char* message) {
   ));
 }
 
+#ifndef _WIN32
+bool ToPosixSharedMemoryName(
+  v8::Isolate* isolate,
+  const std::string& name,
+  std::string* out
+) {
+  if (name.empty()) {
+    ThrowType(isolate, "shared memory name must be non-empty");
+    return false;
+  }
+  if (name.find('\0') != std::string::npos) {
+    ThrowType(isolate, "shared memory name must not contain NUL bytes");
+    return false;
+  }
+
+  *out = name[0] == '/' ? name : "/" + name;
+  if (out->size() < 2 || out->find('/', 1) != std::string::npos) {
+    ThrowType(
+      isolate,
+      "POSIX shared memory name must not contain path separators"
+    );
+    return false;
+  }
+  return true;
+}
+
+int OpenNamedSharedMemoryFd(const std::string& posix_name, const std::string& mode) {
+  int flags = O_RDWR;
+  if (mode == "create") {
+    flags |= O_CREAT | O_EXCL;
+  }
+  return shm_open(posix_name.c_str(), flags, 0600);
+}
+#endif
+
+bool ReadOptionalUtf8String(
+  v8::Isolate* isolate,
+  const v8::FunctionCallbackInfo<v8::Value>& args,
+  int index,
+  std::string* out
+) {
+  out->clear();
+  if (
+    args.Length() <= index ||
+    args[index]->IsUndefined() ||
+    args[index]->IsNull()
+  ) {
+    return true;
+  }
+
+  if (!args[index]->IsString()) {
+    ThrowType(isolate, "expected a string argument");
+    return false;
+  }
+
+  v8::String::Utf8Value value(isolate, args[index]);
+  if (*value == nullptr) {
+    ThrowType(isolate, "expected a valid UTF-8 string");
+    return false;
+  }
+
+  out->assign(*value, value.length());
+  return true;
+}
+
 #ifdef _WIN32
 std::atomic<int> next_mapping_id{1};
 std::mutex registry_mutex;
@@ -204,36 +269,6 @@ HANDLE DuplicateRegisteredMappingHandle(int id) {
     return nullptr;
   }
   return duplicate;
-}
-
-bool ReadOptionalUtf8String(
-  v8::Isolate* isolate,
-  const v8::FunctionCallbackInfo<v8::Value>& args,
-  int index,
-  std::string* out
-) {
-  out->clear();
-  if (
-    args.Length() <= index ||
-    args[index]->IsUndefined() ||
-    args[index]->IsNull()
-  ) {
-    return true;
-  }
-
-  if (!args[index]->IsString()) {
-    ThrowType(isolate, "expected a string argument");
-    return false;
-  }
-
-  v8::String::Utf8Value value(isolate, args[index]);
-  if (*value == nullptr) {
-    ThrowType(isolate, "expected a valid UTF-8 string");
-    return false;
-  }
-
-  out->assign(*value, value.length());
-  return true;
 }
 
 std::wstring Utf8ToWide(const std::string& value) {
@@ -321,6 +356,7 @@ void ReturnMappedRegion(
   const std::string& name,
 #else
   int fd,
+  const std::string& name,
 #endif
   size_t size
 ) {
@@ -365,15 +401,15 @@ void ReturnMappedRegion(
   v8::Local<v8::Object> out = v8::Object::New(isolate);
   SetValue(isolate, context, out, "sab", sab);
   SetValue(isolate, context, out, "fd", v8::Integer::New(isolate, fd));
-#ifdef _WIN32
-  SetValue(
-    isolate,
-    context,
-    out,
-    "name",
-    v8::String::NewFromUtf8(isolate, name.c_str()).ToLocalChecked()
-  );
-#endif
+  if (!name.empty()) {
+    SetValue(
+      isolate,
+      context,
+      out,
+      "name",
+      v8::String::NewFromUtf8(isolate, name.c_str()).ToLocalChecked()
+    );
+  }
   SetValue(
     isolate,
     context,
@@ -486,20 +522,62 @@ void CreateSharedMemory(const v8::FunctionCallbackInfo<v8::Value>& args) {
 
   ReturnMappedRegion(args, handle, fd, name, size);
 #else
-  int fd = CreateSharedMemoryFd("knitting_shared_memory");
-  if (fd == -1) {
-    ThrowErrno(isolate, "shared memory fd create failed");
+  std::string name;
+  if (!ReadOptionalUtf8String(isolate, args, 1, &name)) {
     return;
   }
 
-  if (ftruncate(fd, static_cast<off_t>(size)) == -1) {
+  std::string mode = "anonymous";
+  if (!ReadOptionalUtf8String(isolate, args, 2, &mode)) {
+    return;
+  }
+  if (mode.empty()) {
+    mode = "anonymous";
+  }
+
+  const bool open_existing = mode == "open";
+  const bool create_named = mode == "create";
+  const bool anonymous = mode == "anonymous";
+  if (!open_existing && !create_named && !anonymous) {
+    ThrowType(isolate, "mode must be anonymous, create, or open");
+    return;
+  }
+
+  std::string returned_name;
+  int fd = -1;
+  if (anonymous) {
+    fd = CreateAnonymousSharedMemoryFd("knitting_shared_memory");
+  } else {
+    std::string posix_name;
+    if (!ToPosixSharedMemoryName(isolate, name, &posix_name)) {
+      return;
+    }
+    fd = OpenNamedSharedMemoryFd(posix_name, mode);
+    returned_name = name;
+  }
+  if (fd == -1) {
+    ThrowErrno(
+      isolate,
+      anonymous ? "shared memory fd create failed" : "shm_open failed"
+    );
+    return;
+  }
+
+  if (!SetCloseOnExec(fd)) {
+    int saved = errno;
+    close(fd);
+    ThrowErrno(isolate, "fcntl(F_SETFD) failed", saved);
+    return;
+  }
+
+  if (!open_existing && ftruncate(fd, static_cast<off_t>(size)) == -1) {
     int saved = errno;
     close(fd);
     ThrowErrno(isolate, "ftruncate failed", saved);
     return;
   }
 
-  ReturnMappedRegion(args, fd, size);
+  ReturnMappedRegion(args, fd, returned_name, size);
 #endif
 }
 
@@ -555,12 +633,30 @@ void MapSharedMemory(const v8::FunctionCallbackInfo<v8::Value>& args) {
 
   ReturnMappedRegion(args, handle, fd, name, size);
 #else
-  // Duplicate so each returned SAB owns exactly one fd. The caller can keep
-  // using or transferring its original descriptor independently.
-  int fd = dup(maybe_fd.FromJust());
-  if (fd == -1) {
-    ThrowErrno(isolate, "dup(fd) failed");
+  std::string name;
+  if (!ReadOptionalUtf8String(isolate, args, 2, &name)) {
     return;
+  }
+
+  int fd = -1;
+  if (!name.empty()) {
+    std::string posix_name;
+    if (!ToPosixSharedMemoryName(isolate, name, &posix_name)) {
+      return;
+    }
+    fd = shm_open(posix_name.c_str(), O_RDWR, 0600);
+    if (fd == -1) {
+      ThrowErrno(isolate, "shm_open failed");
+      return;
+    }
+  } else {
+    // Duplicate so each returned SAB owns exactly one fd. The caller can keep
+    // using or transferring its original descriptor independently.
+    fd = dup(maybe_fd.FromJust());
+    if (fd == -1) {
+      ThrowErrno(isolate, "dup(fd) failed");
+      return;
+    }
   }
 
   if (!SetCloseOnExec(fd)) {
@@ -570,13 +666,46 @@ void MapSharedMemory(const v8::FunctionCallbackInfo<v8::Value>& args) {
     return;
   }
 
-  ReturnMappedRegion(args, fd, size);
+  ReturnMappedRegion(args, fd, name, size);
+#endif
+}
+
+void UnlinkSharedMemory(const v8::FunctionCallbackInfo<v8::Value>& args) {
+  v8::Isolate* isolate = args.GetIsolate();
+
+  std::string name;
+  if (!ReadOptionalUtf8String(isolate, args, 0, &name)) {
+    return;
+  }
+  if (name.empty()) {
+    ThrowType(isolate, "unlinkSharedMemory(name) requires name");
+    return;
+  }
+
+#ifdef _WIN32
+  args.GetReturnValue().Set(v8::Boolean::New(isolate, false));
+#else
+  std::string posix_name;
+  if (!ToPosixSharedMemoryName(isolate, name, &posix_name)) {
+    return;
+  }
+
+  if (shm_unlink(posix_name.c_str()) == 0) {
+    args.GetReturnValue().Set(v8::Boolean::New(isolate, true));
+    return;
+  }
+  if (errno == ENOENT) {
+    args.GetReturnValue().Set(v8::Boolean::New(isolate, false));
+    return;
+  }
+  ThrowErrno(isolate, "shm_unlink failed");
 #endif
 }
 
 void Initialize(v8::Local<v8::Object> exports) {
   NODE_SET_METHOD(exports, "createSharedMemory", CreateSharedMemory);
   NODE_SET_METHOD(exports, "mapSharedMemory", MapSharedMemory);
+  NODE_SET_METHOD(exports, "unlinkSharedMemory", UnlinkSharedMemory);
 }
 
 NODE_MODULE(NODE_GYP_MODULE_NAME, Initialize)

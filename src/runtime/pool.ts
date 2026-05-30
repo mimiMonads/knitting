@@ -181,11 +181,20 @@ type ProcessWorkerMemoryLayout = {
   controlLayout: LockControlCarpet;
   lockPayload: SharedBufferSource;
   returnPayload: SharedBufferSource;
+  cleanup: () => void;
 };
 type ProcessWorkerRuntime = NonNullable<WorkerSettings["processRuntime"]>;
 type ProcessWorkerCommandPrefix = NonNullable<
   WorkerSettings["processCommandPrefix"]
 >;
+type ProcessSharedMemoryInput = NonNullable<
+  WorkerSettings["processSharedMemory"]
+>;
+type ResolvedProcessSharedMemorySettings = {
+  mode: "inherit" | "named";
+  namePrefix?: string;
+  unlinkOnShutdown: boolean;
+};
 const WORKER_FATAL_MESSAGE_KEY = "__knittingWorkerFatal";
 const execFlagKey = (flag: string): string => flag.split("=", 1)[0]!;
 const NODE_PERMISSION_EXEC_FLAGS = new Set<string>([
@@ -399,7 +408,10 @@ const isWindowsRuntimeHost = (): boolean => {
   }).process?.platform === "win32";
 };
 
-const makeProcessWorkerMemoryName = (thread: number): string => {
+const makeProcessWorkerMemoryName = (
+  thread: number,
+  prefix = "knitting_process_worker",
+): string => {
   const processId = (globalThis as typeof globalThis & {
     process?: { pid?: number };
     Deno?: { pid?: number };
@@ -409,7 +421,8 @@ const makeProcessWorkerMemoryName = (thread: number): string => {
   const next = processWorkerMemoryNameCounter++;
   const timeTag = Date.now().toString(36);
   const randomTag = Math.random().toString(36).slice(2, 10);
-  return `knitting_process_worker_${processId}_${thread}_${timeTag}_${next}_${randomTag}`;
+  const safePrefix = prefix.replace(/[^a-z0-9_-]/gi, "_") || "knit";
+  return `${safePrefix}_${processId}_${thread}_${timeTag}_${next}_${randomTag}`;
 };
 
 const createProcessWorkerMemoryLayout = ({
@@ -417,11 +430,13 @@ const createProcessWorkerMemoryLayout = ({
   abortBytes,
   payloadBytes,
   thread,
+  sharedMemory,
 }: {
   signalBytes: number;
   abortBytes: number;
   payloadBytes: number;
   thread: number;
+  sharedMemory: ResolvedProcessSharedMemorySettings;
 }): ProcessWorkerMemoryLayout => {
   const carpet = createByteCarpet();
   const signalsSlice = carpet.take("signals", signalBytes);
@@ -454,15 +469,25 @@ const createProcessWorkerMemoryLayout = ({
   const returnPayloadSlice = carpet.take("returnPayload", payloadBytes);
 
   const primitives = getProcessWorkerSharedMemoryPrimitives();
-  const mapping = primitives.createSharedMemory({
-    size: carpet.byteLength(),
-    mode: "create",
-    name: makeProcessWorkerMemoryName(thread),
-  });
+  const forceNamed = sharedMemory.mode === "named" || isWindowsRuntimeHost();
+  const mapping = primitives.createSharedMemory(
+    forceNamed
+      ? {
+        size: carpet.byteLength(),
+        mode: "create",
+        name: makeProcessWorkerMemoryName(thread, sharedMemory.namePrefix),
+      }
+      : { size: carpet.byteLength() },
+  );
   const descriptor = FileDescriptor.fromMapping(mapping);
   if (isWindowsRuntimeHost() && descriptor.name === undefined) {
     throw new Error(
       "Windows process worker shared memory must use a named mapping",
+    );
+  }
+  if (sharedMemory.mode === "named" && descriptor.name === undefined) {
+    throw new Error(
+      "processSharedMemory mode named needs a named shared-memory backend",
     );
   }
   const buffer = mapping.buffer;
@@ -493,6 +518,12 @@ const createProcessWorkerMemoryLayout = ({
     controlLayout,
     lockPayload: bind(requestPayloadSlice),
     returnPayload: bind(returnPayloadSlice),
+    cleanup: () => {
+      const name = descriptor.name;
+      if (name !== undefined && sharedMemory.unlinkOnShutdown) {
+        primitives.unlinkSharedMemory?.(name);
+      }
+    },
   };
 };
 
@@ -589,6 +620,53 @@ const readProcessWorkerCommandPrefix = (
   return out;
 };
 
+const readProcessSharedMemoryMode = (
+  value: unknown,
+): ResolvedProcessSharedMemorySettings["mode"] => {
+  if (value === undefined) return "inherit";
+  if (value === "inherit" || value === "named") return value;
+  throw new TypeError(`Unsupported processSharedMemory mode: ${String(value)}`);
+};
+
+const readProcessSharedMemorySettings = (
+  options: WorkerSettings | undefined,
+): ResolvedProcessSharedMemorySettings => {
+  const input = options?.processSharedMemory;
+  if (input === undefined || typeof input === "string") {
+    return {
+      mode: readProcessSharedMemoryMode(input),
+      unlinkOnShutdown: true,
+    };
+  }
+  if (typeof input !== "object" || input === null) {
+    throw new TypeError("processSharedMemory must be a mode or options object");
+  }
+
+  const settings = input as ProcessSharedMemoryInput & {
+    mode?: unknown;
+    namePrefix?: unknown;
+    unlinkOnShutdown?: unknown;
+  };
+  const mode = readProcessSharedMemoryMode(settings.mode);
+  const out: ResolvedProcessSharedMemorySettings = {
+    mode,
+    unlinkOnShutdown: settings.unlinkOnShutdown !== false,
+  };
+  if (settings.namePrefix !== undefined) {
+    if (
+      typeof settings.namePrefix !== "string" ||
+      settings.namePrefix.length === 0 ||
+      settings.namePrefix.includes("\0")
+    ) {
+      throw new TypeError(
+        "processSharedMemory.namePrefix must be a non-empty string without NUL bytes",
+      );
+    }
+    out.namePrefix = settings.namePrefix;
+  }
+  return out;
+};
+
 const currentProcessEnv = (): Record<string, string | undefined> => ({
   ...getNodeProcess()?.env,
 });
@@ -618,14 +696,20 @@ const stringProcessEnv = (
   return out;
 };
 
-const processWorkerBunBinary = (bun?: BunRuntimeLike): string =>
+const processWorkerBunBinary = (
+  bun?: BunRuntimeLike,
+  commandPrefix?: ProcessWorkerCommandPrefix,
+): string =>
   getNodeProcess()?.env?.BUN_BINARY ??
-  bun?.argv?.[0] ??
+  (commandPrefix === undefined ? bun?.argv?.[0] : undefined) ??
   DEFAULT_BUN_BINARY;
 
-const processWorkerDenoBinary = (deno?: DenoRuntimeLike): string =>
+const processWorkerDenoBinary = (
+  deno?: DenoRuntimeLike,
+  commandPrefix?: ProcessWorkerCommandPrefix,
+): string =>
   getNodeProcess()?.env?.DENO_BINARY ??
-  deno?.execPath?.() ??
+  (commandPrefix === undefined ? deno?.execPath?.() : undefined) ??
   DEFAULT_DENO_BINARY;
 
 const processWorkerDenoFlags = (
@@ -640,10 +724,14 @@ const processWorkerDenoFlags = (
   ];
 };
 
-const processWorkerNodeBinary = (): string => {
+const processWorkerNodeBinary = (
+  commandPrefix?: ProcessWorkerCommandPrefix,
+): string => {
   const nodeProcess = getNodeProcess();
   return nodeProcess?.env?.NODE_BINARY ??
-    (RUNTIME === "node" ? nodeProcess?.execPath : undefined) ??
+    (commandPrefix === undefined && RUNTIME === "node"
+      ? nodeProcess?.execPath
+      : undefined) ??
     DEFAULT_NODE_BINARY;
 };
 
@@ -682,19 +770,19 @@ const processWorkerCommand = ({
   let command: [string, ...string[]];
   if (processRuntime === "deno") {
     command = [
-      processWorkerDenoBinary(deno),
+      processWorkerDenoBinary(deno, commandPrefix),
       "run",
       ...processWorkerDenoFlags(permission),
       workerPath,
     ];
   } else if (processRuntime === "node") {
     command = [
-      processWorkerNodeBinary(),
+      processWorkerNodeBinary(commandPrefix),
       ...processWorkerNodeExecArgv(),
       workerPath,
     ];
   } else {
-    command = [processWorkerBunBinary(bun), workerPath];
+    command = [processWorkerBunBinary(bun, commandPrefix), workerPath];
   }
 
   return commandPrefix === undefined
@@ -1013,6 +1101,15 @@ const terminateWorkerQuietly = (worker: SpawnedWorker): void => {
   }
 };
 
+const cleanupProcessWorkerMemoryQuietly = (
+  memory: ProcessWorkerMemoryLayout | undefined,
+): void => {
+  try {
+    memory?.cleanup();
+  } catch {
+  }
+};
+
 export const spawnWorkerContext = ({
   list,
   ids,
@@ -1064,6 +1161,9 @@ export const spawnWorkerContext = ({
     : undefined;
   const processWorkerCommandPrefix = useProcessWorkerRuntime
     ? readProcessWorkerCommandPrefix(resolvedWorkerOptions)
+    : undefined;
+  const processSharedMemorySettings = useProcessWorkerRuntime
+    ? readProcessSharedMemorySettings(resolvedWorkerOptions)
     : undefined;
 
   if (debug?.logHref === true) {
@@ -1118,6 +1218,7 @@ export const spawnWorkerContext = ({
       abortBytes,
       payloadBytes: resolvedPayloadConfig.payloadMaxByteLength,
       thread,
+      sharedMemory: processSharedMemorySettings!,
     })
     : undefined;
   const processSharedMemory = processWorkerMemory === undefined
@@ -1459,6 +1560,7 @@ export const spawnWorkerContext = ({
     kills: async () => {
       markWorkerClosed("Thread closed");
       terminateWorkerQuietly(worker);
+      cleanupProcessWorkerMemoryQuietly(processWorkerMemory);
     },
     lock,
     processSharedMemoryBackings: processSharedMemory?.backings,
