@@ -227,6 +227,11 @@ const assertReadmeTypes = () => {
       maxPayloadBytes: 8 * 1024 * 1024,
     },
     worker: {
+      bootstrap: {
+        href: "./fixtures/bootstrap_setup.ts",
+        name: "setup",
+        data: { value: "ready" },
+      },
       runtime: "process",
       processRuntime: "node",
       hardTimeoutMs: 1_000,

@@ -285,12 +285,36 @@ Common options you might tweak:
 | `payload` | Shared payload-buffer settings: `mode`, `payloadInitialBytes`, `payloadMaxByteLength`, and `maxPayloadBytes`. |
 | `abortSignalCapacity` | Number of shared abort slots available to abort-aware calls. |
 | `worker.resolveAfterFinishingAll` | Let submitted calls finish before shutdown resolves. |
+| `worker.bootstrap` | Privileged async hook imported and awaited before task modules load. |
 | `worker.hardTimeoutMs` | Force pool shutdown when a task exceeds this many milliseconds. |
 | `worker.runtime` | Choose `"thread"` or `"process"` workers. |
 | `worker.processSharedMemory` | Process-worker memory discovery: `"inherit"` by default on POSIX, or `"named"` for wrappers/containers that cannot preserve fd 0. |
 | `permission` | Runtime permission policy for workers. |
 | `debug` | Enable extra diagnostics. |
 | `source` | Worker source override for advanced runtimes. |
+
+### Worker bootstrap
+
+Use `worker.bootstrap` when a worker needs privileged setup before task modules
+are imported. The bootstrap module is imported once per worker, and its selected
+export is awaited before Knitting imports task definitions.
+
+```ts
+const pool = createPool({
+  worker: {
+    bootstrap: {
+      href: "./worker-bootstrap.ts",
+      name: "setup",
+      data: { env: "worker-only" },
+    },
+  },
+})({ add });
+```
+
+Bootstrap code runs with worker startup privileges, so keep it trusted. It is a
+good place to remove environment variables, install runtime guards, open shared
+memory metadata, or prepare globals that task modules should see at import time.
+Bootstrap is worker-only and cannot be combined with the inline host lane.
 
 ## Worker Runtimes
 

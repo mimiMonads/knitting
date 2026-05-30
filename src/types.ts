@@ -336,8 +336,40 @@ type DebugOptions = {
   logImportedUrl?: boolean;
 };
 
+type WorkerBootstrapContext = {
+  readonly thread: number;
+  readonly totalNumberOfThread: number;
+  readonly runtime: "node" | "deno" | "bun" | "unknown";
+};
+
+type WorkerBootstrapFunction<Data = unknown> = (
+  data: Data,
+  context: WorkerBootstrapContext,
+) => MaybePromise<void>;
+
+type WorkerBootstrapOptions<Data = unknown> = {
+  /**
+   * Module imported inside the worker before task modules are imported.
+   * Relative paths are resolved from the `createPool(...)` caller.
+   */
+  href: string;
+  /**
+   * Exported bootstrap function name. Defaults to `"default"`.
+   */
+  name?: string;
+  /**
+   * Structured data passed to the bootstrap function.
+   */
+  data?: Data;
+};
+
 type WorkerSettings = {
   resolveAfterFinishingAll?: true;
+  /**
+   * Privileged async worker hook that runs once before task modules import.
+   * Use it to shape the worker environment before user task code loads.
+   */
+  bootstrap?: WorkerBootstrapOptions;
   /**
    * Experimental worker runtime.
    * "thread" uses Worker/worker_threads. "process" spawns another JavaScript
@@ -509,6 +541,9 @@ export type {
   BalancerStrategy as BalancerStrategy,
   Balancer as Balancer,
   DebugOptions as DebugOptions,
+  WorkerBootstrapContext as WorkerBootstrapContext,
+  WorkerBootstrapFunction as WorkerBootstrapFunction,
+  WorkerBootstrapOptions as WorkerBootstrapOptions,
   WorkerSettings as WorkerSettings,
   ProcessSharedMemoryMode as ProcessSharedMemoryMode,
   ProcessSharedMemorySettings as ProcessSharedMemorySettings,
