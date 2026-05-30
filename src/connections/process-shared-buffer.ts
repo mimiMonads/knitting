@@ -68,7 +68,9 @@ export type ProcessSharedBufferMapper = Pick<
 export type ProcessSharedBufferPrimitives = Pick<
   SharedMemoryConnectionPrimitives,
   "createSharedMemory" | "mapSharedMemory"
->;
+> & {
+  unlinkSharedMemory?: (name: string) => boolean;
+};
 
 export type ProcessSharedBufferView =
   | Int8Array

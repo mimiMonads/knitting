@@ -87,14 +87,6 @@ const readSignal = (slot: Task): number => {
   return signal >= 0 ? signal : NO_ABORT_SIGNAL;
 };
 
-const throwIfAborted = (
-  signal: number,
-  hasAborted: HasAborted,
-) => {
-  if (signal === NO_ABORT_SIGNAL) return;
-  if (hasAborted(signal)) throw new Error("Task aborted");
-};
-
 const makeToolkitCache = (hasAborted: HasAborted) => {
   const bySignal: Array<WorkerAbortToolkit | undefined> = [];
 
@@ -141,7 +133,6 @@ export const composeWorkerRunner = ({
   if (!timeout) {
     return (slot: Task) => {
       const signal = readSignal(slot);
-      throwIfAborted(signal, hasAborted);
       if (signal === NO_ABORT_SIGNAL) return job(slot.value);
       return job(slot.value, getToolkit(signal));
     };
@@ -149,7 +140,6 @@ export const composeWorkerRunner = ({
 
   return (slot: Task) => {
     const signal = readSignal(slot);
-    throwIfAborted(signal, hasAborted);
     const result = signal === NO_ABORT_SIGNAL
       ? job(slot.value)
       : job(slot.value, getToolkit(signal));

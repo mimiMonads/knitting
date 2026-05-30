@@ -1,0 +1,154 @@
+name: Build and Test
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-native:
+    name: Build native prebuild (${{ matrix.prebuild }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            node-version: "22"
+            prebuild: linux-x64-node-127
+          - os: ubuntu-latest
+            node-version: "24"
+            prebuild: linux-x64-node-137
+          - os: windows-latest
+            node-version: "22"
+            prebuild: win32-x64-node-127
+            ffi-prebuild: win32-x64
+          - os: windows-latest
+            node-version: "24"
+            prebuild: win32-x64-node-137
+          - os: macos-15-intel
+            node-version: "22"
+            prebuild: darwin-x64-node-127
+          - os: macos-15-intel
+            node-version: "24"
+            prebuild: darwin-x64-node-137
+          - os: macos-latest
+            node-version: "22"
+            prebuild: darwin-arm64-node-127
+          - os: macos-latest
+            node-version: "24"
+            prebuild: darwin-arm64-node-137
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+      - uses: oven-sh/setup-bun@v2
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
+      - name: Build native prebuild
+        run: bun run build:native
+      - name: Upload native prebuild
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.prebuild }}
+          path: prebuilds/${{ matrix.prebuild }}/*.node
+          if-no-files-found: error
+      - name: Upload Windows FFI prebuild
+        if: runner.os == 'Windows' && matrix.ffi-prebuild == 'win32-x64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.ffi-prebuild }}
+          path: prebuilds/${{ matrix.ffi-prebuild }}/*.dll
+          if-no-files-found: error
+
+  deno-test:
+    name: deno-test (${{ matrix.os }})
+    needs: build-native
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            prebuild: linux-x64-node-127
+          - os: macos-latest
+            prebuild: darwin-arm64-node-127
+          - os: windows-latest
+            prebuild: win32-x64-node-127
+            ffi-prebuild: win32-x64
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: denoland/setup-deno@v1
+        with:
+          deno-version: "2.x"
+      - name: Download native prebuild
+        uses: actions/download-artifact@v4
+        with:
+          name: native-${{ matrix.prebuild }}
+          path: prebuilds/${{ matrix.prebuild }}
+      - name: Download Windows FFI prebuild
+        if: matrix.ffi-prebuild != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: native-${{ matrix.ffi-prebuild }}
+          path: prebuilds/${{ matrix.ffi-prebuild }}
+      - name: Install Deno dependencies
+        run: deno install
+      - name: Run Deno tests
+        run: npm run test:deno
+
+  runtime-test:
+    name: runtime-test (${{ matrix.os }}, ${{ matrix.runtime }})
+    needs: build-native
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            runtime: node
+            prebuild: linux-x64-node-127
+          - os: macos-latest
+            runtime: node
+            prebuild: darwin-arm64-node-127
+          - os: windows-latest
+            runtime: node
+            prebuild: win32-x64-node-127
+            ffi-prebuild: win32-x64
+          - os: ubuntu-latest
+            runtime: bun
+            prebuild: linux-x64-node-127
+          - os: macos-latest
+            runtime: bun
+            prebuild: darwin-arm64-node-127
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: oven-sh/setup-bun@v2
+      - name: Download native prebuild
+        uses: actions/download-artifact@v4
+        with:
+          name: native-${{ matrix.prebuild }}
+          path: prebuilds/${{ matrix.prebuild }}
+      - name: Download Windows FFI prebuild
+        if: matrix.ffi-prebuild != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: native-${{ matrix.ffi-prebuild }}
+          path: prebuilds/${{ matrix.ffi-prebuild }}
+      - name: Run node:test suite on Node
+        if: matrix.runtime == 'node'
+        run: node --no-warnings --experimental-transform-types --test "./test/*.test.ts"
+      - name: Run Bun test script
+        if: matrix.runtime == 'bun'
+        run: npm run test:bun

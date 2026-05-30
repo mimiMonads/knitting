@@ -139,10 +139,11 @@ export const signalAbortFactory = ({
 export class OneShotDeferred<T> {  
 
   #triggered = false;
-
+  
   constructor(
     deferred: ReturnType<typeof withResolvers<T>>,
     onSettle: () => void,
+    onEmptyReject?: () => void,
   ) {
 
     const settleOnce = <A extends unknown[]>(
@@ -157,6 +158,13 @@ export class OneShotDeferred<T> {
 
     deferred.resolve = settleOnce(deferred.resolve);
     deferred.reject = settleOnce(deferred.reject);
-    deferred.promise.reject = deferred.reject
+    deferred.promise.reject = (reason?: unknown) => {
+      if (this.#triggered) return;
+      if (reason === undefined && onEmptyReject !== undefined) {
+        onEmptyReject();
+        return;
+      }
+      deferred.reject(reason);
+    };
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "@vixeny/knitting",
-  "version": "0.1.44",
+  "version": "0.1.50",
   "nodeModulesDir": "auto",
   "exports": {
     ".": "./knitting.ts",

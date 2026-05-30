@@ -102,6 +102,8 @@ const resolveCallerHref = (offset: number): string => {
 
 const linkingMap = new Map<string, number>();
 
+export const getCallerHref = (offset = 3): string => resolveCallerHref(offset);
+
 export const getCallerFilePath = (offset = 3) => {
   const href = resolveCallerHref(offset);
   const at = linkingMap.get(href) ?? 0;

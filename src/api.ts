@@ -1,4 +1,4 @@
-import { getCallerFilePath } from "./common/task-source.ts";
+import { getCallerFilePath, getCallerHref } from "./common/task-source.ts";
 import { genTaskID } from "./common/task-source.ts";
 import { toModuleUrl } from "./common/module-url.ts";
 import { endpointSymbol } from "./common/task-symbol.ts";
@@ -34,6 +34,7 @@ import type {
   TaskFn,
   TaskTimeout,
   WorkerInvoke,
+  WorkerSettings,
   tasks,
 } from "./types.ts";
 
@@ -52,6 +53,7 @@ type CreatePoolFactory = (
 
 const MAX_FUNCTION_ID = 0xFFFF;
 const MAX_FUNCTION_COUNT = MAX_FUNCTION_ID + 1;
+const DEFAULT_IMPORT_EXPORT_NAME = "default";
 
 type InferredTaskFunction = (...args: any[]) => MaybePromise<Args>;
 
@@ -128,6 +130,39 @@ export const toListAndIds: ToListAndIdsFn = (
     list: [...result[0]],
     ids: [...result[1]],
     at: [...result[2]],
+  };
+};
+
+const resolveImportHref = (href: string, callerHref: string): string => {
+  try {
+    return new URL(href, callerHref).href;
+  } catch {
+    return toModuleUrl(href);
+  }
+};
+
+const resolveWorkerBootstrapSettings = (
+  worker: WorkerSettings | undefined,
+  callerHref: string,
+): WorkerSettings | undefined => {
+  const bootstrap = worker?.bootstrap;
+  if (bootstrap === undefined) return worker;
+
+  const name = bootstrap.name ?? DEFAULT_IMPORT_EXPORT_NAME;
+  if (typeof bootstrap.href !== "string" || bootstrap.href.length === 0) {
+    throw new TypeError("worker.bootstrap.href must be a non-empty string");
+  }
+  if (typeof name !== "string" || name.length === 0) {
+    throw new TypeError("worker.bootstrap.name must be a non-empty string");
+  }
+
+  return {
+    ...worker,
+    bootstrap: {
+      ...bootstrap,
+      href: resolveImportHref(bootstrap.href, callerHref),
+      name,
+    },
   };
 };
 
@@ -278,8 +313,15 @@ export const createPool: CreatePoolFactory = ({
 
   const hostDispatcher: DispatcherSettings | undefined = host ?? dispatcher;
   const usesAbortSignal = listOfFunctions.some((fn) => fn.abortSignal !== undefined);
-  const hardTimeoutMs = Number.isFinite(worker?.hardTimeoutMs)
-    ? Math.max(1, Math.floor(worker?.hardTimeoutMs as number))
+  const resolvedWorker = resolveWorkerBootstrapSettings(
+    worker,
+    getCallerHref(3),
+  );
+  if (usingInliner && resolvedWorker?.bootstrap !== undefined) {
+    throw new Error("worker.bootstrap cannot be used with the inliner");
+  }
+  const hardTimeoutMs = Number.isFinite(resolvedWorker?.hardTimeoutMs)
+    ? Math.max(1, Math.floor(resolvedWorker?.hardTimeoutMs as number))
     : undefined;
 
   let workers = Array.from({
@@ -293,7 +335,7 @@ export const createPool: CreatePoolFactory = ({
       debug,
       totalNumberOfThread,
       source,
-      workerOptions: worker,
+      workerOptions: resolvedWorker,
       workerExecArgv: execArgv,
       host: hostDispatcher,
       payload,
@@ -464,7 +506,6 @@ export const createPool: CreatePoolFactory = ({
 };
 
 const SINGLE_TASK_KEY = "__task__";
-const DEFAULT_IMPORT_EXPORT_NAME = "default";
 
 const createSingleTaskPool = <
   A extends TaskInput,
@@ -523,14 +564,6 @@ const buildTaskDefinition = <
 ): ReturnFixed<A, B, AS> => {
   const [href, at] = getCallerFilePath(callerOffset);
   return buildTaskDefinitionFromCaller(input, href, at);
-};
-
-const resolveImportHref = (href: string, callerHref: string): string => {
-  try {
-    return new URL(href, callerHref).href;
-  } catch {
-    return toModuleUrl(href);
-  }
 };
 
 const createImportedTaskFn = <

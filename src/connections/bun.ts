@@ -2,6 +2,8 @@ import {
   DARWIN_O_CREAT,
   DARWIN_O_EXCL,
   DARWIN_SHM_MODE,
+  LINUX_O_CREAT,
+  LINUX_O_EXCL,
   setCloseOnExec,
   detectPosixPlatform,
   encodeCString,
@@ -9,9 +11,11 @@ import {
   makeDarwinSharedMemoryName,
   MAP_SHARED,
   O_RDWR,
+  POSIX_SHM_MODE,
   type PosixPlatform,
   PROT_READ,
   PROT_WRITE,
+  toPosixSharedMemoryName,
 } from "./posix.ts";
 import {
   type CreateSharedMemoryOptions,
@@ -19,6 +23,8 @@ import {
   expectPositiveSize,
   type MapSharedMemoryOptions,
   readCreateName,
+  readCreateMode,
+  readRequiredCreateName,
   readCreateSize,
   type SharedMemoryConnectionPrimitives,
   type SharedMemoryMapping,
@@ -139,6 +145,14 @@ const getBunCreateSymbols = (platform = detectPosixPlatform()) =>
         args: [FFIType.ptr, FFIType.u32],
         returns: FFIType.i32,
       },
+      shm_open: {
+        args: [FFIType.ptr, FFIType.i32, FFIType.u32],
+        returns: FFIType.i32,
+      },
+      shm_unlink: {
+        args: [FFIType.ptr],
+        returns: FFIType.i32,
+      },
     };
 
 const checkResult = (result: number, message: string): number => {
@@ -198,14 +212,54 @@ const createBunSharedMemoryFd = (
   }
 };
 
+const createNamedBunSharedMemoryFd = (
+  name: string,
+  mode: "create" | "open",
+  platform: PosixPlatform,
+  libc: BunLibc,
+): number => {
+  const shmOpen = libc.symbols.shm_open;
+  if (shmOpen === undefined) {
+    throw new Error("shm_open symbol is not available");
+  }
+
+  const createFlags = platform === "darwin" ? DARWIN_O_CREAT : LINUX_O_CREAT;
+  const exclusiveFlags = platform === "darwin" ? DARWIN_O_EXCL : LINUX_O_EXCL;
+  const flags = mode === "create"
+    ? O_RDWR | createFlags | exclusiveFlags
+    : O_RDWR;
+  const fd = checkResult(
+    shmOpen(
+      encodeCString(toPosixSharedMemoryName(name)),
+      flags,
+      platform === "darwin" ? DARWIN_SHM_MODE : POSIX_SHM_MODE,
+    ),
+    "shm_open failed",
+  );
+
+  try {
+    return setCloseOnExec(libc, fd);
+  } catch (error) {
+    libc.symbols.close(fd);
+    throw error;
+  }
+};
+
 export const mapBunSharedMemory = (
   options: MapSharedMemoryOptions,
   libc = openBunLibc(),
 ): SharedMemoryMapping<ArrayBuffer> => {
-  const sourceFd = expectFd(options.fd);
+  const sourceFd = options.name === undefined ? expectFd(options.fd) : -1;
   const size = expectPositiveSize(options.size);
   let fd = sourceFd;
-  if (options.duplicateFd !== false) {
+  if (options.name !== undefined) {
+    fd = createNamedBunSharedMemoryFd(
+      options.name,
+      "open",
+      detectPosixPlatform(),
+      libc,
+    );
+  } else if (options.duplicateFd !== false) {
     fd = checkResult(libc.symbols.dup(sourceFd), "dup(fd) failed");
     try {
       setCloseOnExec(libc, fd);
@@ -233,6 +287,7 @@ export const mapBunSharedMemory = (
   return {
     runtime: "bun",
     fd,
+    name: options.name,
     size,
     byteLength: arrayBuffer.byteLength,
     buffer: arrayBuffer,
@@ -251,20 +306,43 @@ export const createBunSharedMemory = (
   libc = openBunLibc(),
 ): SharedMemoryMapping<ArrayBuffer> => {
   const size = expectPositiveSize(readCreateSize(options));
-  const name = readCreateName(options, "knitting_shared_memory");
-  const fd = createBunSharedMemoryFd(name, detectPosixPlatform(), libc);
+  const mode = readCreateMode(options);
+  const name = mode === "anonymous"
+    ? readCreateName(options, "knitting_shared_memory")
+    : readRequiredCreateName(options);
+  const platform = detectPosixPlatform();
+  const fd = mode === "anonymous"
+    ? createBunSharedMemoryFd(name, platform, libc)
+    : createNamedBunSharedMemoryFd(name, mode, platform, libc);
 
   try {
-    checkResult(
-      libc.symbols.ftruncate(fd, BigInt(size)),
-      "ftruncate failed",
-    );
+    if (mode !== "open") {
+      checkResult(
+        libc.symbols.ftruncate(fd, BigInt(size)),
+        "ftruncate failed",
+      );
+    }
 
-    return mapBunSharedMemory({ fd, size, duplicateFd: false }, libc);
+    const mapping = mapBunSharedMemory({ fd, size, duplicateFd: false }, libc);
+    if (mode !== "anonymous") {
+      return { ...mapping, name };
+    }
+    return mapping;
   } catch (error) {
     libc.symbols.close(fd);
     throw error;
   }
+};
+
+export const unlinkBunSharedMemory = (
+  name: string,
+  libc = openBunLibc(),
+): boolean => {
+  const shmUnlink = libc.symbols.shm_unlink;
+  if (shmUnlink === undefined) {
+    throw new Error("shm_unlink symbol is not available");
+  }
+  return shmUnlink(encodeCString(toPosixSharedMemoryName(name))) === 0;
 };
 
 export const createBunPosixConnectionPrimitives = (
@@ -273,6 +351,7 @@ export const createBunPosixConnectionPrimitives = (
   runtime: "bun",
   createSharedMemory: (options) => createBunSharedMemory(options, libc),
   mapSharedMemory: (options) => mapBunSharedMemory(options, libc),
+  unlinkSharedMemory: (name) => unlinkBunSharedMemory(name, libc),
 });
 
 export const createBunConnectionPrimitives = (
