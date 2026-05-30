@@ -7,6 +7,11 @@ import {
   setDefaultProcessSharedBufferPrimitives,
   type SharedMemoryMapping,
 } from "../src/connections/index.ts";
+import { createPool } from "../knitting.ts";
+import {
+  readInt32AtZero,
+  writeSevenAndReadInt32,
+} from "./fixtures/psb_tasks.ts";
 
 const runtimePlatform = String(
   (globalThis as typeof globalThis & { Deno?: { build?: { os?: string } } })
@@ -206,3 +211,60 @@ test("ProcessSharedBuffer rejects out-of-bounds and unaligned views", () => {
     /byteLength is not aligned/,
   );
 });
+
+// Regression test: ProcessSharedBuffer tasks must work in Node.js thread workers.
+//
+// Root cause of the original bug: knitting_shared_memory.node used
+// process-level V8 addon registration. The shared object can be cached after
+// the main thread loads it, so worker threads need context-aware registration
+// to initialize their own environment.
+//
+// This test catches the regression by:
+//   1. Loading the native addon in the main thread via getDefaultProcessSharedBufferPrimitives().
+//   2. Spinning up thread workers via createPool().
+//   3. Calling a task that calls buffer.view() inside the worker, which requires
+//      the addon to load inside the worker thread as well.
+const runtimeVersionsForPsbPool = (globalThis as typeof globalThis & {
+  process?: { versions?: { bun?: string; modules?: string } };
+}).process?.versions;
+const isNodeJsForPsbPool =
+  typeof runtimeVersionsForPsbPool?.modules === "string" &&
+  typeof runtimeVersionsForPsbPool?.bun === "undefined" &&
+  typeof (globalThis as { Deno?: unknown }).Deno === "undefined";
+
+if (isNodeJsForPsbPool) {
+  test(
+    "ProcessSharedBuffer tasks run in thread workers after main-thread native addon load",
+    async () => {
+      const primitives = getDefaultProcessSharedBufferPrimitives();
+
+      const shared = ProcessSharedBuffer.create(64, primitives);
+      Atomics.store(shared.view(Int32Array), 0, 99);
+
+      const pool = createPool({ threads: 1 })({
+        readInt32AtZero,
+        writeSevenAndReadInt32,
+      });
+      try {
+        // Worker must load the native addon independently of the main thread.
+        const read = await pool.call.readInt32AtZero(shared);
+        assert.equal(
+          read,
+          99,
+          "worker should read the value written by main thread",
+        );
+
+        // Worker-side write must be visible back on the main thread.
+        await pool.call.writeSevenAndReadInt32(shared);
+        assert.equal(
+          Atomics.load(shared.view(Int32Array), 0),
+          7,
+          "main thread should see the value written by the worker",
+        );
+      } finally {
+        shared.descriptor.mapping?.close?.();
+        await pool.shutdown();
+      }
+    },
+  );
+}

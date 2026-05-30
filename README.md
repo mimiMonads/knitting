@@ -60,7 +60,7 @@ npm install knitting
 For Deno projects:
 
 ```bash
-deno add --npm jsr:@vixeny/knitting
+deno add --npm knitting
 ```
 
 ## Quick Start
