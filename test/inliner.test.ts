@@ -6,7 +6,7 @@ const assertEquals: (actual: unknown, expected: unknown) => void = (
 ) => {
   assert.deepStrictEqual(actual, expected);
 };
-import { createPool, task } from "../knitting.ts";
+import { createPool, importTask, task } from "../knitting.ts";
 import { genTaskID } from "../src/common/task-source.ts";
 import { createInlineExecutor } from "../src/runtime/inline-executor.ts";
 import { hello, world } from "./fixtures/hello_world.ts";
@@ -197,4 +197,23 @@ test("inliner.dispatchThreshold allows inline lane once threshold is reached", a
   } finally {
     await shutdown();
   }
+});
+
+test("imported task in an inliner pool with no worker lane throws", () => {
+  const remoteAddOne = importTask<number, number>({
+    href: "./fixtures/imported_functions.ts",
+    name: "addOne",
+  });
+
+  // threads: 0 leaves only the host inliner lane. An imported task must never
+  // be inlined on the host, so the pool refuses to build rather than silently
+  // bypassing worker permission isolation.
+  assert.throws(
+    () =>
+      createPool({
+        threads: 0,
+        inliner: { position: "last" },
+      })({ remoteAddOne }),
+    /Imported task has no worker lane to run on/,
+  );
 });

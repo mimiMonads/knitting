@@ -39,6 +39,7 @@ type WorkerData = {
   abortSignalMax?: number;
   list: string[];
   ids: number[];
+  names: string[];
   thread: number;
   totalNumberOfThread: number;
   debug?: DebugOptions;
@@ -158,6 +159,8 @@ type TaskLike<AS extends AbortSignalOption = AbortSignalOption> = {
     : { readonly abortSignal: AS }
 );
 
+type TaskFunctionLike = (...args: any[]) => any;
+
 type Composed<
   A extends TaskInput = Args,
   B extends Args = Args,
@@ -166,7 +169,10 @@ type Composed<
   & FixPoint<A, B, AS>
   & SecondPart;
 
-type tasks = Record<string, Composed<any, any, AbortSignalOption>>;
+type tasks = Record<
+  string,
+  Composed<any, any, AbortSignalOption> | TaskFunctionLike
+>;
 
 type ComposedWithKey = Composed<any, any, AbortSignalOption> & { name: string };
 
@@ -215,14 +221,21 @@ type PromisifyCallArgs<
       : never
     : never;
 
-type AbortSignalOfTask<T extends TaskLike<any>> =
+type TaskCallable<T> =
+  T extends TaskLike<any> ? T["f"]
+    : T extends TaskFunctionLike ? T
+    : never;
+
+type AbortSignalOfTask<T> =
   T extends { readonly abortSignal: infer AS }
     ? Extract<AS, AbortSignalOption>
     : undefined;
 
-type FunctionMapType<T extends Record<string, TaskLike<any>>> = {
+type FunctionMapType<
+  T extends Record<string, TaskLike<any> | TaskFunctionLike>,
+> = {
   [K in keyof T]: PromiseWrapped<
-    T[K]["f"],
+    TaskCallable<T[K]>,
     AbortSignalOfTask<T[K]>
   >;
 };
@@ -269,6 +282,14 @@ type SecondPart = {
    */
   readonly at: number;
   readonly importedFrom: string;
+  /**
+   * Marks a task whose worker-side function is imported dynamically (via
+   * `importTask`). Such tasks must never run on the host inliner lane: their
+   * module import is meant to happen inside the worker so worker permission
+   * policies apply. The pool routes them to worker lanes only, even when the
+   * inliner is enabled for other tasks.
+   */
+  readonly imported?: boolean;
 };
 
 type SingleTaskPool<
@@ -278,10 +299,12 @@ type SingleTaskPool<
 > = {
   call: PromiseWrapped<TaskFn<A, B, AS>, AS>;
   shutdown: (delayMs?: number) => Promise<void>;
+  [Symbol.dispose]: () => void;
 };
 
-type Pool<T extends Record<string, TaskLike<any>>> = {
+type Pool<T extends Record<string, TaskLike<any> | TaskFunctionLike>> = {
   shutdown: (delayMs?: number) => Promise<void>;
+  [Symbol.dispose]: () => void;
   call: FunctionMapType<T>;
 };
 

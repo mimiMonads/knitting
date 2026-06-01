@@ -96,6 +96,7 @@ const withFixedPayloadConfig = (
 export const spawnWorkerContext = ({
   list,
   ids,
+  names,
   sab,
   thread,
   debug,
@@ -116,6 +117,7 @@ export const spawnWorkerContext = ({
 }: {
   list: string[];
   ids: number[];
+  names: string[];
   at: number[];
   sab?: Sab;
   thread: number;
@@ -347,6 +349,7 @@ export const spawnWorkerContext = ({
       : undefined,
     list,
     ids,
+    names,
     at,
     thread,
     debug,

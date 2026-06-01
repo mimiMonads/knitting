@@ -17,7 +17,8 @@ Thanks to its memory design, it can be 5x to 25x faster than using `postMessages
 
 Use it for parts of your program that should run in different environments, such as CPU-intensive tasks, small jobs, runtime-isolated tasks, custom isolation for workers in Docker or bwrap environments, long-running tools, or any processes that require speed and type flexibility.
 
-You define a task once, spin up a pool, and call it like a normal async function:
+You export a function or task, spin up a pool, and call it like a normal async
+function:
 
 ```ts
 
@@ -26,10 +27,10 @@ const result = await pool.call.resizeImage(file);
 ```
 
 So you only have to take care of 4 things:
- - Create a task
+ - Export a function or task
  - Create a pool
- - Call your task
- - Terminate the pool
+ - Call it
+ - Let `using` or `shutdown()` close the pool
 
 
 Under the hood, we take care of scheduling and orchestration across worker threads or separate processes, also handling signals, timeouts, life cycles, memory allocation, garbage collection, and cross-runtime memory over the processes.
@@ -66,29 +67,21 @@ deno add --npm knitting
 ## Quick Start
 
 ```ts
-import { createPool, isMain, task } from "knitting";
+import { createPool, isMain } from "knitting";
 
-export const square = task<number, number>({
-  f: (value) => value * value,
-});
+export const square = (value: number) => value * value;
 
-export const greet = task<string, string>({
-  f: (name) => `hello ${name}`,
-});
+export const greet = (name: string) => `hello ${name}`;
 
 if (isMain) {
-  const pool = createPool({ threads: 2 })({ square, greet });
+  using pool = createPool({ threads: 2 })({ square, greet });
 
-  try {
-    const [four, message] = await Promise.all([
-      pool.call.square(2),
-      pool.call.greet("knitting"),
-    ]);
+  const [four, message] = await Promise.all([
+    pool.call.square(2),
+    pool.call.greet("knitting"),
+  ]);
 
-    console.log({ four, message });
-  } finally {
-    await pool.shutdown();
-  }
+  console.log({ four, message });
 }
 ```
 
@@ -127,6 +120,39 @@ if (isMain) {
   }
 }
 ```
+
+On TypeScript or runtimes that support explicit resource management, the pool is
+also a synchronous disposable:
+
+```ts
+if (isMain) {
+  using pool = createPool({ threads: 4 })({ add });
+
+  const value = await pool.call.add([1, 2]);
+  console.log(value);
+}
+```
+
+`using` starts pool shutdown when the scope exits and does not wait for it.
+TypeScript 5.2+ can compile this pattern for runtimes that do not parse `using`
+syntax directly. Use `await pool.shutdown()` when you need to wait for shutdown
+or pass a shutdown delay.
+
+For simple tasks that do not need timeout or abort metadata, exported functions
+can be used directly:
+
+```ts
+export const add = ([a, b]: [number, number]) => a + b;
+
+if (isMain) {
+  using pool = createPool({ threads: 1 })({ add });
+  console.log(await pool.call.add([1, 2]));
+}
+```
+
+Bare functions must be exported from the module that creates the pool. Inline
+anonymous functions cannot be imported by workers; use `task(...)` when you need
+metadata or a more explicit task definition.
 
 Once you have a pool, calls are just promises, so batching looks like normal
 JavaScript:
@@ -240,6 +266,14 @@ path, or a URL. Relative paths are resolved from the module that calls
 When workers import files, keep the pool's permission settings in mind. The
 default strict mode allows task imports, but custom permission policies can
 limit reads, writes, environment access, networking, and process execution.
+
+Imported tasks are never run on the host inline lane, even when the pool enables
+the `inliner`. Inlining would evaluate the imported module on the host and
+bypass the worker permissions that `importTask` exists to enforce, so Knitting
+always routes imported tasks to a worker. You can freely mix `importTask` and
+the `inliner` in one pool — regular tasks get inlined while imported ones stay
+on worker lanes — but the pool needs at least one worker thread for them to run,
+otherwise `createPool` throws.
 
 ### Single-task shorthand
 
@@ -422,7 +456,6 @@ the inherited fd:
 
 ```ts
 const pool = createPool({
-  threads: 2,
   worker: {
     runtime: "process",
     processRuntime: "bun",
@@ -502,7 +535,8 @@ If it isn't on that list, assume it isn't portable. Some things don't (or
 shouldn't) cross the boundary:
 
 - DOM objects and platform handles.
-- Functions, unless they are part of a `task` or `importTask` definition.
+- Functions, unless they are exported pool tasks or part of a `task` or
+  `importTask` definition.
 - Cyclic object graphs.
 - `Map`, `Set`, `WeakMap`, and non-global symbols.
 - Objects with behavior that depends on prototypes, getters, setters, or hidden

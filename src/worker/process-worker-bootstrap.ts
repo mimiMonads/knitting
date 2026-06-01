@@ -110,6 +110,7 @@ const isProcessWorkerBootPayload = (
     isProcessSharedBufferMetadata(workerData.sab) &&
     Array.isArray(workerData.list) &&
     Array.isArray(workerData.ids) &&
+    Array.isArray(workerData.names) &&
     Array.isArray(workerData.at) &&
     typeof workerData.thread === "number" &&
     typeof workerData.totalNumberOfThread === "number" &&

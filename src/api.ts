@@ -20,7 +20,9 @@ import type {
   AbortSignalConfig,
   AbortSignalOption,
   AbortSignalToolkit,
+  Composed,
   ComposedWithKey,
+  CreateContext,
   CreatePool,
   DispatcherSettings,
   FixPoint,
@@ -42,10 +44,11 @@ import type {
 type ToListAndIds = {
   list: string[];
   ids: number[];
+  names: string[];
   at: number[];
 };
 
-type ToListAndIdsFn = (args: tasks) => ToListAndIds;
+type ToListAndIdsFn = (args: ComposedWithKey[]) => ToListAndIds;
 
 type CreatePoolFactory = (
   options: CreatePool,
@@ -105,24 +108,27 @@ export { endpointSymbol as endpointSymbol };
  * 
  */
 export const toListAndIds: ToListAndIdsFn = (
-  args: tasks,
+  args: ComposedWithKey[],
 ): ToListAndIds => {
-  const result = Object.values(args)
+  const result = args
     .reduce(
       (acc, v) => (
         acc[0].add(v.importedFrom), 
         acc[1].add(v.id), 
-        acc[2].add(v.at), 
+        acc[2].add(v.at),
+        acc[3].push(v.name),
         acc
       ),
       [
         new Set<string>(),
         new Set<number>(),
-        new Set<number>()
+        new Set<number>(),
+        [] as string[],
       ] as [
         Set<string>,
         Set<number>,
         Set<number>,
+        string[],
       ],
     );
 
@@ -130,6 +136,7 @@ export const toListAndIds: ToListAndIdsFn = (
     list: [...result[0]],
     ids: [...result[1]],
     at: [...result[2]],
+    names: result[3],
   };
 };
 
@@ -165,6 +172,41 @@ const resolveWorkerBootstrapSettings = (
     },
   };
 };
+
+const isTaskDefinition = (
+  value: unknown,
+): value is Composed<any, any, AbortSignalOption> =>
+  value != null &&
+  typeof value === "object" &&
+  typeof (value as { f?: unknown }).f === "function";
+
+const toPoolTaskEntries = <T extends tasks>(
+  input: T,
+  callerHref: string,
+): ComposedWithKey[] =>
+  Object.entries(input).map(([name, value]) => {
+    if (isTaskDefinition(value)) {
+      return {
+        ...value,
+        name,
+      } as ComposedWithKey;
+    }
+
+    if (typeof value === "function") {
+      return {
+        f: value,
+        id: -1,
+        importedFrom: new URL(callerHref).href,
+        at: -1,
+        name,
+        [endpointSymbol]: true,
+      } as ComposedWithKey;
+    }
+
+    throw new TypeError(
+      `createPool task "${name}" must be a task definition or exported function`,
+    );
+  });
 
 export const createPool: CreatePoolFactory = ({
   threads,
@@ -221,16 +263,15 @@ export const createPool: CreatePoolFactory = ({
     //@ts-ignore
     return ({
       shutdown: mainThreadOnlyProxy,
+      [Symbol.dispose]: () => {},
       call: mainThreadOnlyProxy,
     } as Pool<T>);
   }
 
-  const { list, ids  , at } = toListAndIds(tasks),
-    listOfFunctions = Object.entries(tasks).map(([k, v]) => ({
-      ...v,
-      name: k,
-    }))
-      .sort((a, b) => a.name.localeCompare(b.name)) as ComposedWithKey[];
+  const callerHref = getCallerHref(3);
+  const listOfFunctions = toPoolTaskEntries(tasks, callerHref)
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const { list, ids, names, at } = toListAndIds(listOfFunctions);
 
   if (listOfFunctions.length > MAX_FUNCTION_COUNT) {
     throw new RangeError(
@@ -315,7 +356,7 @@ export const createPool: CreatePoolFactory = ({
   const usesAbortSignal = listOfFunctions.some((fn) => fn.abortSignal !== undefined);
   const resolvedWorker = resolveWorkerBootstrapSettings(
     worker,
-    getCallerHref(3),
+    callerHref,
   );
   if (usingInliner && resolvedWorker?.bootstrap !== undefined) {
     throw new Error("worker.bootstrap cannot be used with the inliner");
@@ -330,6 +371,7 @@ export const createPool: CreatePoolFactory = ({
     spawnWorkerContext({
       list,
       ids,
+      names,
       at,
       thread,
       debug,
@@ -351,7 +393,7 @@ export const createPool: CreatePoolFactory = ({
 
   if (usingInliner) {
     const mainThread = createInlineExecutor({
-      tasks,
+      tasks: listOfFunctions,
       genTaskID,
       batchSize: inliner?.batchSize ?? 1,
     });
@@ -448,12 +490,16 @@ export const createPool: CreatePoolFactory = ({
     })();
     return shutdownPromise;
   };
+  const disposePool = (): void => {
+    void shutdownWithDelay();
+  };
 
   const indexedFunctions = listOfFunctions.map((fn, index) => ({
     name: fn.name,
     index,
     timeout: fn.timeout,
     abortSignal: fn.abortSignal,
+    imported: fn.imported === true,
   }));
 
   const callHandlers = new Map<string, WorkerInvoke[]>();
@@ -479,8 +525,46 @@ export const createPool: CreatePoolFactory = ({
 
   const useDirectHandler = (threads ?? 1) === 1 && !usingInliner;
 
-  const buildInvoker = (handlers: WorkerInvoke[]) =>
-    useDirectHandler
+  // Imported tasks must never execute on the host inliner lane: their module
+  // import is meant to happen inside the worker so worker permission policies
+  // apply. When the inliner is active we strip the inline lane from their
+  // handler set so they only ever reach real worker lanes.
+  const buildImportedInvoker = (handlers: WorkerInvoke[]): WorkerInvoke => {
+    const workerHandlers: WorkerInvoke[] = [];
+    const workerContexts: CreateContext[] = [];
+    for (let lane = 0; lane < handlers.length; lane += 1) {
+      if (lane === inlinerIndex) continue;
+      workerHandlers.push(handlers[lane]!);
+      workerContexts.push(workers[lane]!);
+    }
+
+    if (workerHandlers.length === 0) {
+      throw new Error(
+        "Imported task has no worker lane to run on: the pool only has the " +
+          "host inliner. Imported tasks are never inlined on the host; add at " +
+          "least one worker thread.",
+      );
+    }
+
+    if (workerHandlers.length === 1) return workerHandlers[0]!;
+
+    return managerMethod({
+      contexts: workerContexts,
+      balancer,
+      handlers: workerHandlers,
+      // No inlinerGate: the inline lane is intentionally excluded here.
+    });
+  };
+
+  const buildInvoker = (
+    handlers: WorkerInvoke[],
+    imported: boolean,
+  ): WorkerInvoke => {
+    if (imported && usingInliner) {
+      return buildImportedInvoker(handlers);
+    }
+
+    return useDirectHandler
       ? handlers[0]!
       : managerMethod({
         contexts: workers,
@@ -493,14 +577,27 @@ export const createPool: CreatePoolFactory = ({
           }
           : undefined,
       });
+  };
 
-  const callEntries = Array.from(
-    callHandlers.entries(),
-    ([name, handlers]) => [name, buildInvoker(handlers)],
-  );
+  let callEntries: Array<readonly [string, WorkerInvoke]>;
+  try {
+    callEntries = indexedFunctions.map(
+      ({ name, imported }) =>
+        [name, buildInvoker(callHandlers.get(name)!, imported)] as const,
+    );
+  } catch (error) {
+    // Building invokers can throw (e.g. an imported task with no worker lane,
+    // or a balancer that needs >=2 lanes). The inline executor and any spawned
+    // workers are already live here, so tear them down before propagating —
+    // otherwise their MessageChannel ports / worker handles keep the event
+    // loop alive and hang the process.
+    void closePoolNow();
+    throw error;
+  }
 
   return {
     shutdown: shutdownWithDelay,
+    [Symbol.dispose]: disposePool,
     call: Object.fromEntries(callEntries) as unknown as FunctionMapType<T>,
   } as Pool<T>;
 };
@@ -522,6 +619,7 @@ const createSingleTaskPool = <
   return {
     call: pool.call[SINGLE_TASK_KEY] as SingleTaskPool<A, B, AS>["call"],
     shutdown: pool.shutdown,
+    [Symbol.dispose]: pool[Symbol.dispose],
   };
 };
 
@@ -533,6 +631,7 @@ const buildTaskDefinitionFromCaller = <
   input: FixPoint<A, B, AS>,
   callerHref: string,
   at: number,
+  imported = false,
 ): ReturnFixed<A, B, AS> => {
   const importedFrom = new URL(callerHref).href;
 
@@ -541,6 +640,7 @@ const buildTaskDefinitionFromCaller = <
     id: genTaskID(),
     importedFrom,
     at,
+    imported,
     [endpointSymbol]: true,
   }) as ReturnFixed<A, B, AS>;
 
@@ -695,5 +795,5 @@ export function importTask<
   return buildTaskDefinitionFromCaller<A, B, AS>({
     ...(rest as unknown as Omit<FixPoint<A, B, AS>, "f">),
     f: createImportedTaskFn<A, B, AS>(resolvedHref, name),
-  } as FixPoint<A, B, AS>, callerHref, at);
+  } as FixPoint<A, B, AS>, callerHref, at, true);
 }

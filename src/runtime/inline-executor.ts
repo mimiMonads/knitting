@@ -1,4 +1,9 @@
-import type { TaskTimeout, WorkerCall, tasks } from "../types.ts";
+import type {
+  ComposedWithKey,
+  tasks,
+  TaskTimeout,
+  WorkerCall,
+} from "../types.ts";
 import { withResolvers } from "../common/with-resolvers.ts";
 import RingQueue from "../ipc/tools/ring-queue.ts";
 import { createRuntimeMessageChannel } from "../common/worker-runtime.ts";
@@ -109,19 +114,31 @@ export const createInlineExecutor = ({
   genTaskID,
   batchSize,
 }: {
-  tasks: tasks;
+  tasks: tasks | ComposedWithKey[];
   genTaskID: () => number;
   batchSize?: number;
 }) => {
-  const entries = Object.values(tasks)
-    .sort((a, b) => a.id - b.id);
-  const runners = entries.map((entry) =>
-    composeInlineCallable(
+  const entries = Array.isArray(tasks)
+    ? tasks
+    : (Object.values(tasks) as ComposedWithKey[]).sort((a, b) => a.id - b.id);
+  const runners = entries.map((entry) => {
+    // Imported tasks must never execute on the host inline lane: their module
+    // import is meant to stay inside the worker so worker permission policies
+    // apply. The pool already routes them to worker lanes, but guard here as
+    // defense in depth so a dispatch regression can't silently import on host.
+    if ((entry as ComposedWithKey).imported === true) {
+      return () => {
+        throw new Error(
+          "Imported task cannot run on the host inline lane",
+        );
+      };
+    }
+    return composeInlineCallable(
       entry.f as WorkerCallable,
       entry.timeout,
       entry.abortSignal !== undefined,
-    )
-  );
+    );
+  });
 
   const initCap = 16;
   let fnByIndex = new Int32Array(initCap);

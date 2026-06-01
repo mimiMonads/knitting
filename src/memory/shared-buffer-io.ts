@@ -388,6 +388,39 @@ export const createSharedStaticBufferIO = ({
     slotByteOffsets[i] = slotStartBytes(i) - baseByteOffset;
   }
 
+  // The static region is itself a Uint32Array, shared in-process with native
+  // endianness. Fixed-shape numeric payloads (e.g. ProcessSharedBuffer
+  // descriptors) can be written/read as raw words straight into the slot,
+  // skipping the byte scratch + DataView + copy that the generic paths require.
+  const baseU32 = new Uint32Array(
+    buffer,
+    baseByteOffset,
+    (buffer.byteLength - baseByteOffset) >>> 2,
+  );
+  const slotU32Offsets = new Uint32Array(LockBound.slots);
+  for (let i = 0; i < LockBound.slots; i++) {
+    slotU32Offsets[i] = slotByteOffsets[i]! >>> 2;
+  }
+
+  const writeU32Words = (
+    words: ArrayLike<number>,
+    count: number,
+    at: number,
+  ): number => {
+    const base = slotU32Offsets[at]!;
+    for (let i = 0; i < count; i++) baseU32[base + i] = words[i]!;
+    return count * u32Bytes;
+  };
+  const readU32Words = (
+    out: Uint32Array,
+    count: number,
+    at: number,
+  ): Uint32Array => {
+    const base = slotU32Offsets[at]!;
+    for (let i = 0; i < count; i++) out[i] = baseU32[base + i]!;
+    return out;
+  };
+
   const canWrite = (start: number, length: number) =>
     (start | 0) >= 0 && (start + length) <= writableBytes;
 
@@ -515,6 +548,8 @@ export const createSharedStaticBufferIO = ({
     writeArrayBuffer,
     writeExactUint8Array,
     writeUint8Array,
+    writeU32Words,
+    readU32Words,
     write8Binary,
     readBytesCopy,
     readBytesView,

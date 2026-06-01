@@ -23,13 +23,9 @@ type ResizeInput = {
   height: number;
 };
 
-const square = task<number, number>({
-  f: (value) => value * value,
-});
+const square = (value: number) => value * value;
 
-const greet = task<string, string>({
-  f: (name) => `hello ${name}`,
-});
+const greet = (name: string) => `hello ${name}`;
 
 const add = task<[number, number], number>({
   f: ([a, b]) => a + b,

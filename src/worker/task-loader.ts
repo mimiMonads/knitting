@@ -6,6 +6,7 @@ import type { ResolvedPermissionProtocol } from "../permission/protocol.ts";
 type GetFunctionParams = {
   list: string[];
   ids: number[];
+  names: string[];
   at: number[];
   isWorker: boolean;
   permission?: ResolvedPermissionProtocol;
@@ -59,14 +60,15 @@ export type WorkerComposedWithKey = ComposedWithKey & {
 };
 
 export const getFunctions = async (
-  { list, ids, at, permission }: GetFunctionParams,
+  { list, ids, names, at, permission }: GetFunctionParams,
 ) => {
   const modules = list.map((specifier) => toModuleUrl(specifier));
+  const nameSet = new Set(names);
 
   const results = await Promise.all(
     modules.map(async (imports) => {
       const module = (await import(imports)) as Record<string, unknown>;
-      return Object.entries(module)
+      const fixedTasks = Object.entries(module)
         .filter(
           ([_, value]) =>
             value != null && typeof value === "object" &&
@@ -75,10 +77,26 @@ export const getFunctions = async (
         )
         .map(([name, value]) => (
           {
-          //@ts-ignore Reason -> trust me
-          ...value,
+            //@ts-ignore Reason -> trust me
+            ...value,
+            name,
+          }
+        )) as unknown as ComposedWithKey[];
+
+      const functionTasks = Object.entries(module)
+        .filter(([name, value]) =>
+          nameSet.has(name) && typeof value === "function"
+        )
+        .map(([name, value]) => ({
+          f: value,
+          id: -1,
+          importedFrom: imports,
+          at: -1,
           name,
+          [endpointSymbol]: true,
         })) as unknown as ComposedWithKey[];
+
+      return [...fixedTasks, ...functionTasks];
     }),
   );
 

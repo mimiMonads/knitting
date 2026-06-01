@@ -840,3 +840,52 @@ test("xor decode keeps bit protocol consistent on unknown payload signal", () =>
     assertEquals(lock.workerBits[0], lock.hostBits[0]);
   }
 });
+
+// Sender-side cached shadow (XSC paper section 5: Theorem S1 + refresh-on-exhaustion
+// S3). The encode/sender side keeps a private shadow of the receiver's ack word
+// (workerBits), computes free lanes from that cached copy, and only reloads the real
+// ack word when its cached free set is exhausted ("fake full", refresh policy
+// P-empty). So a receiver ack that frees a lane stays invisible to the sender until
+// it runs out of cached free lanes; at that one refresh it picks up every accumulated
+// ack at once. This is free_cache subset of free_true: staleness can hide free lanes,
+// never invent them. NOTE: the shadow is sender-side only by design; caching the
+// other word on the receiver would be unsafe (paper Proposition S5).
+test("sender uses a cached worker-bit shadow and refreshes only on exhaustion", () => {
+  const lock = lock2({});
+
+  // encode() selects the highest free lane and XORs that bit into hostBits, so the
+  // toggled bit reveals which slot was chosen.
+  const encodeSlot = (value: number): number => {
+    const before = Atomics.load(lock.hostBits, 0) >>> 0;
+    assertEquals(lock.encode(makeValueTask(value)), true);
+    const after = Atomics.load(lock.hostBits, 0) >>> 0;
+    return 31 - Math.clz32((after ^ before) >>> 0);
+  };
+  const ackLane = (bit: number) =>
+    Atomics.store(
+      lock.workerBits,
+      0,
+      (Atomics.load(lock.workerBits, 0) ^ (1 << bit)) >>> 0,
+    );
+
+  // Fill lanes 31..2 (highest-first). Shadow == real ack word == 0 throughout.
+  const filled: number[] = [];
+  for (let i = 0; i < 30; i++) filled.push(encodeSlot(i));
+  assertEquals(filled, Array.from({ length: 30 }, (_, i) => 31 - i));
+
+  // Receiver acks lanes 31 and 30 in the REAL ack word. The sender's cached shadow
+  // is not refreshed, so from its view only lanes 1 and 0 remain free.
+  ackLane(31);
+  ackLane(30);
+
+  // While the cache still shows free lanes the sender uses those (1 then 0) and must
+  // NOT yet see the genuinely-free lanes 31/30 -- stale, but conservatively safe.
+  assertEquals(encodeSlot(100), 1);
+  assertEquals(encodeSlot(101), 0);
+
+  // Cache now exhausted (every lane looks used in the shadow). The next encode is
+  // forced to reload the real ack word, revealing BOTH accumulated acks: it picks
+  // the highest freed lane (31), then 30, from that single refresh.
+  assertEquals(encodeSlot(102), 31);
+  assertEquals(encodeSlot(103), 30);
+});

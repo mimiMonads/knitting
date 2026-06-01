@@ -32,12 +32,30 @@ The core flow is:
 ## Build And Scripts
 
 - `build.ts`: Bundles `knitting.ts` to `out/` with Bun for a Node ESM target.
+- `tsconfig.npm.json`: TypeScript config for the npm release build. Emits
+  `.js` and `.d.ts` files beside the source tree.
+- `scripts/rewrite-declaration-imports.mjs`: Post-processes emitted `.d.ts`
+  files so declaration imports point at `.js` files for npm consumers.
 - `scripts/build-native-addons.ts`: Compiles the native Node addons into
   `build/Release/` on Linux, macOS, and Windows. It finds Node headers/libs,
   splits user flags, builds the shared-memory and futex addons, and emits the
   Windows FFI DLL used by Deno and Bun.
 - `run.sh`: Runs every top-level benchmark in `bench/` across Node, Deno, and
   Bun. `--json` writes JSON result files.
+
+## CI And Release
+
+- `.github/workflows/test.yml`: Push/PR test matrix for Deno, Node, and Bun
+  across Linux, macOS, and Windows.
+- `.github/workflows/coverage.yml`: Node coverage workflow with a 90% line
+  coverage gate.
+- `.github/workflows/build-and-test.yml`: Manual workflow that builds native
+  prebuild artifacts and runs runtime tests against them.
+- `.github/workflows/publish.yml`: Manual native-prebuild workflow. Verifies
+  Node and Windows FFI prebuilds, checks the JSR package contents, and commits
+  updated `prebuilds/` artifacts back to the branch.
+- `docs/windows-process-worker-hang-fix.md`: Investigation notes for the
+  Windows process-worker shared-memory and parked-worker hang fixes.
 
 ## Public API Layer
 
@@ -85,12 +103,20 @@ The core flow is:
   first-idle, random, and first-idle-random.
 - `src/runtime/inline-executor.ts`: Optional in-process executor used by the
   inliner path to run tasks without crossing the worker boundary.
+- `src/runtime/process-worker.ts`: Process-worker spawning, command/runtime
+  selection, process shared-memory layout, inherited/named mapping metadata, and
+  child boot payload construction.
 
 ## Worker Side
 
+- `src/worker/bootstrap.ts`: Optional user bootstrap hook that runs before task
+  modules import and revives process-shared-buffer metadata in bootstrap data.
 - `src/worker/loop.ts`: Worker entrypoint and main loop. Boots worker contexts,
   installs safety guards, receives tasks, executes batches, writes completions,
   and supports process-worker bootstrapping.
+- `src/worker/process-worker-bootstrap.ts`: Child-side process-worker boot
+  payload validation, shared-memory remapping, runtime primitive setup, and
+  startup handoff into the worker loop.
 - `src/worker/task-loader.ts`: Imports task modules inside workers, finds
   exported task definitions, filters by id/caller position, and normalizes
   timeout metadata.
@@ -154,6 +180,8 @@ The core flow is:
   payload-codec registration.
 - `src/connections/file-descriptor.ts`: File descriptor wrapper, metadata
   parsing, mapping support, and descriptor lifecycle helpers.
+- `src/connections/node-addons.ts`: Native addon specifier resolution for
+  committed Node ABI prebuilds with `build/Release` fallback loading.
 - `src/connections/node.ts`: Loads POSIX Node native addons and exposes Node
   shared memory, mapping, unlink, and futex primitives.
 - `src/connections/bun.ts`: Bun FFI implementation for POSIX shared memory.
@@ -169,6 +197,10 @@ The core flow is:
 - `src/knitting_windows_shared_memory.cc`: Runtime-neutral Windows DLL exports
   for creating, opening, mapping, and closing named shared-memory objects from
   FFI runtimes.
+- `prebuilds/*/*.node`: Tracked Node native-addon prebuilds for supported
+  platform/Node ABI combinations.
+- `prebuilds/win32-x64/*.dll`: Tracked Windows FFI DLL prebuild used by Bun and
+  Deno shared-memory primitives on Windows.
 
 ## Permissions
 
@@ -190,6 +222,9 @@ The core flow is:
 - `bench/withload.ts`: Measures behavior under main-thread load.
 - `bench/call-growth.ts`: Measures call cost as payload size grows.
 - `bench/call-growth-batch.ts`: Batch-focused version of call-growth tests.
+- `bench/startup.ts`: Measures `createPool` to first-response startup latency
+  across thread and process workers, with optional cross-runtime and named
+  shared-memory candidates.
 - `bench/tokio-mpsc-knitting.ts`: Batch latency benchmark for string, number,
   and Uint8Array echo tasks.
 - `bench/payload-sweep.ts`: Uint8Array payload-size sweep promoted from the old
@@ -219,6 +254,7 @@ The core flow is:
 
 ## Tests
 
+- `test/_runner.ts`: Runtime-neutral test runner shim used by the test suite.
 - `test/abortSignal.test.ts`: Shared abort bitset behavior.
 - `test/api-cap.test.ts`: API limits such as maximum task id count.
 - `test/shared-buffer-io.test.ts`: Shared-buffer IO read/write behavior.
@@ -250,6 +286,8 @@ The core flow is:
 - `test/task-abort-context-api.test.ts`: Worker abort toolkit/context behavior.
 - `test/tx-queue.test.ts`: Host transmit queue behavior and late-result safety.
 - `test/type-inference.test.ts`: Public type inference guarantees.
+- `test/worker-bootstrap.test.ts`: Worker bootstrap hook behavior, shared-buffer
+  metadata revival, startup failure propagation, and inliner incompatibility.
 - `test/fixtures/*.ts`: Task modules used by tests.
 - `test/fixtures/probes/*.ts`: Probe programs for crash, permission, process,
   file-descriptor, and shared-memory-corruption safety cases.
@@ -259,12 +297,12 @@ The core flow is:
 - `build/Release/*.node`: Native addon output produced by
   `scripts/build-native-addons.ts`.
 - `out/`: Bundled output produced by `build.ts`.
+- `dest/`: Scratch output used by the `build:node` package script.
+- `knitting.js`, `knitting.d.ts`, `process-shared-buffer.js`,
+  `process-shared-buffer.d.ts`, and `src/**/*.js` / `src/**/*.d.ts`: npm
+  release build artifacts produced by `tsconfig.npm.json`.
 - `results/`: Benchmark output produced by `run.sh`.
+- `log/`, `logs`, and `*.log`: Local runtime/log output.
 - `node_modules/`: Installed dependencies. Not part of the source map.
 
-## Deleted Or Intentionally Absent
 
-- Browser-mode build/smoke files are no longer part of the project.
-- The old top-level scratch files `uwu.ts` and `examples.ts` are removed.
-- Python graph scripts under `graphs/` were removed; current benchmark output is
-  kept in the TypeScript benchmark suite.

@@ -5,9 +5,13 @@ export const genTaskID = ((counter: number) => () => counter++)(0);
 
 const INTERNAL_CALLER_HINTS = [
   "/src/common/task-source.ts",
+  "/src/common/task-source.js",
   "\\src\\common\\task-source.ts",
+  "\\src\\common\\task-source.js",
   "/src/api.ts",
+  "/src/api.js",
   "\\src\\api.ts",
+  "\\src\\api.js",
 ];
 
 const INTERNAL_CALLER_FUNCTIONS = new Set([
