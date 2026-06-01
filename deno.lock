@@ -5,10 +5,10 @@
     "jsr:@std/internal@^1.0.5": "1.0.5",
     "npm:@types/bun@latest": "1.2.3",
     "npm:@types/deno@latest": "2.2.0",
-    "npm:@types/node@*": "24.2.0",
+    "npm:@types/node@*": "25.2.3",
     "npm:@types/node@latest": "25.2.3",
     "npm:mitata@^1.0.34": "1.0.34",
-    "npm:typescript@5": "5.9.3"
+    "npm:typescript@^5.2.0": "5.9.3"
   },
   "jsr": {
     "@std/assert@1.0.11": {
@@ -31,28 +31,22 @@
     "@types/deno@2.2.0": {
       "integrity": "sha512-4x6M/ZSyoQy6fJeMArP0dvvNT4IOolfySyukuqqKhsLmSXDV4wGanqXIZ+xFihw3TlReS6JTa4hRG9nAZInpmw=="
     },
-    "@types/node@24.2.0": {
-      "integrity": "sha512-3xyG3pMCq3oYCNg7/ZP+E1ooTaGB4cG8JWRsqqOYQdbWNY4zbaV0Ennrd7stjiJEFZCaybcIgpTjJWHRfBSIDw==",
-      "dependencies": [
-        "undici-types@7.10.0"
-      ]
-    },
     "@types/node@25.2.3": {
       "integrity": "sha512-m0jEgYlYz+mDJZ2+F4v8D1AyQb+QzsNqRuI7xg1VQX/KlKS0qT9r1Mo16yo5F/MtifXFgaofIFsdFMox2SxIbQ==",
       "dependencies": [
-        "undici-types@7.16.0"
+        "undici-types"
       ]
     },
     "@types/ws@8.5.14": {
       "integrity": "sha512-bd/YFLW+URhBzMXurx7lWByOu+xzU9+kb3RboOteXYDfW+tr+JZa99OyNmPINEGB/ahzKrEuc8rcv4gnpJmxTw==",
       "dependencies": [
-        "@types/node@24.2.0"
+        "@types/node"
       ]
     },
     "bun-types@1.2.3": {
       "integrity": "sha512-P7AeyTseLKAvgaZqQrvp3RqFM3yN9PlcLuSTe7SoJOfZkER73mLdT2vEQi8U64S1YvM/ldcNiQjn0Sn7H9lGgg==",
       "dependencies": [
-        "@types/node@24.2.0",
+        "@types/node",
         "@types/ws"
       ]
     },
@@ -62,9 +56,6 @@
     "typescript@5.9.3": {
       "integrity": "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw==",
       "bin": true
-    },
-    "undici-types@7.10.0": {
-      "integrity": "sha512-t5Fy/nfn+14LuOc2KNYg75vZqClpAiqscVvMygNnlsHBFpSXdJaYtXMcdNLpl/Qvc3P2cB3s6lOV51nqsFq4ag=="
     },
     "undici-types@7.16.0": {
       "integrity": "sha512-Zz+aZWSj8LE6zoxD+xrjh4VfkIG8Ya6LvYkZqtUQGJPZjYl53ypCaUwWqo7eI0x66KBGeRo+mlBEkMSeSZ38Nw=="
@@ -81,7 +72,7 @@
         "npm:@types/deno@latest",
         "npm:@types/node@latest",
         "npm:mitata@^1.0.34",
-        "npm:typescript@5"
+        "npm:typescript@^5.2.0"
       ]
     }
   }

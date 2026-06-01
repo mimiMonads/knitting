@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "./_runner.ts";
 import { createPool, task } from "../knitting.ts";
+import { callRawFunctionPool } from "./fixtures/raw_function_tasks.ts";
 import { pooledSlowHello } from "./fixtures/type_inference_tasks.ts";
 
 type Assert<T extends true> = T;
@@ -47,12 +48,31 @@ type _abortOnlyCallReturn = Assert<
   ReturnType<AbortOnlyCall> extends Promise<string> ? true : false
 >;
 
+const rawHello = (name: string) => `hello ${name}`;
+
+const assertRawFunctionPoolTypes = () => {
+  const pool = createPool({ threads: 1 })({ rawHello });
+  type RawHelloPooledCall = typeof pool.call.rawHello;
+  type _rawHelloPooledCallArgs = Assert<
+    ["world"] extends Parameters<RawHelloPooledCall> ? true : false
+  >;
+  type _rawHelloPooledCallReturn = Assert<
+    ReturnType<RawHelloPooledCall> extends Promise<string> ? true : false
+  >;
+  void pool;
+};
+
 test("task inference keeps README-style sync and abort-aware signatures", () => {
+  void assertRawFunctionPoolTypes;
   assert.equal(hello.f("world"), "hello world");
   assert.equal(
     slowHello.f("world", { hasAborted: () => false }),
     "hello world",
   );
+});
+
+test("createPool supports exported bare functions", async () => {
+  assert.deepEqual(await callRawFunctionPool(), [5, 42]);
 });
 
 test("createPool preserves abort-aware call signatures", async () => {

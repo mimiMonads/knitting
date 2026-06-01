@@ -328,6 +328,8 @@ export class ProcessSharedBuffer {
     return ProcessSharedBuffer.fromMetadata(serialized);
   }
 
+  // Rebuilds from the 8 raw words (no name -> no JSON):
+  // fd, size, descByteLength, byteOffset, byteLength, runtime, kind, baseAddressMod64
   static [PROCESS_SHARED_BUFFER_NUMERIC_TRANSFER](
     metadata: ProcessSharedBufferNumericMetadata,
   ): ProcessSharedBuffer {

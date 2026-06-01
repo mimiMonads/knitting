@@ -93,6 +93,7 @@ export const workerMainLoop = async (
     totalNumberOfThread,
     list,
     ids,
+    names,
     at,
   } = startupData as WorkerData;
 
@@ -159,10 +160,11 @@ export const workerMainLoop = async (
     list,
     isWorker: true,
     ids,
+    names,
     at,
     permission,
   });
-  assertWorkerImportsResolved({ debug, list, ids, listOfFunctions });
+  assertWorkerImportsResolved({ debug, list, ids, names, listOfFunctions });
   const abortSignals = abortSignalSAB
     ? signalAbortFactory({
       sab: abortSignalSAB,
@@ -332,6 +334,7 @@ const isWorkerBootPayload = (value: unknown): value is WorkerData => {
   return isSharedBufferSource(candidate.sab) &&
     Array.isArray(candidate.list) &&
     Array.isArray(candidate.ids) &&
+    Array.isArray(candidate.names) &&
     Array.isArray(candidate.at) &&
     typeof candidate.thread === "number" &&
     typeof candidate.totalNumberOfThread === "number" &&

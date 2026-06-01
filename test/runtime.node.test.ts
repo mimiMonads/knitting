@@ -283,6 +283,31 @@ test("node:test pool imports worker function via importTask href", {
   }
 });
 
+test("node:test imported task runs on a worker lane in an inliner pool", {
+  concurrency: false,
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
+  // The inliner runs regular tasks on the host, but an imported task must
+  // still reach a worker so its module import stays under worker permission
+  // policy. The pool keeps it off the inline lane while inlining the rest.
+  const pool = createPool({
+    threads: 1,
+    inliner: { position: "last" },
+    worker: WINDOWS_AWAKE_WORKER,
+  })({ addOnePromise, addOneViaImportTask });
+
+  try {
+    const [inlined, imported] = await Promise.all([
+      withTimeout(pool.call.addOnePromise(Promise.resolve(41)), TEST_TIMEOUT_MS),
+      withTimeout(pool.call.addOneViaImportTask(10), TEST_TIMEOUT_MS),
+    ]);
+    assert.equal(inlined, 42);
+    assert.equal(imported, 11);
+  } finally {
+    await pool.shutdown();
+  }
+});
+
 test("node:test pool rejects when worker cannot encode returned payload", {
   concurrency: false,
   timeout: TEST_TIMEOUT_MS,

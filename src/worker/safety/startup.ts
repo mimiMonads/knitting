@@ -15,6 +15,7 @@ type ImportedFunctionsState = {
   debug: DebugOptions | undefined;
   list: string[];
   ids: number[];
+  names?: string[];
   listOfFunctions: readonly unknown[];
 };
 
@@ -43,15 +44,19 @@ export const assertWorkerSharedMemoryBootData = (
 };
 
 export const assertWorkerImportsResolved = (
-  { debug, list, ids, listOfFunctions }: ImportedFunctionsState,
+  { debug, list, ids, names, listOfFunctions }: ImportedFunctionsState,
 ): void => {
   if (debug?.logImportedUrl === true) {
     console.log(list);
   }
 
-  if (listOfFunctions.length > 0) return;
+  if (
+    listOfFunctions.length > 0 &&
+    (names === undefined || listOfFunctions.length === names.length)
+  ) return;
   console.log(list);
   console.log(ids);
+  if (names !== undefined) console.log(names);
   console.log(listOfFunctions);
   throw new Error("No imports were found.");
 };

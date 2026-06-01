@@ -711,12 +711,19 @@ void UnlinkSharedMemory(const v8::FunctionCallbackInfo<v8::Value>& args) {
 #endif
 }
 
-void Initialize(v8::Local<v8::Object> exports) {
+void Initialize(
+  v8::Local<v8::Object> exports,
+  v8::Local<v8::Value> /*module*/,
+  v8::Local<v8::Context> /*context*/
+) {
   NODE_SET_METHOD(exports, "createSharedMemory", CreateSharedMemory);
   NODE_SET_METHOD(exports, "mapSharedMemory", MapSharedMemory);
   NODE_SET_METHOD(exports, "unlinkSharedMemory", UnlinkSharedMemory);
 }
 
-NODE_MODULE(NODE_GYP_MODULE_NAME, Initialize)
+// This addon needs V8 APIs to expose mmap'd memory as a SharedArrayBuffer.
+// Context-aware registration lets Node initialize it inside worker threads
+// even after the main thread has already loaded the shared library.
+NODE_MODULE_CONTEXT_AWARE(NODE_GYP_MODULE_NAME, Initialize)
 
 }  // namespace knitting_shared_memory

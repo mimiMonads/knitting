@@ -165,29 +165,18 @@ const decodeExternalPayload = (raw: string): unknown => {
 };
 
 const PROCESS_SHARED_BUFFER_NUMERIC_WORDS = 8;
-const PROCESS_SHARED_BUFFER_NUMERIC_BYTES =
-  PROCESS_SHARED_BUFFER_NUMERIC_WORDS * Uint32Array.BYTES_PER_ELEMENT;
 const NUMERIC_SENTINEL = 0xffffffff;
 
-const readProcessSharedBufferNumericPayload = (
-  bytes: Uint8Array,
-): Uint32Array => {
-  const out = new Uint32Array(PROCESS_SHARED_BUFFER_NUMERIC_WORDS);
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  for (let i = 0; i < PROCESS_SHARED_BUFFER_NUMERIC_WORDS; i++) {
-    out[i] = view.getUint32(i * Uint32Array.BYTES_PER_ELEMENT, true);
-  }
-  return out;
-};
-
-const decodeProcessSharedBufferNumeric = (bytes: Uint8Array): unknown => {
-  const metadata = readProcessSharedBufferNumericPayload(bytes);
+const decodeProcessSharedBufferNumericWords = (
+  words: ArrayLike<number>,
+): unknown => {
   const codec = externalPayloadGlobal.__KNITTING_PAYLOAD_CODECS__?.[
     PROCESS_SHARED_BUFFER_CODEC_ID
   ];
-  return typeof codec?.decodeNumeric === "function"
-    ? codec.decodeNumeric(metadata)
-    : { codec: PROCESS_SHARED_BUFFER_CODEC_ID, metadata };
+  if (typeof codec?.decodeNumeric === "function") return codec.decodeNumeric(words);
+  // `words` is a reusable scratch; copy it on the (unreachable in practice)
+  // codec-missing diagnostic path so the escaped value never aliases it.
+  return { codec: PROCESS_SHARED_BUFFER_CODEC_ID, metadata: Array.from(words) };
 };
 
 const tryEncodePrimitiveTask = (task: Task): boolean => {
@@ -442,6 +431,7 @@ export const encodePayload = ({
     writeBuffer: writeStaticBuffer,
     writeArrayBuffer: writeStaticArrayBuffer,
     writeExactUint8Array: writeStaticExactUint8Array,
+    writeU32Words: writeStaticU32Words,
     write8Binary: writeStatic8Binary,
     writeUtf8: writeStaticUtf8,
   } = requireStaticIO(
@@ -717,19 +707,9 @@ export const encodePayload = ({
     task.value = null;
     return true;
   };
-  const processSharedBufferScratch = new Uint8Array(
-    PROCESS_SHARED_BUFFER_NUMERIC_BYTES,
+  const processSharedBufferWords = new Uint32Array(
+    PROCESS_SHARED_BUFFER_NUMERIC_WORDS,
   );
-  const processSharedBufferScratchView = new DataView(
-    processSharedBufferScratch.buffer,
-  );
-  const writeProcessSharedBufferWord = (index: number, value: number): void => {
-    processSharedBufferScratchView.setUint32(
-      index * Uint32Array.BYTES_PER_ELEMENT,
-      value,
-      true,
-    );
-  };
   const tryEncodeProcessSharedBufferNumeric = (
     task: Task,
     slotIndex: number,
@@ -756,23 +736,25 @@ export const encodePayload = ({
       return false;
     }
 
-    writeProcessSharedBufferWord(0, descriptor.fd);
-    writeProcessSharedBufferWord(1, descriptor.size);
-    writeProcessSharedBufferWord(2, descriptor.byteLength);
-    writeProcessSharedBufferWord(3, value.byteOffset);
-    writeProcessSharedBufferWord(4, value.byteLength);
-    writeProcessSharedBufferWord(5, runtimeCode(descriptor.runtime));
-    writeProcessSharedBufferWord(6, kindCode(descriptor.kind));
-    writeProcessSharedBufferWord(
-      7,
-      baseAddressMod64 === undefined ? NUMERIC_SENTINEL : baseAddressMod64,
-    );
-
-    const written = writeStaticBinary(processSharedBufferScratch, slotIndex);
-    if (written !== PROCESS_SHARED_BUFFER_NUMERIC_BYTES) return false;
+    processSharedBufferWords[0] = descriptor.fd;
+    processSharedBufferWords[1] = descriptor.size;
+    processSharedBufferWords[2] = descriptor.byteLength;
+    processSharedBufferWords[3] = value.byteOffset;
+    processSharedBufferWords[4] = value.byteLength;
+    processSharedBufferWords[5] = runtimeCode(descriptor.runtime);
+    processSharedBufferWords[6] = kindCode(descriptor.kind);
+    processSharedBufferWords[7] = baseAddressMod64 === undefined
+      ? NUMERIC_SENTINEL
+      : baseAddressMod64;
 
     task[TaskIndex.Type] = PayloadBuffer.ProcessSharedBuffer;
-    task[TaskIndex.PayloadLen] = written;
+    // Static region is a Uint32Array shared in-process; write the descriptor
+    // words straight in instead of staging bytes through a DataView + copy.
+    task[TaskIndex.PayloadLen] = writeStaticU32Words(
+      processSharedBufferWords,
+      PROCESS_SHARED_BUFFER_NUMERIC_WORDS,
+      slotIndex,
+    );
     task.value = null;
     return true;
   };
@@ -1363,17 +1345,23 @@ export const decodePayload = ({
   });
   const {
     readUtf8: readStaticUtf8,
-    readBytesCopy: readStaticBytesCopy,
     readBytesBufferCopy: readStaticBufferCopy,
     readBufferCopy: readStaticBuffer,
     readUint8ArrayCopy: readStaticUint8ArrayCopy,
     readBytesArrayBufferCopy: readStaticArrayBufferCopy,
     readArrayBufferCopy: readStaticArrayBuffer,
     read8BytesFloatCopy: readStatic8BytesFloatCopy,
+    readU32Words: readStaticU32Words,
   } = requireStaticIO(
     headersBuffer,
     headerSlotStrideU32,
     textCompat?.headers,
+  );
+  // Reusable scratch for the ProcessSharedBuffer raw-word decode. Safe to share:
+  // decode is single-consumer and not re-entrant, and the words are consumed
+  // synchronously when building the ProcessSharedBuffer.
+  const processSharedBufferWords = new Uint32Array(
+    PROCESS_SHARED_BUFFER_NUMERIC_WORDS,
   );
 
   // TODO: remove slotIndex and make that all their callers
@@ -1634,8 +1622,12 @@ export const decodePayload = ({
         );
         return;
       case PayloadBuffer.ProcessSharedBuffer:
-        task.value = decodeProcessSharedBufferNumeric(
-          readStaticBytesCopy(0, task[TaskIndex.PayloadLen], slotIndex),
+        task.value = decodeProcessSharedBufferNumericWords(
+          readStaticU32Words(
+            processSharedBufferWords,
+            PROCESS_SHARED_BUFFER_NUMERIC_WORDS,
+            slotIndex,
+          ),
         );
         return;
       case PayloadBuffer.Date:
