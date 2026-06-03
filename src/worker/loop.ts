@@ -29,6 +29,7 @@ import {
   getProcessWorkerNativeWaitU32,
   installProcessWorkerBootstrap,
 } from "./process-worker-bootstrap.ts";
+import "../connections/buffer-reference.ts";
 
 const WORKER_FATAL_MESSAGE_KEY = "__knittingWorkerFatal";
 

@@ -1,4 +1,5 @@
 import {
+  attachPayloadTransportFinalizer,
   beginPromisePayload,
   finishPromisePayload,
   getTaskSlotIndex,
@@ -810,6 +811,7 @@ export const encodePayload = ({
       if (written !== -1) {
         task[TaskIndex.Type] = PayloadBuffer.StaticExternalPayload;
         task[TaskIndex.PayloadLen] = written;
+        attachPayloadTransportFinalizer(task, externalPayload);
         task.value = null;
         return true;
       }
@@ -831,6 +833,7 @@ export const encodePayload = ({
     if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
     task[TaskIndex.PayloadLen] = written;
     setSlotLength(reservedSlot, written);
+    attachPayloadTransportFinalizer(task, externalPayload);
     task.value = null;
     return true;
   };

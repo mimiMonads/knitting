@@ -13,6 +13,13 @@ export {
   type SharedMemoryMapping,
 } from "./types.ts";
 export {
+  BufferReference,
+  BUFFER_REFERENCE_KIND,
+  type BufferReferenceMetadata,
+  type BufferReferenceRuntime,
+  isBufferReferenceMetadata,
+} from "./buffer-reference.ts";
+export {
   FileDescriptor,
   type FileDescriptorMetadata,
   parseFileDescriptorMetadata,

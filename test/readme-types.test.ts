@@ -1,6 +1,7 @@
 import test from "./_runner.ts";
 import { createPool, Envelope, importTask, task } from "../knitting.ts";
 import type { ProcessSharedBuffer } from "../process-shared-buffer.ts";
+import type { BufferReference } from "../unsafe.ts";
 
 const runtimeProcess = (globalThis as typeof globalThis & {
   process?: {
@@ -89,6 +90,10 @@ const importedAdd = importTask<[number, number], number>({
 
 const readFirstCell = task<ProcessSharedBuffer, number>({
   f: (buffer) => Atomics.load(buffer.view(Int32Array), 0),
+});
+
+const invert = task<BufferReference, number>({
+  f: (ref) => ref.toUint8Array().length,
 });
 
 const processImage = task<
@@ -223,6 +228,17 @@ const assertReadmeTypes = () => {
 
   type _sharedReturn = Assert<
     Equal<Awaited<ReturnType<typeof sharedPool.call.readFirstCell>>, number>
+  >;
+
+  const bufferRefPool = createPool({ threads: 1 })({ invert });
+  const bufferRef = null as unknown as BufferReference;
+
+  bufferRefPool.call.invert(bufferRef);
+  // @ts-expect-error README BufferReference task expects a BufferReference.
+  bufferRefPool.call.invert(new ArrayBuffer(4));
+
+  type _bufferRefReturn = Assert<
+    Equal<Awaited<ReturnType<typeof bufferRefPool.call.invert>>, number>
   >;
 
   const envelopePool = createPool({ threads: 2 })({ processImage });

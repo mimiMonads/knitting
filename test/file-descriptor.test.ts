@@ -89,6 +89,13 @@ type FutexAddon = {
   ) => "woken" | "changed" | "interrupted" | "timed-out";
 };
 
+type ChildProcessExitEmitter = {
+  on: (
+    event: "exit",
+    listener: (code: number | null, signal: string | null) => void,
+  ) => void;
+};
+
 type NativeAddonProbe<T> = {
   addon?: T;
   path?: string;
@@ -427,7 +434,10 @@ nativeCrossProcessFutexTest(
       { code: number | null; signal: string | null }
     >(
       (resolve) => {
-        child.on("exit", (code, signal) => resolve({ code, signal }));
+        (child as unknown as ChildProcessExitEmitter).on(
+          "exit",
+          (code, signal) => resolve({ code, signal }),
+        );
       },
     );
 

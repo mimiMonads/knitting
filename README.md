@@ -525,6 +525,8 @@ Worker calls can carry the following values across the shared-memory transport:
 - Plain objects and arrays made from supported values.
 - `ArrayBuffer`, Node `Buffer`, `DataView`, and supported typed arrays.
 - `ProcessSharedBuffer`.
+- `BufferReference` from `knitting/unsafe` for experimental zero-copy buffers to
+  thread workers (same process only; see below).
 - `Envelope` for metadata plus binary payloads.
 - `Error`, `Date`, and global symbols created with `Symbol.for(...)`.
 - Native `Promise<supported-value>` inputs. The promise is awaited before
@@ -751,6 +753,67 @@ This is same-host communication. It is fast because both sides map the same
 bytes, but it is not a network transport and it deliberately shares IPC with the
 container. Use names like capabilities: generate them, keep them private, and
 unlink them when the shared memory is no longer needed.
+
+### Experimental zero-copy buffers for thread workers
+
+`BufferReference` lives in `knitting/unsafe`. It is experimental and may be
+changed or removed if its safety tradeoffs are not acceptable. It hands a
+buffer's backing memory to a **thread** worker by raw pointer, so the worker
+reads and writes the same bytes with no copy in either direction. It is the
+same-process counterpart to
+`ProcessSharedBuffer`: reach for it when you already hold an `ArrayBuffer` or
+typed array and want a large payload to reach a thread worker without
+serializing it through the transport.
+
+```ts
+import { createPool, isMain, task } from "knitting";
+import { BufferReference } from "knitting/unsafe";
+
+export const invert = task<BufferReference, number>({
+  f: (ref) => {
+    const pixels = ref.toUint8Array(); // aliases the host's memory, no copy
+    for (let i = 0; i < pixels.length; i++) pixels[i] = 255 - pixels[i];
+    return pixels.length;
+  },
+});
+
+if (isMain) {
+  const pixels = new Uint8Array([0, 64, 128, 192, 255]);
+  using pool = createPool({ threads: 1 })({ invert });
+
+  await pool.call.invert(new BufferReference(pixels));
+  console.log([...pixels]); // [255, 191, 127, 63, 0] — written by the worker
+}
+```
+
+Read these constraints before reaching for it:
+
+- **Thread workers only.** A raw pointer is an address in one process's address
+  space. Process workers do not share it, so a `BufferReference` sent to a
+  process worker throws when the worker tries to read it. For cross-process
+  sharing use `ProcessSharedBuffer`.
+- **ArrayBuffer only.** `SharedArrayBuffer` is already shareable and cannot be
+  detached, so `BufferReference` rejects SAB sources and SAB-backed typed-array
+  views.
+- **Transport-owned lifetime.** Knitting keeps the producer-side source buffer
+  alive while the call is in flight and releases it when that call settles.
+  Treat each `BufferReference` as a one-shot handle; create a new one for another
+  call. Worker-side buffers materialized with `.toArrayBuffer()` or
+  `.toUint8Array()` are borrowed views and knitting detaches them after the task
+  settles. Do not pass a transferred or detached `ArrayBuffer`, and do not keep
+  using the pointer from fire-and-forget worker work after the task has returned.
+- **Unsafe escape hatch.** This is not a security boundary. Forged metadata,
+  early pointer use after task return, or unsynchronized host/worker mutation can
+  still be unsafe.
+- **Node uses a native addon.** Bun and Deno read the pointer through their FFI;
+  Node uses the `knitting_buffer_pointer` prebuild shipped with the package (or
+  `bun run build:native` when developing on a new ABI). Without it, constructing
+  a `BufferReference` on Node throws.
+
+When in doubt, a plain `ArrayBuffer` or typed-array payload — which knitting
+copies through the shared transport — is simpler and works for both thread and
+process workers. Reach for `BufferReference` when the copy cost of a large
+buffer to a thread worker actually matters.
 
 ### Current support
 

@@ -1,5 +1,7 @@
 import RingQueue from "../ipc/tools/ring-queue.ts";
 import {
+  attachPayloadTransportFinalizer,
+  runTaskFinalizers,
   TaskFlag,
   TaskIndex,
   type Task,
@@ -21,7 +23,6 @@ type ArgumentsForCreateWorkerQueue = {
 };
 
 export type CreateWorkerRxQueue = ReturnType<typeof createWorkerRxQueue>;
-// Create and manage a working queue.
 export const createWorkerRxQueue = (
   {
     listOfFunctions,
@@ -82,6 +83,7 @@ const enqueueLock = () => {
   while (task) {
     task.resolve = PLACE_HOLDER;
     task.reject  = PLACE_HOLDER;
+    attachPayloadTransportFinalizer(task, task.value);
     toWorkPush(task);
     task = resolvedShift();
   }
@@ -109,6 +111,7 @@ const enqueueLock = () => {
     value: unknown,
     wasAwaited: boolean,
   ) => {
+    runTaskFinalizers(slot);
     slot.value = value;
     hasAnythingFinished++;
     if (wasAwaited && awaiting > 0) awaiting--;
@@ -147,7 +150,6 @@ const enqueueLock = () => {
         try {
           const fnIndex = slot[TaskIndex.FunctionID] & FUNCTION_ID_MASK;
           const result = runByIndex[fnIndex]!(slot);
-          // Slot 0 is reused for response flags; clear request FunctionID value.
           slot[IDX_FLAGS] = 0;
           slot.value = null;
           if (result instanceof Promise) {

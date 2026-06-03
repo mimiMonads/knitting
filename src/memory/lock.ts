@@ -91,8 +91,17 @@ export type Task = [
   number,
 ] & {
   value: unknown;
+  finalize?: (() => void) | undefined;
   resolve: (value?: unknown) => void;
   reject: (reason?: unknown) => void;
+};
+
+export const PayloadTransportFinalizer = Symbol.for(
+  "knitting.payloadCodec.transportFinalizer",
+);
+
+type PayloadTransportFinalizable = {
+  [PayloadTransportFinalizer]?: () => (() => void) | undefined;
 };
 
 export const PromisePayloadMarker = Symbol.for("knitting.promise.payload");
@@ -126,6 +135,47 @@ export const isPromisePayloadPending = (task: Task): boolean =>
 
 export const resetTaskLocalFlags = (task: Task): void => {
   task[TASK_LOCAL_FLAGS_INDEX] = 0;
+};
+
+export const addTaskFinalizer = (
+  task: Task,
+  finalizer: () => void,
+): void => {
+  const previous = task.finalize;
+  task.finalize = previous === undefined
+    ? finalizer
+    : () => {
+      try {
+        previous();
+      } finally {
+        finalizer();
+      }
+    };
+};
+
+export const attachPayloadTransportFinalizer = (
+  task: Task,
+  value: unknown,
+): void => {
+  if (task.finalize !== undefined || value === null || typeof value !== "object") {
+    return;
+  }
+
+  const finalizer = (value as PayloadTransportFinalizable)[
+    PayloadTransportFinalizer
+  ]?.();
+  if (typeof finalizer === "function") addTaskFinalizer(task, finalizer);
+};
+
+export const runTaskFinalizers = (task: Task): void => {
+  const finalizer = task.finalize;
+  task.finalize = undefined;
+  if (finalizer !== undefined) {
+    try {
+      finalizer();
+    } catch {
+    }
+  }
 };
 
 export enum TaskIndex {
@@ -255,10 +305,12 @@ const def = (_?: unknown) => {};
 const createTaskShell = () => {
   const task = new Uint32Array(TaskIndex.Size) as Uint32Array & {
     value: unknown;
+    finalize?: (() => void) | undefined;
     resolve: (value?: unknown) => void;
     reject: (reason?: unknown) => void;
   } as unknown as Task;
   task.value = null;
+  task.finalize = undefined;
   task.resolve = def;
   task.reject = def;
   task[TASK_LOCAL_FLAGS_INDEX] = 0;
@@ -856,6 +908,7 @@ export const lock2 = ({
     if (recycled) {
       fillTaskFrom(recycled, headersBuffer, off);
       recycled.value = null;
+      recycled.finalize = undefined;
       recycled.resolve = def;
       recycled.reject = def;
       task = recycled;

@@ -1,6 +1,7 @@
 import {
   makeTask,
   resetTaskLocalFlags,
+  runTaskFinalizers,
   TaskIndex,
   type Task,
   type Lock2,
@@ -75,7 +76,6 @@ export function createHostTxQueue({
   );
 
 
-  // Local count
   const freePush = (id: number) => freeSockets.push(id);
   const freePop = () => freeSockets.pop();
   const queuePush = (task: QueueTask) => queue.push(task);
@@ -97,6 +97,7 @@ export function createHostTxQueue({
     onResolved: (task) => {
       inUsed = (inUsed - 1) | 0;
       resetTaskLocalFlags(task);
+      runTaskFinalizers(task);
       task.value = null;
       task.resolve = PLACE_HOLDER;
       task.reject = PLACE_HOLDER;
@@ -104,7 +105,6 @@ export function createHostTxQueue({
     },
   });
 
-  // Helpers
   const txIdle = () =>
     getPendingFrameCount() === 0 && inUsed === getPendingPromiseCount();
 
@@ -116,6 +116,7 @@ export function createHostTxQueue({
           slot.reject(reason);
         } catch {
         }
+        runTaskFinalizers(slot);
         slot.resolve = PLACE_HOLDER;
         slot.reject = PLACE_HOLDER;
 
@@ -149,7 +150,6 @@ export function createHostTxQueue({
     
 
       return (rawArgs: RawArguments) => {
-        // Expanding size if needed
         if (inUsed === queue.length) {
           const newSize = inUsed + 32;
           let current = queue.length;
@@ -188,7 +188,6 @@ export function createHostTxQueue({
         } 
 
 
-        // Set info
         slot.value = rawArgs;
  
         slot[TaskIndex.ID] = index;
@@ -227,6 +226,7 @@ export function createHostTxQueue({
         } catch {
         }
         resetTaskLocalFlags(task);
+        runTaskFinalizers(task);
         task.value = null;
         task.resolve = PLACE_HOLDER;
         task.reject = PLACE_HOLDER;
