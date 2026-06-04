@@ -25,3 +25,20 @@ export const storeBorrowedViewAndReturnLength = task<BufferReference, number>({
 export const storedBorrowedViewByteLength = task<void, number>({
   f: () => borrowedView?.byteLength ?? -1,
 });
+
+export const returnsBuffer = task<number, BufferReference>({
+  f: (n) => {
+    const bytes = new Uint8Array(n);
+    for (let i = 0; i < n; i++) bytes[i] = (i * 3) & 0xff;
+    return new BufferReference(bytes);
+  },
+});
+
+export const echoBufferPlusOne = task<BufferReference, BufferReference>({
+  f: (ref) => {
+    const input = ref.toUint8Array();
+    const out = new Uint8Array(input.length);
+    for (let i = 0; i < input.length; i++) out[i] = (input[i] + 1) & 0xff;
+    return new BufferReference(out);
+  },
+});

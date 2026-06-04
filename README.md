@@ -11,44 +11,55 @@
 [![Deno](https://img.shields.io/badge/deno-2%2B-000000?logo=deno&logoColor=white)](https://deno.com/)
 [![Bun](https://img.shields.io/badge/bun-1%2B-f472b6?logo=bun&logoColor=white)](https://bun.sh/)
 
-Knitting is a worker pool over a shared-memory IPC runtime for Node.js, Deno, and Bun. Our mission is to make JavaScript a multicore language with real inter-runtime communication. 
+Knitting is a worker pool over a shared-memory IPC runtime for Node.js, Deno,
+and Bun. Our mission is to make JavaScript a multicore language with real
+inter-runtime communication.
 
-Thanks to its memory design, it can be 5x to 25x faster than using `postMessages` , bypassing OS socket communication entirely with a novel protocol written from scratch.
+Thanks to its memory design, it can be 5x to 25x faster than using
+`postMessages` , bypassing OS socket communication entirely with a novel
+protocol written from scratch.
 
-Use it for parts of your program that should run in different environments, such as CPU-intensive tasks, small jobs, runtime-isolated tasks, custom isolation for workers in Docker or bwrap environments, long-running tools, or any processes that require speed and type flexibility.
+Use it for parts of your program that should run in different environments, such
+as CPU-intensive tasks, small jobs, runtime-isolated tasks, custom isolation for
+workers in Docker or bwrap environments, long-running tools, or any processes
+that require speed and type flexibility.
 
 You export a function or task, spin up a pool, and call it like a normal async
 function:
 
 ```ts
-
 const result = await pool.call.resizeImage(file);
-
 ```
 
 So you only have to take care of 4 things:
- - Export a function or task
- - Create a pool
- - Call it
- - Let `using` or `shutdown()` close the pool
 
+- Export a function or task
+- Create a pool
+- Call it
+- Let `using` or `shutdown()` close the pool
 
-Under the hood, we take care of scheduling and orchestration across worker threads or separate processes, also handling signals, timeouts, life cycles, memory allocation, garbage collection, and cross-runtime memory over the processes.
-
+Under the hood, we take care of scheduling and orchestration across worker
+threads or separate processes, also handling signals, timeouts, life cycles,
+memory allocation, garbage collection, and cross-runtime memory over the
+processes.
 
 ## Why use it?
 
-- Easy to use: Have a multithreaded environment or process with few lines of code.
-- Great type support: pass primitives, JSON, Promise of these, and special types (typed arrays, `Node Buffer`, `Envelope`, and `ProcessSharedBuffer`).
+- Easy to use: Have a multithreaded environment or process with few lines of
+  code.
+- Great type support: pass primitives, JSON, Promise of these, and special types
+  (typed arrays, `Node Buffer`, `Envelope`, and `ProcessSharedBuffer`).
 - Runtime flexibility: the same API across Node.js, Deno, and Bun.
-- Worker choices: use threads for fast pools or processes for stronger isolation.
-- All out-of-the-box experiences: strict-by-default permissions, payload-size limits, task timeouts, abort-aware tasks, and worker hard timeouts.
+- Worker choices: use threads for fast pools or processes for stronger
+  isolation.
+- All out-of-the-box experiences: strict-by-default permissions, payload-size
+  limits, task timeouts, abort-aware tasks, and worker hard timeouts.
 
 ## Requirements
 
-- Node.js 22+ 
-- Deno 2+ 
-- Bun 1+ 
+- Node.js 22+
+- Deno 2+
+- Bun 1+
 
 ## Install
 
@@ -86,8 +97,8 @@ if (isMain) {
 ```
 
 The `isMain` guard when the same module is loaded by workers or process. Export
-exposes the tasks or functions at module scope, so knitting maps down the imports,
-then use and use the pool only from the main program.
+exposes the tasks or functions at module scope, so knitting maps down the
+imports, then use and use the pool only from the main program.
 
 ## The Mental Model
 
@@ -100,7 +111,7 @@ import { createPool, isMain, task } from "knitting";
 - `task(...)` describes a callable worker function (types + implementation).
 
 - `createPool(options)({ tasks })` starts workers and gives you a typed `call`
-object for invoking tasks.
+  object for invoking tasks.
 
 - `pool.shutdown()` stops workers when you're done.
 
@@ -182,8 +193,8 @@ export const pixels = task<ResizeInput, number>({
 ```
 
 Supported payloads are listed below. For large binary data, prefer
-`ArrayBuffer`, typed arrays, or `ProcessSharedBuffer` instead of serializing
-big objects.
+`ArrayBuffer`, typed arrays, or `ProcessSharedBuffer` instead of serializing big
+objects.
 
 ### Task timeouts
 
@@ -312,20 +323,20 @@ const pool = createPool({
 
 Common options you might tweak:
 
-| Option | What it does |
-| --- | --- |
-| `threads` | Number of workers to start. |
-| `balancer` | Scheduling strategy: `"roundRobin"`, `"firstIdle"`, `"randomLane"`, `"firstIdleOrRandom"`, or the legacy alias `"robinRound"`. |
-| `payload` | Shared payload-buffer settings: `mode`, `payloadInitialBytes`, `payloadMaxByteLength`, and `maxPayloadBytes`. |
-| `abortSignalCapacity` | Number of shared abort slots available to abort-aware calls. |
-| `worker.resolveAfterFinishingAll` | Let submitted calls finish before shutdown resolves. |
-| `worker.bootstrap` | Privileged async hook imported and awaited before task modules load. |
-| `worker.hardTimeoutMs` | Force pool shutdown when a task exceeds this many milliseconds. |
-| `worker.runtime` | Choose `"thread"` or `"process"` workers. |
-| `worker.processSharedMemory` | Process-worker memory discovery: `"inherit"` by default on POSIX, or `"named"` for wrappers/containers that cannot preserve fd 0. |
-| `permission` | Runtime permission policy for workers. |
-| `debug` | Enable extra diagnostics. |
-| `source` | Worker source override for advanced runtimes. |
+| Option                            | What it does                                                                                                                      |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `threads`                         | Number of workers to start.                                                                                                       |
+| `balancer`                        | Scheduling strategy: `"roundRobin"`, `"firstIdle"`, `"randomLane"`, `"firstIdleOrRandom"`, or the legacy alias `"robinRound"`.    |
+| `payload`                         | Shared payload-buffer settings: `mode`, `payloadInitialBytes`, `payloadMaxByteLength`, and `maxPayloadBytes`.                     |
+| `abortSignalCapacity`             | Number of shared abort slots available to abort-aware calls.                                                                      |
+| `worker.resolveAfterFinishingAll` | Let submitted calls finish before shutdown resolves.                                                                              |
+| `worker.bootstrap`                | Privileged async hook imported and awaited before task modules load.                                                              |
+| `worker.hardTimeoutMs`            | Force pool shutdown when a task exceeds this many milliseconds.                                                                   |
+| `worker.runtime`                  | Choose `"thread"` or `"process"` workers.                                                                                         |
+| `worker.processSharedMemory`      | Process-worker memory discovery: `"inherit"` by default on POSIX, or `"named"` for wrappers/containers that cannot preserve fd 0. |
+| `permission`                      | Runtime permission policy for workers.                                                                                            |
+| `debug`                           | Enable extra diagnostics.                                                                                                         |
+| `source`                          | Worker source override for advanced runtimes.                                                                                     |
 
 ### Worker bootstrap
 
@@ -374,10 +385,9 @@ const pool = createPool({
 })({ add });
 ```
 
-`processRuntime` can be `"node"`, `"deno"`, or `"bun"` and defaults to
-`"deno"`. You can also provide a `processCommandPrefix` when workers need to be
-launched through a wrapper such as a package manager, container command, or
-runtime shim.
+`processRuntime` can be `"node"`, `"deno"`, or `"bun"` and defaults to `"deno"`.
+You can also provide a `processCommandPrefix` when workers need to be launched
+through a wrapper such as a package manager, container command, or runtime shim.
 
 That prefix is also useful for sandbox and resource-control tools. The one
 important detail is that process workers receive their shared-memory handle on
@@ -428,8 +438,8 @@ const pool = createPool({
 
 On Windows, Knitting automatically uses named shared memory for the
 process-worker control channel. You do not need to set
-`processSharedMemory: "named"` yourself — the runtime detects Windows and
-forces it.
+`processSharedMemory: "named"` yourself — the runtime detects Windows and forces
+it.
 
 ```ts
 // Works on Windows without extra options.
@@ -546,12 +556,12 @@ shouldn't) cross the boundary:
 
 ### Envelope
 
-`Envelope` pairs a JSON-serializable header with a binary `ArrayBuffer`
-payload. Use it when a call needs both structured metadata and raw bytes in a
-single argument.
+`Envelope` pairs a JSON-serializable header with a binary `ArrayBuffer` payload.
+Use it when a call needs both structured metadata and raw bytes in a single
+argument.
 
 ```ts
-import { Envelope, createPool, isMain, task } from "knitting";
+import { createPool, Envelope, isMain, task } from "knitting";
 
 export const processImage = task<
   Envelope<{ format: string }>,
@@ -745,8 +755,8 @@ There are three moving parts:
 
 - `processSharedMemory: "named"` lets the Docker worker find Knitting's control
   channel.
-- `ProcessSharedBuffer.create({ mode: "create", name, size })` makes the
-  payload buffer reopenable by name.
+- `ProcessSharedBuffer.create({ mode: "create", name, size })` makes the payload
+  buffer reopenable by name.
 - `--ipc=host` lets the container see the same POSIX shared-memory namespace.
 
 This is same-host communication. It is fast because both sides map the same
@@ -757,23 +767,24 @@ unlink them when the shared memory is no longer needed.
 ### Experimental zero-copy buffers for thread workers
 
 `BufferReference` lives in `knitting/unsafe`. It is experimental and may be
-changed or removed if its safety tradeoffs are not acceptable. It hands a
-buffer's backing memory to a **thread** worker by raw pointer, so the worker
-reads and writes the same bytes with no copy in either direction. It is the
-same-process counterpart to
-`ProcessSharedBuffer`: reach for it when you already hold an `ArrayBuffer` or
-typed array and want a large payload to reach a thread worker without
-serializing it through the transport.
+changed or removed if its safety tradeoffs are not acceptable. It **moves** a
+buffer's ownership to a **thread** worker: constructing one detaches the source,
+so the bytes travel to the worker without being serialized through the
+transport. Send a result back the same way — return a `BufferReference` from the
+worker. It is the same-process counterpart to `ProcessSharedBuffer`: reach for
+it when you hold a large `ArrayBuffer` or typed array and the copy cost to a
+thread worker actually matters.
 
 ```ts
 import { createPool, isMain, task } from "knitting";
 import { BufferReference } from "knitting/unsafe";
 
-export const invert = task<BufferReference, number>({
+export const invert = task<BufferReference, BufferReference>({
   f: (ref) => {
-    const pixels = ref.toUint8Array(); // aliases the host's memory, no copy
-    for (let i = 0; i < pixels.length; i++) pixels[i] = 255 - pixels[i];
-    return pixels.length;
+    const pixels = ref.toUint8Array(); // the moved bytes, no copy
+    const out = new Uint8Array(pixels.length);
+    for (let i = 0; i < pixels.length; i++) out[i] = 255 - pixels[i];
+    return new BufferReference(out); // move the result back to the host
   },
 });
 
@@ -781,44 +792,75 @@ if (isMain) {
   const pixels = new Uint8Array([0, 64, 128, 192, 255]);
   using pool = createPool({ threads: 1 })({ invert });
 
-  await pool.call.invert(new BufferReference(pixels));
-  console.log([...pixels]); // [255, 191, 127, 63, 0] — written by the worker
+  // `pixels` is detached by the move; the result comes back as a BufferReference.
+  const result = await pool.call.invert(new BufferReference(pixels));
+  console.log([...result.toUint8Array()]); // [255, 191, 127, 63, 0]
 }
 ```
 
 Read these constraints before reaching for it:
 
-- **Thread workers only.** A raw pointer is an address in one process's address
-  space. Process workers do not share it, so a `BufferReference` sent to a
-  process worker throws when the worker tries to read it. For cross-process
-  sharing use `ProcessSharedBuffer`.
+- **Thread workers only.** The handle is a process-local pointer. Process
+  workers do not share it, so a `BufferReference` sent to a process worker
+  throws. For cross-process sharing use `ProcessSharedBuffer`.
 - **ArrayBuffer only.** `SharedArrayBuffer` is already shareable and cannot be
   detached, so `BufferReference` rejects SAB sources and SAB-backed typed-array
   views.
-- **Transport-owned lifetime.** Knitting keeps the producer-side source buffer
-  alive while the call is in flight and releases it when that call settles.
-  Treat each `BufferReference` as a one-shot handle; create a new one for another
-  call. Worker-side buffers materialized with `.toArrayBuffer()` or
-  `.toUint8Array()` are borrowed views and knitting detaches them after the task
-  settles. Do not pass a transferred or detached `ArrayBuffer`, and do not keep
-  using the pointer from fire-and-forget worker work after the task has returned.
-- **Unsafe escape hatch.** This is not a security boundary. Forged metadata,
-  early pointer use after task return, or unsynchronized host/worker mutation can
-  still be unsafe.
-- **Node uses a native addon.** Bun and Deno read the pointer through their FFI;
-  Node uses the `knitting_buffer_pointer` prebuild shipped with the package (or
+- **Move semantics.** Constructing a `BufferReference` detaches its source — the
+  original buffer is empty afterward, and reads/writes through it are gone. The
+  bytes now belong to the reference; to get a result back, the worker returns
+  its own `BufferReference`. Each handle is one-shot. Forward inputs the worker
+  materializes with `.toArrayBuffer()`/`.toUint8Array()` are borrowed for the
+  duration of the call and detached once it settles; do not keep using them from
+  fire-and-forget work after the task returns.
+- **Forward is zero-copy everywhere; the return is zero-copy on Node.** Sending
+  a buffer to the worker never copies. On Node the returned buffer is also
+  handed back with no copy (the engine co-owns the backing store across
+  threads); on Deno and Bun the host takes a single copy of the returned bytes,
+  because their FFI cannot co-own a worker-thread backing store. Both are far
+  cheaper than serializing a large buffer through the transport.
+- **Borrowed Deno/Bun returns are opt-in.** The default is
+  `unsafe: { BufferReferenceReturn: "copy" }` — the safe single copy described
+  above. Set it to `"borrow"` on `createPool` to skip that copy on Deno/Bun by
+  borrowing the worker's backing store until the returned `BufferReference` is
+  released. Call `ref.release()` or use `using`, and do it before shutting down
+  the producing worker. **After `release()` the borrowed bytes are gone —
+  reading the reference, or any view you took from it, is a use-after-free.**
+  If the bytes escape into HTTP responses, streams, timers, callbacks, or caches,
+  copy them before the borrowed reference is released.
+- **Unsafe escape hatch.** This is not a security boundary. Forged metadata or
+  unsynchronized host/worker mutation can still be unsafe.
+- **Node uses a native addon.** Bun and Deno go through their FFI; Node uses the
+  `knitting_buffer_pointer` prebuild shipped with the package (or
   `bun run build:native` when developing on a new ABI). Without it, constructing
   a `BufferReference` on Node throws.
 
+Borrowed returns, end to end (Node is always zero-copy; this opts Deno/Bun in):
+
+```ts
+using pool = createPool({
+  threads: 1,
+  unsafe: {
+    BufferReferenceReturn: "borrow",
+  },
+})({ invert });
+
+{
+  using result = await pool.call.invert(new BufferReference(pixels));
+  const out = result.toUint8Array(); // borrowed — valid only while `result` lives
+  console.log([...out]);
+} // `using` releases the borrow here; do not read `out` after this point
+```
+
 When in doubt, a plain `ArrayBuffer` or typed-array payload — which knitting
 copies through the shared transport — is simpler and works for both thread and
-process workers. Reach for `BufferReference` when the copy cost of a large
-buffer to a thread worker actually matters.
+process workers. Reach for `BufferReference` only when the copy cost of a large
+buffer to a thread worker actually matters: below roughly 256 KiB the per-call
+pointer setup tends to cost more than just copying, so the plain transport wins.
 
 ### Current support
 
-Knitting supports Node.js 22+, Deno 2+, and Bun 1+ on Linux, macOS, and
-Windows.
+Knitting supports Node.js 22+, Deno 2+, and Bun 1+ on Linux, macOS, and Windows.
 
 Thread workers work without native pieces. Process workers and
 `ProcessSharedBuffer` use the platform's shared-memory APIs. Release packages
@@ -829,8 +871,8 @@ FFI path; if you are developing locally on a new Node ABI or architecture, run:
 bun run build:native
 ```
 
-For Deno projects with permissions enabled, allow FFI when using process
-workers or `ProcessSharedBuffer`.
+For Deno projects with permissions enabled, allow FFI when using process workers
+or `ProcessSharedBuffer`.
 
 ## Runtime Safety
 

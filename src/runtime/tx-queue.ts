@@ -1,10 +1,10 @@
 import {
+  type Lock2,
   makeTask,
   resetTaskLocalFlags,
   runTaskFinalizers,
-  TaskIndex,
   type Task,
-  type Lock2,
+  TaskIndex,
 } from "../memory/lock.ts";
 import { withResolvers } from "../common/with-resolvers.ts";
 import type { AbortSignalOption, TaskTimeout } from "../types.ts";
@@ -13,6 +13,7 @@ import {
   OneShotDeferred,
   type SignalAbortStore,
 } from "../shared/abortSignal.ts";
+import { withBufferReferenceReturnReleaser } from "../connections/buffer-reference.ts";
 
 type RawArguments = unknown;
 type WorkerResponse = unknown;
@@ -29,11 +30,11 @@ const FUNCTION_META_SHIFT = 16;
 const ABORT_SIGNAL_META_OFFSET = 1;
 const NO_ABORT_SIGNAL = -1;
 
-
 type CreateHostTxQueueArgs = {
   max?: number;
   lock: Lock2;
   returnLock: Lock2;
+  releaseBufferReferenceReturn?: (token: bigint) => void;
   abortSignals?: Pick<
     SignalAbortStore,
     "getSignal" | "setSignal" | "resetSignal" | "closeNow"
@@ -47,6 +48,7 @@ export function createHostTxQueue({
   max,
   lock,
   returnLock,
+  releaseBufferReferenceReturn,
   abortSignals,
   now,
 }: CreateHostTxQueueArgs) {
@@ -74,7 +76,6 @@ export function createHostTxQueue({
     { length: initialSize },
     (_, i) => i,
   );
-
 
   const freePush = (id: number) => freeSockets.push(id);
   const freePop = () => freeSockets.pop();
@@ -104,6 +105,13 @@ export function createHostTxQueue({
       freePush(task[TaskIndex.ID]);
     },
   });
+  const completeFrame = releaseBufferReferenceReturn === undefined
+    ? resolveReturn
+    : () =>
+      withBufferReferenceReturnReleaser(
+        releaseBufferReferenceReturn,
+        resolveReturn,
+      );
 
   const txIdle = () =>
     getPendingFrameCount() === 0 && inUsed === getPendingPromiseCount();
@@ -121,7 +129,7 @@ export function createHostTxQueue({
         slot.reject = PLACE_HOLDER;
 
         queue[index] = newSlot(index);
-      } 
+      }
     }
 
     resetPendingState();
@@ -138,7 +146,7 @@ export function createHostTxQueue({
     rejectAll,
     hasPendingFrames,
     txIdle,
-    completeFrame: resolveReturn,
+    completeFrame,
     enqueue: (
       functionID: FunctionID,
       timeout?: TaskTimeout,
@@ -146,8 +154,8 @@ export function createHostTxQueue({
     ) => {
       const HAS_TIMER = timeout !== undefined;
       const functionIDMasked = functionID & FUNCTION_ID_MASK;
-      const USE_SIGNAL = abortSignal !== undefined && abortSignals !== undefined;
-    
+      const USE_SIGNAL = abortSignal !== undefined &&
+        abortSignals !== undefined;
 
       return (rawArgs: RawArguments) => {
         if (inUsed === queue.length) {
@@ -161,12 +169,10 @@ export function createHostTxQueue({
           }
         }
 
-
-
         const index = freePop()!;
         const slot = queue[index];
         const deferred = withResolvers<WorkerResponse>();
-      
+
         slot[TaskIndex.FunctionID] = functionIDMasked;
         if (USE_SIGNAL) {
           const maybeSignal = abortSignals.getSignal();
@@ -182,32 +188,29 @@ export function createHostTxQueue({
             },
           );
           const encodedSignalMeta =
-            ((maybeSignal + ABORT_SIGNAL_META_OFFSET) & FUNCTION_META_MASK) >>> 0;
+            ((maybeSignal + ABORT_SIGNAL_META_OFFSET) & FUNCTION_META_MASK) >>>
+            0;
           slot[TaskIndex.FunctionID] =
-            ((encodedSignalMeta << FUNCTION_META_SHIFT) | functionIDMasked) >>> 0;
-        } 
-
+            ((encodedSignalMeta << FUNCTION_META_SHIFT) | functionIDMasked) >>>
+            0;
+        }
 
         slot.value = rawArgs;
- 
+
         slot[TaskIndex.ID] = index;
         slot.resolve = deferred.resolve;
         slot.reject = deferred.reject;
 
         if (HAS_TIMER) {
-          slot[TaskIndex.slotBuffer] =
-            (
-              (slot[TaskIndex.slotBuffer] & SLOT_INDEX_MASK) |
-              ((((nowTime() >>> 0) & SLOT_META_MASK) << SLOT_META_SHIFT) >>> 0)
-            ) >>> 0;
+          slot[TaskIndex.slotBuffer] = (
+            (slot[TaskIndex.slotBuffer] & SLOT_INDEX_MASK) |
+            ((((nowTime() >>> 0) & SLOT_META_MASK) << SLOT_META_SHIFT) >>> 0)
+          ) >>> 0;
         }
 
         void publish(slot);
 
         inUsed = (inUsed + 1) | 0;
-
-  
-    
 
         return deferred.promise;
       };

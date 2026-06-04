@@ -49,7 +49,18 @@ type WorkerData = {
   lock: LockBuffers;
   returnLock: LockBuffers;
   payloadConfig?: PayloadBufferOptions;
+  bufferReferenceReturn?: "copy" | "borrow";
   permission?: ResolvedPermissionProtocol;
+};
+
+type UnsafeOptions = {
+  /**
+   * Experimental `BufferReference` return lifetime.
+   *
+   * `"copy"` is safe after worker release. `"borrow"` skips the Deno/Bun copy,
+   * but must be released before producer shutdown and must not outlive its ref.
+   */
+  BufferReferenceReturn?: "copy" | "borrow";
 };
 
 type LockBuffers = {
@@ -120,19 +131,17 @@ type BivariantCallback<Args extends unknown[], R> = {
   bivarianceHack(...args: Args): R;
 }["bivarianceHack"];
 
-type AbortSignalConfig =
-  {
-    readonly hasAborted: true;
-  };
+type AbortSignalConfig = {
+  readonly hasAborted: true;
+};
 
 type AbortSignalOption = true | AbortSignalConfig | undefined;
 
-type AbortSignalMethods<AS extends AbortSignalOption> =
-  AS extends undefined
-    ? never
-    : {
-      hasAborted: () => boolean;
-    };
+type AbortSignalMethods<AS extends AbortSignalOption> = AS extends undefined
+  ? never
+  : {
+    hasAborted: () => boolean;
+  };
 
 type AbortSignalToolkit<AS extends AbortSignalOption> = AbortSignalMethods<AS>;
 
@@ -141,8 +150,7 @@ type TaskFn<
   B extends Args,
   AS extends AbortSignalOption = undefined,
 > = BivariantCallback<
-  AS extends undefined
-    ? [NoBlob<Awaited<A>>]
+  AS extends undefined ? [NoBlob<Awaited<A>>]
     : [NoBlob<Awaited<A>>, AbortSignalToolkit<AS>],
   MaybePromise<NoBlob<B>>
 >;
@@ -151,13 +159,14 @@ type PromiseWithMaybeReject<T> = Promise<T> & {
   reject: (reason?: unknown) => void;
 };
 
-type TaskLike<AS extends AbortSignalOption = AbortSignalOption> = {
-  readonly f: (...args: any[]) => any;
-} & (
-  AS extends undefined
-    ? { readonly abortSignal?: undefined }
-    : { readonly abortSignal: AS }
-);
+type TaskLike<AS extends AbortSignalOption = AbortSignalOption> =
+  & {
+    readonly f: (...args: any[]) => any;
+  }
+  & (
+    AS extends undefined ? { readonly abortSignal?: undefined }
+      : { readonly abortSignal: AS }
+  );
 
 type TaskFunctionLike = (...args: any[]) => any;
 
@@ -181,11 +190,8 @@ type PromiseWrapped<
   AS extends AbortSignalOption = undefined,
 > = (
   ...args: PromisifyCallArgs<F, AS>
-) => (
-  AS extends undefined
-    ? Promise<Awaited<ReturnType<F>>>
-    : PromiseWithMaybeReject<Awaited<ReturnType<F>>>
-);
+) => AS extends undefined ? Promise<Awaited<ReturnType<F>>>
+  : PromiseWithMaybeReject<Awaited<ReturnType<F>>>;
 
 type PromiseInput<T> = T | Promise<T>;
 
@@ -193,43 +199,34 @@ type PromisifyArgs<T extends unknown[]> = {
   [K in keyof T]: PromiseInput<T[K]>;
 };
 
-type NormalizeUndefinedSingleArg<T extends unknown[]> =
-  T extends [undefined]
-    ? [] | [undefined]
-    : T;
+type NormalizeUndefinedSingleArg<T extends unknown[]> = T extends [undefined]
+  ? [] | [undefined]
+  : T;
 
-type AbortAwareCallArgs<T extends unknown[]> =
-  T extends [...infer Head, AbortSignalToolkit<any>]
-    ? NormalizeUndefinedSingleArg<Head>
-    : NormalizeUndefinedSingleArg<T>;
+type AbortAwareCallArgs<T extends unknown[]> = T extends
+  [...infer Head, AbortSignalToolkit<any>] ? NormalizeUndefinedSingleArg<Head>
+  : NormalizeUndefinedSingleArg<T>;
 
 type HostCallArgs<
   F extends (...args: any[]) => any,
   AS extends AbortSignalOption,
-> =
-  AS extends undefined
-    ? Parameters<F>
-    : AbortAwareCallArgs<Parameters<F>>;
+> = AS extends undefined ? Parameters<F>
+  : AbortAwareCallArgs<Parameters<F>>;
 
 type PromisifyCallArgs<
   F extends (...args: any[]) => any,
   AS extends AbortSignalOption,
-> =
-  HostCallArgs<F, AS> extends infer T
-    ? T extends unknown[]
-      ? PromisifyArgs<T>
-      : never
-    : never;
+> = HostCallArgs<F, AS> extends infer T ? T extends unknown[] ? PromisifyArgs<T>
+  : never
+  : never;
 
-type TaskCallable<T> =
-  T extends TaskLike<any> ? T["f"]
-    : T extends TaskFunctionLike ? T
-    : never;
+type TaskCallable<T> = T extends TaskLike<any> ? T["f"]
+  : T extends TaskFunctionLike ? T
+  : never;
 
-type AbortSignalOfTask<T> =
-  T extends { readonly abortSignal: infer AS }
-    ? Extract<AS, AbortSignalOption>
-    : undefined;
+type AbortSignalOfTask<T> = T extends { readonly abortSignal: infer AS }
+  ? Extract<AS, AbortSignalOption>
+  : undefined;
 
 type FunctionMapType<
   T extends Record<string, TaskLike<any> | TaskFunctionLike>,
@@ -256,8 +253,7 @@ type FixPoint<
 > =
   & FixPointBase<A, B, AS>
   & (
-    AS extends undefined
-      ? { readonly abortSignal?: undefined }
+    AS extends undefined ? { readonly abortSignal?: undefined }
       : { readonly abortSignal: AS }
   );
 
@@ -265,29 +261,19 @@ type ImportTaskOptions<
   A extends TaskInput = void,
   B extends Args = void,
   AS extends AbortSignalOption = undefined,
-> =
-  Omit<FixPoint<A, B, AS>, "f"> & {
-    readonly href: string;
-    readonly name?: string;
-  };
+> = Omit<FixPoint<A, B, AS>, "f"> & {
+  readonly href: string;
+  readonly name?: string;
+};
 
 type SecondPart = {
   readonly [endpointSymbol]: true;
   readonly id: number;
-  /**
-   * IMPORTANT: `at` helps to create a `createPool` because we dont know 
-   * the name of the variable at runtime, so basically this gets the logical order
-   * of the exported file, so no matter the name the worker can track which ` task `
-   * to track
-   */
+  /** Logical export order used to match worker tasks before names are known. */
   readonly at: number;
   readonly importedFrom: string;
   /**
-   * Marks a task whose worker-side function is imported dynamically (via
-   * `importTask`). Such tasks must never run on the host inliner lane: their
-   * module import is meant to happen inside the worker so worker permission
-   * policies apply. The pool routes them to worker lanes only, even when the
-   * inliner is enabled for other tasks.
+   * Imported tasks stay on worker lanes so imports run under worker permissions.
    */
   readonly imported?: boolean;
 };
@@ -470,7 +456,7 @@ type DispatcherSettings = {
 
 type CreatePool = {
   threads?: number;
-    /**
+  /**
    * @deprecated Too risky with processes, need to rewrite or delete.
    */
   inliner?: Inliner;
@@ -480,6 +466,10 @@ type CreatePool = {
    * Payload transport settings.
    */
   payload?: PayloadBufferOptions;
+  /**
+   * Experimental unsafe options.
+   */
+  unsafe?: UnsafeOptions;
   /**
    * Initial payload SharedArrayBuffer size (bytes) per worker direction.
    * Defaults to 4 MiB when growable SAB is available, otherwise defaults to
@@ -533,56 +523,56 @@ type CreatePool = {
 // NOTE: Explicit export list with `as` keeps JSR type resolution stable,
 // especially for curried APIs like `createPool`.
 export type {
-  WorkerCall as WorkerCall,
-  WorkerInvoke as WorkerInvoke,
-  WorkerContext as WorkerContext,
-  CreateContext as CreateContext,
-  WorkerData as WorkerData,
-  LockBuffers as LockBuffers,
-  ValidInput as ValidInput,
-  Args as Args,
-  MaybePromise as MaybePromise,
-  TaskInput as TaskInput,
-  TaskTimeout as TaskTimeout,
-  TaskFn as TaskFn,
   AbortSignalConfig as AbortSignalConfig,
-  AbortSignalOption as AbortSignalOption,
   AbortSignalMethods as AbortSignalMethods,
+  AbortSignalOption as AbortSignalOption,
   AbortSignalToolkit as AbortSignalToolkit,
-  Composed as Composed,
-  tasks as tasks,
-  ComposedWithKey as ComposedWithKey,
-  FunctionMapType as FunctionMapType,
-  FixPoint as FixPoint,
-  ImportTaskOptions as ImportTaskOptions,
-  SecondPart as SecondPart,
-  SingleTaskPool as SingleTaskPool,
-  Pool as Pool,
-  ReturnFixed as ReturnFixed,
-  External as External,
-  Inliner as Inliner,
-  BalancerStrategy as BalancerStrategy,
+  Args as Args,
   Balancer as Balancer,
-  DebugOptions as DebugOptions,
-  WorkerBootstrapContext as WorkerBootstrapContext,
-  WorkerBootstrapFunction as WorkerBootstrapFunction,
-  WorkerBootstrapOptions as WorkerBootstrapOptions,
-  WorkerSettings as WorkerSettings,
-  ProcessSharedMemoryMode as ProcessSharedMemoryMode,
-  ProcessSharedMemorySettings as ProcessSharedMemorySettings,
-  WorkerTimers as WorkerTimers,
-  DispatcherSettings as DispatcherSettings,
+  BalancerStrategy as BalancerStrategy,
+  Composed as Composed,
+  ComposedWithKey as ComposedWithKey,
+  CreateContext as CreateContext,
   CreatePool as CreatePool,
+  DebugOptions as DebugOptions,
+  DispatcherSettings as DispatcherSettings,
+  Envelope as Envelope,
+  External as External,
+  FixPoint as FixPoint,
+  FunctionMapType as FunctionMapType,
+  ImportTaskOptions as ImportTaskOptions,
+  Inliner as Inliner,
+  LockBuffers as LockBuffers,
+  LockBufferTextCompat as LockBufferTextCompat,
+  MaybePromise as MaybePromise,
   PayloadBufferMode as PayloadBufferMode,
   PayloadBufferOptions as PayloadBufferOptions,
   PermissionProtocol as PermissionProtocol,
   PermissionProtocolInput as PermissionProtocolInput,
+  Pool as Pool,
+  ProcessSharedMemoryMode as ProcessSharedMemoryMode,
+  ProcessSharedMemorySettings as ProcessSharedMemorySettings,
   ResolvedPermissionProtocol as ResolvedPermissionProtocol,
-  Envelope as Envelope,
-  SharedBufferTextCompat as SharedBufferTextCompat,
-  LockBufferTextCompat as LockBufferTextCompat,
+  ReturnFixed as ReturnFixed,
+  SecondPart as SecondPart,
   SharedBufferRegion as SharedBufferRegion,
   SharedBufferSource as SharedBufferSource,
+  SharedBufferTextCompat as SharedBufferTextCompat,
+  SingleTaskPool as SingleTaskPool,
+  TaskFn as TaskFn,
+  TaskInput as TaskInput,
+  tasks as tasks,
+  TaskTimeout as TaskTimeout,
+  ValidInput as ValidInput,
+  WorkerBootstrapContext as WorkerBootstrapContext,
+  WorkerBootstrapFunction as WorkerBootstrapFunction,
+  WorkerBootstrapOptions as WorkerBootstrapOptions,
+  WorkerCall as WorkerCall,
+  WorkerContext as WorkerContext,
+  WorkerData as WorkerData,
+  WorkerInvoke as WorkerInvoke,
+  WorkerSettings as WorkerSettings,
+  WorkerTimers as WorkerTimers,
 };
 export type { Task as Task } from "./memory/lock.ts";
 export {

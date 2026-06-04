@@ -27,14 +27,34 @@ import {
   resolvePayloadBufferOptions,
 } from "./payload-config.ts";
 import type { SharedBufferSource } from "../common/shared-buffer-region.ts";
+import {
+  getSharedArrayBufferPayload,
+  SHARED_ARRAY_BUFFER_CODEC_ID,
+  SHARED_ARRAY_BUFFER_NUMERIC_TRANSFER,
+  SHARED_ARRAY_BUFFER_NUMERIC_WORDS,
+} from "../connections/shared-array-buffer-payload.ts";
 
 type ExternalPayloadLike = {
   toMetadata: () => unknown;
 };
 
+const BUFFER_REFERENCE_NUMERIC_TRANSFER = Symbol.for(
+  "knitting.bufferReference.numericTransfer",
+);
+
 type ExternalPayloadCodec = {
   decode: (metadata: unknown) => unknown;
   decodeNumeric?: (metadata: ArrayLike<number>) => unknown;
+};
+
+type BufferReferencePayloadLike = ExternalPayloadLike & {
+  [BUFFER_REFERENCE_NUMERIC_TRANSFER]?: () => ArrayLike<number> | undefined;
+};
+
+type SharedArrayBufferPayloadLike = ExternalPayloadLike & {
+  [SHARED_ARRAY_BUFFER_NUMERIC_TRANSFER]?: (
+    transportKey?: object,
+  ) => ArrayLike<number> | undefined;
 };
 
 type ProcessSharedBufferPayloadLike = ExternalPayloadLike & {
@@ -82,6 +102,7 @@ const BIGINT64_MAX = (1n << 63n) - 1n;
 const { parse: parseJSON, stringify: stringifyJSON } = JSON;
 const { for: symbolFor, keyFor: symbolKeyFor } = Symbol;
 const EXTERNAL_PAYLOAD_BRAND = symbolFor("knitting.payloadCodec");
+const BUFFER_REFERENCE_CODEC_ID = "knitting.bufferReference";
 const PROCESS_SHARED_BUFFER_CODEC_ID = "knitting.processSharedBuffer";
 const externalPayloadGlobal = globalThis as typeof globalThis & {
   __KNITTING_PAYLOAD_CODECS__?: Record<
@@ -166,19 +187,32 @@ const decodeExternalPayload = (raw: string): unknown => {
 };
 
 const PROCESS_SHARED_BUFFER_NUMERIC_WORDS = 8;
+const BUFFER_REFERENCE_NUMERIC_WORDS = 8;
 const NUMERIC_SENTINEL = 0xffffffff;
+
+const decodeNumericExternalPayload = (
+  codecId: string,
+  words: ArrayLike<number>,
+): unknown => {
+  const codec = externalPayloadGlobal.__KNITTING_PAYLOAD_CODECS__?.[codecId];
+  if (typeof codec?.decodeNumeric === "function") {
+    return codec.decodeNumeric(words);
+  }
+  return { codec: codecId, metadata: Array.from(words) };
+};
 
 const decodeProcessSharedBufferNumericWords = (
   words: ArrayLike<number>,
-): unknown => {
-  const codec = externalPayloadGlobal.__KNITTING_PAYLOAD_CODECS__?.[
-    PROCESS_SHARED_BUFFER_CODEC_ID
-  ];
-  if (typeof codec?.decodeNumeric === "function") return codec.decodeNumeric(words);
-  // `words` is a reusable scratch; copy it on the (unreachable in practice)
-  // codec-missing diagnostic path so the escaped value never aliases it.
-  return { codec: PROCESS_SHARED_BUFFER_CODEC_ID, metadata: Array.from(words) };
-};
+): unknown =>
+  decodeNumericExternalPayload(PROCESS_SHARED_BUFFER_CODEC_ID, words);
+
+const decodeBufferReferenceNumericWords = (
+  words: ArrayLike<number>,
+): unknown => decodeNumericExternalPayload(BUFFER_REFERENCE_CODEC_ID, words);
+
+const decodeSharedArrayBufferNumericWords = (
+  words: ArrayLike<number>,
+): unknown => decodeNumericExternalPayload(SHARED_ARRAY_BUFFER_CODEC_ID, words);
 
 const tryEncodePrimitiveTask = (task: Task): boolean => {
   const value = task.value;
@@ -711,6 +745,9 @@ export const encodePayload = ({
   const processSharedBufferWords = new Uint32Array(
     PROCESS_SHARED_BUFFER_NUMERIC_WORDS,
   );
+  const sharedArrayBufferWords = new Uint32Array(
+    SHARED_ARRAY_BUFFER_NUMERIC_WORDS,
+  );
   const tryEncodeProcessSharedBufferNumeric = (
     task: Task,
     slotIndex: number,
@@ -759,6 +796,52 @@ export const encodePayload = ({
     task.value = null;
     return true;
   };
+  const tryEncodeBufferReferenceNumeric = (
+    task: Task,
+    slotIndex: number,
+    value: BufferReferencePayloadLike,
+  ): boolean => {
+    const words = value[BUFFER_REFERENCE_NUMERIC_TRANSFER]?.();
+    if (words === undefined) return false;
+
+    task[TaskIndex.Type] = PayloadBuffer.BufferReference;
+    task[TaskIndex.PayloadLen] = writeStaticU32Words(
+      words,
+      BUFFER_REFERENCE_NUMERIC_WORDS,
+      slotIndex,
+    );
+    attachPayloadTransportFinalizer(task, value);
+    task.value = null;
+    return true;
+  };
+  const tryEncodeSharedArrayBufferNumeric = (
+    task: Task,
+    slotIndex: number,
+    value: SharedArrayBufferPayloadLike,
+  ): boolean => {
+    const words = value[SHARED_ARRAY_BUFFER_NUMERIC_TRANSFER]?.(
+      lockSector as object | undefined,
+    );
+    if (words === undefined) return false;
+
+    sharedArrayBufferWords[0] = words[0] ?? 0;
+    sharedArrayBufferWords[1] = words[1] ?? 0;
+    sharedArrayBufferWords[2] = words[2] ?? 0;
+    sharedArrayBufferWords[3] = words[3] ?? 0;
+    sharedArrayBufferWords[4] = words[4] ?? 0;
+    sharedArrayBufferWords[5] = words[5] ?? 0;
+    sharedArrayBufferWords[6] = words[6] ?? 0;
+    sharedArrayBufferWords[7] = words[7] ?? 0;
+
+    task[TaskIndex.Type] = PayloadBuffer.SharedArrayBuffer;
+    task[TaskIndex.PayloadLen] = writeStaticU32Words(
+      sharedArrayBufferWords,
+      words.length,
+      slotIndex,
+    );
+    task.value = null;
+    return true;
+  };
   const encodeObjectExternalPayload = (
     task: Task,
     slotIndex: number,
@@ -772,6 +855,28 @@ export const encodePayload = ({
         onPromise,
         detail: UNSUPPORTED_OBJECT_DETAIL,
       });
+    }
+
+    if (
+      codecId === SHARED_ARRAY_BUFFER_CODEC_ID &&
+      tryEncodeSharedArrayBufferNumeric(
+        task,
+        slotIndex,
+        externalPayload as SharedArrayBufferPayloadLike,
+      )
+    ) {
+      return true;
+    }
+
+    if (
+      codecId === BUFFER_REFERENCE_CODEC_ID &&
+      tryEncodeBufferReferenceNumeric(
+        task,
+        slotIndex,
+        externalPayload as BufferReferencePayloadLike,
+      )
+    ) {
+      return true;
     }
 
     if (
@@ -1036,6 +1141,17 @@ export const encodePayload = ({
 
         try {
           const objectValue = args as object;
+          const sharedArrayBufferPayload = getSharedArrayBufferPayload(
+            objectValue,
+          );
+          if (sharedArrayBufferPayload !== undefined) {
+            return encodeObjectExternalPayload(
+              task,
+              slotIndex,
+              sharedArrayBufferPayload,
+            );
+          }
+
           const objectProto = objectGetPrototypeOf(objectValue);
           if (isRuntimeUint8Array(objectValue)) {
             return encodeObjectUint8Array(
@@ -1366,6 +1482,10 @@ export const decodePayload = ({
   const processSharedBufferWords = new Uint32Array(
     PROCESS_SHARED_BUFFER_NUMERIC_WORDS,
   );
+  const sharedArrayBufferWords = new Uint32Array(
+    SHARED_ARRAY_BUFFER_NUMERIC_WORDS,
+  );
+  const bufferReferenceWords = new Uint32Array(BUFFER_REFERENCE_NUMERIC_WORDS);
 
   // TODO: remove slotIndex and make that all their callers
   // store the slot in their Task, to just get it when it comes
@@ -1629,6 +1749,24 @@ export const decodePayload = ({
           readStaticU32Words(
             processSharedBufferWords,
             PROCESS_SHARED_BUFFER_NUMERIC_WORDS,
+            slotIndex,
+          ),
+        );
+        return;
+      case PayloadBuffer.SharedArrayBuffer:
+        task.value = decodeSharedArrayBufferNumericWords(
+          readStaticU32Words(
+            sharedArrayBufferWords,
+            task[TaskIndex.PayloadLen] >>> 2,
+            slotIndex,
+          ),
+        );
+        return;
+      case PayloadBuffer.BufferReference:
+        task.value = decodeBufferReferenceNumericWords(
+          readStaticU32Words(
+            bufferReferenceWords,
+            BUFFER_REFERENCE_NUMERIC_WORDS,
             slotIndex,
           ),
         );

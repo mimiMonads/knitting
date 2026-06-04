@@ -15,6 +15,17 @@ export type NodeBufferPointerAddon = {
   releasePointer: (token: bigint) => boolean;
   wrapPointer: (pointer: bigint, byteLength: number) => ArrayBuffer;
   detachArrayBuffer: (buffer: ArrayBuffer) => boolean;
+  // Owning, cross-isolate move primitives (newer prebuilds only — feature-detected).
+  retainBackingStore?: (
+    buffer: ArrayBufferView | ArrayBuffer,
+  ) => {
+    pointer: bigint;
+    byteOffset: number;
+    byteLength: number;
+    token: bigint;
+  };
+  adoptBackingStore?: (token: bigint) => ArrayBuffer;
+  releaseBackingStore?: (token: bigint) => boolean;
 };
 
 type NodeModuleBuiltin = {

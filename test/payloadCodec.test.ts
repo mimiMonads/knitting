@@ -17,16 +17,19 @@ import {
 import {
   HEADER_STATIC_PAYLOAD_U32,
   HEADER_U32_LENGTH,
+  HEADER_SLOT_STRIDE_U32,
   makeTask,
   PAYLOAD_LOCK_SECTOR_BYTE_LENGTH,
   PayloadBuffer,
   PayloadSignal,
   type PromisePayloadHandler,
+  runTaskFinalizers,
   TaskIndex,
 } from "../src/memory/lock.ts";
 import { register } from "../src/memory/regionRegistry.ts";
 import { withResolvers } from "../src/common/with-resolvers.ts";
 import type { PayloadBufferOptions } from "../src/memory/payload-config.ts";
+import { BufferReference } from "../unsafe.ts";
 
 const align64 = (n: number) => (n + 63) & ~63;
 const textEncoder = new TextEncoder();
@@ -119,6 +122,7 @@ const makeCodec = (
       payload: { sab: payload, config: payloadConfig },
     }),
     registry: register({ lockSector }),
+    headersBuffer,
   };
 };
 
@@ -561,6 +565,111 @@ test("ProcessSharedBuffer payload round-trips descriptor metadata", () => {
   } finally {
     setDefaultProcessSharedBufferPrimitives(undefined);
   }
+});
+
+test("SharedArrayBuffer payload warms to a token-only numeric fast path", () => {
+  if (typeof SharedArrayBuffer !== "function") return;
+
+  const { encode, decode, headersBuffer } = makeCodec();
+  const first = makeTask();
+  const second = makeTask();
+  const sab = new SharedArrayBuffer(16);
+  const expectedBytes = Array.from(
+    new Uint8Array(sab).map((_, index) => (index * 17) & 0xff),
+  );
+  new Uint8Array(sab).set(expectedBytes);
+
+  first.value = sab;
+  assertEquals(encode(first, 0), true);
+  assertEquals(first[TaskIndex.Type], PayloadBuffer.SharedArrayBuffer);
+  assertEquals(
+    headersBuffer.slice(0, 8)[7],
+    0,
+    "first send should use the full numeric metadata path",
+  );
+
+  decode(first, 0);
+  assertEquals(first.value instanceof ArrayBuffer, true);
+  assertEquals(
+    Array.from(new Uint8Array(first.value as ArrayBuffer)),
+    expectedBytes,
+  );
+
+  second.value = sab;
+  assertEquals(encode(second, 1), true);
+  assertEquals(second[TaskIndex.Type], PayloadBuffer.SharedArrayBuffer);
+  assertEquals(second[TaskIndex.PayloadLen], 8);
+
+  const warmWords = headersBuffer.slice(
+    HEADER_SLOT_STRIDE_U32,
+    HEADER_SLOT_STRIDE_U32 + (second[TaskIndex.PayloadLen] >>> 2),
+  );
+  assertEquals(warmWords.length, 2);
+  assertEquals(
+    warmWords[0],
+    headersBuffer[0],
+    "warm send should preserve the token id",
+  );
+  assertEquals(warmWords[1], headersBuffer[1]);
+
+  decode(second, 1);
+  assertEquals(second.value instanceof ArrayBuffer, true);
+  assertEquals(
+    Array.from(new Uint8Array(second.value as ArrayBuffer)),
+    expectedBytes,
+  );
+});
+
+test("decoded SharedArrayBuffer aliases re-encode by reference", () => {
+  if (typeof SharedArrayBuffer !== "function") return;
+
+  const { encode, decode } = makeCodec();
+  const first = makeTask();
+  const returned = makeTask();
+  const sab = new SharedArrayBuffer(16);
+  new Uint8Array(sab).set([1, 2, 3, 4, 5, 6, 7, 8]);
+
+  first.value = sab;
+  assertEquals(encode(first, 0), true);
+  decode(first, 0);
+
+  returned.value = first.value;
+  assertEquals(encode(returned, 1), true);
+  assertEquals(returned[TaskIndex.Type], PayloadBuffer.SharedArrayBuffer);
+  assertEquals(
+    returned[TaskIndex.PayloadLen],
+    8,
+    "the returned alias should use the warm token-only path",
+  );
+
+  decode(returned, 1);
+  const alias = returned.value as ArrayBuffer;
+  new Uint8Array(alias)[0] = 99;
+  assertEquals(new Uint8Array(sab)[0], 99);
+});
+
+test("BufferReference payload uses numeric metadata transfer", () => {
+  let original: BufferReference | undefined;
+  try {
+    original = new BufferReference(new Uint8Array([7, 8, 9, 10]));
+  } catch {
+    return;
+  }
+
+  const { encode, decode } = makeCodec();
+  const task = makeTask();
+  task.value = original;
+
+  assertEquals(encode(task, 0), true);
+  assertEquals(task[TaskIndex.Type], PayloadBuffer.BufferReference);
+  assertEquals(task.value, null);
+
+  decode(task, 0);
+  assertEquals(task.value instanceof BufferReference, true);
+
+  const restored = task.value as BufferReference;
+  runTaskFinalizers(task);
+  assertEquals(Array.from(restored.toUint8Array()), [7, 8, 9, 10]);
 });
 
 test("named ProcessSharedBuffer payload keeps its mapping name", () => {

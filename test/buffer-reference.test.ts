@@ -7,6 +7,8 @@ import {
 } from "../unsafe.ts";
 import { createPool } from "../knitting.ts";
 import {
+  echoBufferPlusOne,
+  returnsBuffer,
   storeBorrowedViewAndReturnLength,
   storedBorrowedViewByteLength,
   sumAndIncrement,
@@ -43,6 +45,8 @@ const validMetadata = (): BufferReferenceMetadata => ({
   origin: "bun:1234",
   runtime: "bun",
   pointer: "140737488355328",
+  token: "1",
+  byteOffset: 0,
   byteLength: 8,
 });
 
@@ -71,25 +75,32 @@ test("BufferReference captures a pointer and produces JSON-safe metadata", () =>
   }
 });
 
-test("BufferReference.fromMetadata aliases the same memory", () => {
+test("BufferReference.fromMetadata materializes the moved bytes", () => {
   if (!supported) return;
 
   const original = new Uint8Array([10, 20, 30]);
   const ref = new BufferReference(original);
-  let consumer: BufferReference | undefined;
+  let a: BufferReference | undefined;
+  let b: BufferReference | undefined;
   try {
+    assert.equal(original.byteLength, 0, "source is detached by the move");
+
     const meta = ref.toMetadata();
-    consumer = BufferReference.fromMetadata(meta);
-    const view = consumer.toUint8Array();
+    a = BufferReference.fromMetadata(meta);
+    b = BufferReference.fromMetadata(meta);
+    const av = a.toUint8Array();
+    const bv = b.toUint8Array();
 
-    assert.deepEqual([...view], [10, 20, 30]);
+    assert.deepEqual([...av], [10, 20, 30]);
 
-    view[0] = 99;
-    assert.equal(original[0], 99);
-    original[2] = 123;
-    assert.equal(view[2], 123);
+    // Consumers materialize the same backing store, so they alias each other.
+    av[0] = 99;
+    assert.equal(bv[0], 99);
+    bv[2] = 123;
+    assert.equal(av[2], 123);
   } finally {
-    if (consumer !== undefined) finishReference(consumer);
+    if (a !== undefined) finishReference(a);
+    if (b !== undefined) finishReference(b);
     finishReference(ref);
   }
 });
@@ -118,17 +129,19 @@ test("BufferReference accepts an ArrayBuffer and a typed-array view", () => {
   try {
     assert.equal(fromBuffer.byteLength, 4);
     assert.deepEqual([...fromBuffer.toUint8Array()], [5, 6, 7, 8]);
-
-    const offsetView = new Uint8Array(buffer, 2, 2);
-    const fromView = new BufferReference(offsetView);
-    try {
-      assert.equal(fromView.byteLength, 2);
-      assert.deepEqual([...fromView.toUint8Array()], [7, 8]);
-    } finally {
-      finishReference(fromView);
-    }
   } finally {
     finishReference(fromBuffer);
+  }
+
+  // Use a fresh source because construction detaches.
+  const backing = new Uint8Array([1, 2, 3, 4]);
+  const offsetView = new Uint8Array(backing.buffer, 2, 2);
+  const fromView = new BufferReference(offsetView);
+  try {
+    assert.equal(fromView.byteLength, 2);
+    assert.deepEqual([...fromView.toUint8Array()], [3, 4]);
+  } finally {
+    finishReference(fromView);
   }
 });
 
@@ -190,8 +203,9 @@ test("transport finalizer detaches materialized borrowed buffers", () => {
         "function"
     ) {
       assert.throws(
-        () => (buffer as ArrayBuffer & { transfer: () => ArrayBuffer })
-          .transfer(),
+        () =>
+          (buffer as ArrayBuffer & { transfer: () => ArrayBuffer })
+            .transfer(),
         /detach|transfer|ArrayBuffer/i,
       );
       assert.equal(buffer.byteLength, 3);
@@ -219,7 +233,7 @@ test("isBufferReferenceMetadata validates shape", () => {
   assert.equal(isBufferReferenceMetadata(validMetadata()), true);
 });
 
-test("BufferReference flows through a thread pool with zero copy", async () => {
+test("BufferReference flows through a thread pool (move semantics)", async () => {
   if (!supported) return;
 
   const original = new Uint8Array([1, 2, 3, 4, 5]);
@@ -229,12 +243,9 @@ test("BufferReference flows through a thread pool with zero copy", async () => {
   try {
     const sum = await pool.call.sumAndIncrement(ref);
 
-    assert.equal(sum, 15, "worker should see the host bytes");
-    assert.deepEqual(
-      [...original],
-      [2, 3, 4, 5, 6],
-      "host should see the worker's in-place writes (aliased, no copy)",
-    );
+    assert.equal(sum, 15, "worker should see the moved host bytes");
+    // In-place worker writes do not update the detached source handle.
+    assert.equal(original.byteLength, 0, "source is detached by the move");
   } finally {
     await pool.shutdown();
   }
@@ -256,6 +267,76 @@ test("worker-side materialized views are detached after task settlement", async 
     );
     assert.equal(length, 3);
     assert.equal(await pool.call.storedBorrowedViewByteLength(), 0);
+  } finally {
+    await pool.shutdown();
+  }
+});
+
+test("worker returns a BufferReference moved back to the host", async () => {
+  if (!supported) return;
+
+  const pool = createPool({ threads: 1 })({ returnsBuffer });
+  try {
+    const ref = await pool.call.returnsBuffer(5);
+    // Safe mode claims bytes before the worker drains its hold.
+    assert.deepEqual([...ref.toUint8Array()], [0, 3, 6, 9, 12]);
+  } finally {
+    await pool.shutdown();
+  }
+});
+
+test("worker can return a borrowed BufferReference with explicit release", async () => {
+  if (!supported) return;
+
+  const pool = createPool({
+    threads: 1,
+    unsafe: {
+      BufferReferenceReturn: "borrow",
+    },
+  })({ returnsBuffer });
+  try {
+    const ref = await pool.call.returnsBuffer(5);
+    assert.deepEqual([...ref.toUint8Array()], [0, 3, 6, 9, 12]);
+
+    ref.release();
+    assert.throws(() => ref.toUint8Array(), /released/);
+  } finally {
+    await pool.shutdown();
+  }
+});
+
+test("borrowed BufferReference return can be released without materializing", async () => {
+  if (!supported) return;
+
+  const pool = createPool({
+    threads: 1,
+    unsafe: {
+      BufferReferenceReturn: "borrow",
+    },
+  })({ returnsBuffer });
+  try {
+    const ref = await pool.call.returnsBuffer(5);
+    ref.release();
+    assert.throws(() => ref.toUint8Array(), /released/);
+  } finally {
+    await pool.shutdown();
+  }
+});
+
+test("BufferReference round-trips host -> worker -> host", async () => {
+  if (!supported) return;
+
+  const pool = createPool({ threads: 1 })({ echoBufferPlusOne });
+  try {
+    const input = new Uint8Array([1, 2, 3, 4]);
+    const out = await pool.call.echoBufferPlusOne(new BufferReference(input));
+
+    assert.equal(input.byteLength, 0, "forward input is moved (detached)");
+    assert.deepEqual(
+      [...out.toUint8Array()],
+      [2, 3, 4, 5],
+      "host receives the worker's returned buffer",
+    );
   } finally {
     await pool.shutdown();
   }

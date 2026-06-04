@@ -1,46 +1,33 @@
 import { createPool, isMain, task } from "./knitting.ts";
 import { BufferReference } from "./unsafe.ts";
 
-export const brighten = task<BufferReference, number>({
+// Brighten the pixels and move the result back to the host as a BufferReference.
+export const brighten = task<BufferReference, BufferReference>({
   f: (ref) => {
-    const px = ref.toUint8Array();
-    let sum = 0;
-    for (let i = 0; i < px.length; i++) {
-      px[i] = px[i] < 245 ? px[i] + 10 : 255;
-      sum += px[i];
+    const src = ref.toUint8Array();
+    const out = new Uint8Array(src.length);
+    for (let i = 0; i < src.length; i++) {
+      out[i] = src[i] < 245 ? src[i] + 10 : 255;
     }
-    return sum;
-  },
-});
-
-export const brightenCopy = task<Uint8Array, number>({
-  f: (px) => {
-    let sum = 0;
-    for (let i = 0; i < px.length; i++) sum += px[i];
-    return sum;
+    return new BufferReference(out);
   },
 });
 
 if (isMain) {
-  using pool = createPool({ threads: 1 })({ brighten, brightenCopy });
+  using pool = createPool({ threads: 1 })({ brighten });
 
   const small = new Uint8Array([0, 100, 200, 250, 255]);
-  console.log("small before:", [...small]);
-  await pool.call.brighten(new BufferReference(small));
-  console.log("small after :", [...small], "← edited by the worker, nothing copied back\n");
+  console.log("small before  :", [...small]);
+  const result = await pool.call.brighten(new BufferReference(small));
+  console.log("small detached:", small.byteLength === 0, "← moved, not copied");
+  console.log("result        :", [...result.toUint8Array()], "\n");
 
   const big = new Uint8Array(16 * 1024 * 1024).fill(1);
-
-  try {
-    await pool.call.brightenCopy(big);
-    console.log("copy path   : sent 16 MiB (unexpected!)");
-  } catch (err) {
-    console.log("copy path   : rejected —", (err as Error));
-  }
-
   const t0 = performance.now();
-  const sum = await pool.call.brighten(new BufferReference(big));
+  const out = await pool.call.brighten(new BufferReference(big));
   const ms = (performance.now() - t0).toFixed(1);
-  console.log(`ref path    : 16 MiB processed in ${ms} ms; big[0] is now ${big[0]} (was 1)`);
-  console.log("worker sum  :", sum.toLocaleString());
+  console.log(
+    `ref path      : 16 MiB moved out and returned in ${ms} ms; ` +
+      `result[0] is now ${out.toUint8Array()[0]} (was 1)`,
+  );
 }
