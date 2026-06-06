@@ -2,7 +2,7 @@
   "compilerOptions": {
     "allowImportingTsExtensions": true,
     "declaration": true,
-    "lib": ["ES2023", "DOM", "WebWorker"],
+    "lib": ["ES2023", "DOM", "WebWorker", "ES2024.SharedMemory"],
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "rewriteRelativeImportExtensions": true,
@@ -13,6 +13,8 @@
   "include": [
     "knitting.ts",
     "process-shared-buffer.ts",
+    "unsafe.ts",
+    "utils.ts",
     "src/**/*.ts"
   ]
 }

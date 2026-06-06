@@ -10,3 +10,7 @@ export {
   task as task,
   workerMainLoop as workerMainLoop,
 };
+export type {
+  EnvelopeBody as EnvelopeBody,
+  EnvelopeHeader as EnvelopeHeader,
+} from "./src/common/envelope.ts";

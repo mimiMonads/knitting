@@ -56,6 +56,7 @@ import {
   type PayloadBufferOptions,
   resolvePayloadBufferOptions,
 } from "../memory/payload-config.ts";
+import { createBufferReferenceReturnReleaseMessage } from "../connections/buffer-reference.ts";
 
 const WORKER_FATAL_MESSAGE_KEY = "__knittingWorkerFatal";
 const isWorkerFatalMessage = (
@@ -108,6 +109,7 @@ export const spawnWorkerContext = ({
   permission,
   host,
   payload,
+  bufferReferenceReturn,
   payloadInitialBytes,
   payloadMaxBytes,
   bufferMode,
@@ -130,6 +132,7 @@ export const spawnWorkerContext = ({
   permission?: WorkerData["permission"];
   host?: DispatcherSettings;
   payload?: PayloadBufferOptions;
+  bufferReferenceReturn?: "copy" | "borrow";
   payloadInitialBytes?: number;
   payloadMaxBytes?: number;
   bufferMode?: PayloadBufferOptions["mode"];
@@ -316,6 +319,11 @@ export const spawnWorkerContext = ({
     lock,
     returnLock,
     abortSignals,
+    releaseBufferReferenceReturn: bufferReferenceReturn === "borrow"
+      ? (token) => {
+        worker?.postMessage?.(createBufferReferenceReturnReleaseMessage(token));
+      }
+      : undefined,
   });
 
   const {
@@ -359,6 +367,7 @@ export const spawnWorkerContext = ({
     lock: lockBuffers,
     returnLock: returnLockBuffers,
     payloadConfig: resolvedPayloadConfig,
+    bufferReferenceReturn,
     permission,
   } as WorkerData;
   const baseWorkerOptions = {

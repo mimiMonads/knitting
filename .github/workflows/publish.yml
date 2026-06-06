@@ -65,6 +65,7 @@ jobs:
           const prebuild = process.env.KNITTING_PREBUILD;
           const shared = require(`./prebuilds/${prebuild}/knitting_shared_memory.node`);
           const futex = require(`./prebuilds/${prebuild}/knitting_shm.node`);
+          const bufferPointer = require(`./prebuilds/${prebuild}/knitting_buffer_pointer.node`);
           const first = shared.createSharedMemory(64);
           const second = shared.mapSharedMemory(first.fd, first.size, first.name);
 
@@ -76,6 +77,14 @@ jobs:
           }
           if (typeof futex.wakeU32 !== "function") {
             throw new Error("futex addon did not expose wakeU32");
+          }
+
+          const probe = new Uint8Array([7, 8, 9]);
+          const pointer = bufferPointer.getPointer(probe);
+          const aliased = new Uint8Array(bufferPointer.wrapPointer(pointer, 3));
+          aliased[0] = 42;
+          if (probe[0] !== 42) {
+            throw new Error("buffer-pointer addon did not alias the same memory");
           }
           EOF
       - name: Verify Windows FFI prebuild

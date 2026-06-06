@@ -1,10 +1,12 @@
 {
   "name": "@vixeny/knitting",
-  "version": "0.1.51",
+  "version": "0.1.52",
   "nodeModulesDir": "auto",
   "exports": {
     ".": "./knitting.ts",
-    "./process-shared-buffer": "./process-shared-buffer.ts"
+    "./process-shared-buffer": "./process-shared-buffer.ts",
+    "./unsafe": "./unsafe.ts",
+    "./utils": "./utils.ts"
   },
   "license": "Apache-2.0",
   "publish": {
@@ -15,7 +17,9 @@
       "prebuilds/**/*.dll",
       "src/**/*.ts",
       "./knitting.ts",
-      "./process-shared-buffer.ts"
+      "./process-shared-buffer.ts",
+      "./unsafe.ts",
+      "./utils.ts"
     ]
   }
 }

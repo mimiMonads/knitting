@@ -5,6 +5,7 @@ import { endpointSymbol } from "./common/task-symbol.ts";
 import { spawnWorkerContext } from "./runtime/pool.ts";
 import {
   RUNTIME_IS_MAIN_THREAD,
+  RUNTIME_POOL_DEPTH,
   RUNTIME_WORKER_DATA,
 } from "./common/worker-runtime.ts";
 import {
@@ -16,10 +17,10 @@ import { getNodeProcess } from "./common/node-compat.ts";
 import { managerMethod } from "./runtime/balancer.ts";
 import { createInlineExecutor } from "./runtime/inline-executor.ts";
 import type {
-  Args,
   AbortSignalConfig,
   AbortSignalOption,
   AbortSignalToolkit,
+  Args,
   Composed,
   ComposedWithKey,
   CreateContext,
@@ -27,17 +28,17 @@ import type {
   DispatcherSettings,
   FixPoint,
   FunctionMapType,
+  ImportTaskOptions,
   MaybePromise,
   Pool,
-  TaskInput,
-  SingleTaskPool,
   ReturnFixed,
-  ImportTaskOptions,
+  SingleTaskPool,
   TaskFn,
+  TaskInput,
+  tasks,
   TaskTimeout,
   WorkerInvoke,
   WorkerSettings,
-  tasks,
 } from "./types.ts";
 
 // NOTE: Explicit API typings keep JSR from widening curried signatures.
@@ -63,17 +64,14 @@ type InferredTaskFunction = (...args: any[]) => MaybePromise<Args>;
 type InferredTaskInput<
   F extends InferredTaskFunction,
   AS extends AbortSignalOption,
-> = Parameters<F> extends []
-  ? void
+> = Parameters<F> extends [] ? void
   : AS extends undefined
-    ? Parameters<F> extends [infer A]
-      ? A extends TaskInput ? A : never
-      : never
-    : Parameters<F> extends [infer A]
-      ? A extends TaskInput ? A : never
-      : Parameters<F> extends [infer A, AbortSignalToolkit<AS>]
-        ? A extends TaskInput ? A : never
-        : never;
+    ? Parameters<F> extends [infer A] ? A extends TaskInput ? A : never
+    : never
+  : Parameters<F> extends [infer A] ? A extends TaskInput ? A : never
+  : Parameters<F> extends [infer A, AbortSignalToolkit<AS>]
+    ? A extends TaskInput ? A : never
+  : never;
 
 type InferredTaskOutput<F extends InferredTaskFunction> =
   Awaited<ReturnType<F>> extends infer R
@@ -83,29 +81,23 @@ type InferredTaskOutput<F extends InferredTaskFunction> =
 type InferredTaskShape<
   F extends InferredTaskFunction,
   AS extends AbortSignalOption,
-> =
-  [InferredTaskInput<F, AS>] extends [never] ? never
-    : [InferredTaskOutput<F>] extends [never] ? never
-    : {
+> = [InferredTaskInput<F, AS>] extends [never] ? never
+  : [InferredTaskOutput<F>] extends [never] ? never
+  :
+    & {
       readonly f: F;
       readonly timeout?: TaskTimeout;
-    } & (
-      AS extends undefined
-        ? { readonly abortSignal?: undefined }
+    }
+    & (
+      AS extends undefined ? { readonly abortSignal?: undefined }
         : { readonly abortSignal: AS }
     );
 
 export const isMain: boolean = RUNTIME_IS_MAIN_THREAD;
 export { endpointSymbol as endpointSymbol };
 
-
 /**
- *  With this information we can recreate the logical order of
- *  relevant exported functions from a file, also it helps to 
- *  track a task before naming, ` export ` elements have to be declared
- *  at top level and without branching, we take advantage of this to 
- *  correctly map them. 
- * 
+ * Reconstructs stable task order from top-level exports before names are bound.
  */
 export const toListAndIds: ToListAndIdsFn = (
   args: ComposedWithKey[],
@@ -113,11 +105,11 @@ export const toListAndIds: ToListAndIdsFn = (
   const result = args
     .reduce(
       (acc, v) => (
-        acc[0].add(v.importedFrom), 
-        acc[1].add(v.id), 
-        acc[2].add(v.at),
-        acc[3].push(v.name),
-        acc
+        acc[0].add(v.importedFrom),
+          acc[1].add(v.id),
+          acc[2].add(v.at),
+          acc[3].push(v.name),
+          acc
       ),
       [
         new Set<string>(),
@@ -214,6 +206,7 @@ export const createPool: CreatePoolFactory = ({
   inliner,
   balancer,
   payload,
+  unsafe,
   payloadInitialBytes,
   payloadMaxBytes,
   bufferMode,
@@ -227,6 +220,7 @@ export const createPool: CreatePoolFactory = ({
   host,
 }: CreatePool) =>
 <T extends tasks>(tasks: T): Pool<T> => {
+  const bufferReferenceReturn = unsafe?.BufferReferenceReturn;
   /**
    *  This functions is only available in the main thread.
    *  Also triggers when debug extra is enabled.
@@ -276,7 +270,7 @@ export const createPool: CreatePoolFactory = ({
   if (listOfFunctions.length > MAX_FUNCTION_COUNT) {
     throw new RangeError(
       `Too many tasks: received ${listOfFunctions.length}. ` +
-      `Maximum is ${MAX_FUNCTION_COUNT} (Uint16 function IDs: 0..${MAX_FUNCTION_ID}).`,
+        `Maximum is ${MAX_FUNCTION_COUNT} (Uint16 function IDs: 0..${MAX_FUNCTION_ID}).`,
     );
   }
 
@@ -353,7 +347,9 @@ export const createPool: CreatePoolFactory = ({
   );
 
   const hostDispatcher: DispatcherSettings | undefined = host ?? dispatcher;
-  const usesAbortSignal = listOfFunctions.some((fn) => fn.abortSignal !== undefined);
+  const usesAbortSignal = listOfFunctions.some((fn) =>
+    fn.abortSignal !== undefined
+  );
   const resolvedWorker = resolveWorkerBootstrapSettings(
     worker,
     callerHref,
@@ -364,6 +360,18 @@ export const createPool: CreatePoolFactory = ({
   const hardTimeoutMs = Number.isFinite(resolvedWorker?.hardTimeoutMs)
     ? Math.max(1, Math.floor(resolvedWorker?.hardTimeoutMs as number))
     : undefined;
+
+  if (RUNTIME_POOL_DEPTH >= 1) {
+    throw new Error(
+      `createPool() tried to spawn workers from inside a worker process ` +
+        `(pool depth ${RUNTIME_POOL_DEPTH}). This usually means a pool is ` +
+        `created at module scope in a module your workers import, so every ` +
+        `worker spawns its own pool recursively. Is your createPool protected ` +
+        `by isMain? Guard pool creation behind \`if (isMain) { ... }\` ` +
+        `(import { isMain } from "knitting") so only the main program starts ` +
+        `the pool.`,
+    );
+  }
 
   let workers = Array.from({
     length: threads ?? 1,
@@ -381,6 +389,7 @@ export const createPool: CreatePoolFactory = ({
       workerExecArgv: execArgv,
       host: hostDispatcher,
       payload,
+      bufferReferenceReturn,
       payloadInitialBytes,
       payloadMaxBytes,
       bufferMode,
@@ -564,19 +573,17 @@ export const createPool: CreatePoolFactory = ({
       return buildImportedInvoker(handlers);
     }
 
-    return useDirectHandler
-      ? handlers[0]!
-      : managerMethod({
-        contexts: workers,
-        balancer,
-        handlers,
-        inlinerGate: usingInliner
-          ? {
-            index: inlinerIndex,
-            threshold: inlinerDispatchThreshold,
-          }
-          : undefined,
-      });
+    return useDirectHandler ? handlers[0]! : managerMethod({
+      contexts: workers,
+      balancer,
+      handlers,
+      inlinerGate: usingInliner
+        ? {
+          index: inlinerIndex,
+          threshold: inlinerDispatchThreshold,
+        }
+        : undefined,
+    });
   };
 
   let callEntries: Array<readonly [string, WorkerInvoke]>;
@@ -792,8 +799,13 @@ export function importTask<
   } = options;
   const resolvedHref = resolveImportHref(href, callerHref);
 
-  return buildTaskDefinitionFromCaller<A, B, AS>({
-    ...(rest as unknown as Omit<FixPoint<A, B, AS>, "f">),
-    f: createImportedTaskFn<A, B, AS>(resolvedHref, name),
-  } as FixPoint<A, B, AS>, callerHref, at, true);
+  return buildTaskDefinitionFromCaller<A, B, AS>(
+    {
+      ...(rest as unknown as Omit<FixPoint<A, B, AS>, "f">),
+      f: createImportedTaskFn<A, B, AS>(resolvedHref, name),
+    } as FixPoint<A, B, AS>,
+    callerHref,
+    at,
+    true,
+  );
 }

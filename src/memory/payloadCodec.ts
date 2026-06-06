@@ -1,4 +1,5 @@
 import {
+  attachPayloadTransportFinalizer,
   beginPromisePayload,
   finishPromisePayload,
   getTaskSlotIndex,
@@ -26,14 +27,34 @@ import {
   resolvePayloadBufferOptions,
 } from "./payload-config.ts";
 import type { SharedBufferSource } from "../common/shared-buffer-region.ts";
+import {
+  getSharedArrayBufferPayload,
+  SHARED_ARRAY_BUFFER_CODEC_ID,
+  SHARED_ARRAY_BUFFER_NUMERIC_TRANSFER,
+  SHARED_ARRAY_BUFFER_NUMERIC_WORDS,
+} from "../connections/shared-array-buffer-payload.ts";
 
 type ExternalPayloadLike = {
   toMetadata: () => unknown;
 };
 
+const BUFFER_REFERENCE_NUMERIC_TRANSFER = Symbol.for(
+  "knitting.bufferReference.numericTransfer",
+);
+
 type ExternalPayloadCodec = {
   decode: (metadata: unknown) => unknown;
   decodeNumeric?: (metadata: ArrayLike<number>) => unknown;
+};
+
+type BufferReferencePayloadLike = ExternalPayloadLike & {
+  [BUFFER_REFERENCE_NUMERIC_TRANSFER]?: () => ArrayLike<number> | undefined;
+};
+
+type SharedArrayBufferPayloadLike = ExternalPayloadLike & {
+  [SHARED_ARRAY_BUFFER_NUMERIC_TRANSFER]?: (
+    transportKey?: object,
+  ) => ArrayLike<number> | undefined;
 };
 
 type ProcessSharedBufferPayloadLike = ExternalPayloadLike & {
@@ -81,6 +102,7 @@ const BIGINT64_MAX = (1n << 63n) - 1n;
 const { parse: parseJSON, stringify: stringifyJSON } = JSON;
 const { for: symbolFor, keyFor: symbolKeyFor } = Symbol;
 const EXTERNAL_PAYLOAD_BRAND = symbolFor("knitting.payloadCodec");
+const BUFFER_REFERENCE_CODEC_ID = "knitting.bufferReference";
 const PROCESS_SHARED_BUFFER_CODEC_ID = "knitting.processSharedBuffer";
 const externalPayloadGlobal = globalThis as typeof globalThis & {
   __KNITTING_PAYLOAD_CODECS__?: Record<
@@ -94,7 +116,9 @@ const arrayIsArray = Array.isArray;
 const objectPrototype = Object.prototype;
 const UNSUPPORTED_OBJECT_DETAIL =
   "Unsupported object type. Allowed: plain object, array, Error, Date, Envelope, Buffer, ArrayBuffer, DataView, typed arrays, and registered external payloads. Serialize it yourself.";
-const ENVELOPE_PAYLOAD_DETAIL = "Envelope payload must be an ArrayBuffer.";
+const ENVELOPE_PAYLOAD_DETAIL =
+  "Envelope payload must be an ArrayBuffer, SharedArrayBuffer, " +
+  "ProcessSharedBuffer, or BufferReference.";
 const ENVELOPE_HEADER_DETAIL =
   "Envelope header must be a JSON-like value or string.";
 const ENVELOPE_PROMISE_DETAIL =
@@ -165,19 +189,32 @@ const decodeExternalPayload = (raw: string): unknown => {
 };
 
 const PROCESS_SHARED_BUFFER_NUMERIC_WORDS = 8;
+const BUFFER_REFERENCE_NUMERIC_WORDS = 8;
 const NUMERIC_SENTINEL = 0xffffffff;
+
+const decodeNumericExternalPayload = (
+  codecId: string,
+  words: ArrayLike<number>,
+): unknown => {
+  const codec = externalPayloadGlobal.__KNITTING_PAYLOAD_CODECS__?.[codecId];
+  if (typeof codec?.decodeNumeric === "function") {
+    return codec.decodeNumeric(words);
+  }
+  return { codec: codecId, metadata: Array.from(words) };
+};
 
 const decodeProcessSharedBufferNumericWords = (
   words: ArrayLike<number>,
-): unknown => {
-  const codec = externalPayloadGlobal.__KNITTING_PAYLOAD_CODECS__?.[
-    PROCESS_SHARED_BUFFER_CODEC_ID
-  ];
-  if (typeof codec?.decodeNumeric === "function") return codec.decodeNumeric(words);
-  // `words` is a reusable scratch; copy it on the (unreachable in practice)
-  // codec-missing diagnostic path so the escaped value never aliases it.
-  return { codec: PROCESS_SHARED_BUFFER_CODEC_ID, metadata: Array.from(words) };
-};
+): unknown =>
+  decodeNumericExternalPayload(PROCESS_SHARED_BUFFER_CODEC_ID, words);
+
+const decodeBufferReferenceNumericWords = (
+  words: ArrayLike<number>,
+): unknown => decodeNumericExternalPayload(BUFFER_REFERENCE_CODEC_ID, words);
+
+const decodeSharedArrayBufferNumericWords = (
+  words: ArrayLike<number>,
+): unknown => decodeNumericExternalPayload(SHARED_ARRAY_BUFFER_CODEC_ID, words);
 
 const tryEncodePrimitiveTask = (task: Task): boolean => {
   const value = task.value;
@@ -710,6 +747,9 @@ export const encodePayload = ({
   const processSharedBufferWords = new Uint32Array(
     PROCESS_SHARED_BUFFER_NUMERIC_WORDS,
   );
+  const sharedArrayBufferWords = new Uint32Array(
+    SHARED_ARRAY_BUFFER_NUMERIC_WORDS,
+  );
   const tryEncodeProcessSharedBufferNumeric = (
     task: Task,
     slotIndex: number,
@@ -758,6 +798,52 @@ export const encodePayload = ({
     task.value = null;
     return true;
   };
+  const tryEncodeBufferReferenceNumeric = (
+    task: Task,
+    slotIndex: number,
+    value: BufferReferencePayloadLike,
+  ): boolean => {
+    const words = value[BUFFER_REFERENCE_NUMERIC_TRANSFER]?.();
+    if (words === undefined) return false;
+
+    task[TaskIndex.Type] = PayloadBuffer.BufferReference;
+    task[TaskIndex.PayloadLen] = writeStaticU32Words(
+      words,
+      BUFFER_REFERENCE_NUMERIC_WORDS,
+      slotIndex,
+    );
+    attachPayloadTransportFinalizer(task, value);
+    task.value = null;
+    return true;
+  };
+  const tryEncodeSharedArrayBufferNumeric = (
+    task: Task,
+    slotIndex: number,
+    value: SharedArrayBufferPayloadLike,
+  ): boolean => {
+    const words = value[SHARED_ARRAY_BUFFER_NUMERIC_TRANSFER]?.(
+      lockSector as object | undefined,
+    );
+    if (words === undefined) return false;
+
+    sharedArrayBufferWords[0] = words[0] ?? 0;
+    sharedArrayBufferWords[1] = words[1] ?? 0;
+    sharedArrayBufferWords[2] = words[2] ?? 0;
+    sharedArrayBufferWords[3] = words[3] ?? 0;
+    sharedArrayBufferWords[4] = words[4] ?? 0;
+    sharedArrayBufferWords[5] = words[5] ?? 0;
+    sharedArrayBufferWords[6] = words[6] ?? 0;
+    sharedArrayBufferWords[7] = words[7] ?? 0;
+
+    task[TaskIndex.Type] = PayloadBuffer.SharedArrayBuffer;
+    task[TaskIndex.PayloadLen] = writeStaticU32Words(
+      sharedArrayBufferWords,
+      words.length,
+      slotIndex,
+    );
+    task.value = null;
+    return true;
+  };
   const encodeObjectExternalPayload = (
     task: Task,
     slotIndex: number,
@@ -771,6 +857,28 @@ export const encodePayload = ({
         onPromise,
         detail: UNSUPPORTED_OBJECT_DETAIL,
       });
+    }
+
+    if (
+      codecId === SHARED_ARRAY_BUFFER_CODEC_ID &&
+      tryEncodeSharedArrayBufferNumeric(
+        task,
+        slotIndex,
+        externalPayload as SharedArrayBufferPayloadLike,
+      )
+    ) {
+      return true;
+    }
+
+    if (
+      codecId === BUFFER_REFERENCE_CODEC_ID &&
+      tryEncodeBufferReferenceNumeric(
+        task,
+        slotIndex,
+        externalPayload as BufferReferencePayloadLike,
+      )
+    ) {
+      return true;
     }
 
     if (
@@ -810,6 +918,7 @@ export const encodePayload = ({
       if (written !== -1) {
         task[TaskIndex.Type] = PayloadBuffer.StaticExternalPayload;
         task[TaskIndex.PayloadLen] = written;
+        attachPayloadTransportFinalizer(task, externalPayload);
         task.value = null;
         return true;
       }
@@ -831,6 +940,7 @@ export const encodePayload = ({
     if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
     task[TaskIndex.PayloadLen] = written;
     setSlotLength(reservedSlot, written);
+    attachPayloadTransportFinalizer(task, externalPayload);
     task.value = null;
     return true;
   };
@@ -842,56 +952,60 @@ export const encodePayload = ({
     task.value = null;
     return true;
   };
-  const encodeObjectEnvelope = (
+  const encodeEnvelopeHeaderText = (
     task: Task,
-    slotIndex: number,
-    envelope: Envelope,
-  ) => {
-    const header = envelope.header;
-    const payload = envelope.payload;
-    const headerIsString = typeof header === "string";
-    if (!(payload instanceof ArrayBuffer)) {
-      return encoderError({
-        task,
-        type: ErrorKnitting.Serializable,
-        onPromise,
-        detail: ENVELOPE_PAYLOAD_DETAIL,
-      });
-    }
+    header: unknown,
+    headerIsString: boolean,
+  ): string | undefined => {
     if (hasPromiseInEnvelopeHeader(header)) {
-      return encoderError({
+      encoderError({
         task,
         type: ErrorKnitting.Serializable,
         onPromise,
         detail: ENVELOPE_PROMISE_DETAIL,
       });
+      return undefined;
     }
-
+    if (headerIsString) return header as string;
     let headerText: string | undefined;
-    if (headerIsString) {
-      headerText = header;
-    } else {
-      try {
-        headerText = stringifyJSON(header);
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        return encoderError({
-          task,
-          type: ErrorKnitting.Json,
-          onPromise,
-          detail,
-        });
-      }
+    try {
+      headerText = stringifyJSON(header);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      encoderError({ task, type: ErrorKnitting.Json, onPromise, detail });
+      return undefined;
     }
     if (typeof headerText !== "string") {
-      return encoderError({
+      encoderError({
         task,
         type: ErrorKnitting.Serializable,
         onPromise,
         detail: ENVELOPE_HEADER_DETAIL,
       });
+      return undefined;
     }
+    return headerText;
+  };
 
+  const resolveEnvelopeExternalBody = (
+    body: unknown,
+  ): ExternalPayloadLike | undefined => {
+    if (body === null || typeof body !== "object") return undefined;
+    const sharedArrayBuffer = getSharedArrayBufferPayload(body as object);
+    if (sharedArrayBuffer !== undefined) return sharedArrayBuffer;
+    if (isExternalPayloadLike(body as object)) {
+      return body as ExternalPayloadLike;
+    }
+    return undefined;
+  };
+
+  const encodeEnvelopeArrayBufferBody = (
+    task: Task,
+    slotIndex: number,
+    headerText: string,
+    headerIsString: boolean,
+    payload: ArrayBuffer,
+  ) => {
     const payloadBytes = new Uint8Array(payload);
     const payloadLength = payloadBytes.byteLength;
     const payloadReserveBytes = payloadLength > 0 ? payloadLength : 1;
@@ -966,6 +1080,154 @@ export const encodePayload = ({
     task.value = null;
     return true;
   };
+
+  const encodeEnvelopeExternalBody = (
+    task: Task,
+    slotIndex: number,
+    headerText: string,
+    headerIsString: boolean,
+    externalBody: ExternalPayloadLike,
+  ) => {
+    const codecId = readExternalPayloadCodecId(externalBody as object);
+    if (codecId === undefined) {
+      return encoderError({
+        task,
+        type: ErrorKnitting.Serializable,
+        onPromise,
+        detail: ENVELOPE_PAYLOAD_DETAIL,
+      });
+    }
+
+    let bodyText: string | undefined;
+    try {
+      bodyText = stringifyJSON([codecId, externalBody.toMetadata()]);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return encoderError({
+        task,
+        type: ErrorKnitting.Serializable,
+        onPromise,
+        detail,
+      });
+    }
+    if (typeof bodyText !== "string") {
+      return encoderError({
+        task,
+        type: ErrorKnitting.Serializable,
+        onPromise,
+        detail: "Envelope body metadata must be JSON serializable.",
+      });
+    }
+
+    const bodyBytes = textEncode.encode(bodyText);
+    const bodyLength = bodyBytes.byteLength;
+
+    const staticHeaderWritten = writeStaticUtf8(headerText, slotIndex);
+    if (staticHeaderWritten !== -1) {
+      if (
+        !ensureWithinDynamicLimit(
+          task,
+          bodyLength,
+          "EnvelopeStaticHeaderExternal",
+        )
+      ) return false;
+      const reservedSlot = reserveDynamicObject(task, bodyLength);
+      task[TaskIndex.Type] = headerIsString
+        ? PayloadBuffer.EnvelopeStaticHeaderStringExternal
+        : PayloadBuffer.EnvelopeStaticHeaderExternal;
+      task[TaskIndex.PayloadLen] = staticHeaderWritten;
+      task[TaskIndex.End] = bodyLength;
+      const bodyWritten = writeDynamicBinary(bodyBytes, task[TaskIndex.Start]);
+      if (bodyWritten < 0) {
+        return failDynamicWriteAfterReserve(task, reservedSlot);
+      }
+      setSlotLength(reservedSlot, bodyWritten);
+      attachPayloadTransportFinalizer(task, externalBody);
+      task.value = null;
+      return true;
+    }
+
+    const headerReserveBytes = dynamicUtf8ReserveBytesWithExtra(
+      task,
+      headerText,
+      bodyLength,
+      headerIsString
+        ? "EnvelopeDynamicHeaderStringExternal"
+        : "EnvelopeDynamicHeaderExternal",
+    );
+    if (headerReserveBytes < 0) return false;
+    task[TaskIndex.Type] = headerIsString
+      ? PayloadBuffer.EnvelopeDynamicHeaderStringExternal
+      : PayloadBuffer.EnvelopeDynamicHeaderExternal;
+    const reservedSlot = reserveDynamicObject(
+      task,
+      headerReserveBytes + bodyLength,
+    );
+    const baseStart = task[TaskIndex.Start];
+    const writtenHeaderBytes = writeDynamicUtf8(
+      headerText,
+      baseStart,
+      headerReserveBytes,
+    );
+    if (writtenHeaderBytes < 0) {
+      return failDynamicWriteAfterReserve(task, reservedSlot);
+    }
+    const bodyWritten = writeDynamicBinary(
+      bodyBytes,
+      baseStart + writtenHeaderBytes,
+    );
+    if (bodyWritten < 0) {
+      return failDynamicWriteAfterReserve(task, reservedSlot);
+    }
+    task[TaskIndex.PayloadLen] = writtenHeaderBytes;
+    task[TaskIndex.End] = bodyLength;
+    setSlotLength(reservedSlot, writtenHeaderBytes + bodyLength);
+    attachPayloadTransportFinalizer(task, externalBody);
+    task.value = null;
+    return true;
+  };
+
+  const encodeObjectEnvelope = (
+    task: Task,
+    slotIndex: number,
+    envelope: Envelope,
+  ) => {
+    const header = envelope.header;
+    const payload = envelope.payload;
+    const headerIsString = typeof header === "string";
+
+    if (payload instanceof ArrayBuffer) {
+      const headerText = encodeEnvelopeHeaderText(task, header, headerIsString);
+      if (headerText === undefined) return false;
+      return encodeEnvelopeArrayBufferBody(
+        task,
+        slotIndex,
+        headerText,
+        headerIsString,
+        payload,
+      );
+    }
+
+    const externalBody = resolveEnvelopeExternalBody(payload);
+    if (externalBody !== undefined) {
+      const headerText = encodeEnvelopeHeaderText(task, header, headerIsString);
+      if (headerText === undefined) return false;
+      return encodeEnvelopeExternalBody(
+        task,
+        slotIndex,
+        headerText,
+        headerIsString,
+        externalBody,
+      );
+    }
+
+    return encoderError({
+      task,
+      type: ErrorKnitting.Serializable,
+      onPromise,
+      detail: ENVELOPE_PAYLOAD_DETAIL,
+    });
+  };
   const encodeObjectPromise = (task: Task, promise: Promise<unknown>) => {
     if (beginPromisePayload(task)) {
       promise.then(
@@ -1033,6 +1295,17 @@ export const encodePayload = ({
 
         try {
           const objectValue = args as object;
+          const sharedArrayBufferPayload = getSharedArrayBufferPayload(
+            objectValue,
+          );
+          if (sharedArrayBufferPayload !== undefined) {
+            return encodeObjectExternalPayload(
+              task,
+              slotIndex,
+              sharedArrayBufferPayload,
+            );
+          }
+
           const objectProto = objectGetPrototypeOf(objectValue);
           if (isRuntimeUint8Array(objectValue)) {
             return encodeObjectUint8Array(
@@ -1363,6 +1636,10 @@ export const decodePayload = ({
   const processSharedBufferWords = new Uint32Array(
     PROCESS_SHARED_BUFFER_NUMERIC_WORDS,
   );
+  const sharedArrayBufferWords = new Uint32Array(
+    SHARED_ARRAY_BUFFER_NUMERIC_WORDS,
+  );
+  const bufferReferenceWords = new Uint32Array(BUFFER_REFERENCE_NUMERIC_WORDS);
 
   // TODO: remove slotIndex and make that all their callers
   // store the slot in their Task, to just get it when it comes
@@ -1457,6 +1734,43 @@ export const decodePayload = ({
           )
           : new ArrayBuffer(0);
         task.value = new Envelope(header as any, payload);
+        freeTaskSlot(task);
+        return;
+      }
+      case PayloadBuffer.EnvelopeStaticHeaderExternal:
+      case PayloadBuffer.EnvelopeStaticHeaderStringExternal: {
+        const rawHeader = readStaticUtf8(
+          0,
+          task[TaskIndex.PayloadLen],
+          slotIndex,
+        );
+        const header =
+          task[TaskIndex.Type] ===
+              PayloadBuffer.EnvelopeStaticHeaderStringExternal
+            ? rawHeader
+            : parseJSON(rawHeader);
+        const bodyStart = task[TaskIndex.Start];
+        const body = decodeExternalPayload(
+          readDynamicUtf8(bodyStart, bodyStart + task[TaskIndex.End]),
+        );
+        task.value = new Envelope(header as any, body as any);
+        freeTaskSlot(task);
+        return;
+      }
+      case PayloadBuffer.EnvelopeDynamicHeaderExternal:
+      case PayloadBuffer.EnvelopeDynamicHeaderStringExternal: {
+        const headerStart = task[TaskIndex.Start];
+        const bodyStart = headerStart + task[TaskIndex.PayloadLen];
+        const rawHeader = readDynamicUtf8(headerStart, bodyStart);
+        const header =
+          task[TaskIndex.Type] ===
+              PayloadBuffer.EnvelopeDynamicHeaderStringExternal
+            ? rawHeader
+            : parseJSON(rawHeader);
+        const body = decodeExternalPayload(
+          readDynamicUtf8(bodyStart, bodyStart + task[TaskIndex.End]),
+        );
+        task.value = new Envelope(header as any, body as any);
         freeTaskSlot(task);
         return;
       }
@@ -1626,6 +1940,24 @@ export const decodePayload = ({
           readStaticU32Words(
             processSharedBufferWords,
             PROCESS_SHARED_BUFFER_NUMERIC_WORDS,
+            slotIndex,
+          ),
+        );
+        return;
+      case PayloadBuffer.SharedArrayBuffer:
+        task.value = decodeSharedArrayBufferNumericWords(
+          readStaticU32Words(
+            sharedArrayBufferWords,
+            task[TaskIndex.PayloadLen] >>> 2,
+            slotIndex,
+          ),
+        );
+        return;
+      case PayloadBuffer.BufferReference:
+        task.value = decodeBufferReferenceNumericWords(
+          readStaticU32Words(
+            bufferReferenceWords,
+            BUFFER_REFERENCE_NUMERIC_WORDS,
             slotIndex,
           ),
         );

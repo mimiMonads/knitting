@@ -1,33 +1,35 @@
 import RingQueue from "../ipc/tools/ring-queue.ts";
 import {
+  attachPayloadTransportFinalizer,
+  type Lock2,
+  runTaskFinalizers,
+  type Task,
   TaskFlag,
   TaskIndex,
-  type Task,
-  type Lock2,
 } from "../memory/lock.ts";
 import type { WorkerComposedWithKey } from "./task-loader.ts";
 import { composeWorkerRunner } from "./composable-runners.ts";
-import type {
-  WorkerSettings,
-} from "../types.ts";
+import type { WorkerSettings } from "../types.ts";
+import { BUFFER_REFERENCE_RETURN_RELEASE_TOKEN } from "../connections/buffer-reference.ts";
 
 type ArgumentsForCreateWorkerQueue = {
   listOfFunctions: WorkerComposedWithKey[];
   workerOptions?: WorkerSettings;
   lock: Lock2;
   returnLock: Lock2;
+  borrowReturnedBufferReferences?: boolean;
   hasAborted?: (signal: number) => boolean;
   now?: () => number;
 };
 
 export type CreateWorkerRxQueue = ReturnType<typeof createWorkerRxQueue>;
-// Create and manage a working queue.
 export const createWorkerRxQueue = (
   {
     listOfFunctions,
     workerOptions,
     lock,
     returnLock,
+    borrowReturnedBufferReferences,
     hasAborted,
     now,
   }: ArgumentsForCreateWorkerQueue,
@@ -56,6 +58,37 @@ export const createWorkerRxQueue = (
   const IDX_FLAGS = TaskIndex.FlagsToHost;
   const FLAG_REJECT = TaskFlag.Reject;
 
+  // Return-payload finalizers wait until the host consumes the return.
+  // Quiescence (hostBits XOR workerBits == 0) lets us release them in batch.
+  const a_load = Atomics.load;
+  const returnHostBits = returnLock.hostBits;
+  const returnWorkerBits = returnLock.workerBits;
+  const deferredReleases: Array<() => void> = [];
+  const explicitReturnReleases = new Map<string, () => void>();
+  const drainReturnReleases = () => {
+    if (deferredReleases.length === 0) return;
+    if ((a_load(returnHostBits, 0) ^ a_load(returnWorkerBits, 0)) !== 0) return;
+    for (let i = 0; i < deferredReleases.length; i++) {
+      try {
+        deferredReleases[i]!();
+      } catch {
+        // best effort
+      }
+    }
+    deferredReleases.length = 0;
+  };
+  const releaseReturnedBufferReference = (token: bigint): void => {
+    const key = token.toString();
+    const release = explicitReturnReleases.get(key);
+    if (release === undefined) return;
+    explicitReturnReleases.delete(key);
+    try {
+      release();
+    } catch {
+      // best effort
+    }
+  };
+
   const runByIndex = listOfFunctions.reduce((acc, fixed, idx) => {
     const job = jobs[idx]!;
     acc.push(composeWorkerRunner({
@@ -71,26 +104,25 @@ export const createWorkerRxQueue = (
     ? () => hasAnythingFinished !== 0 && toWork.size === 0
     : () => hasAnythingFinished !== 0;
 
-const { decode, resolved } = lock;
-const resolvedShift = () => resolved.shiftNoClear();
+  const { decode, resolved } = lock;
+  const resolvedShift = () => resolved.shiftNoClear();
 
+  const enqueueLock = () => {
+    if (!decode()) return false;
 
-const enqueueLock = () => {
-  if (!decode()) return false;
-
-  let task = resolvedShift();
-  while (task) {
-    task.resolve = PLACE_HOLDER;
-    task.reject  = PLACE_HOLDER;
-    toWorkPush(task);
-    task = resolvedShift();
-  }
-  return true;
-};
+    let task = resolvedShift();
+    while (task) {
+      task.resolve = PLACE_HOLDER;
+      task.reject = PLACE_HOLDER;
+      attachPayloadTransportFinalizer(task, task.value);
+      toWorkPush(task);
+      task = resolvedShift();
+    }
+    return true;
+  };
 
   const encodeReturnSafe = (slot: Task) => {
-  
-      if (!returnLock.encode(slot)) return false;
+    if (!returnLock.encode(slot)) return false;
 
     return true;
   };
@@ -98,6 +130,18 @@ const enqueueLock = () => {
   const sendReturn = (slot: Task, shouldReject: boolean) => {
     slot[IDX_FLAGS] = shouldReject ? FLAG_REJECT : 0;
     if (!encodeReturnSafe(slot)) return false;
+    // Preserve return finalizers past slot recycle; release after drain.
+    if (slot.finalize !== undefined) {
+      const token = (slot.finalize as (() => void) & {
+        [BUFFER_REFERENCE_RETURN_RELEASE_TOKEN]?: bigint;
+      })[BUFFER_REFERENCE_RETURN_RELEASE_TOKEN];
+      if (token === undefined || borrowReturnedBufferReferences !== true) {
+        deferredReleases.push(slot.finalize);
+      } else {
+        explicitReturnReleases.set(token.toString(), slot.finalize);
+      }
+      slot.finalize = undefined;
+    }
     hasAnythingFinished--;
     recyclePush(slot);
     return true;
@@ -109,6 +153,7 @@ const enqueueLock = () => {
     value: unknown,
     wasAwaited: boolean,
   ) => {
+    runTaskFinalizers(slot);
     slot.value = value;
     hasAnythingFinished++;
     if (wasAwaited && awaiting > 0) awaiting--;
@@ -141,13 +186,12 @@ const enqueueLock = () => {
     serviceBatchImmediate: () => {
       let processed = 0;
 
-      while ( processed < 5 && toWork.size !== 0 ) {
+      while (processed < 5 && toWork.size !== 0) {
         const slot = toWorkShift()!;
 
         try {
           const fnIndex = slot[TaskIndex.FunctionID] & FUNCTION_ID_MASK;
           const result = runByIndex[fnIndex]!(slot);
-          // Slot 0 is reused for response flags; clear request FunctionID value.
           slot[IDX_FLAGS] = 0;
           slot.value = null;
           if (result instanceof Promise) {
@@ -164,13 +208,14 @@ const enqueueLock = () => {
           settleNow(slot, true, err, false);
         }
 
-        ++processed ;
-       
+        ++processed;
       }
 
       return processed;
     },
     enqueueLock,
+    drainReturnReleases,
+    releaseReturnedBufferReference,
     hasAwaiting: () => awaiting > 0,
     getAwaiting: () => awaiting,
   };

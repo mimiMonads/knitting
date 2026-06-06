@@ -1,4 +1,5 @@
 import {
+  addRuntimeDataListener,
   createRuntimeMessageChannel,
   RUNTIME_IS_MAIN_THREAD,
   RUNTIME_IS_PROCESS_WORKER,
@@ -29,6 +30,9 @@ import {
   getProcessWorkerNativeWaitU32,
   installProcessWorkerBootstrap,
 } from "./process-worker-bootstrap.ts";
+import {
+  readBufferReferenceReturnReleaseMessage,
+} from "../connections/buffer-reference.ts";
 
 const WORKER_FATAL_MESSAGE_KEY = "__knittingWorkerFatal";
 
@@ -70,6 +74,30 @@ const reportWorkerStartupFatal = (error: unknown): void => {
   }
 };
 
+const installBufferReferenceReleaseListener = (
+  releaseReturnedBufferReference: (token: bigint) => void,
+): void => {
+  const handleMessage = (message: unknown): void => {
+    const token = readBufferReferenceReturnReleaseMessage(message);
+    if (token !== undefined) releaseReturnedBufferReference(token);
+  };
+
+  if (RUNTIME_PARENT_PORT !== undefined) {
+    addRuntimeDataListener(RUNTIME_PARENT_PORT, handleMessage);
+    return;
+  }
+
+  const scope = globalThis as typeof globalThis & {
+    addEventListener?: (
+      type: string,
+      listener: (event: { data?: unknown }) => void,
+    ) => void;
+  };
+  scope.addEventListener?.("message", (event) => {
+    handleMessage((event as { data?: unknown })?.data);
+  });
+};
+
 export const workerMainLoop = async (
   startupData: WorkerData,
 ): Promise<void> => {
@@ -89,6 +117,7 @@ export const workerMainLoop = async (
     abortSignalSAB,
     abortSignalMax,
     payloadConfig,
+    bufferReferenceReturn,
     permission,
     totalNumberOfThread,
     list,
@@ -179,13 +208,17 @@ export const workerMainLoop = async (
     writeBatch,
     hasPending,
     getAwaiting,
+    drainReturnReleases,
+    releaseReturnedBufferReference,
   } = createWorkerRxQueue({
     listOfFunctions,
     workerOptions,
     lock: lockState,
     returnLock: returnLockState,
+    borrowReturnedBufferReferences: bufferReferenceReturn === "borrow",
     hasAborted: abortSignals?.hasAborted,
   });
+  installBufferReferenceReleaseListener(releaseReturnedBufferReference);
 
   a_store(rxStatus, 0, 1);
 
@@ -248,6 +281,7 @@ export const workerMainLoop = async (
   const _hasPending = hasPending;
   const _serviceBatchImmediate = serviceBatchImmediate;
   const _getAwaiting = getAwaiting;
+  const _drainReturnReleases = drainReturnReleases;
   const _pauseSpin = pauseSpin;
   const _pauseUntil = pauseUntil;
 
@@ -261,6 +295,8 @@ export const workerMainLoop = async (
       if (_hasCompleted()) {
         if (_writeBatch(WRITE_MAX) > 0) progressed = true;
       }
+
+      _drainReturnReleases();
 
       if (_hasPending()) {
         if (_serviceBatchImmediate() > 0) progressed = true;

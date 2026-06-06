@@ -1,6 +1,7 @@
 import test from "./_runner.ts";
 import { createPool, Envelope, importTask, task } from "../knitting.ts";
 import type { ProcessSharedBuffer } from "../process-shared-buffer.ts";
+import type { BufferReference } from "../unsafe.ts";
 
 const runtimeProcess = (globalThis as typeof globalThis & {
   process?: {
@@ -91,6 +92,10 @@ const readFirstCell = task<ProcessSharedBuffer, number>({
   f: (buffer) => Atomics.load(buffer.view(Int32Array), 0),
 });
 
+const invert = task<BufferReference, number>({
+  f: (ref) => ref.toUint8Array().length,
+});
+
 const processImage = task<
   Envelope<{ format: string }>,
   Envelope<{ width: number; height: number }>
@@ -99,6 +104,20 @@ const processImage = task<
     const pixels = new Uint8Array(envelope.payload);
     return new Envelope({ width: 800, height: 600 }, pixels.buffer);
   },
+});
+
+const echoEnvelopeShared = task<
+  Envelope<{ tag: string }, SharedArrayBuffer>,
+  Envelope<{ tag: string }, SharedArrayBuffer>
+>({
+  f: (envelope) => envelope,
+});
+
+const echoEnvelopeRef = task<
+  Envelope<{ op: string }, BufferReference>,
+  Envelope<{ op: string }, BufferReference>
+>({
+  f: (envelope) => envelope,
 });
 
 const assertReadmeTypes = () => {
@@ -225,6 +244,17 @@ const assertReadmeTypes = () => {
     Equal<Awaited<ReturnType<typeof sharedPool.call.readFirstCell>>, number>
   >;
 
+  const bufferRefPool = createPool({ threads: 1 })({ invert });
+  const bufferRef = null as unknown as BufferReference;
+
+  bufferRefPool.call.invert(bufferRef);
+  // @ts-expect-error README BufferReference task expects a BufferReference.
+  bufferRefPool.call.invert(new ArrayBuffer(4));
+
+  type _bufferRefReturn = Assert<
+    Equal<Awaited<ReturnType<typeof bufferRefPool.call.invert>>, number>
+  >;
+
   const envelopePool = createPool({ threads: 2 })({ processImage });
   const buf = new ArrayBuffer(1024);
 
@@ -236,6 +266,29 @@ const assertReadmeTypes = () => {
     Equal<
       Awaited<ReturnType<typeof envelopePool.call.processImage>>,
       Envelope<{ width: number; height: number }>
+    >
+  >;
+
+  const envelopeSharedPool = createPool({ threads: 1 })({ echoEnvelopeShared });
+  envelopeSharedPool.call.echoEnvelopeShared(
+    new Envelope({ tag: "img" }, new SharedArrayBuffer(8)),
+  );
+  type _envelopeSharedReturn = Assert<
+    Equal<
+      Awaited<ReturnType<typeof envelopeSharedPool.call.echoEnvelopeShared>>,
+      Envelope<{ tag: string }, SharedArrayBuffer>
+    >
+  >;
+
+  const envelopeRefPool = createPool({ threads: 1 })({ echoEnvelopeRef });
+  const envelopeRefBody = null as unknown as BufferReference;
+  envelopeRefPool.call.echoEnvelopeRef(
+    new Envelope({ op: "invert" }, envelopeRefBody),
+  );
+  type _envelopeRefReturn = Assert<
+    Equal<
+      Awaited<ReturnType<typeof envelopeRefPool.call.echoEnvelopeRef>>,
+      Envelope<{ op: string }, BufferReference>
     >
   >;
 

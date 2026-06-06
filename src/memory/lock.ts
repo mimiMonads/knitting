@@ -9,8 +9,8 @@ import {
   toSharedBufferRegion,
 } from "../common/shared-buffer-region.ts";
 import {
-  probeLockBufferTextCompat,
   type LockBufferTextCompat,
+  probeLockBufferTextCompat,
 } from "../common/shared-buffer-text.ts";
 import {
   type PayloadBufferOptions,
@@ -68,6 +68,12 @@ export enum PayloadBuffer {
   ExternalPayload = 44,
   StaticExternalPayload = 45,
   ProcessSharedBuffer = 46,
+  BufferReference = 47,
+  SharedArrayBuffer = 48,
+  EnvelopeStaticHeaderExternal = 49,
+  EnvelopeDynamicHeaderExternal = 50,
+  EnvelopeStaticHeaderStringExternal = 51,
+  EnvelopeDynamicHeaderStringExternal = 52,
 }
 
 export enum LockBound {
@@ -91,8 +97,17 @@ export type Task = [
   number,
 ] & {
   value: unknown;
+  finalize?: (() => void) | undefined;
   resolve: (value?: unknown) => void;
   reject: (reason?: unknown) => void;
+};
+
+export const PayloadTransportFinalizer = Symbol.for(
+  "knitting.payloadCodec.transportFinalizer",
+);
+
+type PayloadTransportFinalizable = {
+  [PayloadTransportFinalizer]?: () => (() => void) | undefined;
 };
 
 export const PromisePayloadMarker = Symbol.for("knitting.promise.payload");
@@ -112,7 +127,8 @@ const TASK_LOCAL_PROMISE_TRACKED_FLAG = 1 << 1;
 export const beginPromisePayload = (task: Task): boolean => {
   const flags = task[TASK_LOCAL_FLAGS_INDEX];
   if ((flags & TASK_LOCAL_PROMISE_PENDING_FLAG) !== 0) return false;
-  task[TASK_LOCAL_FLAGS_INDEX] = (flags | TASK_LOCAL_PROMISE_PENDING_FLAG) >>> 0;
+  task[TASK_LOCAL_FLAGS_INDEX] = (flags | TASK_LOCAL_PROMISE_PENDING_FLAG) >>>
+    0;
   return true;
 };
 
@@ -126,6 +142,47 @@ export const isPromisePayloadPending = (task: Task): boolean =>
 
 export const resetTaskLocalFlags = (task: Task): void => {
   task[TASK_LOCAL_FLAGS_INDEX] = 0;
+};
+
+export const addTaskFinalizer = (
+  task: Task,
+  finalizer: () => void,
+): void => {
+  const previous = task.finalize;
+  task.finalize = previous === undefined ? finalizer : () => {
+    try {
+      previous();
+    } finally {
+      finalizer();
+    }
+  };
+};
+
+export const attachPayloadTransportFinalizer = (
+  task: Task,
+  value: unknown,
+): void => {
+  if (
+    task.finalize !== undefined || value === null || typeof value !== "object"
+  ) {
+    return;
+  }
+
+  const finalizer = (value as PayloadTransportFinalizable)[
+    PayloadTransportFinalizer
+  ]?.();
+  if (typeof finalizer === "function") addTaskFinalizer(task, finalizer);
+};
+
+export const runTaskFinalizers = (task: Task): void => {
+  const finalizer = task.finalize;
+  task.finalize = undefined;
+  if (finalizer !== undefined) {
+    try {
+      finalizer();
+    } catch {
+    }
+  }
 };
 
 export enum TaskIndex {
@@ -255,10 +312,12 @@ const def = (_?: unknown) => {};
 const createTaskShell = () => {
   const task = new Uint32Array(TaskIndex.Size) as Uint32Array & {
     value: unknown;
+    finalize?: (() => void) | undefined;
     resolve: (value?: unknown) => void;
     reject: (reason?: unknown) => void;
   } as unknown as Task;
   task.value = null;
+  task.finalize = undefined;
   task.resolve = def;
   task.reject = def;
   task[TASK_LOCAL_FLAGS_INDEX] = 0;
@@ -413,11 +472,13 @@ export const lock2 = ({
     textCompat: resolvedTextCompat,
     onPromise: (task, isRejected, value) => {
       if (
-        (task[TASK_LOCAL_FLAGS_INDEX] & TASK_LOCAL_PROMISE_TRACKED_FLAG) !== 0 &&
+        (task[TASK_LOCAL_FLAGS_INDEX] & TASK_LOCAL_PROMISE_TRACKED_FLAG) !==
+          0 &&
         pendingPromiseCount > 0
       ) {
         task[TASK_LOCAL_FLAGS_INDEX] =
-          (task[TASK_LOCAL_FLAGS_INDEX] & ~TASK_LOCAL_PROMISE_TRACKED_FLAG) >>> 0;
+          (task[TASK_LOCAL_FLAGS_INDEX] & ~TASK_LOCAL_PROMISE_TRACKED_FLAG) >>>
+          0;
         pendingPromiseCount = (pendingPromiseCount - 1) | 0;
       }
       promiseHandler!(task, isRejected, value);
@@ -478,7 +539,8 @@ export const lock2 = ({
   const trackDeferredTask = (task: Task) => {
     const flags = task[TASK_LOCAL_FLAGS_INDEX];
     if ((flags & TASK_LOCAL_PROMISE_TRACKED_FLAG) !== 0) return;
-    task[TASK_LOCAL_FLAGS_INDEX] = (flags | TASK_LOCAL_PROMISE_TRACKED_FLAG) >>> 0;
+    task[TASK_LOCAL_FLAGS_INDEX] = (flags | TASK_LOCAL_PROMISE_TRACKED_FLAG) >>>
+      0;
     pendingPromiseCount = (pendingPromiseCount + 1) | 0;
   };
   const encodeTaskValue = (task: Task, slotIndex: number): boolean =>
@@ -776,7 +838,6 @@ export const lock2 = ({
       };
     }
 
- 
     const hasOnResolved = onResolved !== undefined;
     const onResolvedTask = onResolved ?? def;
     const shouldSettleTask = shouldSettle;
@@ -856,6 +917,7 @@ export const lock2 = ({
     if (recycled) {
       fillTaskFrom(recycled, headersBuffer, off);
       recycled.value = null;
+      recycled.finalize = undefined;
       recycled.resolve = def;
       recycled.reject = def;
       task = recycled;

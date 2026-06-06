@@ -232,6 +232,11 @@ const addons = [
     source: "src/knitting_shm.cc",
     output: "build/Release/knitting_shm.node",
   },
+  {
+    name: "knitting_buffer_pointer",
+    source: "src/knitting_buffer_pointer.cc",
+    output: "build/Release/knitting_buffer_pointer.node",
+  },
 ];
 const ffiLibraries = isWindows
   ? [

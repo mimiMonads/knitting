@@ -1,7 +1,13 @@
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-const roots = ["knitting.d.ts", "process-shared-buffer.d.ts", "src"];
+const roots = [
+  "knitting.d.ts",
+  "process-shared-buffer.d.ts",
+  "unsafe.d.ts",
+  "utils.d.ts",
+  "src",
+];
 const importExtensionPattern = /\.ts(?=["')])/g;
 
 const rewriteFile = (filePath) => {

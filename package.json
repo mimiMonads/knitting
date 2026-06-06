@@ -1,6 +1,6 @@
 {
   "name": "knitting",
-  "version": "0.1.51",
+  "version": "0.1.52",
   "description": "Shared-memory IPC runtime for Node.js, Deno, and Bun.",
   "license": "Apache-2.0",
   "repository": {
@@ -23,6 +23,14 @@
     "./process-shared-buffer": {
       "types": "./process-shared-buffer.d.ts",
       "default": "./process-shared-buffer.js"
+    },
+    "./unsafe": {
+      "types": "./unsafe.d.ts",
+      "default": "./unsafe.js"
+    },
+    "./utils": {
+      "types": "./utils.d.ts",
+      "default": "./utils.js"
     }
   },
   "files": [
@@ -38,7 +46,11 @@
     "knitting.d.ts",
     "knitting.js",
     "process-shared-buffer.d.ts",
-    "process-shared-buffer.js"
+    "process-shared-buffer.js",
+    "unsafe.d.ts",
+    "unsafe.js",
+    "utils.d.ts",
+    "utils.js"
   ],
   "scripts": {
     "build": "bun run build.ts",
