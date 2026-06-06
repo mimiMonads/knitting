@@ -16,7 +16,12 @@ import {
   toString,
   toVoid,
 } from "./fixtures/parameter_tasks.ts";
-import { echoEnvelope } from "./fixtures/envelope_tasks.ts";
+import {
+  bumpEnvelopeShared,
+  echoEnvelope,
+  invertEnvelope,
+} from "./fixtures/envelope_tasks.ts";
+import { BufferReference } from "../unsafe.ts";
 
 test("Using one thread calling with multiple arguments", async () => {
   const { call, shutdown } = createPool({})({
@@ -157,6 +162,48 @@ test("Envelope payload round-trips through worker calls", async () => {
     assertEquals(out instanceof Envelope, true);
     assertEquals(out.header, { path: "/hello", status: 200 });
     assertEquals(Array.from(new Uint8Array(out.payload)), [10, 20, 30, 40]);
+  } finally {
+    await pool.shutdown();
+  }
+});
+
+test("Envelope with SharedArrayBuffer body round-trips zero-copy through a thread worker", async () => {
+  if (typeof SharedArrayBuffer !== "function") return;
+  const pool = createPool({ threads: 1 })({ bumpEnvelopeShared });
+  const sab = new SharedArrayBuffer(8);
+  new Uint8Array(sab).set([5, 0, 0, 0, 0, 0, 0, 0]);
+  const input = new Envelope({ tag: "img" }, sab);
+
+  try {
+    const out = await pool.call.bumpEnvelopeShared(input);
+    assertEquals(out instanceof Envelope, true);
+    assertEquals(out.header, { tag: "img:seen" });
+    assertEquals(new Uint8Array(sab)[0], 6);
+    assertEquals(new Uint8Array(out.payload)[0], 6);
+  } finally {
+    await pool.shutdown();
+  }
+});
+
+test("Envelope with BufferReference body round-trips through a thread worker", async () => {
+  try {
+    new BufferReference(new Uint8Array([0])).release();
+  } catch {
+    return;
+  }
+
+  const pool = createPool({ threads: 1 })({ invertEnvelope });
+  const input = new Envelope(
+    { op: "invert" },
+    new BufferReference(new Uint8Array([0, 64, 128, 255])),
+  );
+
+  try {
+    const out = await pool.call.invertEnvelope(input);
+    assertEquals(out instanceof Envelope, true);
+    assertEquals(out.header, { op: "invert:done" });
+    assertEquals(Array.from(out.payload.toUint8Array()), [255, 191, 127, 0]);
+    out.payload.release();
   } finally {
     await pool.shutdown();
   }

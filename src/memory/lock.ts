@@ -70,6 +70,10 @@ export enum PayloadBuffer {
   ProcessSharedBuffer = 46,
   BufferReference = 47,
   SharedArrayBuffer = 48,
+  EnvelopeStaticHeaderExternal = 49,
+  EnvelopeDynamicHeaderExternal = 50,
+  EnvelopeStaticHeaderStringExternal = 51,
+  EnvelopeDynamicHeaderStringExternal = 52,
 }
 
 export enum LockBound {

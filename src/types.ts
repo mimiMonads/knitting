@@ -1,5 +1,9 @@
 import { endpointSymbol } from "./common/task-symbol.ts";
-import type { Envelope } from "./common/envelope.ts";
+import type {
+  Envelope,
+  EnvelopeBody,
+  EnvelopeHeader,
+} from "./common/envelope.ts";
 import type {
   LockBufferTextCompat,
   SharedBufferTextCompat,
@@ -106,7 +110,7 @@ type ValidInput =
   | DataView
   | Error
   | Date
-  | Envelope;
+  | Envelope<EnvelopeHeader, EnvelopeBody>;
 
 type Args = ValidInput | Serializable;
 
@@ -537,6 +541,8 @@ export type {
   DebugOptions as DebugOptions,
   DispatcherSettings as DispatcherSettings,
   Envelope as Envelope,
+  EnvelopeBody as EnvelopeBody,
+  EnvelopeHeader as EnvelopeHeader,
   External as External,
   FixPoint as FixPoint,
   FunctionMapType as FunctionMapType,

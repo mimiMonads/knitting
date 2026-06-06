@@ -19,6 +19,8 @@ import type {
 } from "../types.ts";
 import { RUNTIME } from "../common/runtime.ts";
 import {
+  RUNTIME_POOL_DEPTH,
+  RUNTIME_POOL_DEPTH_ENV,
   RUNTIME_PROCESS_WORKER_BOOT_ENV,
   RUNTIME_PROCESS_WORKER_BOOT_VERSION,
   RUNTIME_PROCESS_WORKER_ENV,
@@ -319,6 +321,7 @@ const DEFAULT_NODE_BINARY = "node";
 const DENO_PROCESS_WORKER_BOOT_ENV_ALLOW = [
   RUNTIME_PROCESS_WORKER_ENV,
   RUNTIME_PROCESS_WORKER_BOOT_ENV,
+  RUNTIME_POOL_DEPTH_ENV,
 ].join(",");
 const DENO_PROCESS_WORKER_INTERNAL_FLAGS = [
   `--allow-env=${DENO_PROCESS_WORKER_BOOT_ENV_ALLOW}`,
@@ -682,6 +685,7 @@ const processWorkerEnv = (
 ): Record<string, string | undefined> => ({
   ...currentProcessEnv(),
   [RUNTIME_PROCESS_WORKER_ENV]: "1",
+  [RUNTIME_POOL_DEPTH_ENV]: String(RUNTIME_POOL_DEPTH + 1),
   ...extra,
 });
 

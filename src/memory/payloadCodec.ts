@@ -116,7 +116,9 @@ const arrayIsArray = Array.isArray;
 const objectPrototype = Object.prototype;
 const UNSUPPORTED_OBJECT_DETAIL =
   "Unsupported object type. Allowed: plain object, array, Error, Date, Envelope, Buffer, ArrayBuffer, DataView, typed arrays, and registered external payloads. Serialize it yourself.";
-const ENVELOPE_PAYLOAD_DETAIL = "Envelope payload must be an ArrayBuffer.";
+const ENVELOPE_PAYLOAD_DETAIL =
+  "Envelope payload must be an ArrayBuffer, SharedArrayBuffer, " +
+  "ProcessSharedBuffer, or BufferReference.";
 const ENVELOPE_HEADER_DETAIL =
   "Envelope header must be a JSON-like value or string.";
 const ENVELOPE_PROMISE_DETAIL =
@@ -950,56 +952,60 @@ export const encodePayload = ({
     task.value = null;
     return true;
   };
-  const encodeObjectEnvelope = (
+  const encodeEnvelopeHeaderText = (
     task: Task,
-    slotIndex: number,
-    envelope: Envelope,
-  ) => {
-    const header = envelope.header;
-    const payload = envelope.payload;
-    const headerIsString = typeof header === "string";
-    if (!(payload instanceof ArrayBuffer)) {
-      return encoderError({
-        task,
-        type: ErrorKnitting.Serializable,
-        onPromise,
-        detail: ENVELOPE_PAYLOAD_DETAIL,
-      });
-    }
+    header: unknown,
+    headerIsString: boolean,
+  ): string | undefined => {
     if (hasPromiseInEnvelopeHeader(header)) {
-      return encoderError({
+      encoderError({
         task,
         type: ErrorKnitting.Serializable,
         onPromise,
         detail: ENVELOPE_PROMISE_DETAIL,
       });
+      return undefined;
     }
-
+    if (headerIsString) return header as string;
     let headerText: string | undefined;
-    if (headerIsString) {
-      headerText = header;
-    } else {
-      try {
-        headerText = stringifyJSON(header);
-      } catch (error) {
-        const detail = error instanceof Error ? error.message : String(error);
-        return encoderError({
-          task,
-          type: ErrorKnitting.Json,
-          onPromise,
-          detail,
-        });
-      }
+    try {
+      headerText = stringifyJSON(header);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      encoderError({ task, type: ErrorKnitting.Json, onPromise, detail });
+      return undefined;
     }
     if (typeof headerText !== "string") {
-      return encoderError({
+      encoderError({
         task,
         type: ErrorKnitting.Serializable,
         onPromise,
         detail: ENVELOPE_HEADER_DETAIL,
       });
+      return undefined;
     }
+    return headerText;
+  };
 
+  const resolveEnvelopeExternalBody = (
+    body: unknown,
+  ): ExternalPayloadLike | undefined => {
+    if (body === null || typeof body !== "object") return undefined;
+    const sharedArrayBuffer = getSharedArrayBufferPayload(body as object);
+    if (sharedArrayBuffer !== undefined) return sharedArrayBuffer;
+    if (isExternalPayloadLike(body as object)) {
+      return body as ExternalPayloadLike;
+    }
+    return undefined;
+  };
+
+  const encodeEnvelopeArrayBufferBody = (
+    task: Task,
+    slotIndex: number,
+    headerText: string,
+    headerIsString: boolean,
+    payload: ArrayBuffer,
+  ) => {
     const payloadBytes = new Uint8Array(payload);
     const payloadLength = payloadBytes.byteLength;
     const payloadReserveBytes = payloadLength > 0 ? payloadLength : 1;
@@ -1073,6 +1079,154 @@ export const encodePayload = ({
     );
     task.value = null;
     return true;
+  };
+
+  const encodeEnvelopeExternalBody = (
+    task: Task,
+    slotIndex: number,
+    headerText: string,
+    headerIsString: boolean,
+    externalBody: ExternalPayloadLike,
+  ) => {
+    const codecId = readExternalPayloadCodecId(externalBody as object);
+    if (codecId === undefined) {
+      return encoderError({
+        task,
+        type: ErrorKnitting.Serializable,
+        onPromise,
+        detail: ENVELOPE_PAYLOAD_DETAIL,
+      });
+    }
+
+    let bodyText: string | undefined;
+    try {
+      bodyText = stringifyJSON([codecId, externalBody.toMetadata()]);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return encoderError({
+        task,
+        type: ErrorKnitting.Serializable,
+        onPromise,
+        detail,
+      });
+    }
+    if (typeof bodyText !== "string") {
+      return encoderError({
+        task,
+        type: ErrorKnitting.Serializable,
+        onPromise,
+        detail: "Envelope body metadata must be JSON serializable.",
+      });
+    }
+
+    const bodyBytes = textEncode.encode(bodyText);
+    const bodyLength = bodyBytes.byteLength;
+
+    const staticHeaderWritten = writeStaticUtf8(headerText, slotIndex);
+    if (staticHeaderWritten !== -1) {
+      if (
+        !ensureWithinDynamicLimit(
+          task,
+          bodyLength,
+          "EnvelopeStaticHeaderExternal",
+        )
+      ) return false;
+      const reservedSlot = reserveDynamicObject(task, bodyLength);
+      task[TaskIndex.Type] = headerIsString
+        ? PayloadBuffer.EnvelopeStaticHeaderStringExternal
+        : PayloadBuffer.EnvelopeStaticHeaderExternal;
+      task[TaskIndex.PayloadLen] = staticHeaderWritten;
+      task[TaskIndex.End] = bodyLength;
+      const bodyWritten = writeDynamicBinary(bodyBytes, task[TaskIndex.Start]);
+      if (bodyWritten < 0) {
+        return failDynamicWriteAfterReserve(task, reservedSlot);
+      }
+      setSlotLength(reservedSlot, bodyWritten);
+      attachPayloadTransportFinalizer(task, externalBody);
+      task.value = null;
+      return true;
+    }
+
+    const headerReserveBytes = dynamicUtf8ReserveBytesWithExtra(
+      task,
+      headerText,
+      bodyLength,
+      headerIsString
+        ? "EnvelopeDynamicHeaderStringExternal"
+        : "EnvelopeDynamicHeaderExternal",
+    );
+    if (headerReserveBytes < 0) return false;
+    task[TaskIndex.Type] = headerIsString
+      ? PayloadBuffer.EnvelopeDynamicHeaderStringExternal
+      : PayloadBuffer.EnvelopeDynamicHeaderExternal;
+    const reservedSlot = reserveDynamicObject(
+      task,
+      headerReserveBytes + bodyLength,
+    );
+    const baseStart = task[TaskIndex.Start];
+    const writtenHeaderBytes = writeDynamicUtf8(
+      headerText,
+      baseStart,
+      headerReserveBytes,
+    );
+    if (writtenHeaderBytes < 0) {
+      return failDynamicWriteAfterReserve(task, reservedSlot);
+    }
+    const bodyWritten = writeDynamicBinary(
+      bodyBytes,
+      baseStart + writtenHeaderBytes,
+    );
+    if (bodyWritten < 0) {
+      return failDynamicWriteAfterReserve(task, reservedSlot);
+    }
+    task[TaskIndex.PayloadLen] = writtenHeaderBytes;
+    task[TaskIndex.End] = bodyLength;
+    setSlotLength(reservedSlot, writtenHeaderBytes + bodyLength);
+    attachPayloadTransportFinalizer(task, externalBody);
+    task.value = null;
+    return true;
+  };
+
+  const encodeObjectEnvelope = (
+    task: Task,
+    slotIndex: number,
+    envelope: Envelope,
+  ) => {
+    const header = envelope.header;
+    const payload = envelope.payload;
+    const headerIsString = typeof header === "string";
+
+    if (payload instanceof ArrayBuffer) {
+      const headerText = encodeEnvelopeHeaderText(task, header, headerIsString);
+      if (headerText === undefined) return false;
+      return encodeEnvelopeArrayBufferBody(
+        task,
+        slotIndex,
+        headerText,
+        headerIsString,
+        payload,
+      );
+    }
+
+    const externalBody = resolveEnvelopeExternalBody(payload);
+    if (externalBody !== undefined) {
+      const headerText = encodeEnvelopeHeaderText(task, header, headerIsString);
+      if (headerText === undefined) return false;
+      return encodeEnvelopeExternalBody(
+        task,
+        slotIndex,
+        headerText,
+        headerIsString,
+        externalBody,
+      );
+    }
+
+    return encoderError({
+      task,
+      type: ErrorKnitting.Serializable,
+      onPromise,
+      detail: ENVELOPE_PAYLOAD_DETAIL,
+    });
   };
   const encodeObjectPromise = (task: Task, promise: Promise<unknown>) => {
     if (beginPromisePayload(task)) {
@@ -1580,6 +1734,43 @@ export const decodePayload = ({
           )
           : new ArrayBuffer(0);
         task.value = new Envelope(header as any, payload);
+        freeTaskSlot(task);
+        return;
+      }
+      case PayloadBuffer.EnvelopeStaticHeaderExternal:
+      case PayloadBuffer.EnvelopeStaticHeaderStringExternal: {
+        const rawHeader = readStaticUtf8(
+          0,
+          task[TaskIndex.PayloadLen],
+          slotIndex,
+        );
+        const header =
+          task[TaskIndex.Type] ===
+              PayloadBuffer.EnvelopeStaticHeaderStringExternal
+            ? rawHeader
+            : parseJSON(rawHeader);
+        const bodyStart = task[TaskIndex.Start];
+        const body = decodeExternalPayload(
+          readDynamicUtf8(bodyStart, bodyStart + task[TaskIndex.End]),
+        );
+        task.value = new Envelope(header as any, body as any);
+        freeTaskSlot(task);
+        return;
+      }
+      case PayloadBuffer.EnvelopeDynamicHeaderExternal:
+      case PayloadBuffer.EnvelopeDynamicHeaderStringExternal: {
+        const headerStart = task[TaskIndex.Start];
+        const bodyStart = headerStart + task[TaskIndex.PayloadLen];
+        const rawHeader = readDynamicUtf8(headerStart, bodyStart);
+        const header =
+          task[TaskIndex.Type] ===
+              PayloadBuffer.EnvelopeDynamicHeaderStringExternal
+            ? rawHeader
+            : parseJSON(rawHeader);
+        const body = decodeExternalPayload(
+          readDynamicUtf8(bodyStart, bodyStart + task[TaskIndex.End]),
+        );
+        task.value = new Envelope(header as any, body as any);
         freeTaskSlot(task);
         return;
       }

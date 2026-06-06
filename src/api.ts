@@ -5,6 +5,7 @@ import { endpointSymbol } from "./common/task-symbol.ts";
 import { spawnWorkerContext } from "./runtime/pool.ts";
 import {
   RUNTIME_IS_MAIN_THREAD,
+  RUNTIME_POOL_DEPTH,
   RUNTIME_WORKER_DATA,
 } from "./common/worker-runtime.ts";
 import {
@@ -359,6 +360,18 @@ export const createPool: CreatePoolFactory = ({
   const hardTimeoutMs = Number.isFinite(resolvedWorker?.hardTimeoutMs)
     ? Math.max(1, Math.floor(resolvedWorker?.hardTimeoutMs as number))
     : undefined;
+
+  if (RUNTIME_POOL_DEPTH >= 1) {
+    throw new Error(
+      `createPool() tried to spawn workers from inside a worker process ` +
+        `(pool depth ${RUNTIME_POOL_DEPTH}). This usually means a pool is ` +
+        `created at module scope in a module your workers import, so every ` +
+        `worker spawns its own pool recursively. Is your createPool protected ` +
+        `by isMain? Guard pool creation behind \`if (isMain) { ... }\` ` +
+        `(import { isMain } from "knitting") so only the main program starts ` +
+        `the pool.`,
+    );
+  }
 
   let workers = Array.from({
     length: threads ?? 1,

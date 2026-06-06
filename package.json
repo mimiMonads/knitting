@@ -27,6 +27,10 @@
     "./unsafe": {
       "types": "./unsafe.d.ts",
       "default": "./unsafe.js"
+    },
+    "./utils": {
+      "types": "./utils.d.ts",
+      "default": "./utils.js"
     }
   },
   "files": [
@@ -44,7 +48,9 @@
     "process-shared-buffer.d.ts",
     "process-shared-buffer.js",
     "unsafe.d.ts",
-    "unsafe.js"
+    "unsafe.js",
+    "utils.d.ts",
+    "utils.js"
   ],
   "scripts": {
     "build": "bun run build.ts",

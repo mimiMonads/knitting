@@ -46,6 +46,8 @@ export const RUNTIME_PROCESS_WORKER_ENV = "KNITTING_PROCESS_WORKER";
 export const RUNTIME_PROCESS_WORKER_BOOT_ENV = "KNITTING_PROCESS_WORKER_BOOT";
 export const RUNTIME_PROCESS_WORKER_BOOT_VERSION = 1;
 
+export const RUNTIME_POOL_DEPTH_ENV = "KNITTING_POOL_DEPTH";
+
 type ProcessLikeWithIpc = NonNullable<ReturnType<typeof getNodeProcess>> & {
   send?: (message: unknown) => void;
 };
@@ -54,6 +56,14 @@ const nodeProcess = getNodeProcess() as ProcessLikeWithIpc | undefined;
 
 export const RUNTIME_IS_PROCESS_WORKER =
   nodeProcess?.env?.[RUNTIME_PROCESS_WORKER_ENV] === "1";
+
+const readPoolDepth = (): number => {
+  const raw = nodeProcess?.env?.[RUNTIME_POOL_DEPTH_ENV];
+  if (typeof raw !== "string") return 0;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+};
+export const RUNTIME_POOL_DEPTH = readPoolDepth();
 
 const workerThreads = getNodeBuiltinModule<WorkerThreadsModuleLike>(
   "node:worker_threads",

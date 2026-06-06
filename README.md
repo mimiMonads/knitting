@@ -537,7 +537,8 @@ Worker calls can carry the following values across the shared-memory transport:
 - `ProcessSharedBuffer`.
 - `BufferReference` from `knitting/unsafe` for experimental zero-copy buffers to
   thread workers (same process only; see below).
-- `Envelope` for metadata plus binary payloads.
+- `Envelope` for a JSON header plus a binary body (`ArrayBuffer`,
+  `SharedArrayBuffer`, `ProcessSharedBuffer`, or `BufferReference`).
 - `Error`, `Date`, and global symbols created with `Symbol.for(...)`.
 - Native `Promise<supported-value>` inputs. The promise is awaited before
   dispatch.
@@ -556,9 +557,10 @@ shouldn't) cross the boundary:
 
 ### Envelope
 
-`Envelope` pairs a JSON-serializable header with a binary `ArrayBuffer` payload.
-Use it when a call needs both structured metadata and raw bytes in a single
-argument.
+`Envelope` pairs a JSON-serializable header with a binary body. Use it when a
+call needs both structured metadata and raw bytes in a single argument — the
+transport carries one special binary value per call, so an envelope is the way
+to attach a header to one.
 
 ```ts
 import { createPool, Envelope, isMain, task } from "knitting";
@@ -588,6 +590,58 @@ if (isMain) {
   }
 }
 ```
+
+#### Body types
+
+The body is generic — `Envelope<Header, Body>` — and accepts any of the binary
+shapes the transport understands:
+
+| Body                 | Copy?                | Workers          | Notes                                            |
+| -------------------- | -------------------- | ---------------- | ------------------------------------------------ |
+| `ArrayBuffer`        | copied               | thread + process | The default body; works everywhere.              |
+| `SharedArrayBuffer`  | zero-copy, shared    | thread only      | Shared by reference; process workers reject it.  |
+| `ProcessSharedBuffer`| zero-copy, shared    | thread + process | Cross-process shared memory.                     |
+| `BufferReference`    | zero-copy, moved     | thread only      | From `knitting/unsafe`; same constraints as bare `BufferReference`. |
+
+The header keeps its fast paths regardless of the body: a small header is
+written inline, and only large headers spill to the dynamic payload region. A
+zero-copy body keeps its own semantics — a `SharedArrayBuffer` stays shared by
+reference, and a `BufferReference` body is still moved (its source is detached)
+and joins the same borrow/copy/release flow it follows on its own.
+
+```ts
+import { createPool, Envelope, isMain, task } from "knitting";
+import { BufferReference } from "knitting/unsafe";
+
+export const invert = task<
+  Envelope<{ op: string }, BufferReference>,
+  Envelope<{ op: string }, BufferReference>
+>({
+  f: (envelope) => {
+    const pixels = envelope.payload.toUint8Array();
+    const out = new Uint8Array(pixels.length);
+    for (let i = 0; i < pixels.length; i++) out[i] = 255 - pixels[i];
+    return new Envelope({ op: "inverted" }, new BufferReference(out));
+  },
+});
+
+if (isMain) {
+  using pool = createPool({ threads: 1 })({ invert });
+  const pixels = new Uint8Array([0, 64, 128, 192, 255]);
+
+  using result = await pool.call.invert(
+    new Envelope({ op: "invert" }, new BufferReference(pixels)),
+  );
+  console.log(result.header, [...result.payload.toUint8Array()]);
+}
+```
+
+`Envelope` is disposable: disposing it (via `using` or `Symbol.dispose`)
+disposes a disposable body such as a `BufferReference`, and is a harmless no-op
+for `ArrayBuffer` / `SharedArrayBuffer` bodies. See
+[Experimental zero-copy buffers for thread workers](#experimental-zero-copy-buffers-for-thread-workers)
+for the full `BufferReference` constraints, which apply unchanged to a
+`BufferReference` body.
 
 If a payload is large, set `payload.maxPayloadBytes` deliberately and prefer
 binary/shared-memory shapes over deeply nested objects.

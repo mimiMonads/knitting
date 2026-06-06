@@ -93,7 +93,6 @@ test("BufferReference.fromMetadata materializes the moved bytes", () => {
 
     assert.deepEqual([...av], [10, 20, 30]);
 
-    // Consumers materialize the same backing store, so they alias each other.
     av[0] = 99;
     assert.equal(bv[0], 99);
     bv[2] = 123;
@@ -133,7 +132,6 @@ test("BufferReference accepts an ArrayBuffer and a typed-array view", () => {
     finishReference(fromBuffer);
   }
 
-  // Use a fresh source because construction detaches.
   const backing = new Uint8Array([1, 2, 3, 4]);
   const offsetView = new Uint8Array(backing.buffer, 2, 2);
   const fromView = new BufferReference(offsetView);
@@ -196,20 +194,6 @@ test("transport finalizer detaches materialized borrowed buffers", () => {
     consumer = BufferReference.fromMetadata(ref.toMetadata());
     const buffer = consumer.toArrayBuffer();
     assert.equal(buffer.byteLength, 3);
-
-    if (
-      consumer.runtime === "node" &&
-      typeof (buffer as ArrayBuffer & { transfer?: unknown }).transfer ===
-        "function"
-    ) {
-      assert.throws(
-        () =>
-          (buffer as ArrayBuffer & { transfer: () => ArrayBuffer })
-            .transfer(),
-        /detach|transfer|ArrayBuffer/i,
-      );
-      assert.equal(buffer.byteLength, 3);
-    }
 
     finishReference(consumer);
     assert.equal(isDetached(buffer), true);

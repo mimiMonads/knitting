@@ -1,10 +1,15 @@
 import assert from "node:assert/strict";
 import test from "./_runner.ts";
-const assertEquals: (actual: unknown, expected: unknown) => void = (
+const assertEquals: (
+  actual: unknown,
+  expected: unknown,
+  msg?: string,
+) => void = (
   actual,
   expected,
+  msg,
 ) => {
-  assert.deepStrictEqual(actual, expected);
+  assert.deepStrictEqual(actual, expected, msg);
 };
 import { Buffer as NodeBuffer } from "node:buffer";
 import { decodePayload, encodePayload } from "../src/memory/payloadCodec.ts";
@@ -914,6 +919,147 @@ test("envelope rejects non-ArrayBuffer payloads", async () => {
     assert.ok(reason.includes("KNT_ERROR_3"));
     assert.ok(reason.includes("Envelope payload must be an ArrayBuffer"));
   }
+});
+
+test("envelope with SharedArrayBuffer body round-trips by reference", () => {
+  if (typeof SharedArrayBuffer !== "function") return;
+  const { encode, decode } = makeCodec();
+  const task = makeTask();
+  const sab = new SharedArrayBuffer(16);
+  new Uint8Array(sab).set([10, 20, 30, 40]);
+  const header = { kind: "sab" };
+
+  task.value = new Envelope(header, sab);
+
+  assertEquals(encode(task, 0), true);
+  assertEquals(
+    task[TaskIndex.Type],
+    PayloadBuffer.EnvelopeStaticHeaderExternal,
+  );
+  assertEquals(task.value, null);
+
+  decode(task, 0);
+  assertEquals(task.value instanceof Envelope, true);
+  const out = task.value as Envelope<typeof header, SharedArrayBuffer>;
+  assertEquals(out.header, header);
+  assertEquals(out.payload.byteLength, 16);
+  new Uint8Array(out.payload)[0] = 99;
+  assertEquals(new Uint8Array(sab)[0], 99);
+});
+
+test("envelope with SharedArrayBuffer body switches to dynamic header", () => {
+  if (typeof SharedArrayBuffer !== "function") return;
+  const { encode, decode } = makeCodec();
+  const task = makeTask();
+  const sab = new SharedArrayBuffer(8);
+  new Uint8Array(sab).set([1, 2, 3, 4, 5, 6, 7, 8]);
+  const header = { msg: "😀".repeat((STATIC_STRING_MAX_BYTES >>> 2) + 1) };
+
+  task.value = new Envelope(header, sab);
+
+  assertEquals(encode(task, 0), true);
+  assertEquals(
+    task[TaskIndex.Type],
+    PayloadBuffer.EnvelopeDynamicHeaderExternal,
+  );
+
+  decode(task, 0);
+  const out = task.value as Envelope<typeof header, SharedArrayBuffer>;
+  assertEquals(out.header, header);
+  new Uint8Array(out.payload)[1] = 77;
+  assertEquals(new Uint8Array(sab)[1], 77);
+});
+
+test("envelope with string header and SharedArrayBuffer body", () => {
+  if (typeof SharedArrayBuffer !== "function") return;
+  const { encode, decode } = makeCodec();
+  const task = makeTask();
+  const sab = new SharedArrayBuffer(8);
+
+  task.value = new Envelope("ok", sab);
+
+  assertEquals(encode(task, 0), true);
+  assertEquals(
+    task[TaskIndex.Type],
+    PayloadBuffer.EnvelopeStaticHeaderStringExternal,
+  );
+
+  decode(task, 0);
+  const out = task.value as Envelope<string, SharedArrayBuffer>;
+  assertEquals(out.header, "ok");
+  assertEquals(out.payload.byteLength, 8);
+});
+
+test("envelope with ProcessSharedBuffer body keeps its metadata", () => {
+  const { encode, decode } = makeCodec();
+  const task = makeTask();
+  const psb = ProcessSharedBuffer.fromMapping({
+    ...makeSharedMemoryMapping(),
+    name: "Local\\knitting-envelope-psb",
+  }).subbuffer(32, 32);
+
+  task.value = new Envelope({ kind: "psb" }, psb);
+
+  assertEquals(encode(task, 0), true);
+  assertEquals(
+    task[TaskIndex.Type],
+    PayloadBuffer.EnvelopeStaticHeaderExternal,
+  );
+
+  decode(task, 0);
+  const out = task.value as Envelope<{ kind: string }, ProcessSharedBuffer>;
+  assertEquals(out.header, { kind: "psb" });
+  assertEquals(out.payload instanceof ProcessSharedBuffer, true);
+  assertEquals(out.payload.toMetadata(), psb.toMetadata());
+});
+
+test("envelope with BufferReference body round-trips and releases on dispose", () => {
+  let ref: BufferReference | undefined;
+  try {
+    ref = new BufferReference(new Uint8Array([4, 5, 6, 7]));
+  } catch {
+    return;
+  }
+
+  const { encode, decode } = makeCodec();
+  const task = makeTask();
+  task.value = new Envelope({ kind: "ref" }, ref);
+
+  assertEquals(encode(task, 0), true);
+  assertEquals(
+    task[TaskIndex.Type],
+    PayloadBuffer.EnvelopeStaticHeaderExternal,
+  );
+  assertEquals(task.value, null);
+
+  decode(task, 0);
+  const out = task.value as Envelope<{ kind: string }, BufferReference>;
+  runTaskFinalizers(task);
+
+  assertEquals(out.header, { kind: "ref" });
+  assertEquals(out.payload instanceof BufferReference, true);
+  assertEquals(Array.from(out.payload.toUint8Array()), [4, 5, 6, 7]);
+
+  (out as { [Symbol.dispose](): void })[Symbol.dispose]();
+});
+
+test("envelope dispose delegates to a disposable body", () => {
+  let disposed = 0;
+  const body = {
+    [Symbol.dispose]() {
+      disposed++;
+    },
+  };
+  const envelope = new Envelope("h", body as unknown as ArrayBuffer);
+
+  (envelope as { [Symbol.dispose](): void })[Symbol.dispose]();
+  assertEquals(disposed, 1);
+});
+
+test("envelope dispose is a no-op for plain ArrayBuffer bodies", () => {
+  const envelope = new Envelope("h", new Uint8Array([1]).buffer);
+  (envelope as { [Symbol.dispose](): void })[Symbol.dispose]();
+  assertEquals(envelope.payload.byteLength, 1);
 });
 
 test("custom class payload is rejected by strict object policy", async () => {

@@ -5,7 +5,8 @@
   "exports": {
     ".": "./knitting.ts",
     "./process-shared-buffer": "./process-shared-buffer.ts",
-    "./unsafe": "./unsafe.ts"
+    "./unsafe": "./unsafe.ts",
+    "./utils": "./utils.ts"
   },
   "license": "Apache-2.0",
   "publish": {
@@ -17,7 +18,8 @@
       "src/**/*.ts",
       "./knitting.ts",
       "./process-shared-buffer.ts",
-      "./unsafe.ts"
+      "./unsafe.ts",
+      "./utils.ts"
     ]
   }
 }

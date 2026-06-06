@@ -20,6 +20,9 @@ The core flow is:
   `importTask`, `isMain`, `Envelope`, and `workerMainLoop`.
 - `process-shared-buffer.ts`: Secondary public export for process-shared-buffer
   helpers.
+- `unsafe.ts`: Public export for experimental lower-level capabilities such as
+  `BufferReference`.
+- `utils.ts`: Public export for request/response buffer conversion helpers.
 - `README.md`: User-facing documentation, examples, configuration, and command
   reference.
 - `package.json`: Package metadata, export map, shipped files, scripts, runtime
@@ -54,8 +57,15 @@ The core flow is:
 - `.github/workflows/publish.yml`: Manual native-prebuild workflow. Verifies
   Node and Windows FFI prebuilds, checks the JSR package contents, and commits
   updated `prebuilds/` artifacts back to the branch.
-- `docs/windows-process-worker-hang-fix.md`: Investigation notes for the
-  Windows process-worker shared-memory and parked-worker hang fixes.
+
+## Project Guidance And Docs
+
+- `docs/AGENTS.md`: Agent/contributor orientation, invariants, and workflow
+  notes.
+- `docs/CLAUDE.md`: Pointer to the shared agent guidance.
+- `docs/buffer-reference-ownership-move.md`: Design record for
+  `BufferReference` ownership transfer.
+- `docs/knitting.pdf`: Longer-form project design/theory document.
 
 ## Public API Layer
 
@@ -88,6 +98,8 @@ The core flow is:
 - `src/common/with-resolvers.ts`: `Promise.withResolvers` compatibility helper.
 - `src/common/worker-runtime.ts`: Runtime-neutral worker/thread/process-worker
   detection, parent-port access, and message-channel creation.
+- `src/utils/http.ts`: Buffer conversion helpers for HTTP/request-response
+  boundaries, including raw bytes, strings, JSON, and numeric arrays.
 
 ## Runtime Host Side
 
@@ -286,6 +298,7 @@ The core flow is:
 - `test/task-abort-context-api.test.ts`: Worker abort toolkit/context behavior.
 - `test/tx-queue.test.ts`: Host transmit queue behavior and late-result safety.
 - `test/type-inference.test.ts`: Public type inference guarantees.
+- `test/utils.test.ts`: Public utility conversion helpers.
 - `test/worker-bootstrap.test.ts`: Worker bootstrap hook behavior, shared-buffer
   metadata revival, startup failure propagation, and inliner incompatibility.
 - `test/fixtures/*.ts`: Task modules used by tests.
@@ -304,5 +317,4 @@ The core flow is:
 - `results/`: Benchmark output produced by `run.sh`.
 - `log/`, `logs`, and `*.log`: Local runtime/log output.
 - `node_modules/`: Installed dependencies. Not part of the source map.
-
 
