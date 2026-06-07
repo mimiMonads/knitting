@@ -324,10 +324,12 @@ export const isBufferReferenceMetadata = (
 };
 
 /**
- * Zero-copy handle for moving ArrayBuffer bytes to **thread** workers.
+ * Zero-copy handle for moving ArrayBuffer bytes to/from **thread** workers.
  *
  * Construction detaches the source. Consumers materialize the moved region in
- * their isolate: owning on Node, alias/copy on Deno/Bun.
+ * their isolate: owning on Node, alias/copy on Deno/Bun. Return a
+ * `BufferReference` for large binary results to avoid copying back through the
+ * transport. Use `ProcessSharedBuffer` across process boundaries.
  */
 export class BufferReference {
   readonly [EXTERNAL_PAYLOAD_BRAND] = BUFFER_REFERENCE_CODEC_ID;

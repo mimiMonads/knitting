@@ -101,6 +101,7 @@ export const spawnWorkerContext = ({
   sab,
   thread,
   debug,
+  hostDebug,
   totalNumberOfThread,
   source,
   at,
@@ -110,10 +111,6 @@ export const spawnWorkerContext = ({
   host,
   payload,
   bufferReferenceReturn,
-  payloadInitialBytes,
-  payloadMaxBytes,
-  bufferMode,
-  maxPayloadBytes,
   abortSignalCapacity,
   usesAbortSignal,
 }: {
@@ -124,6 +121,7 @@ export const spawnWorkerContext = ({
   sab?: Sab;
   thread: number;
   debug?: DebugOptions;
+  hostDebug?: (message: string) => void;
   totalNumberOfThread: number;
 
   source?: string;
@@ -133,10 +131,6 @@ export const spawnWorkerContext = ({
   host?: DispatcherSettings;
   payload?: PayloadBufferOptions;
   bufferReferenceReturn?: "copy" | "borrow";
-  payloadInitialBytes?: number;
-  payloadMaxBytes?: number;
-  bufferMode?: PayloadBufferOptions["mode"];
-  maxPayloadBytes?: number;
   abortSignalCapacity?: number;
   usesAbortSignal?: boolean;
 }) => {
@@ -156,9 +150,6 @@ export const spawnWorkerContext = ({
     ? readProcessSharedMemorySettings(resolvedWorkerOptions)
     : undefined;
 
-  if (debug?.logHref === true) {
-    console.log(tsFileUrl);
-  }
   if (!useProcessWorkerRuntime && typeof poliWorker !== "function") {
     throw new Error("Worker is not available in this runtime");
   }
@@ -171,15 +162,7 @@ export const spawnWorkerContext = ({
     return bytes > 0 ? bytes : undefined;
   };
   const basePayloadConfig = resolvePayloadBufferOptions({
-    options: {
-      ...payload,
-      mode: payload?.mode ?? bufferMode,
-      maxPayloadBytes: payload?.maxPayloadBytes ?? maxPayloadBytes,
-      payloadInitialBytes: payload?.payloadInitialBytes ??
-        sanitizeBytes(payloadInitialBytes),
-      payloadMaxByteLength: payload?.payloadMaxByteLength ??
-        sanitizeBytes(payloadMaxBytes),
-    },
+    options: payload,
   });
   const resolvedPayloadConfig = useProcessWorkerRuntime
     ? withFixedPayloadConfig(basePayloadConfig)
@@ -307,7 +290,6 @@ export const spawnWorkerContext = ({
       : sab,
     isMain: true,
     thread,
-    debug,
   });
   const signalBox = signals;
   const nativeNotifySignal = createProcessWorkerNativeSignalNotifier({
@@ -339,9 +321,6 @@ export const spawnWorkerContext = ({
     channelHandler,
     dispatcherOptions: host,
     notifySignal: nativeNotifySignal,
-    //thread,
-    //debugSignal: debug?.logMain ?? false,
-    //perf,
   });
 
   channelHandler.open(check);
@@ -349,6 +328,16 @@ export const spawnWorkerContext = ({
   let worker: SpawnedWorker;
 
   const workerUrl = source ?? tsFileUrl;
+  const workerMode = useProcessWorkerRuntime
+    ? "process"
+    : HAS_NODE_WORKER_THREADS
+    ? "worker_threads"
+    : "worker";
+  hostDebug?.(
+    `worker thread=${thread} mode=${workerMode}` +
+      `${processWorkerRuntime ? ` runtime=${processWorkerRuntime}` : ""}` +
+      ` url=${String(workerUrl)}`,
+  );
   const workerDataPayload = {
     sab: signals.sab,
     abortSignalSAB,
@@ -528,7 +517,7 @@ export const spawnWorkerContext = ({
     // Macro lane: dispatcher check is driven by the channel callback.
     // channelHandler.notify();
 
-    // Use opView as a wake counter in lock2 mode to avoid lost wakeups.
+    // Use opView as a wake token in lock2 mode to avoid lost wakeups.
     if (a_load(signalBox.rxStatus, 0) === 0) {
       a_add(thisSignal, 0, 1);
       notifySignal?.();

@@ -11,12 +11,21 @@ import {
 export const PAYLOAD_DEFAULT_MAX_BYTE_LENGTH = 64 * 1024 * 1024;
 export const PAYLOAD_DEFAULT_INITIAL_BYTES = 4 * 1024 * 1024;
 
+/** Payload backing mode. Growable uses SAB growth when the runtime supports it. */
 export type PayloadBufferMode = "growable" | "fixed";
 
 export type PayloadBufferOptions = {
+  /** Shared payload buffer mode. Defaults to growable when available. */
   mode?: PayloadBufferMode;
+  /** Initial shared payload bytes per direction. Defaults to 4 MiB when growable. */
   payloadInitialBytes?: number;
+  /** Shared payload growth cap. Defaults to 64 MiB. */
   payloadMaxByteLength?: number;
+  /**
+   * Max dynamic payload bytes for one call. Defaults to `payloadMaxByteLength >> 3`
+   * (about 8 MiB by default) and must stay `<= payloadMaxByteLength >> 3`.
+   * Over-cap payloads reject with `KNT_ERROR_3`.
+   */
   maxPayloadBytes?: number;
 };
 

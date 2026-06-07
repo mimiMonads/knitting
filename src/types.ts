@@ -116,12 +116,13 @@ type Args = ValidInput | Serializable;
 
 type MaybePromise<T> = T | Promise<T>;
 
-// Blob payloads are intentionally not supported by the transport.
+/** Blob payloads are not supported; pass ArrayBuffer/typed arrays instead. */
 type NoBlob<T> = T extends Blob ? never : T;
 
-// Native Promise only. Thenables/PromiseLike values are treated as regular inputs.
+/** Task input may be a direct value or native Promise; thenables are plain values. */
 type TaskInput = NoBlob<Args> | Promise<NoBlob<Args>>;
 
+/** Per-call timeout. A number is milliseconds; object form can return a default. */
 type TaskTimeout =
   | number
   | {
@@ -139,6 +140,7 @@ type AbortSignalConfig = {
   readonly hasAborted: true;
 };
 
+/** `true` or config injects an abort toolkit as the task's second parameter. */
 type AbortSignalOption = true | AbortSignalConfig | undefined;
 
 type AbortSignalMethods<AS extends AbortSignalOption> = AS extends undefined
@@ -246,7 +248,9 @@ interface FixPointBase<
   B extends Args,
   AS extends AbortSignalOption = undefined,
 > {
+  /** Worker function. It receives one value; use a tuple/object for many inputs. */
   readonly f: TaskFn<A, B, AS>;
+  /** Soft call timeout. Use `worker.hardTimeoutMs` for runaway CPU walls. */
   readonly timeout?: TaskTimeout;
 }
 
@@ -266,7 +270,9 @@ type ImportTaskOptions<
   B extends Args = void,
   AS extends AbortSignalOption = undefined,
 > = Omit<FixPoint<A, B, AS>, "f"> & {
+  /** Module imported by the worker only. Relative paths resolve from caller. */
   readonly href: string;
+  /** Plain function export name. Defaults to `"default"`; do not target `task()`. */
   readonly name?: string;
 };
 
@@ -287,14 +293,23 @@ type SingleTaskPool<
   B extends Args = Args,
   AS extends AbortSignalOption = undefined,
 > = {
+  /** Invoke the single task. Arguments may be native Promises. */
   call: PromiseWrapped<TaskFn<A, B, AS>, AS>;
+  /** Await worker teardown now. `using` disposes at scope exit without awaiting. */
   shutdown: (delayMs?: number) => Promise<void>;
+  /** Starts shutdown at scope exit. Use `shutdown()` when you must await it. */
   [Symbol.dispose]: () => void;
 };
 
 type Pool<T extends Record<string, TaskLike<any> | TaskFunctionLike>> = {
+  /** Await worker teardown now. `using` disposes at scope exit without awaiting. */
   shutdown: (delayMs?: number) => Promise<void>;
+  /** Starts shutdown at scope exit. Use `shutdown()` when you must await it. */
   [Symbol.dispose]: () => void;
+  /**
+   * Typed task callers. Each call accepts the task input or a native Promise.
+   * Thrown errors/rejections reject here as Error objects with cause chains.
+   */
   call: FunctionMapType<T>;
 };
 
@@ -341,13 +356,13 @@ type Balancer =
     strategy?: BalancerStrategy;
   };
 
-type DebugOptions = {
-  extras?: boolean;
-  logMain?: boolean;
-  //logThreads?: boolean;
-  logHref?: boolean;
-  logImportedUrl?: boolean;
-};
+/** Debug namespaces for host setup, worker state, imports, globals, and lifecycle. */
+type DebugNamespace = "host" | "globals" | "signals" | "imports" | "lifecycle";
+
+type DebugFlags = { [Namespace in DebugNamespace]?: boolean };
+
+/** Pass `true` for all debug, or enable namespaces by name. */
+type DebugOptions = boolean | DebugFlags;
 
 type WorkerBootstrapContext = {
   readonly thread: number;
@@ -386,7 +401,7 @@ type WorkerSettings = {
   /**
    * Experimental worker runtime.
    * "thread" uses Worker/worker_threads. "process" spawns another JavaScript
-   * runtime and shares one inherited fd-backed memory mapping.
+   * runtime, useful for process isolation, bwrap, and containers.
    */
   runtime?: "thread" | "process";
   /**
@@ -459,42 +474,21 @@ type DispatcherSettings = {
 };
 
 type CreatePool = {
+  /** Number of workers. Default: 1. */
   threads?: number;
-  /**
-   * @deprecated Too risky with processes, need to rewrite or delete.
-   */
+  /** Add a host inline lane for regular tasks. Imported tasks still use workers. */
   inliner?: Inliner;
   balancer?: Balancer;
   worker?: WorkerSettings;
   /**
-   * Payload transport settings.
+   * Payload transport settings. Default dynamic payload cap is about 8 MiB
+   * (`payloadMaxByteLength >> 3`, with a 64 MiB growth cap).
    */
   payload?: PayloadBufferOptions;
   /**
    * Experimental unsafe options.
    */
   unsafe?: UnsafeOptions;
-  /**
-   * Initial payload SharedArrayBuffer size (bytes) per worker direction.
-   * Defaults to 4 MiB when growable SAB is available, otherwise defaults to
-   * `payloadMaxBytes`.
-   * @deprecated Use `payload.payloadInitialBytes`.
-   */
-  payloadInitialBytes?: number;
-  /**
-   * Maximum payload SharedArrayBuffer size (bytes) per worker direction.
-   * Defaults to 64 MiB.
-   * @deprecated Use `payload.payloadMaxByteLength`.
-   */
-  payloadMaxBytes?: number;
-  /**
-   * @deprecated Use `payload.mode`.
-   */
-  bufferMode?: PayloadBufferMode;
-  /**
-   * @deprecated Use `payload.maxPayloadBytes`.
-   */
-  maxPayloadBytes?: number;
   /**
    * Abort-aware signal pool capacity.
    * Defaults to `258`.
@@ -511,15 +505,14 @@ type CreatePool = {
   workerExecArgv?: string[];
   /**
    * Runtime permission protocol.
-   * Omit to use strict defaults with `allowImport: true`.
+   * Omit to use strict defaults with `allowImport: true`; worker console is
+   * quiet unless `permission: { console: true }`.
+   *
+   * Task code cannot terminate the host: process/Deno exit APIs are blocked.
    * Use `"strict"` (default for object mode) or `"unsafe"`.
    * Accepts object form for fine-grained permission controls.
    */
   permission?: PermissionProtocolInput;
-  /**
-   * @deprecated Use `host` instead.
-   */
-  dispatcher?: DispatcherSettings;
   debug?: DebugOptions;
   source?: string;
 };
@@ -538,6 +531,7 @@ export type {
   ComposedWithKey as ComposedWithKey,
   CreateContext as CreateContext,
   CreatePool as CreatePool,
+  DebugNamespace as DebugNamespace,
   DebugOptions as DebugOptions,
   DispatcherSettings as DispatcherSettings,
   Envelope as Envelope,

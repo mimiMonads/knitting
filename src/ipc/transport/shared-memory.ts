@@ -4,7 +4,6 @@ import {
   toSharedBufferRegion,
   type SharedBufferSource,
 } from "../../common/shared-buffer-region.ts";
-import { type DebugOptions } from "../../types.ts";
 
 const page = 1024 * 4;
 const CACHE_LINE_BYTES = 64;
@@ -28,7 +27,6 @@ type SignalForWorker = {
   sabObject?: Sab;
   isMain: boolean;
   thread: number;
-  debug?: DebugOptions;
   startTime?: number;
 };
 

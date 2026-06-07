@@ -3,7 +3,7 @@ import {
   type SharedBufferSource,
 } from "../../common/shared-buffer-region.ts";
 import { isLockBufferTextCompat } from "../../common/shared-buffer-text.ts";
-import type { DebugOptions, LockBuffers } from "../../types.ts";
+import type { LockBuffers } from "../../types.ts";
 
 type SharedMemoryBootData = {
   sab: SharedBufferSource | undefined;
@@ -12,7 +12,6 @@ type SharedMemoryBootData = {
 };
 
 type ImportedFunctionsState = {
-  debug: DebugOptions | undefined;
   list: string[];
   ids: number[];
   names?: string[];
@@ -44,12 +43,8 @@ export const assertWorkerSharedMemoryBootData = (
 };
 
 export const assertWorkerImportsResolved = (
-  { debug, list, ids, names, listOfFunctions }: ImportedFunctionsState,
+  { list, ids, names, listOfFunctions }: ImportedFunctionsState,
 ): void => {
-  if (debug?.logImportedUrl === true) {
-    console.log(list);
-  }
-
   if (
     listOfFunctions.length > 0 &&
     (names === undefined || listOfFunctions.length === names.length)

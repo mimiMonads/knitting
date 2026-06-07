@@ -136,7 +136,10 @@ type PermissionProtocol = {
   deno?: DenoPermissionSettings;
 };
 
-type PermissionProtocolInput = PermissionMode | PermissionLegacyMode | PermissionProtocol;
+type PermissionProtocolInput =
+  | PermissionMode
+  | PermissionLegacyMode
+  | PermissionProtocol;
 
 type L3RuntimeKeys = {
   deno: string[];
@@ -269,7 +272,9 @@ const normalizeList = (values: string[]): string[] => {
   return out;
 };
 
-const normalizeStringList = (values: readonly string[] | undefined): string[] => {
+const normalizeStringList = (
+  values: readonly string[] | undefined,
+): string[] => {
   if (!values || values.length === 0) return [];
   const cleaned: string[] = [];
   for (const value of values) {
@@ -281,7 +286,9 @@ const normalizeStringList = (values: readonly string[] | undefined): string[] =>
   return normalizeList(cleaned);
 };
 
-const normalizeSysApiList = (values: readonly string[] | undefined): SysApiName[] => {
+const normalizeSysApiList = (
+  values: readonly string[] | undefined,
+): SysApiName[] => {
   if (!values || values.length === 0) return [];
   const out: SysApiName[] = [];
   const seen = new Set<string>();
@@ -302,11 +309,15 @@ const hasOwn = (value: object, key: PropertyKey): boolean =>
 const normalizeProtocolInput = (
   input: PermissionProtocolInput | undefined,
 ): PermissionProtocol | undefined =>
-  !input ? undefined : (typeof input === "string" ? { mode: input as PermissionMode } : input);
+  !input
+    ? undefined
+    : (typeof input === "string" ? { mode: input as PermissionMode } : input);
 
 const isWindows = (): boolean => {
   const nodeProcess = getNodeProcess();
-  if (typeof nodeProcess?.platform === "string") return nodeProcess.platform === "win32";
+  if (typeof nodeProcess?.platform === "string") {
+    return nodeProcess.platform === "win32";
+  }
   const g = globalThis as typeof globalThis & {
     Deno?: { build?: { os?: string } };
   };
@@ -345,7 +356,8 @@ const getHome = (): string | undefined => {
     Deno?: { env?: { get?: (name: string) => string | undefined } };
   };
   try {
-    const home = g.Deno?.env?.get?.("HOME") ?? g.Deno?.env?.get?.("USERPROFILE");
+    const home = g.Deno?.env?.get?.("HOME") ??
+      g.Deno?.env?.get?.("USERPROFILE");
     if (typeof home === "string" && home.length > 0) return home;
   } catch {
   }
@@ -416,7 +428,11 @@ const toEnvFiles = (
   cwd: string,
   home: string | undefined,
 ): string[] => {
-  const values = Array.isArray(input) ? input : input ? [input] : [DEFAULT_ENV_FILE];
+  const values = Array.isArray(input)
+    ? input
+    : input
+    ? [input]
+    : [DEFAULT_ENV_FILE];
   return toUniquePathList(values, cwd, home);
 };
 
@@ -433,7 +449,8 @@ const isPathWithin = (base: string, candidate: string): boolean => {
   const canonicalBase = toCanonicalPath(base);
   const canonicalCandidate = toCanonicalPath(candidate);
   const relative = pathRelative(canonicalBase, canonicalCandidate);
-  return relative === "" || (!relative.startsWith("..") && !pathIsAbsolute(relative));
+  return relative === "" ||
+    (!relative.startsWith("..") && !pathIsAbsolute(relative));
 };
 
 const defaultSensitiveProjectAndHomePaths = (
@@ -462,7 +479,9 @@ const defaultSensitiveReadDenyPaths = (
 
 const collectWritePaths = (cwd: string, values: string[]): string[] => {
   const out = normalizeList(values.length > 0 ? values : [cwd]);
-  if (!out.some((entry) => isPathWithin(entry, cwd) || isPathWithin(cwd, entry))) {
+  if (
+    !out.some((entry) => isPathWithin(entry, cwd) || isPathWithin(cwd, entry))
+  ) {
     out.unshift(cwd);
   }
   return normalizeList(out);
@@ -667,6 +686,11 @@ const toDenoFlags = ({
   }
 
   for (const file of envFiles) {
+    try {
+      if (!existsSyncCompat(file)) continue;
+    } catch {
+      continue;
+    }
     flags.push(`--env-file=${file}`);
   }
 
@@ -827,9 +851,11 @@ export const resolvePermissionProtocol = ({
   const configuredRead = readAll
     ? []
     : toPathList(Array.isArray(input.read) ? input.read : undefined, cwd, home);
-  const configuredWrite = writeAll
-    ? []
-    : toPathList(Array.isArray(input.write) ? input.write : undefined, cwd, home);
+  const configuredWrite = writeAll ? [] : toPathList(
+    Array.isArray(input.write) ? input.write : undefined,
+    cwd,
+    home,
+  );
 
   const resolvedRead = readAll
     ? []
@@ -855,23 +881,23 @@ export const resolvePermissionProtocol = ({
   const denyNet = normalizeStringList(input.denyNet);
 
   const allowImportAll = input.allowImport === true;
-  const allowImport = allowImportAll
-    ? []
-    : normalizeStringList(
-      Array.isArray(input.allowImport)
-        ? input.allowImport
-        : [...DEFAULT_ALLOW_IMPORT_HOSTS],
-    );
+  const allowImport = allowImportAll ? [] : normalizeStringList(
+    Array.isArray(input.allowImport)
+      ? input.allowImport
+      : [...DEFAULT_ALLOW_IMPORT_HOSTS],
+  );
 
   const envAllowAll = input.env?.allow === true;
-  const envAllow = envAllowAll
-    ? []
-    : normalizeStringList(Array.isArray(input.env?.allow) ? input.env.allow : []);
+  const envAllow = envAllowAll ? [] : normalizeStringList(
+    Array.isArray(input.env?.allow) ? input.env.allow : [],
+  );
   const envDeny = normalizeStringList(input.env?.deny);
 
   const legacyRunEnabled = input.node?.allowChildProcess === true ||
     input.deno?.allowRun === true;
-  const runSource = hasOwn(input, "run") ? input.run : (legacyRunEnabled ? true : []);
+  const runSource = hasOwn(input, "run")
+    ? input.run
+    : (legacyRunEnabled ? true : []);
   const runAll = runSource === true;
   const run = runAll
     ? []
@@ -886,9 +912,11 @@ export const resolvePermissionProtocol = ({
     ? input.ffi
     : (input.node?.allowAddons === true ? true : false);
   const ffiAll = ffiSource === true;
-  const ffi = ffiAll
-    ? []
-    : toUniquePathList(Array.isArray(ffiSource) ? ffiSource : undefined, cwd, home);
+  const ffi = ffiAll ? [] : toUniquePathList(
+    Array.isArray(ffiSource) ? ffiSource : undefined,
+    cwd,
+    home,
+  );
   const denyFfi = toUniquePathList(input.denyFfi, cwd, home);
 
   const sysSource = input.sys;
@@ -1016,14 +1044,14 @@ export const toRuntimePermissionFlags = (
     : [];
 
 export type {
-  PermissionPath,
-  PermissionMode,
-  PermissionLegacyMode,
-  SysApiName,
-  NodePermissionSettings,
   DenoPermissionSettings,
+  NodePermissionSettings,
   PermissionEnvironment,
+  PermissionLegacyMode,
+  PermissionMode,
+  PermissionPath,
   PermissionProtocol,
   PermissionProtocolInput,
   ResolvedPermissionProtocol,
+  SysApiName,
 };

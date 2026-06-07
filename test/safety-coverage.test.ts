@@ -172,7 +172,7 @@ test("startup guard rejects missing shared memory boot buffers", () => {
 });
 
 test(
-  "startup import assertion logs debug list and returns when imports exist",
+  "startup import assertion returns without logging when imports exist",
   {
     concurrency: false,
   },
@@ -186,7 +186,6 @@ test(
     try {
       assert.doesNotThrow(() => {
         assertWorkerImportsResolved({
-          debug: { logImportedUrl: true },
           list: ["./a.ts"],
           ids: [1],
           listOfFunctions: [() => 1],
@@ -196,8 +195,7 @@ test(
       console.log = originalLog;
     }
 
-    assert.equal(messages.length, 1);
-    assert.deepEqual(messages[0], ["./a.ts"]);
+    assert.equal(messages.length, 0);
   },
 );
 
@@ -213,7 +211,6 @@ test("startup import assertion throws when no imports are resolved", {
   try {
     assert.throws(() => {
       assertWorkerImportsResolved({
-        debug: undefined,
         list: ["./missing.ts"],
         ids: [5],
         listOfFunctions: [],

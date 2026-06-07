@@ -60,6 +60,9 @@ const NODE_CHILD_ARGS = (() => {
 
   return ["--no-warnings"];
 })();
+const HOST_DEBUG_CHILD_BIN = process.versions.bun ? process.execPath : NODE_BIN;
+const HOST_DEBUG_CHILD_ARGS = process.versions.bun ? [] : NODE_CHILD_ARGS;
+const HOST_DEBUG_RUNTIME = process.versions.bun ? "bun" : "node";
 const faultConstructorProbePath = fileURLToPath(
   new URL("./fixtures/probes/fault_constructor_probe.ts", import.meta.url),
 );
@@ -71,6 +74,9 @@ const sharedMemoryCorruptionProbePath = fileURLToPath(
     "./fixtures/probes/shared_memory_corruption_probe.ts",
     import.meta.url,
   ),
+);
+const hostDebugProbePath = fileURLToPath(
+  new URL("./fixtures/probes/host_debug_probe.ts", import.meta.url),
 );
 
 type ChildResult = {
@@ -113,11 +119,13 @@ const createDeferred = <T>() => {
 const runProbe = (
   scriptPath: string,
   timeoutMs = 4_000,
+  command = NODE_BIN,
+  args = NODE_CHILD_ARGS,
 ): Promise<ChildResult> =>
   new Promise((resolve, reject) => {
     const child = spawn(
-      NODE_BIN,
-      [...NODE_CHILD_ARGS, scriptPath],
+      command,
+      [...args, scriptPath],
       {
         cwd: process.cwd(),
         stdio: ["ignore", "pipe", "pipe"],
@@ -298,7 +306,10 @@ test("node:test imported task runs on a worker lane in an inliner pool", {
 
   try {
     const [inlined, imported] = await Promise.all([
-      withTimeout(pool.call.addOnePromise(Promise.resolve(41)), TEST_TIMEOUT_MS),
+      withTimeout(
+        pool.call.addOnePromise(Promise.resolve(41)),
+        TEST_TIMEOUT_MS,
+      ),
       withTimeout(pool.call.addOneViaImportTask(10), TEST_TIMEOUT_MS),
     ]);
     assert.equal(inlined, 42);
@@ -397,6 +408,40 @@ test("node:test workerData lock buffers are hidden from task code", {
     0,
     `shared-memory mitigation probe failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
   );
+});
+
+test("node:test host debug emits setup path map", {
+  concurrency: false,
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
+  const result = await runProbe(
+    hostDebugProbePath,
+    4_000,
+    HOST_DEBUG_CHILD_BIN,
+    HOST_DEBUG_CHILD_ARGS,
+  );
+
+  assert.equal(
+    result.timedOut,
+    false,
+    `probe timed out\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+  );
+  assert.equal(
+    result.code,
+    0,
+    `host debug probe failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+  );
+  assert.match(result.stdout, /probe-ok host-debug/);
+  assert.match(
+    result.stderr,
+    new RegExp(`\\[host·${HOST_DEBUG_RUNTIME}·\\+\\d+\\.\\dms\\] host: cwd=`),
+  );
+  assert.match(
+    result.stderr,
+    /host: task name=addOnePromise id=.* from=file:\/\/\/.*runtime_tasks\.ts/,
+  );
+  assert.match(result.stderr, /host: worker thread=0 mode=.* url=/);
+  assert.doesNotMatch(result.stderr, /\[w0·/);
 });
 
 test("node:test permission unsafe mode allows unrestricted file access", {

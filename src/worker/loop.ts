@@ -33,6 +33,7 @@ import {
 import {
   readBufferReferenceReturnReleaseMessage,
 } from "../connections/buffer-reference.ts";
+import { resolveDebugNamespaces } from "../debug/gate.ts";
 
 const WORKER_FATAL_MESSAGE_KEY = "__knittingWorkerFatal";
 
@@ -129,6 +130,17 @@ export const workerMainLoop = async (
   scrubWorkerDataSensitiveBuffers(startupData);
   assertWorkerSharedMemoryBootData({ sab, lock, returnLock });
 
+  const debugNamespaces = resolveDebugNamespaces(debug);
+  const dbg = debugNamespaces.size > 0
+    ? await import("../debug/handle.ts").then((module) =>
+      module.initDebug({
+        name: `w${thread}`,
+        runtime: RUNTIME,
+        namespaces: debugNamespaces,
+      })
+    )
+    : undefined;
+
   enum Comment {
     thisIsAHint = 0,
   }
@@ -138,7 +150,6 @@ export const workerMainLoop = async (
     },
     isMain: false,
     thread,
-    debug,
     startTime: startAt,
   });
 
@@ -164,8 +175,10 @@ export const workerMainLoop = async (
   const timers = workerOptions?.timers;
   const spinMicroseconds = timers?.spinMicroseconds ??
     Math.max(1, totalNumberOfThread) * 50;
-  const parkMs = timers?.parkMs ??
-    Math.max(1, totalNumberOfThread) * 50;
+  const parkMs = dbg !== undefined
+    ? Number.POSITIVE_INFINITY
+    : (timers?.parkMs ??
+      Math.max(1, totalNumberOfThread) * 50);
 
   const pauseSpin = (() => {
     const fn = typeof timers?.pauseNanoseconds === "number"
@@ -184,6 +197,7 @@ export const workerMainLoop = async (
     thread,
     totalNumberOfThread,
   });
+  dbg?.envPhase("bootstrap");
 
   const listOfFunctions = await getFunctions({
     list,
@@ -193,7 +207,14 @@ export const workerMainLoop = async (
     at,
     permission,
   });
-  assertWorkerImportsResolved({ debug, list, ids, names, listOfFunctions });
+  dbg?.envPhase("tasks");
+  dbg?.log(
+    "imports",
+    `${listOfFunctions.length} task(s) from ${
+      list.map((spec) => spec.split(/[\\/]/).pop() || spec).join(", ")
+    }`,
+  );
+  assertWorkerImportsResolved({ list, ids, names, listOfFunctions });
   const abortSignals = abortSignalSAB
     ? signalAbortFactory({
       sab: abortSignalSAB,
@@ -249,7 +270,7 @@ export const workerMainLoop = async (
   let lastAwaiting = 0;
   const MAX_AWAITING_MS = 10;
 
-  let wakeSeq = a_load(opView, 0);
+  let wakeToken = a_load(opView, 0);
 
   const scheduleMacro = () => {
     if (isInMacro) return;
@@ -275,15 +296,41 @@ export const workerMainLoop = async (
     post2(null);
   };
 
-  const _enqueueLock = enqueueLock;
+  const traceSignals = dbg?.enabled("signals") === true;
   const _hasCompleted = hasCompleted;
-  const _writeBatch = writeBatch;
   const _hasPending = hasPending;
-  const _serviceBatchImmediate = serviceBatchImmediate;
   const _getAwaiting = getAwaiting;
   const _drainReturnReleases = drainReturnReleases;
   const _pauseSpin = pauseSpin;
-  const _pauseUntil = pauseUntil;
+  const _enqueueLock = traceSignals
+    ? (): boolean => {
+      const progressed = enqueueLock();
+      if (progressed) {
+        dbg!.log("signals", "work from=host");
+      }
+      return progressed;
+    }
+    : enqueueLock;
+  const _writeBatch = traceSignals
+    ? (max: number): number => {
+      const wrote = writeBatch(max);
+      if (wrote > 0) dbg!.log("signals", `result count=${wrote}`);
+      return wrote;
+    }
+    : writeBatch;
+  const _serviceBatchImmediate = traceSignals
+    ? (): number => {
+      const ran = serviceBatchImmediate();
+      if (ran > 0) dbg!.log("signals", `run count=${ran}`);
+      return ran;
+    }
+    : serviceBatchImmediate;
+  const _pauseUntil = traceSignals
+    ? (value: number, spinMicroseconds: number, parkMs?: number): void => {
+      dbg!.log("signals", `idle token=${value}`);
+      pauseUntil(value, spinMicroseconds, parkMs);
+    }
+    : pauseUntil;
 
   const loop = () => {
     isInMacro = false;
@@ -317,8 +364,8 @@ export const workerMainLoop = async (
           _pauseSpin();
           continue;
         }
-        _pauseUntil(wakeSeq, spinMicroseconds, parkMs);
-        wakeSeq = a_load(opView, 0);
+        _pauseUntil(wakeToken, spinMicroseconds, parkMs);
+        wakeToken = a_load(opView, 0);
       }
     }
   };
@@ -336,6 +383,10 @@ export const workerMainLoop = async (
   }
   port1Any.start?.();
   (port2 as unknown as { start?: () => void }).start?.();
+  dbg?.log(
+    "lifecycle",
+    `ready: ${listOfFunctions.length} task(s) on thread ${thread}/${totalNumberOfThread}, entering dispatch loop`,
+  );
   scheduleMacro();
 };
 

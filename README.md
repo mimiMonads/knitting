@@ -335,7 +335,7 @@ Common options you might tweak:
 | `worker.runtime`                  | Choose `"thread"` or `"process"` workers.                                                                                         |
 | `worker.processSharedMemory`      | Process-worker memory discovery: `"inherit"` by default on POSIX, or `"named"` for wrappers/containers that cannot preserve fd 0. |
 | `permission`                      | Runtime permission policy for workers.                                                                                            |
-| `debug`                           | Enable extra diagnostics.                                                                                                         |
+| `debug`                           | Enable diagnostics (`host`, `globals`, `signals`, `imports`, `lifecycle`) or use `KNITTING_DEBUG`.                                |
 | `source`                          | Worker source override for advanced runtimes.                                                                                     |
 
 ### Worker bootstrap

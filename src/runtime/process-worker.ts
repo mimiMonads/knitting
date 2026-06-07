@@ -18,6 +18,7 @@ import type {
   WorkerSettings,
 } from "../types.ts";
 import { RUNTIME } from "../common/runtime.ts";
+import { debugHas } from "../debug/gate.ts";
 import {
   RUNTIME_POOL_DEPTH,
   RUNTIME_POOL_DEPTH_ENV,
@@ -286,7 +287,7 @@ export const createProcessSharedMemoryAllocator = (
       "knitting_shared_memory",
     );
   } catch (error) {
-    if (debug?.extras === true) {
+    if (debugHas(debug, "lifecycle")) {
       console.warn(
         "Process-shared memory allocator unavailable; falling back to SharedArrayBuffer.",
         error,
