@@ -22,7 +22,11 @@ import {
   type Sab,
   TRANSPORT_SIGNAL_BYTES,
 } from "../ipc/transport/shared-memory.ts";
-import { ChannelHandler, hostDispatcherLoop } from "./dispatcher.ts";
+import {
+  ChannelHandler,
+  type DispatcherCheck,
+  hostDispatcherLoop,
+} from "./dispatcher.ts";
 import {
   HEADER_SLOT_STRIDE_U32,
   lock2,
@@ -113,6 +117,7 @@ export const spawnWorkerContext = ({
   bufferReferenceReturn,
   abortSignalCapacity,
   usesAbortSignal,
+  sharedChannelHandler,
 }: {
   list: string[];
   ids: number[];
@@ -133,6 +138,11 @@ export const spawnWorkerContext = ({
   bufferReferenceReturn?: "copy" | "borrow";
   abortSignalCapacity?: number;
   usesAbortSignal?: boolean;
+  /**
+   * When set, this lane keeps its dispatcher state while the pool owns the
+   * macro channel that runs all lane checks.
+   */
+  sharedChannelHandler?: ChannelHandler;
 }) => {
   const tsFileUrl = new URL(import.meta.url);
   const poliWorker = RUNTIME_WORKER;
@@ -313,17 +323,46 @@ export const spawnWorkerContext = ({
     rejectAll,
     txIdle,
   } = queue;
-  const channelHandler = new ChannelHandler();
+  const thisSignal = signalBox.opView;
+  const a_add = Atomics.add;
+  const a_load = Atomics.load;
+  const a_notify = Atomics.notify;
+  const canNotifySignal = thisSignal.buffer instanceof SharedArrayBuffer;
+  const notifySignal = nativeNotifySignal ??
+    (canNotifySignal ? (() => a_notify(thisSignal, 0, 1)) : undefined);
 
-  const { check } = hostDispatcherLoop({
+  // Wakes this lane's worker when it is parked (rxStatus 0). Used by send()
+  // (new work just arrived) — the dispatcher drain wakes it the same way.
+  const laneWake = () => {
+    if (a_load(signalBox.rxStatus, 0) === 0) {
+      a_add(thisSignal, 0, 1);
+      notifySignal?.();
+    }
+  };
+
+  let dispatchSend: () => void = () => {};
+  const send = () => dispatchSend();
+
+  let channelHandler: ChannelHandler | undefined;
+  const ownsChannel = sharedChannelHandler === undefined;
+  const ownChannel = sharedChannelHandler ?? new ChannelHandler();
+  const { check: dispatcherCheck } = hostDispatcherLoop({
     signalBox,
     queue,
-    channelHandler,
+    channelHandler: ownChannel,
     dispatcherOptions: host,
     notifySignal: nativeNotifySignal,
   });
-
-  channelHandler.open(check);
+  if (ownsChannel) {
+    ownChannel.open(dispatcherCheck);
+    channelHandler = ownChannel;
+    dispatchSend = () => {
+      if (dispatcherCheck.isRunning === true) return;
+      dispatcherCheck.isRunning = true;
+      Promise.resolve().then(dispatcherCheck);
+      laneWake();
+    };
+  }
 
   let worker: SpawnedWorker;
 
@@ -451,7 +490,7 @@ export const spawnWorkerContext = ({
     if (closedReason) return;
     closedReason = reason;
     rejectAll(reason);
-    channelHandler.close();
+    channelHandler?.close();
   };
 
   const onWorkerMessage = (message: unknown) => {
@@ -501,29 +540,6 @@ export const spawnWorkerContext = ({
     }
   }
 
-  const thisSignal = signalBox.opView;
-  const a_add = Atomics.add;
-  const a_load = Atomics.load;
-  const a_notify = Atomics.notify;
-  const canNotifySignal = thisSignal.buffer instanceof SharedArrayBuffer;
-  const notifySignal = nativeNotifySignal ??
-    (canNotifySignal ? (() => a_notify(thisSignal, 0, 1)) : undefined);
-  //const scheduleFastCheck = queueMicrotask;
-
-  const send = () => {
-    if (check.isRunning === true) return;
-    check.isRunning = true;
-    Promise.resolve().then(check);
-    // Macro lane: dispatcher check is driven by the channel callback.
-    // channelHandler.notify();
-
-    // Use opView as a wake token in lock2 mode to avoid lost wakeups.
-    if (a_load(signalBox.rxStatus, 0) === 0) {
-      a_add(thisSignal, 0, 1);
-      notifySignal?.();
-    }
-  };
-
   lock.setPromiseHandler((task: Task, isRejected: boolean, value: unknown) => {
     queue.settlePromisePayload(task, isRejected, value);
     send();
@@ -542,6 +558,9 @@ export const spawnWorkerContext = ({
   const context: WorkerContext & {
     lock: ReturnType<typeof lock2>;
     processSharedMemoryBackings?: readonly ProcessSharedMemoryBacking[];
+    dispatcherCheck?: DispatcherCheck;
+    laneWake?: () => void;
+    bindSend?: (fn: () => void) => void;
   } = {
     txIdle,
     call,
@@ -552,6 +571,11 @@ export const spawnWorkerContext = ({
     },
     lock,
     processSharedMemoryBackings: processSharedMemory?.backings,
+    dispatcherCheck,
+    laneWake: sharedChannelHandler !== undefined ? laneWake : undefined,
+    bindSend: sharedChannelHandler !== undefined
+      ? ((fn: () => void) => void (dispatchSend = fn))
+      : undefined,
   };
 
   return context;

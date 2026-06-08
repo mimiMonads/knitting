@@ -11,18 +11,16 @@
 [![Deno](https://img.shields.io/badge/deno-2%2B-000000?logo=deno&logoColor=white)](https://deno.com/)
 [![Bun](https://img.shields.io/badge/bun-1%2B-f472b6?logo=bun&logoColor=white)](https://bun.sh/)
 
-Knitting is a worker pool over a shared-memory IPC runtime for Node.js, Deno,
-and Bun. Our mission is to make JavaScript a multicore language with real
-inter-runtime communication.
+Knitting is a worker pool built on shared-memory IPC for Node.js, Deno, and Bun.
+It lets you call work running on other threads or processes as if it were a
+normal async function.
 
-Thanks to its memory design, it can be 5x to 25x faster than using
-`postMessages` , bypassing OS socket communication entirely with a novel
-protocol written from scratch.
+Because calls move through shared memory instead of `postMessage` or sockets,
+some workloads can be 5x to 25x faster than the usual worker-message path.
 
-Use it for parts of your program that should run in different environments, such
-as CPU-intensive tasks, small jobs, runtime-isolated tasks, custom isolation for
-workers in Docker or bwrap environments, long-running tools, or any processes
-that require speed and type flexibility.
+Use it when part of your program should run somewhere else: CPU-heavy work,
+bursty small jobs, runtime-isolated code, Docker or bwrap workers, long-running
+tools, or cross-runtime process work that still needs to be fast and typed.
 
 You export a function or task, spin up a pool, and call it like a normal async
 function:
@@ -31,29 +29,28 @@ function:
 const result = await pool.call.resizeImage(file);
 ```
 
-So you only have to take care of 4 things:
+Most of the time, you only have to take care of four things:
 
 - Export a function or task
 - Create a pool
 - Call it
 - Let `using` or `shutdown()` close the pool
 
-Under the hood, we take care of scheduling and orchestration across worker
-threads or separate processes, also handling signals, timeouts, life cycles,
-memory allocation, garbage collection, and cross-runtime memory over the
-processes.
+Under the hood, Knitting handles scheduling across worker threads or separate
+processes, plus signals, timeouts, lifecycles, memory allocation, cleanup, and
+cross-runtime shared memory.
 
 ## Why use it?
 
-- Easy to use: Have a multithreaded environment or process with few lines of
-  code.
-- Great type support: pass primitives, JSON, Promise of these, and special types
-  (typed arrays, `Node Buffer`, `Envelope`, and `ProcessSharedBuffer`).
+- Easy to use: spin up threads or processes with a small API.
+- Great type support: pass primitives, JSON, promises of those values, and
+  special types like typed arrays, `Node Buffer`, `Envelope`, and
+  `ProcessSharedBuffer`.
 - Runtime flexibility: the same API across Node.js, Deno, and Bun.
 - Worker choices: use threads for fast pools or processes for stronger
   isolation.
-- All out-of-the-box experiences: strict-by-default permissions, payload-size
-  limits, task timeouts, abort-aware tasks, and worker hard timeouts.
+- Practical defaults: strict worker permissions, payload-size limits, task
+  timeouts, abort-aware tasks, and worker hard timeouts.
 
 ## Requirements
 
@@ -96,9 +93,9 @@ if (isMain) {
 }
 ```
 
-The `isMain` guard when the same module is loaded by workers or process. Export
-exposes the tasks or functions at module scope, so knitting maps down the
-imports, then use and use the pool only from the main program.
+Use the `isMain` guard when a module can be loaded by both the host and its
+workers. Export tasks at module scope so Knitting can find them, then create and
+use the pool only from the main program.
 
 ## The Mental Model
 
@@ -335,8 +332,16 @@ Common options you might tweak:
 | `worker.runtime`                  | Choose `"thread"` or `"process"` workers.                                                                                         |
 | `worker.processSharedMemory`      | Process-worker memory discovery: `"inherit"` by default on POSIX, or `"named"` for wrappers/containers that cannot preserve fd 0. |
 | `permission`                      | Runtime permission policy for workers.                                                                                            |
+| `host.dispatcher`                 | Experimental host dispatcher topology: `"per-thread"` or `"serial-channel"`.                                                      |
 | `debug`                           | Enable diagnostics (`host`, `globals`, `signals`, `imports`, `lifecycle`) or use `KNITTING_DEBUG`.                                |
 | `source`                          | Worker source override for advanced runtimes.                                                                                     |
+
+Most users can leave `host.dispatcher` alone. The current default is
+experimental: Bun and single-worker pools use `"per-thread"`, while multi-worker
+Node/Deno pools use `"serial-channel"` because it tends to behave well for
+bursty HTTP-style fan-out. If you are tuning a server or comparing runtimes, you
+can force either mode with `KNITTING_DISPATCHER=per-thread` or
+`KNITTING_DISPATCHER=serial-channel`.
 
 ### Worker bootstrap
 

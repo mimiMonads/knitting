@@ -186,7 +186,7 @@ type Composed<
 
 type tasks = Record<
   string,
-  Composed<any, any, AbortSignalOption> | TaskFunctionLike
+  Composed<any, any, any> | TaskFunctionLike
 >;
 
 type ComposedWithKey = Composed<any, any, AbortSignalOption> & { name: string };
@@ -471,6 +471,17 @@ type DispatcherSettings = {
    * Max backoff delay (milliseconds).
    */
   maxBackoffMs?: number;
+  /**
+   * Host dispatcher topology.
+   * - `"per-thread"`: each worker owns its dispatcher and macro channel.
+   * - `"serial-channel"`: each worker keeps its own dispatcher check state, but
+   *   one shared channel runs all lane checks from first to last.
+   *
+   * Experimental default: `"per-thread"` on Bun or with one worker, otherwise
+   * `"serial-channel"` for multi-worker Node/Deno pools. Can also be forced
+   * with the `KNITTING_DISPATCHER` env var (`serial-channel` or `per-thread`).
+   */
+  dispatcher?: "per-thread" | "serial-channel";
 };
 
 type CreatePool = {

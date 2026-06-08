@@ -4,6 +4,7 @@ import { genTaskID } from "./common/task-source.ts";
 import { toModuleUrl } from "./common/module-url.ts";
 import { endpointSymbol } from "./common/task-symbol.ts";
 import { spawnWorkerContext } from "./runtime/pool.ts";
+import { ChannelHandler } from "./runtime/dispatcher.ts";
 import { RUNTIME } from "./common/runtime.ts";
 import {
   RUNTIME_IS_MAIN_THREAD,
@@ -474,6 +475,27 @@ export const createPool: CreatePoolFactory = ({
     );
   }
 
+  const dispatcherEnv = nodeProcess?.env?.KNITTING_DISPATCHER;
+  const explicitDispatcher = host?.dispatcher ??
+    (
+      dispatcherEnv === "serial-channel" || dispatcherEnv === "per-thread"
+        ? dispatcherEnv
+        : undefined
+    );
+  const autoDispatcher = (() => {
+    // Experimental default for HTTP-style bursts: Bun still favors direct
+    // per-thread channels, while Node/Deno multi-worker pools favor one shared
+    // macro channel over the per-lane dispatcher checks.
+    if (RUNTIME === "bun") return "per-thread";
+    if ((threads ?? 1) <= 1) return "per-thread";
+    return "serial-channel";
+  })();
+  const dispatcher = explicitDispatcher ?? autoDispatcher;
+  const serialChannel = dispatcher === "serial-channel";
+  const serialDispatcherChannel = serialChannel
+    ? new ChannelHandler()
+    : undefined;
+
   let workers = Array.from({
     length: threads ?? 1,
   }).map((_, thread) =>
@@ -495,8 +517,61 @@ export const createPool: CreatePoolFactory = ({
       abortSignalCapacity,
       usesAbortSignal,
       permission: permissionProtocol,
+      sharedChannelHandler: serialDispatcherChannel,
     })
   );
+
+  const sharedDispatcherChannel = serialDispatcherChannel;
+  if (serialChannel) {
+    const channel = serialDispatcherChannel!;
+    const checks = workers.map((context) => context.dispatcherCheck!);
+    let serialScheduled = false;
+    let serialInFlight = false;
+    let serialRerun = false;
+
+    const runSerialChecks = () => {
+      if (serialInFlight) {
+        serialRerun = true;
+        return;
+      }
+      serialInFlight = true;
+
+      do {
+        serialRerun = false;
+        serialScheduled = false;
+
+        for (let index = 0; index < checks.length; index++) {
+          const check = checks[index]!;
+          if (check.isRunning !== true) check.isRunning = true;
+          check();
+        }
+      } while (serialRerun);
+
+      serialInFlight = false;
+    };
+
+    const scheduleSerialCheck = () => {
+      if (serialInFlight) {
+        serialRerun = true;
+        return;
+      }
+      if (serialScheduled) return;
+      serialScheduled = true;
+      Promise.resolve().then(runSerialChecks);
+    };
+
+    channel.open(runSerialChecks);
+    workers.forEach((context) => {
+      const wake = context.laneWake!;
+      context.bindSend!(() => {
+        scheduleSerialCheck();
+        wake();
+      });
+    });
+    hostDebug?.log(`dispatcher=serial-channel lanes=${checks.length}`);
+  } else {
+    hostDebug?.log(`dispatcher=per-thread lanes=${workers.length}`);
+  }
 
   if (usingInliner) {
     const mainThread = createInlineExecutor({
@@ -532,7 +607,9 @@ export const createPool: CreatePoolFactory = ({
     if (closePromise) return closePromise;
     closing = true;
     closePromise = Promise.allSettled(workers.map((context) => context.kills()))
-      .then(() => undefined);
+      .then(() => {
+        sharedDispatcherChannel?.close();
+      });
     return closePromise;
   };
 

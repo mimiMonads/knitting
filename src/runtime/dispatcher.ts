@@ -148,6 +148,8 @@ type CheckWithState = (() => void) & {
   rerun: boolean;
 };
 
+export type DispatcherCheck = CheckWithState;
+
 export class ChannelHandler {
   public channel: RuntimeMessageChannelLike;
   public port1: RuntimeMessagePortLike;

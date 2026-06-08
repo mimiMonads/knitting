@@ -204,3 +204,28 @@ test("dispatcher drains oversubscribed batches without stalling", async () => {
     await shutdown();
   }
 });
+
+test("serial-channel dispatcher drains multi-lane bursts", async () => {
+  const { call, shutdown } = createPool({
+    threads: 2,
+    host: {
+      dispatcher: "serial-channel",
+      stallFreeLoops: 0,
+      maxBackoffMs: 2,
+    },
+  })({ addOne });
+
+  try {
+    const batch = 96;
+    const jobs = Array.from(
+      { length: batch },
+      (_, index) => call.addOne(index),
+    );
+    const values = await withTimeout(Promise.all(jobs), 3000);
+    assert.equal(values.length, batch);
+    assert.equal(values[0], 1);
+    assert.equal(values[batch - 1], batch);
+  } finally {
+    await shutdown();
+  }
+});
