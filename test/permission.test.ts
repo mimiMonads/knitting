@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import path from "node:path";
 import test from "./_runner.ts";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { pathToFileURL } from "node:url";
 import { resolvePermissionProtocol } from "../src/permission/index.ts";
 
@@ -352,6 +354,9 @@ test("resolvePermissionProtocol derives node booleans from top-level unified fie
 });
 
 test("resolvePermissionProtocol emits deno flags for unified categories", () => {
+  const envDir = mkdtempSync(path.join(tmpdir(), "knitting-permission-"));
+  const envFile = path.join(envDir, ".env.production");
+  writeFileSync(envFile, "NODE_ENV=production\n");
   const resolved = resolvePermissionProtocol({
     permission: {
       mode: "custom",
@@ -363,7 +368,7 @@ test("resolvePermissionProtocol emits deno flags for unified categories", () => 
       env: {
         allow: ["NODE_ENV"],
         deny: ["AWS_SECRET_ACCESS_KEY"],
-        files: [".env.production"],
+        files: [envFile],
       },
       run: ["curl"],
       denyRun: ["bash"],
@@ -374,69 +379,87 @@ test("resolvePermissionProtocol emits deno flags for unified categories", () => 
     },
   });
 
-  assert.ok(resolved);
-  assert.equal(
-    resolved.deno.flags.some((flag) => flag === "--allow-read"),
-    true,
-  );
-  assert.equal(
-    resolved.deno.flags.some((flag) => flag.startsWith("--allow-write=")),
-    true,
-  );
-  assert.equal(
-    resolved.deno.flags.some((flag) =>
-      flag === "--allow-net=api.example.com:443"
-    ),
-    true,
-  );
-  assert.equal(
-    resolved.deno.flags.some((flag) => flag === "--deny-net=127.0.0.1:1"),
-    true,
-  );
-  assert.equal(
-    resolved.deno.flags.some((flag) => flag === "--allow-import=jsr.io"),
-    true,
-  );
-  assert.equal(
-    resolved.deno.flags.some((flag) => flag === "--allow-env=NODE_ENV"),
-    true,
-  );
-  assert.equal(
-    resolved.deno.flags.some((flag) =>
-      flag === "--deny-env=AWS_SECRET_ACCESS_KEY"
-    ),
-    true,
-  );
-  assert.equal(
-    resolved.deno.flags.some((flag) =>
-      flag.includes("--env-file=") && flag.includes(".env.production")
-    ),
-    true,
-  );
-  assert.equal(
-    resolved.deno.flags.some((flag) => flag === "--allow-run=curl"),
-    true,
-  );
-  assert.equal(
-    resolved.deno.flags.some((flag) => flag === "--deny-run=bash"),
-    true,
-  );
-  assert.equal(
-    resolved.deno.flags.some((flag) => flag === "--allow-ffi"),
-    true,
-  );
-  assert.equal(
-    resolved.deno.flags.some((flag) => flag.startsWith("--deny-ffi=")),
-    true,
-  );
-  assert.equal(
-    resolved.deno.flags.some((flag) => flag === "--allow-sys=hostname"),
-    true,
-  );
-  assert.equal(
-    resolved.deno.flags.some((flag) => flag === "--deny-sys=uid"),
-    true,
-  );
+  try {
+    assert.ok(resolved);
+    assert.equal(
+      resolved.deno.flags.some((flag) => flag === "--allow-read"),
+      true,
+    );
+    assert.equal(
+      resolved.deno.flags.some((flag) => flag.startsWith("--allow-write=")),
+      true,
+    );
+    assert.equal(
+      resolved.deno.flags.some((flag) =>
+        flag === "--allow-net=api.example.com:443"
+      ),
+      true,
+    );
+    assert.equal(
+      resolved.deno.flags.some((flag) => flag === "--deny-net=127.0.0.1:1"),
+      true,
+    );
+    assert.equal(
+      resolved.deno.flags.some((flag) => flag === "--allow-import=jsr.io"),
+      true,
+    );
+    assert.equal(
+      resolved.deno.flags.some((flag) => flag === "--allow-env=NODE_ENV"),
+      true,
+    );
+    assert.equal(
+      resolved.deno.flags.some((flag) =>
+        flag === "--deny-env=AWS_SECRET_ACCESS_KEY"
+      ),
+      true,
+    );
+    assert.equal(resolved.deno.flags.includes(`--env-file=${envFile}`), true);
+    assert.equal(
+      resolved.deno.flags.some((flag) => flag === "--allow-run=curl"),
+      true,
+    );
+    assert.equal(
+      resolved.deno.flags.some((flag) => flag === "--deny-run=bash"),
+      true,
+    );
+    assert.equal(
+      resolved.deno.flags.some((flag) => flag === "--allow-ffi"),
+      true,
+    );
+    assert.equal(
+      resolved.deno.flags.some((flag) => flag.startsWith("--deny-ffi=")),
+      true,
+    );
+    assert.equal(
+      resolved.deno.flags.some((flag) => flag === "--allow-sys=hostname"),
+      true,
+    );
+    assert.equal(
+      resolved.deno.flags.some((flag) => flag === "--deny-sys=uid"),
+      true,
+    );
+  } finally {
+    rmSync(envDir, { recursive: true, force: true });
+  }
+});
+
+test("resolvePermissionProtocol omits missing deno env-file flags", () => {
+  const envDir = mkdtempSync(path.join(tmpdir(), "knitting-permission-"));
+
+  try {
+    const resolved = resolvePermissionProtocol({
+      permission: { cwd: envDir },
+    });
+
+    assert.ok(resolved);
+    assert.equal(resolved.envFiles.includes(path.join(envDir, ".env")), true);
+    assert.equal(
+      resolved.deno.flags.some((flag) => flag.startsWith("--env-file=")),
+      false,
+    );
+  } finally {
+    rmSync(envDir, { recursive: true, force: true });
+  }
 });
 
 test("resolvePermissionProtocol supports allowImport=true for unrestricted import hosts", () => {

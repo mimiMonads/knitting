@@ -28,8 +28,11 @@ jobs:
       - uses: denoland/setup-deno@v1
         with:
           deno-version: "2.x"
+      - uses: oven-sh/setup-bun@v2
       - name: Install Deno dependencies
         run: deno install
+      - name: Install npm type dependencies
+        run: bun install --frozen-lockfile
       - name: Run Deno tests
         run: npm run test:deno
 

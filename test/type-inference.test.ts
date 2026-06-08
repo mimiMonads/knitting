@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { fileURLToPath } from "node:url";
+import * as ts from "typescript";
 import test from "./_runner.ts";
 import { createPool, task } from "../knitting.ts";
 import { callRawFunctionPool } from "./fixtures/raw_function_tasks.ts";
@@ -8,6 +10,57 @@ type Assert<T extends true> = T;
 type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends
   (<T>() => T extends B ? 1 : 2) ? true
   : false;
+
+const rootPath = fileURLToPath(new URL("../", import.meta.url));
+
+const formatDiagnostic = (diagnostic: ts.Diagnostic) => {
+  const message = ts.flattenDiagnosticMessageText(
+    diagnostic.messageText,
+    "\n",
+  );
+
+  if (!diagnostic.file || diagnostic.start === undefined) {
+    return `TS${diagnostic.code}: ${message}`;
+  }
+
+  const position = diagnostic.file.getLineAndCharacterOfPosition(
+    diagnostic.start,
+  );
+  return `${diagnostic.file.fileName}:${position.line + 1}:${
+    position.character + 1
+  } TS${diagnostic.code}: ${message}`;
+};
+
+const assertTypeScriptFixturePasses = (
+  fixturePath: string,
+  compilerOptions: Record<string, unknown>,
+) => {
+  const parsed = ts.parseJsonConfigFileContent(
+    {
+      compilerOptions: {
+        allowImportingTsExtensions: true,
+        lib: ["ES2023", "DOM", "WebWorker", "ES2024.SharedMemory"],
+        module: "NodeNext",
+        moduleResolution: "NodeNext",
+        noEmit: true,
+        skipLibCheck: true,
+        target: "ES2023",
+        types: ["bun-types", "node"],
+        ...compilerOptions,
+      },
+      files: [fixturePath],
+    },
+    ts.sys,
+    rootPath,
+  );
+  const program = ts.createProgram(parsed.fileNames, parsed.options);
+  const diagnostics = [
+    ...parsed.errors,
+    ...ts.getPreEmitDiagnostics(program),
+  ].map(formatDiagnostic);
+
+  assert.deepEqual(diagnostics, []);
+};
 
 const hello = task({
   f: (name: string) => `hello ${name}`,
@@ -91,4 +144,14 @@ test("createPool preserves abort-aware call signatures", async () => {
   });
 
   await pool.shutdown();
+});
+
+test("createPool accepts non-abort tasks when strictNullChecks is disabled", () => {
+  assertTypeScriptFixturePasses(
+    "test/fixtures/strict_null_checks_off.ts",
+    {
+      strict: false,
+      strictNullChecks: false,
+    },
+  );
 });

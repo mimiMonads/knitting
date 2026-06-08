@@ -113,8 +113,12 @@ export function createHostTxQueue({
         resolveReturn,
       );
 
-  const txIdle = () =>
-    getPendingFrameCount() === 0 && inUsed === getPendingPromiseCount();
+  const hasActiveTasks = () => {
+    const count = (inUsed - getPendingPromiseCount()) | 0;
+    return count > 0;
+  };
+
+  const txIdle = () => getPendingFrameCount() === 0 && !hasActiveTasks();
 
   const rejectAll = (reason: string) => {
     for (let index = 0; index < queue.length; index++) {

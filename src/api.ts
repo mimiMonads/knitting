@@ -1,8 +1,11 @@
 import { getCallerFilePath, getCallerHref } from "./common/task-source.ts";
+import { DEBUG_ENABLED, resolveDebugNamespaces } from "./debug/gate.ts";
 import { genTaskID } from "./common/task-source.ts";
 import { toModuleUrl } from "./common/module-url.ts";
 import { endpointSymbol } from "./common/task-symbol.ts";
 import { spawnWorkerContext } from "./runtime/pool.ts";
+import { ChannelHandler } from "./runtime/dispatcher.ts";
+import { RUNTIME } from "./common/runtime.ts";
 import {
   RUNTIME_IS_MAIN_THREAD,
   RUNTIME_POOL_DEPTH,
@@ -25,7 +28,6 @@ import type {
   ComposedWithKey,
   CreateContext,
   CreatePool,
-  DispatcherSettings,
   FixPoint,
   FunctionMapType,
   ImportTaskOptions,
@@ -54,6 +56,60 @@ type ToListAndIdsFn = (args: ComposedWithKey[]) => ToListAndIds;
 type CreatePoolFactory = (
   options: CreatePool,
 ) => <T extends tasks>(tasks: T) => Pool<T>;
+
+type HostDebug = {
+  log: (message: string) => void;
+};
+
+const hasDebugNamespace = (
+  namespaces: ReadonlySet<string>,
+  namespace: string,
+): boolean => namespaces.has("*") || namespaces.has(namespace);
+
+const createHostDebug = (
+  namespaces: ReadonlySet<string>,
+): HostDebug | undefined => {
+  const enabled = (namespace: string): boolean =>
+    hasDebugNamespace(namespaces, namespace);
+  if (!enabled("host")) return undefined;
+
+  const base = performance.now();
+  const tag = `host·${RUNTIME}`;
+  const log = (message: string): void => {
+    const elapsed = (performance.now() - base).toFixed(1);
+    console.error(`[${tag}·+${elapsed}ms] host: ${message}`);
+  };
+
+  return { log };
+};
+
+const readHostCwd = (): string | undefined => {
+  const denoCwd = (globalThis as typeof globalThis & {
+    Deno?: { cwd?: () => string };
+  }).Deno?.cwd;
+  if (typeof denoCwd === "function") {
+    try {
+      return denoCwd();
+    } catch {
+    }
+  }
+
+  const nodeProcess = getNodeProcess();
+  if (typeof nodeProcess?.cwd === "function") {
+    try {
+      return nodeProcess.cwd();
+    } catch {
+      return undefined;
+    }
+  }
+
+  return undefined;
+};
+
+const formatDebugList = (
+  values: readonly string[] | undefined,
+  empty = "(none)",
+): string => values && values.length > 0 ? values.join(",") : empty;
 
 const MAX_FUNCTION_ID = 0xFFFF;
 const MAX_FUNCTION_COUNT = MAX_FUNCTION_ID + 1;
@@ -200,6 +256,20 @@ const toPoolTaskEntries = <T extends tasks>(
     );
   });
 
+/**
+ * Create a typed worker pool from module-scope exported tasks/functions.
+ *
+ * Install/import as `knitting` on npm or `@vixeny/knitting` on JSR. Requires
+ * Node 22+, Deno 2+, or Bun 1+.
+ *
+ * Use `createPool(options)({ taskA })`, call `await pool.call.taskA(arg)`, and
+ * clean up with `using pool = ...` or `await pool.shutdown()`.
+ *
+ * Guard host-only pool setup with `isMain`: workers re-import task modules, and
+ * top-level imports in those modules run in every worker. Keep task modules
+ * lean and separate from server/framework setup. Each task receives one
+ * argument; use an object or tuple for multiple values.
+ */
 export const createPool: CreatePoolFactory = ({
   threads,
   debug,
@@ -207,26 +277,31 @@ export const createPool: CreatePoolFactory = ({
   balancer,
   payload,
   unsafe,
-  payloadInitialBytes,
-  payloadMaxBytes,
-  bufferMode,
-  maxPayloadBytes,
   abortSignalCapacity,
   source,
   worker,
   workerExecArgv,
   permission,
-  dispatcher,
   host,
 }: CreatePool) =>
 <T extends tasks>(tasks: T): Pool<T> => {
   const bufferReferenceReturn = unsafe?.BufferReferenceReturn;
+  const debugRequested = DEBUG_ENABLED ||
+    (debug !== undefined && debug !== false);
+  let debugNamespaces: Set<string> | undefined;
+  const getDebugNamespaces = (): Set<string> =>
+    debugNamespaces ??= resolveDebugNamespaces(debug);
+  const hostDebug = debugRequested
+    ? createHostDebug(getDebugNamespaces())
+    : undefined;
+  const debugEnabled = (namespace: string): boolean =>
+    debugRequested && hasDebugNamespace(getDebugNamespaces(), namespace);
   /**
    *  This functions is only available in the main thread.
    *  Also triggers when debug extra is enabled.
    */
   if (RUNTIME_IS_MAIN_THREAD === false) {
-    if ((debug?.extras === true)) {
+    if (debugEnabled("lifecycle")) {
       console.warn(
         "createPool has been called with : " + JSON.stringify(
           RUNTIME_WORKER_DATA,
@@ -266,6 +341,15 @@ export const createPool: CreatePoolFactory = ({
   const listOfFunctions = toPoolTaskEntries(tasks, callerHref)
     .sort((a, b) => a.name.localeCompare(b.name));
   const { list, ids, names, at } = toListAndIds(listOfFunctions);
+
+  hostDebug?.log(
+    `cwd=${readHostCwd() ?? "(unknown)"} caller=${callerHref}`,
+  );
+  listOfFunctions.forEach((fn) => {
+    hostDebug?.log(
+      `task name=${fn.name} id=${fn.id} from=${fn.importedFrom}`,
+    );
+  });
 
   if (listOfFunctions.length > MAX_FUNCTION_COUNT) {
     throw new RangeError(
@@ -346,7 +430,19 @@ export const createPool: CreatePoolFactory = ({
     combinedExecArgv.length > 0 ? combinedExecArgv : undefined,
   );
 
-  const hostDispatcher: DispatcherSettings | undefined = host ?? dispatcher;
+  hostDebug?.log(
+    `pool runtime=${RUNTIME} workers=${threads ?? 1}` +
+      ` lanes=${totalNumberOfThread} inliner=${usingInliner ? "on" : "off"}`,
+  );
+  hostDebug?.log(
+    `modules=${formatDebugList(list)}`,
+  );
+  hostDebug?.log(
+    `permission=${permissionProtocol?.mode ?? "off"} execArgv=${
+      formatDebugList(execArgv)
+    }`,
+  );
+
   const usesAbortSignal = listOfFunctions.some((fn) =>
     fn.abortSignal !== undefined
   );
@@ -354,6 +450,12 @@ export const createPool: CreatePoolFactory = ({
     worker,
     callerHref,
   );
+  if (resolvedWorker?.bootstrap !== undefined) {
+    hostDebug?.log(
+      `bootstrap href=${resolvedWorker.bootstrap.href}` +
+        ` name=${resolvedWorker.bootstrap.name}`,
+    );
+  }
   if (usingInliner && resolvedWorker?.bootstrap !== undefined) {
     throw new Error("worker.bootstrap cannot be used with the inliner");
   }
@@ -373,6 +475,27 @@ export const createPool: CreatePoolFactory = ({
     );
   }
 
+  const dispatcherEnv = nodeProcess?.env?.KNITTING_DISPATCHER;
+  const explicitDispatcher = host?.dispatcher ??
+    (
+      dispatcherEnv === "serial-channel" || dispatcherEnv === "per-thread"
+        ? dispatcherEnv
+        : undefined
+    );
+  const autoDispatcher = (() => {
+    // Experimental default for HTTP-style bursts: Bun still favors direct
+    // per-thread channels, while Node/Deno multi-worker pools favor one shared
+    // macro channel over the per-lane dispatcher checks.
+    if (RUNTIME === "bun") return "per-thread";
+    if ((threads ?? 1) <= 1) return "per-thread";
+    return "serial-channel";
+  })();
+  const dispatcher = explicitDispatcher ?? autoDispatcher;
+  const serialChannel = dispatcher === "serial-channel";
+  const serialDispatcherChannel = serialChannel
+    ? new ChannelHandler()
+    : undefined;
+
   let workers = Array.from({
     length: threads ?? 1,
   }).map((_, thread) =>
@@ -383,22 +506,72 @@ export const createPool: CreatePoolFactory = ({
       at,
       thread,
       debug,
+      hostDebug: hostDebug?.log,
       totalNumberOfThread,
       source,
       workerOptions: resolvedWorker,
       workerExecArgv: execArgv,
-      host: hostDispatcher,
+      host,
       payload,
       bufferReferenceReturn,
-      payloadInitialBytes,
-      payloadMaxBytes,
-      bufferMode,
-      maxPayloadBytes,
       abortSignalCapacity,
       usesAbortSignal,
       permission: permissionProtocol,
+      sharedChannelHandler: serialDispatcherChannel,
     })
   );
+
+  const sharedDispatcherChannel = serialDispatcherChannel;
+  if (serialChannel) {
+    const channel = serialDispatcherChannel!;
+    const checks = workers.map((context) => context.dispatcherCheck!);
+    let serialScheduled = false;
+    let serialInFlight = false;
+    let serialRerun = false;
+
+    const runSerialChecks = () => {
+      if (serialInFlight) {
+        serialRerun = true;
+        return;
+      }
+      serialInFlight = true;
+
+      do {
+        serialRerun = false;
+        serialScheduled = false;
+
+        for (let index = 0; index < checks.length; index++) {
+          const check = checks[index]!;
+          if (check.isRunning !== true) check.isRunning = true;
+          check();
+        }
+      } while (serialRerun);
+
+      serialInFlight = false;
+    };
+
+    const scheduleSerialCheck = () => {
+      if (serialInFlight) {
+        serialRerun = true;
+        return;
+      }
+      if (serialScheduled) return;
+      serialScheduled = true;
+      Promise.resolve().then(runSerialChecks);
+    };
+
+    channel.open(runSerialChecks);
+    workers.forEach((context) => {
+      const wake = context.laneWake!;
+      context.bindSend!(() => {
+        scheduleSerialCheck();
+        wake();
+      });
+    });
+    hostDebug?.log(`dispatcher=serial-channel lanes=${checks.length}`);
+  } else {
+    hostDebug?.log(`dispatcher=per-thread lanes=${workers.length}`);
+  }
 
   if (usingInliner) {
     const mainThread = createInlineExecutor({
@@ -434,7 +607,9 @@ export const createPool: CreatePoolFactory = ({
     if (closePromise) return closePromise;
     closing = true;
     closePromise = Promise.allSettled(workers.map((context) => context.kills()))
-      .then(() => undefined);
+      .then(() => {
+        sharedDispatcherChannel?.close();
+      });
     return closePromise;
   };
 
@@ -713,10 +888,15 @@ const createImportedTaskFn = <
 };
 
 /**
- * Define a worker task.
+ * Define a worker task with options.
  *
- * Input may be a direct value or a native Promise of that value.
- * Thenables/PromiseLike values are treated as plain values.
+ * Pass raw module-scope exported functions to `createPool` directly when you do
+ * not need options. Use `task({ f })` for timeouts, abort signals, or the
+ * single-task `.createPool()` shorthand.
+ *
+ * The function receives one argument; use a tuple/object for multiple values.
+ * Inputs may be direct values or native Promises, so `request.arrayBuffer()` can
+ * be forwarded without awaiting on the host.
  */
 export function task<F extends InferredTaskFunction>(
   I: InferredTaskShape<F, undefined>,
@@ -766,10 +946,11 @@ export function task<
 }
 
 /**
- * Define a task whose worker-side function is imported dynamically from `href`.
+ * Define a task whose worker-side code is imported only by workers.
  *
- * This keeps module import/evaluation inside the worker, so worker permission
- * policies apply to that import path.
+ * Use this for untrusted or security-sensitive code: the host keeps a typed
+ * wrapper and does not import/evaluate `href`. The target export must be a
+ * plain function, not a `task()` wrapper.
  */
 export function importTask<A extends TaskInput = void, B extends Args = void>(
   options: ImportTaskOptions<A, B, true>,

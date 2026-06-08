@@ -54,9 +54,11 @@ const toBytes = (source: BufferLike): Uint8Array => {
   );
 };
 
+/** View ArrayBuffer/SharedArrayBuffer/typed-array bytes as Uint8Array. */
 export const bufferToBytes = (source: BufferLike): Uint8Array =>
   toBytes(source);
 
+/** Copy bytes into a SharedArrayBuffer for zero-copy worker inputs. */
 export const bytesToBuffer = (source: BufferLike): SharedArrayBuffer => {
   const bytes = toBytes(source);
   const sab = new SharedArrayBuffer(bytes.byteLength);
@@ -80,6 +82,7 @@ const makeNumberView = (
   }
 };
 
+/** Decode UTF-8 bytes from ArrayBuffer/SharedArrayBuffer/typed-array input. */
 export const bufferToString = (source: BufferLike): string => {
   const bytes = toBytes(source);
   if (hasNodeBuffer) {
@@ -90,6 +93,7 @@ export const bufferToString = (source: BufferLike): string => {
   return textDecoder.decode(bytes);
 };
 
+/** Encode UTF-8 text into a SharedArrayBuffer. */
 export const stringToBuffer = (text: string): SharedArrayBuffer => {
   if (typeof text !== "string") {
     throw new TypeError("stringToBuffer expects a string.");
@@ -106,9 +110,11 @@ export const stringToBuffer = (text: string): SharedArrayBuffer => {
   return sab;
 };
 
+/** Decode JSON from UTF-8 bytes. */
 export const bufferToJson = <T = unknown>(source: BufferLike): T =>
   JSON.parse(bufferToString(source)) as T;
 
+/** Encode JSON into a SharedArrayBuffer. */
 export const jsonToBuffer = (value: unknown): SharedArrayBuffer => {
   const text = JSON.stringify(value);
   if (typeof text !== "string") {
@@ -119,6 +125,7 @@ export const jsonToBuffer = (value: unknown): SharedArrayBuffer => {
   return stringToBuffer(text);
 };
 
+/** Encode numbers into a SharedArrayBuffer (`f64` by default). */
 export const numbersToBuffer = (
   numbers: ArrayLike<number>,
   options?: NumberBufferOptions,
@@ -129,6 +136,7 @@ export const numbersToBuffer = (
   return sab;
 };
 
+/** Decode numeric typed-array views from worker-friendly byte buffers. */
 export function bufferToNumbers(
   source: BufferLike,
   options?: { format?: "f64" },

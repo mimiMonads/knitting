@@ -272,6 +272,12 @@ const expectRange = (
   }
 };
 
+/**
+ * Zero-copy shared bytes for process workers.
+ *
+ * Use this when the boundary is a separate process, container, or sandbox.
+ * For thread workers, `SharedArrayBuffer` or `BufferReference` can be cheaper.
+ */
 export class ProcessSharedBuffer {
   readonly [PROCESS_SHARED_BUFFER_BRAND] = true;
   readonly [EXTERNAL_PAYLOAD_BRAND] = PROCESS_SHARED_BUFFER_CODEC_ID;
