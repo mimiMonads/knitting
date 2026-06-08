@@ -79,7 +79,7 @@ const isPlainNodeWindows = runtimeGlobals.process?.platform === "win32" &&
 // runners appear to hang. The native wait already polls internally, so this is
 // just bounding each poll slice.
 const nativeWaitTimeoutMs = (parkMs?: number): number =>
-  isPlainNodeWindows ? 1 : Number.isFinite(parkMs) ? parkMs! : 60;
+  isPlainNodeWindows ? 1 : Number.isFinite(parkMs) ? parkMs! : Infinity;
 
 export const whilePausing = ({ pauseInNanoseconds }: PauseOptions) => {
   const forNanoseconds = pauseInNanoseconds ?? DEFAULT_PAUSE_TIME;
@@ -178,12 +178,12 @@ export const sleepUntilChanged = (
         opView,
         at,
         value,
-        parkMs ?? 60,
+        parkMs ?? Infinity,
       );
     } else if (a_wait && waitFallbackView) {
       // waitFallbackView is never notified — this wait only ever times out and
       // re-polls, so it must stay finite or the worker would hang forever.
-      a_wait(waitFallbackView, 0, 0, Number.isFinite(parkMs) ? parkMs! : 1);
+      a_wait(waitFallbackView, 0, 0, Number.isFinite(parkMs) ? parkMs! : Infinity);
     }
 
     a_store(rxStatus, 0, 1);

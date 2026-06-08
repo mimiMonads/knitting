@@ -11,6 +11,12 @@
 [![Deno](https://img.shields.io/badge/deno-2%2B-000000?logo=deno&logoColor=white)](https://deno.com/)
 [![Bun](https://img.shields.io/badge/bun-1%2B-f472b6?logo=bun&logoColor=white)](https://bun.sh/)
 
+Website: [knittingdocs.netlify.app](https://knittingdocs.netlify.app/)
+
+If you are an agent trying to understand the project, the website also serves an
+[`llms.txt`](https://knittingdocs.netlify.app/llms.txt) file with a compact map
+of the docs.
+
 Knitting is a worker pool built on shared-memory IPC for Node.js, Deno, and Bun.
 It lets you call work running on other threads or processes as if it were a
 normal async function.
