@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 import test from "./_runner.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
+const isBun = typeof process.versions.bun === "string";
+const packageBuildTest = isBun ? test.skip : test;
 const npmBin = process.platform === "win32" ? "npm.cmd" : "npm";
 const npmCli = join(
   dirname(process.execPath),
@@ -53,7 +55,7 @@ const visit = (dir: string, predicate: (path: string) => void): void => {
   }
 };
 
-test("npm package build ships compiled source files and compatibility entries", {
+packageBuildTest("npm package build ships compiled source files and compatibility entries", {
   concurrency: false,
   timeout: 60_000,
 }, () => {
