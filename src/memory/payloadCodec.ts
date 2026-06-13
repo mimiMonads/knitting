@@ -33,6 +33,11 @@ import {
   SHARED_ARRAY_BUFFER_NUMERIC_TRANSFER,
   SHARED_ARRAY_BUFFER_NUMERIC_WORDS,
 } from "../connections/shared-array-buffer-payload.ts";
+import {
+  isNumericArray,
+  type NumericArray,
+  numericArrayFromFloat64,
+} from "../connections/numeric-array.ts";
 
 type ExternalPayloadLike = {
   toMetadata: () => unknown;
@@ -718,6 +723,39 @@ export const encodePayload = ({
     task.value = null;
     return true;
   };
+  let numericArrayScratch = new Float64Array(0);
+  const encodeObjectNumericArray = (
+    task: Task,
+    slotIndex: number,
+    numericArray: NumericArray,
+  ) => {
+    const length = numericArray.length;
+    if (numericArrayScratch.length < length) {
+      numericArrayScratch = new Float64Array(length);
+    }
+    for (let i = 0; i < length; i++) numericArrayScratch[i] = numericArray[i]!;
+    const float64 = numericArrayScratch.subarray(0, length);
+    const bytes = float64.byteLength;
+    if (bytes <= staticMaxBytes) {
+      const written = writeStatic8Binary(float64, slotIndex);
+      if (written !== -1) {
+        task[TaskIndex.Type] = PayloadBuffer.StaticNumericArray;
+        task[TaskIndex.PayloadLen] = written;
+        task.value = null;
+        return true;
+      }
+    }
+
+    task[TaskIndex.Type] = PayloadBuffer.NumericArray;
+    if (!ensureWithinDynamicLimit(task, bytes, "NumericArray")) return false;
+    const reservedSlot = reserveDynamicObject(task, bytes);
+    const written = writeDynamic8Binary(float64, task[TaskIndex.Start]);
+    if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
+    task[TaskIndex.PayloadLen] = written;
+    setSlotLength(reservedSlot, written);
+    task.value = null;
+    return true;
+  };
   const encodeObjectArrayBuffer = (
     task: Task,
     slotIndex: number,
@@ -1315,6 +1353,14 @@ export const encodePayload = ({
             );
           }
 
+          if (arrayIsArray(objectValue) && isNumericArray(objectValue)) {
+            return encodeObjectNumericArray(
+              task,
+              slotIndex,
+              objectValue as NumericArray,
+            );
+          }
+
           if (
             arrayIsArray(objectValue) ||
             objectProto === objectPrototype ||
@@ -1841,6 +1887,21 @@ export const decodePayload = ({
           0,
           task[TaskIndex.PayloadLen],
           slotIndex,
+        );
+        return;
+      case PayloadBuffer.NumericArray: {
+        task.value = numericArrayFromFloat64(
+          readDynamic8BytesFloatView(
+            task[TaskIndex.Start],
+            task[TaskIndex.Start] + task[TaskIndex.PayloadLen],
+          ),
+        );
+        freeTaskSlot(task);
+        return;
+      }
+      case PayloadBuffer.StaticNumericArray:
+        task.value = numericArrayFromFloat64(
+          readStatic8BytesFloatCopy(0, task[TaskIndex.PayloadLen], slotIndex),
         );
         return;
       case PayloadBuffer.BigInt64Array: {

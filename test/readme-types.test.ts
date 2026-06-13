@@ -1,6 +1,6 @@
 import test from "./_runner.ts";
 import { createPool, Envelope, importTask, task } from "../knitting.ts";
-import type { ProcessSharedBuffer } from "../process-shared-buffer.ts";
+import type { ProcessSharedBuffer } from "../shared-memory.ts";
 import type { BufferReference } from "../unsafe.ts";
 
 const runtimeProcess = (globalThis as typeof globalThis & {

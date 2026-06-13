@@ -18,7 +18,7 @@ The core flow is:
 
 - `knitting.ts`: Main package entry. Re-exports `createPool`, `task`,
   `importTask`, `isMain`, `Envelope`, and `workerMainLoop`.
-- `process-shared-buffer.ts`: Secondary public export for process-shared-buffer
+- `shared-memory.ts`: Secondary public export for process-safe shared-memory
   helpers.
 - `unsafe.ts`: Public export for experimental lower-level capabilities such as
   `BufferReference`.
@@ -34,11 +34,11 @@ The core flow is:
 
 ## Build And Scripts
 
-- `build.ts`: Bundles `knitting.ts` to `out/` with Bun for a Node ESM target.
-- `tsconfig.npm.json`: TypeScript config for the npm release build. Emits
-  `.js` and `.d.ts` files beside the source tree.
-- `scripts/rewrite-declaration-imports.mjs`: Post-processes emitted `.d.ts`
-  files so declaration imports point at `.js` files for npm consumers.
+- `build.ts`: Bundles each public entry to one root `.js` file with Bun for a
+  Node ESM target.
+- `tsconfig.npm.json`: TypeScript config used by npm declaration bundling.
+- `scripts/build-declarations.mjs`: Bundles each public entry to one root
+  `.d.ts` file for npm consumers.
 - `scripts/build-native-addons.ts`: Compiles the native Node addons into
   `build/Release/` on Linux, macOS, and Windows. It finds Node headers/libs,
   splits user flags, builds the shared-memory and futex addons, and emits the
@@ -309,12 +309,9 @@ The core flow is:
 
 - `build/Release/*.node`: Native addon output produced by
   `scripts/build-native-addons.ts`.
-- `out/`: Bundled output produced by `build.ts`.
-- `dest/`: Scratch output used by the `build:node` package script.
-- `knitting.js`, `knitting.d.ts`, `process-shared-buffer.js`,
-  `process-shared-buffer.d.ts`, and `src/**/*.js` / `src/**/*.d.ts`: npm
-  release build artifacts produced by `tsconfig.npm.json`.
+- `knitting.js`, `knitting.d.ts`, `shared-memory.js`, `shared-memory.d.ts`,
+  `unsafe.js`, `unsafe.d.ts`, `utils.js`, and `utils.d.ts`: npm release build
+  artifacts produced by `build.ts` and `scripts/build-declarations.mjs`.
 - `results/`: Benchmark output produced by `run.sh`.
 - `log/`, `logs`, and `*.log`: Local runtime/log output.
 - `node_modules/`: Installed dependencies. Not part of the source map.
-

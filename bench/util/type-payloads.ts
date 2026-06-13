@@ -1,5 +1,6 @@
 import { Buffer as NodeBuffer } from "node:buffer";
 import type { Args } from "../../src/types.ts";
+import { NumericArray } from "../../src/connections/numeric-array.ts";
 
 export type BenchPayloadCase = readonly [name: string, payload: Args | Promise<Args>];
 
@@ -29,6 +30,9 @@ export const createSharedTypePayloadCases = () => {
 
   const f64 = new Float64Array(128);
   for (let i = 0; i < f64.length; i++) f64[i] = i + 0.5;
+
+  const numericArr = new NumericArray(f64.length);
+  for (let i = 0; i < f64.length; i++) numericArr[i] = f64[i]!;
 
   const bi64 = new BigInt64Array(128);
   for (let i = 0; i < bi64.length; i++) bi64[i] = BigInt(i) - 32n;
@@ -61,6 +65,7 @@ export const createSharedTypePayloadCases = () => {
     ["Buffer", bufferValue],
     ["Int32Array", i32],
     ["Float64Array", f64],
+    ["NumericArray", numericArr],
     ["string huge", stringHuge],
     ["BigInt64Array", bi64],
     ["BigUint64Array", bu64],
@@ -123,6 +128,9 @@ export const estimatePayloadBytes = (value: unknown): number => {
   }
   if (value instanceof ArrayBuffer) return value.byteLength;
   if (ArrayBuffer.isView(value)) return value.byteLength;
+  if (value instanceof NumericArray) {
+    return value.length * Float64Array.BYTES_PER_ELEMENT;
+  }
   if (value instanceof Promise) return 0;
   if (typeof value === "object") {
     try {

@@ -12,7 +12,7 @@
   },
   "include": [
     "knitting.ts",
-    "process-shared-buffer.ts",
+    "shared-memory.ts",
     "unsafe.ts",
     "utils.ts",
     "src/**/*.ts"

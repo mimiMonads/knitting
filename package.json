@@ -1,6 +1,6 @@
 {
   "name": "knitting",
-  "version": "0.1.54",
+  "version": "0.1.55",
   "description": "Shared-memory IPC runtime for Node.js, Deno, and Bun.",
   "license": "Apache-2.0",
   "repository": {
@@ -20,9 +20,9 @@
       "types": "./knitting.d.ts",
       "default": "./knitting.js"
     },
-    "./process-shared-buffer": {
-      "types": "./process-shared-buffer.d.ts",
-      "default": "./process-shared-buffer.js"
+    "./shared-memory": {
+      "types": "./shared-memory.d.ts",
+      "default": "./shared-memory.js"
     },
     "./unsafe": {
       "types": "./unsafe.d.ts",
@@ -41,24 +41,24 @@
     "prebuilds/**/*.dll",
     "scripts/build-native-addons.ts",
     "src/**/*.cc",
-    "src/**/*.d.ts",
-    "src/**/*.js",
     "knitting.d.ts",
     "knitting.js",
-    "process-shared-buffer.d.ts",
-    "process-shared-buffer.js",
+    "shared-memory.d.ts",
+    "shared-memory.js",
     "unsafe.d.ts",
     "unsafe.js",
     "utils.d.ts",
     "utils.js"
   ],
   "scripts": {
-    "build": "bun run build.ts",
-    "build:npm": "tsc -p tsconfig.npm.json && node scripts/rewrite-declaration-imports.mjs",
+    "build": "bun run build.ts && node scripts/build-declarations.mjs",
+    "build:js": "bun run build.ts",
+    "build:types": "node scripts/build-declarations.mjs",
+    "build:npm": "npm run build",
     "build:native": "bun run scripts/build-native-addons.ts",
-    "build:release": "bun run build:native && bun run build && npm run build:npm",
-    "build:node": "bun build knitting.ts --outdir dest --target node --format esm",
-    "prepack": "npm run build:npm",
+    "build:release": "bun run build:native && npm run build",
+    "build:node": "npm run build:js",
+    "prepack": "npm run build",
     "release:npm": "npm run test:all && npm publish",
     "release:npm:dry-run": "npm publish --dry-run",
     "test": "npm run test:deno",
@@ -84,6 +84,7 @@
     "@types/bun": "latest",
     "@types/deno": "latest",
     "@types/node": "latest",
+    "dts-bundle-generator": "^9.5.1",
     "mitata": "^1.0.34",
     "typescript": "^5.2.0"
   }

@@ -68,8 +68,8 @@ build/Release
 # npm release build artifacts
 /knitting.d.ts
 /knitting.js
-/process-shared-buffer.d.ts
-/process-shared-buffer.js
+/shared-memory.d.ts
+/shared-memory.js
 /unsafe.d.ts
 /unsafe.js
 /utils.d.ts

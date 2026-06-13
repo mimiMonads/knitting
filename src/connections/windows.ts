@@ -1,4 +1,4 @@
-import { fileURLToPath } from "node:url";
+import { resolveKnittingPackageAsset } from "./package-assets.ts";
 import {
   type CreateSharedMemoryOptions,
   expectFd,
@@ -153,11 +153,10 @@ const windowsArch = (): string => {
 };
 
 export const windowsSharedMemoryPrebuildPath = (): string =>
-  fileURLToPath(
-    new URL(
-      `../../prebuilds/win32-${windowsArch()}/knitting_windows_shared_memory.dll`,
-      import.meta.url,
-    ),
+  resolveKnittingPackageAsset(
+    "prebuilds",
+    `win32-${windowsArch()}`,
+    "knitting_windows_shared_memory.dll",
   );
 
 export const makeWindowsAnonymousSharedMemoryName = (

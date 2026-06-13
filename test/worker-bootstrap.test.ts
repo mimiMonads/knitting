@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "./_runner.ts";
 import { createPool } from "../knitting.ts";
-import { ProcessSharedBuffer } from "../process-shared-buffer.ts";
+import { ProcessSharedBuffer } from "../shared-memory.ts";
 import { readBootstrapState } from "./fixtures/bootstrap_tasks.ts";
 
 const withTimeout = async <T>(

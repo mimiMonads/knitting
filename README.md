@@ -667,7 +667,7 @@ copying the whole payload for every call.
 import {
   getDefaultProcessSharedBufferPrimitives,
   ProcessSharedBuffer,
-} from "knitting/process-shared-buffer";
+} from "knitting/shared-memory";
 import { createPool, isMain, task } from "knitting";
 
 export const readFirstCell = task<ProcessSharedBuffer, number>({
@@ -712,7 +712,7 @@ name; the other opens that same name.
 import {
   getDefaultProcessSharedBufferPrimitives,
   ProcessSharedBuffer,
-} from "knitting/process-shared-buffer";
+} from "knitting/shared-memory";
 
 const name = "knitting-demo-channel";
 const primitives = getDefaultProcessSharedBufferPrimitives();
@@ -761,7 +761,7 @@ import { createPool, isMain, task } from "knitting";
 import {
   getDefaultProcessSharedBufferPrimitives,
   ProcessSharedBuffer,
-} from "knitting/process-shared-buffer";
+} from "knitting/shared-memory";
 
 export const readCounter = task<ProcessSharedBuffer, number>({
   f: (shared) => Atomics.load(shared.view(Int32Array), 0),

@@ -41,6 +41,8 @@ done
 if [[ "$OUT_EXT" == "json" ]]; then
   RESULTS_JSON_DIR="$RESULTS_DIR/json"
   mkdir -p "$RESULTS_JSON_DIR"/{node,deno,bun}
+else
+  mkdir -p "$RESULTS_DIR"
 fi
 
 # Find only files directly inside BENCH_DIR (ignore nested)

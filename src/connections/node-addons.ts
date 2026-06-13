@@ -1,3 +1,5 @@
+import { resolveKnittingPackageAsset } from "./package-assets.ts";
+
 type NodeRequire = (specifier: string) => unknown;
 
 export type NodeNativeAddonName =
@@ -36,19 +38,31 @@ export const nodeNativeAddonSpecifiers = (
   name: NodeNativeAddonName,
 ): readonly string[] => {
   const platformInfo = readNodePlatformInfo();
-  const fallback = `../../build/Release/${name}.node`;
+  const fallback = resolveKnittingPackageAsset(
+    "build",
+    "Release",
+    `${name}.node`,
+  );
   if (platformInfo === undefined) return [fallback];
 
   const nodeModuleAbi = platformInfo.modules;
   if (typeof nodeModuleAbi === "string" && nodeModuleAbi.length > 0) {
     return [
-      `../../prebuilds/${platformInfo.platform}-${platformInfo.arch}-node-${nodeModuleAbi}/${name}.node`,
+      resolveKnittingPackageAsset(
+        "prebuilds",
+        `${platformInfo.platform}-${platformInfo.arch}-node-${nodeModuleAbi}`,
+        `${name}.node`,
+      ),
       fallback,
     ];
   }
 
   return [
-    `../../prebuilds/${platformInfo.platform}-${platformInfo.arch}/${name}.node`,
+    resolveKnittingPackageAsset(
+      "prebuilds",
+      `${platformInfo.platform}-${platformInfo.arch}`,
+      `${name}.node`,
+    ),
     fallback,
   ];
 };

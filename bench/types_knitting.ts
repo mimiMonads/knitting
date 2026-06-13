@@ -1,6 +1,6 @@
 import { bench, group, run as mitataRun } from "mitata";
 import { createPool, isMain, task } from "../knitting.ts";
-import { ProcessSharedBuffer } from "../process-shared-buffer.ts";
+import { ProcessSharedBuffer } from "../shared-memory.ts";
 import { TaskIndex } from "../src/memory/lock.ts";
 import type { Args } from "../src/types.ts";
 import { format, print } from "./util/json-parse.ts";
