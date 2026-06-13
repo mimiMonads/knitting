@@ -122,7 +122,8 @@ jobs:
           ref: ${{ github.sha }}
       - uses: denoland/setup-deno@v1
         with:
-          deno-version: "2.x"
+          # Pin until Deno 2.8.3's macOS FFI shm_open reopen regression is resolved.
+          deno-version: "2.8.2"
       - uses: actions/download-artifact@v4
         with:
           pattern: native-*
