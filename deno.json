@@ -1,9 +1,10 @@
 {
   "name": "@vixeny/knitting",
-  "version": "0.1.55",
+  "version": "0.1.56",
   "nodeModulesDir": "auto",
   "exports": {
     ".": "./knitting.ts",
+    "./process-shared-buffer": "./process-shared-buffer.ts",
     "./shared-memory": "./shared-memory.ts",
     "./unsafe": "./unsafe.ts",
     "./utils": "./utils.ts"
@@ -17,6 +18,7 @@
       "prebuilds/**/*.dll",
       "src/**/*.ts",
       "./knitting.ts",
+      "./process-shared-buffer.ts",
       "./shared-memory.ts",
       "./unsafe.ts",
       "./utils.ts"

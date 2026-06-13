@@ -20,6 +20,8 @@ The core flow is:
   `importTask`, `isMain`, `Envelope`, and `workerMainLoop`.
 - `shared-memory.ts`: Secondary public export for process-safe shared-memory
   helpers.
+- `process-shared-buffer.ts`: Backward-compatible alias for the shared-memory
+  public export.
 - `unsafe.ts`: Public export for experimental lower-level capabilities such as
   `BufferReference`.
 - `utils.ts`: Public export for request/response buffer conversion helpers.
@@ -34,11 +36,11 @@ The core flow is:
 
 ## Build And Scripts
 
-- `build.ts`: Bundles each public entry to one root `.js` file with Bun for a
-  Node ESM target.
-- `tsconfig.npm.json`: TypeScript config used by npm declaration bundling.
-- `scripts/build-declarations.mjs`: Bundles each public entry to one root
-  `.d.ts` file for npm consumers.
+- `build.ts`: Cleans generated npm artifacts, then compiles public entries and
+  `src/**/*.ts` to `.js` and `.d.ts` files with TypeScript.
+- `tsconfig.npm.json`: TypeScript config used by the npm release build.
+- `scripts/rewrite-declaration-imports.mjs`: Rewrites generated declaration
+  imports from `.ts` to `.js` so npm consumers resolve the compiled files.
 - `scripts/build-native-addons.ts`: Compiles the native Node addons into
   `build/Release/` on Linux, macOS, and Windows. It finds Node headers/libs,
   splits user flags, builds the shared-memory and futex addons, and emits the
@@ -309,9 +311,11 @@ The core flow is:
 
 - `build/Release/*.node`: Native addon output produced by
   `scripts/build-native-addons.ts`.
-- `knitting.js`, `knitting.d.ts`, `shared-memory.js`, `shared-memory.d.ts`,
-  `unsafe.js`, `unsafe.d.ts`, `utils.js`, and `utils.d.ts`: npm release build
-  artifacts produced by `build.ts` and `scripts/build-declarations.mjs`.
+- `knitting.js`, `knitting.d.ts`, `process-shared-buffer.js`,
+  `process-shared-buffer.d.ts`, `shared-memory.js`, `shared-memory.d.ts`,
+  `unsafe.js`, `unsafe.d.ts`, `utils.js`, `utils.d.ts`, and generated
+  `src/**/*.js`/`src/**/*.d.ts`: npm release build artifacts produced by
+  `build.ts` and `scripts/rewrite-declaration-imports.mjs`.
 - `results/`: Benchmark output produced by `run.sh`.
 - `log/`, `logs`, and `*.log`: Local runtime/log output.
 - `node_modules/`: Installed dependencies. Not part of the source map.
