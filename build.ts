@@ -1,38 +1,43 @@
-import { rmSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { readdirSync, rmSync, statSync } from "node:fs";
+import { join } from "node:path";
 
-declare const Bun: {
-  build: (options: {
-    entrypoints: string[];
-    outdir: string;
-    format: "esm";
-    target: "node";
-    external?: string[];
-  }) => Promise<{ success: boolean; logs: unknown[] }>;
-};
-
-const entrypoints = [
-  "./knitting.ts",
-  "./shared-memory.ts",
-  "./unsafe.ts",
-  "./utils.ts",
+const generatedRootOutputs = [
+  "knitting.d.ts",
+  "knitting.js",
+  "process-shared-buffer.d.ts",
+  "process-shared-buffer.js",
+  "shared-memory.d.ts",
+  "shared-memory.js",
+  "unsafe.d.ts",
+  "unsafe.js",
+  "utils.d.ts",
+  "utils.js",
 ];
 
-for (const staleOutput of [
-  "./process-shared-buffer.d.ts",
-  "./process-shared-buffer.js",
-]) {
-  rmSync(staleOutput, { force: true });
-}
+const removeGeneratedSourceOutputs = (dir: string): void => {
+  for (const entry of readdirSync(dir)) {
+    const path = join(dir, entry);
+    const stats = statSync(path);
+    if (stats.isDirectory()) {
+      removeGeneratedSourceOutputs(path);
+      continue;
+    }
+    if (path.endsWith(".js") || path.endsWith(".d.ts")) {
+      rmSync(path, { force: true });
+    }
+  }
+};
 
-const result = await Bun.build({
-  entrypoints,
-  outdir: ".",
-  format: "esm",
-  target: "node",
-  external: ["node:*"],
+for (const output of generatedRootOutputs) {
+  rmSync(output, { force: true });
+}
+removeGeneratedSourceOutputs("src");
+
+const tsc = join("node_modules", "typescript", "bin", "tsc");
+const result = spawnSync("node", [tsc, "-p", "tsconfig.npm.json"], {
+  stdio: "inherit",
 });
 
-if (!result.success) {
-  for (const log of result.logs) console.error(log);
-  process.exit(1);
-}
+if (result.error !== undefined) throw result.error;
+if (result.status !== 0) process.exit(result.status ?? 1);
