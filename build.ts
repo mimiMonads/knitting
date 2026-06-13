@@ -34,12 +34,9 @@ for (const output of generatedRootOutputs) {
 }
 removeGeneratedSourceOutputs("src");
 
-const tsc = process.platform === "win32"
-  ? "node_modules/.bin/tsc.cmd"
-  : "node_modules/.bin/tsc";
-const result = spawnSync(tsc, ["-p", "tsconfig.npm.json"], {
+const tsc = join("node_modules", "typescript", "bin", "tsc");
+const result = spawnSync("node", [tsc, "-p", "tsconfig.npm.json"], {
   stdio: "inherit",
-  shell: process.platform === "win32",
 });
 
 if (result.error !== undefined) throw result.error;
