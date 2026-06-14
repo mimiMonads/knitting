@@ -1,3 +1,6 @@
+// Side-effect import: registers the payload codec (cycle break for Andromeda;
+// see lock.ts), ensuring registration before any lock2() call.
+import "../memory/payloadCodec.ts";
 import {
   type Lock2,
   makeTask,

@@ -1,4 +1,3 @@
-import { fileURLToPath as fileURLToPathCompat } from "node:url";
 import {
   HEADER_SLOT_STRIDE_U32,
   LOCK_SECTOR_BYTE_LENGTH,
@@ -48,6 +47,18 @@ import type {
   SharedMemoryBuffer,
   SharedMemoryMapping,
 } from "../connections/types.ts";
+
+// `node:url` resolved lazily so this module evaluates on runtimes without it
+// (e.g. Andromeda); process workers aren't used there, so it never runs.
+const fileURLToPathCompat = (value: string): string => {
+  const url = getNodeBuiltinModule<{ fileURLToPath: (u: string) => string }>(
+    "node:url",
+  );
+  if (url === undefined) {
+    throw new Error("node:url is not available in this runtime");
+  }
+  return url.fileURLToPath(value);
+};
 
 export type SpawnedWorker = {
   terminate: () => unknown;

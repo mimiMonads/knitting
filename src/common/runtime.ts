@@ -1,10 +1,12 @@
 import { getNodeProcess } from "./node-compat.ts";
 
-type RuntimeName = "deno" | "bun" | "node" | "unknown";
+type RuntimeName = "deno" | "bun" | "node" | "andromeda" | "unknown";
 
 type GlobalWithRuntimes = typeof globalThis & {
   Deno?: { version?: { deno?: string } };
   Bun?: { version?: string };
+  __andromeda__?: unknown;
+  WebAssembly?: typeof WebAssembly;
   setImmediate?: (cb: () => void) => void;
 };
 
@@ -15,10 +17,25 @@ export const IS_DENO = typeof globals.Deno?.version?.deno === "string";
 export const IS_BUN = typeof globals.Bun?.version === "string";
 export const IS_NODE =
   typeof nodeProcess?.versions?.node === "string";
+// Andromeda (Nova engine): no `node:` builtins or `WebAssembly`; detect via
+// its private bootstrap global.
+export const IS_ANDROMEDA = typeof globals.__andromeda__ !== "undefined";
 
 export const RUNTIME = (
-  IS_DENO ? "deno" : IS_BUN ? "bun" : IS_NODE ? "node" : "unknown"
+  IS_DENO
+    ? "deno"
+    : IS_BUN
+    ? "bun"
+    : IS_NODE
+    ? "node"
+    : IS_ANDROMEDA
+    ? "andromeda"
+    : "unknown"
 ) as RuntimeName;
+
+// `WebAssembly` may be undeclared (not just undefined) on Andromeda, where a
+// bare reference throws; capture it through `globalThis` so access is safe.
+const WebAssemblyRef = globals.WebAssembly;
 
 export const SET_IMMEDIATE =
   typeof globals.setImmediate === "function" ? globals.setImmediate : undefined;
@@ -35,9 +52,9 @@ const wasmSharedBufferMemory = new WeakMap<SharedArrayBuffer, WebAssembly.Memory
 const wasmSharedBufferMaxByteLength = new WeakMap<SharedArrayBuffer, number>();
 
 const hasSharedWasmMemory = (() => {
-  if (typeof WebAssembly?.Memory !== "function") return false;
+  if (typeof WebAssemblyRef?.Memory !== "function") return false;
   try {
-    void new WebAssembly.Memory({ initial: 0, maximum: 1, shared: true });
+    void new WebAssemblyRef.Memory({ initial: 0, maximum: 1, shared: true });
     return true;
   } catch {
     return false;
@@ -53,7 +70,7 @@ const createSharedWasmBuffer = (
   byteLength: number,
   maxByteLength: number,
 ) => {
-  const memory = new WebAssembly.Memory({
+  const memory = new WebAssemblyRef!.Memory({
     initial: roundupWasmPages(byteLength),
     maximum: Math.max(roundupWasmPages(byteLength), roundupWasmPages(maxByteLength)),
     shared: true,

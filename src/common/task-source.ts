@@ -86,7 +86,24 @@ const isInternalFrame = (frame: StackFrameInfo): boolean =>
   isInternalCallerFrame(frame.file) ||
   isInternalCallerFunction(frame.functionName, frame.methodName);
 
+// Module-URL override for runtimes without stack traces (e.g. Andromeda, where
+// `new Error().stack` is undefined). When set, caller discovery skips stack
+// inspection and attributes every task here. Set via
+// `setModuleUrl(import.meta.url)`, which runs in both host and worker copies so
+// both agree on the path.
+let moduleUrlOverride: string | undefined;
+
+export const setModuleUrl = (url: string | undefined): void => {
+  moduleUrlOverride = typeof url === "string" && url.length > 0
+    ? toModuleUrl(url)
+    : undefined;
+};
+
+export const getModuleUrlOverride = (): string | undefined => moduleUrlOverride;
+
 const resolveCallerHref = (offset: number): string => {
+  if (moduleUrlOverride !== undefined) return moduleUrlOverride;
+
   const frames = collectStackFrames();
   const direct = frames[offset];
   const caller = (
@@ -98,7 +115,11 @@ const resolveCallerHref = (offset: number): string => {
     frames.find((frame) => !isRuntimeInternalFrame(frame.file))?.file;
 
   if (!caller) {
-    throw new Error("Unable to determine caller file.");
+    throw new Error(
+      "Unable to determine caller file. This runtime exposes no stack traces " +
+        "(e.g. Andromeda); call setModuleUrl(import.meta.url) at the top of " +
+        "the module that defines your tasks before creating a pool.",
+    );
   }
 
   return toModuleUrl(caller);

@@ -1,33 +1,70 @@
-import { existsSync, statSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { getNodeBuiltinModule } from "../common/node-compat.ts";
 
-const safeExists = (path: string): boolean => {
+// `node:` builtins resolved lazily so this module evaluates on runtimes without
+// them (Andromeda); these helpers only run on FFI/native asset paths.
+type FsModule = {
+  existsSync: (path: string) => boolean;
+  statSync: (path: string) => { isDirectory: () => boolean };
+};
+type PathModule = {
+  dirname: (path: string) => string;
+  join: (...segments: string[]) => string;
+};
+type UrlModule = { fileURLToPath: (url: string) => string };
+
+let fsModule: FsModule | undefined;
+let pathModule: PathModule | undefined;
+let urlModule: UrlModule | undefined;
+
+const requireNode = <T>(value: T | undefined, specifier: string): T => {
+  if (value === undefined) {
+    throw new Error(`${specifier} is not available in this runtime`);
+  }
+  return value;
+};
+
+const fs = (): FsModule =>
+  requireNode(
+    fsModule ??= getNodeBuiltinModule<FsModule>("node:fs"),
+    "node:fs",
+  );
+const path = (): PathModule =>
+  requireNode(
+    pathModule ??= getNodeBuiltinModule<PathModule>("node:path"),
+    "node:path",
+  );
+const url = (): UrlModule =>
+  requireNode(
+    urlModule ??= getNodeBuiltinModule<UrlModule>("node:url"),
+    "node:url",
+  );
+
+const safeExists = (target: string): boolean => {
   try {
-    return existsSync(path);
+    return fs().existsSync(target);
   } catch {
     return false;
   }
 };
 
-const safeIsDirectory = (path: string): boolean => {
+const safeIsDirectory = (target: string): boolean => {
   try {
-    return statSync(path).isDirectory();
+    return fs().statSync(target).isDirectory();
   } catch {
     return false;
   }
 };
 
 const moduleDirectory = (moduleUrl: string): string => {
-  const path = fileURLToPath(moduleUrl);
-  return safeIsDirectory(path) ? path : dirname(path);
+  const target = url().fileURLToPath(moduleUrl);
+  return safeIsDirectory(target) ? target : path().dirname(target);
 };
 
 const isKnittingPackageRoot = (dir: string): boolean =>
-  safeExists(join(dir, "package.json")) &&
-  (safeExists(join(dir, "prebuilds")) ||
-    safeExists(join(dir, "src")) ||
-    safeExists(join(dir, "build")));
+  safeExists(path().join(dir, "package.json")) &&
+  (safeExists(path().join(dir, "prebuilds")) ||
+    safeExists(path().join(dir, "src")) ||
+    safeExists(path().join(dir, "build")));
 
 let cachedPackageRoot: string | undefined;
 
@@ -43,7 +80,7 @@ export const findKnittingPackageRoot = (
       return current;
     }
 
-    const parent = dirname(current);
+    const parent = path().dirname(current);
     if (parent === current) {
       throw new Error(
         `Could not locate knitting package root from ${moduleUrl}`,
@@ -55,4 +92,4 @@ export const findKnittingPackageRoot = (
 
 export const resolveKnittingPackageAsset = (
   ...segments: string[]
-): string => join(findKnittingPackageRoot(), ...segments);
+): string => path().join(findKnittingPackageRoot(), ...segments);

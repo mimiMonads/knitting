@@ -1,4 +1,8 @@
-import { getCallerFilePath, getCallerHref } from "./common/task-source.ts";
+import {
+  getCallerFilePath,
+  getCallerHref,
+  setModuleUrl,
+} from "./common/task-source.ts";
 import { DEBUG_ENABLED, resolveDebugNamespaces } from "./debug/gate.ts";
 import { genTaskID } from "./common/task-source.ts";
 import { toModuleUrl } from "./common/module-url.ts";
@@ -151,6 +155,21 @@ type InferredTaskShape<
 
 export const isMain: boolean = RUNTIME_IS_MAIN_THREAD;
 export { endpointSymbol as endpointSymbol };
+/**
+ * Declare the task module's URL for runtimes without stack traces (e.g.
+ * Andromeda) that can't auto-discover the caller. Call once at module top
+ * level, before defining tasks:
+ *
+ * ```ts
+ * import { setModuleUrl, task } from "knitting";
+ * setModuleUrl(import.meta.url);
+ * export const add = task({ f: ([a, b]: [number, number]) => a + b });
+ * ```
+ *
+ * Runs in both host and worker (same module re-imported), so both agree on the
+ * path. No-op-safe on Node/Deno/Bun, where stack discovery already works.
+ */
+export { setModuleUrl as setModuleUrl };
 
 /**
  * Reconstructs stable task order from top-level exports before names are bound.

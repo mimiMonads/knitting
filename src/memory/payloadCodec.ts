@@ -8,8 +8,10 @@ import {
   HEADER_STATIC_PAYLOAD_U32,
   LockBound,
   PayloadBuffer,
+  payloadBufferName,
   PayloadSignal,
   type PromisePayloadHandler,
+  registerLockPayloadCodec,
   type Task,
   TaskIndex,
 } from "./lock.ts";
@@ -635,7 +637,7 @@ export const encodePayload = ({
     }
 
     task[TaskIndex.Type] = dynamicType;
-    if (!ensureWithinDynamicLimit(task, bytes, PayloadBuffer[dynamicType])) {
+    if (!ensureWithinDynamicLimit(task, bytes, payloadBufferName(dynamicType))) {
       return false;
     }
     const reservedSlot = reserveDynamicObject(task, bytes);
@@ -2089,3 +2091,7 @@ export const decodePayload = ({
     }
   };
 };
+
+// Break the lock.ts <-> payloadCodec.ts cycle (see lock.ts): register the codec
+// factories on load instead of having lock.ts import them.
+registerLockPayloadCodec(encodePayload, decodePayload);

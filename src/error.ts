@@ -8,12 +8,15 @@ import {
 } from "./memory/lock.ts";
 import { RUNTIME_IS_MAIN_THREAD } from "./common/worker-runtime.ts";
 
-export enum ErrorKnitting {
-  Function = 0,
-  Symbol = 1,
-  Json = 2,
-  Serializable = 3,
-}
+// const object, not `enum`: Andromeda's Nova engine can't parse `enum`. Same
+// value access and emit on Node/Deno/Bun.
+export const ErrorKnitting = {
+  Function: 0,
+  Symbol: 1,
+  Json: 2,
+  Serializable: 3,
+} as const;
+export type ErrorKnitting = typeof ErrorKnitting[keyof typeof ErrorKnitting];
 
 const reasonFrom = (
   task: Task,

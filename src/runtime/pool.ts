@@ -34,6 +34,9 @@ import {
   LockBound,
   type Task,
 } from "../memory/lock.ts";
+// Side-effect import: registers the payload codec (cycle break for Andromeda;
+// see lock.ts). Must run before any lock2() call.
+import "../memory/payloadCodec.ts";
 import type {
   DebugOptions,
   DispatcherSettings,

@@ -16,15 +16,19 @@ interface Deferred {
   reject: (v?: unknown) => void;
 }
 
-const enum SlotStateMacro {
-  Free = -1,
-  Pending = 0,
-}
+// const objects, not `enum`s: Andromeda's Nova engine can't parse `enum`. Same
+// values and emit on Node/Deno/Bun.
+const SlotStateMacro = {
+  Free: -1,
+  Pending: 0,
+} as const;
+type SlotStateMacro = typeof SlotStateMacro[keyof typeof SlotStateMacro];
 
-const enum TimeoutKind {
-  Reject = 0,
-  Resolve = 1,
-}
+const TimeoutKind = {
+  Reject: 0,
+  Resolve: 1,
+} as const;
+type TimeoutKind = typeof TimeoutKind[keyof typeof TimeoutKind];
 
 type TimeoutSpec = {
   ms: number;

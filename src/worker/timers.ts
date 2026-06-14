@@ -9,9 +9,10 @@ export type NativeWaitU32 = (
   timeoutMs?: number,
 ) => unknown;
 
-enum Comment {
-  thisIsAHint = 0,
-}
+// const object, not `enum`: Andromeda's Nova engine can't parse `enum`.
+const Comment = {
+  thisIsAHint: 0,
+} as const;
 
 const maybeGc = (() => {
   type GcHost = {

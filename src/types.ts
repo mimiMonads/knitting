@@ -585,11 +585,15 @@ export type {
   WorkerSettings as WorkerSettings,
   WorkerTimers as WorkerTimers,
 };
-export type { Task as Task } from "./memory/lock.ts";
+// A value re-export and a type-only re-export from the *same* module in one file
+// makes Andromeda's Nova engine panic. Re-export values below, and surface the
+// `Task` type via an `import type` alias instead.
+import type { Task as TaskType } from "./memory/lock.ts";
 export {
   LockBound as LockBound,
   PayloadBuffer as PayloadBuffer,
   PayloadSignal as PayloadSignal,
   TaskIndex as TaskIndex,
 } from "./memory/lock.ts";
+export type Task = TaskType;
 export type { RegisterMalloc as RegisterMalloc } from "./memory/regionRegistry.ts";

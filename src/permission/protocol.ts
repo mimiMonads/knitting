@@ -1,16 +1,44 @@
-import {
-  existsSync as existsSyncCompat,
-  realpathSync as realpathSyncCompat,
-} from "node:fs";
-import {
-  isAbsolute as pathIsAbsolute,
-  relative as pathRelative,
-  resolve as pathResolve,
-} from "node:path";
-import { fileURLToPath as fileURLToPathCompat } from "node:url";
 import { RUNTIME } from "../common/runtime.ts";
 import { toCanonicalPath as toSharedCanonicalPath } from "../common/path-canonical.ts";
-import { getNodeProcess } from "../common/node-compat.ts";
+import { getNodeBuiltinModule, getNodeProcess } from "../common/node-compat.ts";
+
+// `node:fs`/`node:path`/`node:url` resolved lazily so this module evaluates on
+// runtimes without them (e.g. Andromeda); the wrappers only run when a
+// permission policy resolves filesystem paths.
+type RealpathSync = ((candidate: string) => string) & {
+  native?: (candidate: string) => string;
+};
+type FsModule = {
+  existsSync: (path: string) => boolean;
+  realpathSync: RealpathSync;
+};
+type PathModule = {
+  isAbsolute: (path: string) => boolean;
+  relative: (from: string, to: string) => string;
+  resolve: (...segments: string[]) => string;
+};
+type UrlModule = { fileURLToPath: (url: string | URL) => string };
+
+const requireNodeModule = <T>(specifier: string): T => {
+  const module = getNodeBuiltinModule<T>(specifier);
+  if (module === undefined) {
+    throw new Error(`${specifier} is not available in this runtime`);
+  }
+  return module;
+};
+
+const nodeFs = (): FsModule => requireNodeModule<FsModule>("node:fs");
+const nodePath = (): PathModule => requireNodeModule<PathModule>("node:path");
+const nodeUrl = (): UrlModule => requireNodeModule<UrlModule>("node:url");
+
+const existsSyncCompat = (path: string): boolean => nodeFs().existsSync(path);
+const pathIsAbsolute = (path: string): boolean => nodePath().isAbsolute(path);
+const pathRelative = (from: string, to: string): string =>
+  nodePath().relative(from, to);
+const pathResolve = (...segments: string[]): string =>
+  nodePath().resolve(...segments);
+const fileURLToPathCompat = (url: string | URL): string =>
+  nodeUrl().fileURLToPath(url);
 
 type PermissionPath = string | URL;
 
@@ -436,7 +464,10 @@ const toEnvFiles = (
   return toUniquePathList(values, cwd, home);
 };
 
-const rawRealpathSync = realpathSyncCompat.native ?? realpathSyncCompat;
+const rawRealpathSync = (candidate: string): string => {
+  const { realpathSync } = nodeFs();
+  return (realpathSync.native ?? realpathSync)(candidate);
+};
 
 const toCanonicalPath = (candidate: string): string => {
   return toSharedCanonicalPath(candidate, {

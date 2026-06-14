@@ -11,10 +11,13 @@ import { isLockBufferTextCompat } from "../common/shared-buffer-text.ts";
 import { createWorkerRxQueue } from "./rx-queue.ts";
 import { createSharedMemoryTransport } from "../ipc/transport/shared-memory.ts";
 import { lock2 } from "../memory/lock.ts";
+// Side-effect import: registers the payload codec (cycle break for Andromeda;
+// see lock.ts). Must run before any lock2() call.
+import "../memory/payloadCodec.ts";
 import type { LockBuffers, WorkerData } from "../types.ts";
 import { getFunctions } from "./task-loader.ts";
 import { pauseGeneric, sleepUntilChanged, whilePausing } from "./timers.ts";
-import { RUNTIME, SET_IMMEDIATE } from "../common/runtime.ts";
+import { IS_ANDROMEDA, RUNTIME, SET_IMMEDIATE } from "../common/runtime.ts";
 import { getNodeProcess } from "../common/node-compat.ts";
 import {
   assertWorkerImportsResolved,
@@ -141,9 +144,10 @@ export const workerMainLoop = async (
     )
     : undefined;
 
-  enum Comment {
-    thisIsAHint = 0,
-  }
+  // const object, not `enum`: Andromeda's Nova engine can't parse `enum`.
+  const Comment = {
+    thisIsAHint: 0,
+  } as const;
   const signals = createSharedMemoryTransport({
     sabObject: {
       sharedSab: sab,
@@ -393,13 +397,26 @@ export const workerMainLoop = async (
 const isWorkerGlobalScope = (): boolean => {
   const scopeCtor =
     (globalThis as { WorkerGlobalScope?: unknown }).WorkerGlobalScope;
-  if (typeof scopeCtor !== "function") return false;
-  try {
-    return globalThis instanceof
-      (scopeCtor as new (...args: unknown[]) => object);
-  } catch {
-    return false;
+  if (typeof scopeCtor === "function") {
+    try {
+      if (
+        globalThis instanceof (scopeCtor as new (...args: unknown[]) => object)
+      ) {
+        return true;
+      }
+    } catch {
+      // fall through to runtime-specific checks
+    }
   }
+  // Andromeda has no `WorkerGlobalScope`; its worker scope carries a `self`
+  // global that the main thread lacks.
+  if (
+    IS_ANDROMEDA &&
+    typeof (globalThis as { self?: unknown }).self !== "undefined"
+  ) {
+    return true;
+  }
+  return false;
 };
 
 const isLockBuffers = (value: unknown): value is LockBuffers => {

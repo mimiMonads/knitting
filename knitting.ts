@@ -1,6 +1,12 @@
 // Exportables
 import { workerMainLoop } from "./src/worker/loop.ts";
-import { createPool, importTask, isMain, task } from "./src/api.ts";
+import {
+  createPool,
+  importTask,
+  isMain,
+  setModuleUrl,
+  task,
+} from "./src/api.ts";
 import { Envelope } from "./src/common/envelope.ts";
 import { isNumericArray, NumericArray } from "./src/connections/numeric-array.ts";
 export {
@@ -10,6 +16,7 @@ export {
   isMain as isMain,
   isNumericArray as isNumericArray,
   NumericArray as NumericArray,
+  setModuleUrl as setModuleUrl,
   task as task,
   workerMainLoop as workerMainLoop,
 };

@@ -1,6 +1,6 @@
 import type { ComposedWithKey, TaskTimeout } from "../types.ts";
 import { endpointSymbol } from "../common/task-symbol.ts";
-import { toModuleUrl } from "../common/module-url.ts";
+import { toImportSpecifier, toModuleUrl } from "../common/module-url.ts";
 import type { ResolvedPermissionProtocol } from "../permission/protocol.ts";
 
 type GetFunctionParams = {
@@ -14,10 +14,13 @@ type GetFunctionParams = {
 
 type WorkerCallable = (args: unknown, abortToolkit?: unknown) => unknown;
 
-export const enum TimeoutKind {
-  Reject = 0,
-  Resolve = 1,
-}
+// const object, not `const enum`: Andromeda's Nova engine can't parse `enum`.
+// No longer inlined, but only read on cold paths.
+export const TimeoutKind = {
+  Reject: 0,
+  Resolve: 1,
+} as const;
+export type TimeoutKind = typeof TimeoutKind[keyof typeof TimeoutKind];
 
 export type TimeoutSpec = {
   ms: number;
@@ -67,7 +70,9 @@ export const getFunctions = async (
 
   const results = await Promise.all(
     modules.map(async (imports) => {
-      const module = (await import(imports)) as Record<string, unknown>;
+      const module = (await import(
+        toImportSpecifier(imports)
+      )) as Record<string, unknown>;
       const fixedTasks = Object.entries(module)
         .filter(
           ([_, value]) =>

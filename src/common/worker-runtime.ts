@@ -1,4 +1,5 @@
 import { getNodeBuiltinModule, getNodeProcess } from "./node-compat.ts";
+import { IS_ANDROMEDA } from "./runtime.ts";
 
 type RuntimePortMessageHandler = (message: unknown) => void;
 
@@ -72,13 +73,26 @@ const workerThreads = getNodeBuiltinModule<WorkerThreadsModuleLike>(
 const isWorkerGlobalScope = (): boolean => {
   const scopeCtor =
     (globalThis as { WorkerGlobalScope?: unknown }).WorkerGlobalScope;
-  if (typeof scopeCtor !== "function") return false;
-  try {
-    return globalThis instanceof
-      (scopeCtor as new (...args: unknown[]) => object);
-  } catch {
-    return false;
+  if (typeof scopeCtor === "function") {
+    try {
+      if (
+        globalThis instanceof (scopeCtor as new (...args: unknown[]) => object)
+      ) {
+        return true;
+      }
+    } catch {
+      // fall through to runtime-specific checks
+    }
   }
+  // Andromeda has no `WorkerGlobalScope`; its worker scope is distinguished by a
+  // `self` global that the main thread lacks.
+  if (
+    IS_ANDROMEDA &&
+    typeof (globalThis as { self?: unknown }).self !== "undefined"
+  ) {
+    return true;
+  }
+  return false;
 };
 
 type WorkerConstructorLike = new (
