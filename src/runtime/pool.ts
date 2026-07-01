@@ -274,6 +274,7 @@ export const spawnWorkerContext = ({
     payloadSector: lockBuffers.payloadSector,
     payloadConfig: resolvedPayloadConfig,
     textCompat: lockBuffers.textCompat,
+    processBoundary: useProcessWorkerRuntime,
   });
   const returnLock = lock2({
     headers: returnLockBuffers.headers,
@@ -283,6 +284,7 @@ export const spawnWorkerContext = ({
     payloadSector: returnLockBuffers.payloadSector,
     payloadConfig: resolvedPayloadConfig,
     textCompat: returnLockBuffers.textCompat,
+    processBoundary: useProcessWorkerRuntime,
   });
   const abortSignalSAB = usesAbortSignal === true
     ? controlLayout.abortSignals

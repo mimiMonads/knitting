@@ -1,5 +1,12 @@
 import { getNodeBuiltinModule } from "../common/node-compat.ts";
-import { loadNodeNativeAddon } from "./node-addons.ts";
+import {
+  loadNodeNativeAddon,
+  type NodeNativeAddonName,
+} from "./node-addons.ts";
+import {
+  createNodeFfiConnectionPrimitives,
+  isNodeFfiTarget,
+} from "./node-ffi.ts";
 import {
   type CreateSharedMemoryOptions,
   expectFd,
@@ -7,8 +14,8 @@ import {
   type MapSharedMemoryOptions,
   readCreateMode,
   readCreateName,
-  readRequiredCreateName,
   readCreateSize,
+  readRequiredCreateName,
   type SharedMemoryConnectionPrimitives,
   type SharedMemoryMapping,
 } from "./types.ts";
@@ -68,40 +75,42 @@ type NodeModuleBuiltin = {
 
 export const DEFAULT_NODE_SHARED_MEMORY_ADDON =
   "../../build/Release/knitting_shared_memory.node";
-export const DEFAULT_NODE_FUTEX_ADDON =
-  "../../build/Release/knitting_shm.node";
+export const DEFAULT_NODE_FUTEX_ADDON = "../../build/Release/knitting_shm.node";
+
+const loadNodeAddon = <T>(
+  label: string,
+  name: NodeNativeAddonName,
+  specifier?: string,
+): T => {
+  const nodeModule = getNodeBuiltinModule<NodeModuleBuiltin>("node:module");
+  if (nodeModule === undefined) {
+    throw new Error(`Node ${label} addon can only be loaded in Node`);
+  }
+
+  return loadNodeNativeAddon<T>(
+    nodeModule.createRequire(import.meta.url),
+    name,
+    specifier,
+  );
+};
 
 export const loadNodeSharedMemoryAddon = (
   specifier?: string,
-): NodeSharedMemoryAddon => {
-  const nodeModule = getNodeBuiltinModule<NodeModuleBuiltin>("node:module");
-  if (nodeModule === undefined) {
-    throw new Error("Node shared memory addon can only be loaded in Node");
-  }
-
-  const require = nodeModule.createRequire(import.meta.url);
-  return loadNodeNativeAddon<NodeSharedMemoryAddon>(
-    require,
+): NodeSharedMemoryAddon =>
+  loadNodeAddon<NodeSharedMemoryAddon>(
+    "shared memory",
     "knitting_shared_memory",
     specifier,
   );
-};
 
 export const loadNodeFutexAddon = (
   specifier?: string,
-): NodeFutexAddon => {
-  const nodeModule = getNodeBuiltinModule<NodeModuleBuiltin>("node:module");
-  if (nodeModule === undefined) {
-    throw new Error("Node futex addon can only be loaded in Node");
-  }
-
-  const require = nodeModule.createRequire(import.meta.url);
-  return loadNodeNativeAddon<NodeFutexAddon>(
-    require,
+): NodeFutexAddon =>
+  loadNodeAddon<NodeFutexAddon>(
+    "futex",
     "knitting_shm",
     specifier,
   );
-};
 
 export const fromNodeNativeMapping = (
   mapped: NodeSharedMemoryNativeMapping,
@@ -144,15 +153,21 @@ export const mapNodeSharedMemory = (
 };
 
 export const createNodeConnectionPrimitives = (
-  addon = loadNodeSharedMemoryAddon(),
-): SharedMemoryConnectionPrimitives<
-  SharedMemoryMapping<SharedArrayBuffer>
-> => ({
-  runtime: "node",
-  createSharedMemory: (options) => createNodeSharedMemory(options, addon),
-  mapSharedMemory: (options) => mapNodeSharedMemory(options, addon),
-  unlinkSharedMemory: (name) => unlinkNodeSharedMemory(name, addon),
-});
+  addon?: NodeSharedMemoryAddon,
+): SharedMemoryConnectionPrimitives => {
+  if (addon === undefined && isNodeFfiTarget()) {
+    return createNodeFfiConnectionPrimitives();
+  }
+
+  const resolvedAddon = addon ?? loadNodeSharedMemoryAddon();
+  return {
+    runtime: "node",
+    createSharedMemory: (options) =>
+      createNodeSharedMemory(options, resolvedAddon),
+    mapSharedMemory: (options) => mapNodeSharedMemory(options, resolvedAddon),
+    unlinkSharedMemory: (name) => unlinkNodeSharedMemory(name, resolvedAddon),
+  };
+};
 
 export const unlinkNodeSharedMemory = (
   name: string,

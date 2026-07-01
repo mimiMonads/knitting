@@ -105,6 +105,8 @@ const makeCodec = (
   options?: {
     payloadBytes?: number;
     payloadConfig?: PayloadBufferOptions;
+    encodeProcessBoundary?: boolean;
+    decodeProcessBoundary?: boolean;
   },
 ) => {
   const lockSector = new SharedArrayBuffer(
@@ -120,11 +122,13 @@ const makeCodec = (
       headersBuffer,
       onPromise,
       payload: { sab: payload, config: payloadConfig },
+      processBoundary: options?.encodeProcessBoundary,
     }),
     decode: decodePayload({
       lockSector,
       headersBuffer,
       payload: { sab: payload, config: payloadConfig },
+      processBoundary: options?.decodeProcessBoundary,
     }),
     registry: register({ lockSector }),
     headersBuffer,
@@ -570,6 +574,175 @@ test("ProcessSharedBuffer payload round-trips descriptor metadata", () => {
   } finally {
     setDefaultProcessSharedBufferPrimitives(undefined);
   }
+});
+
+test("process-boundary codec preserves ProcessSharedBuffer payloads", () => {
+  const { encode, decode } = makeCodec(undefined, {
+    encodeProcessBoundary: true,
+    decodeProcessBoundary: true,
+  });
+  const task = makeTask();
+  const original = ProcessSharedBuffer.fromMapping(
+    makeSharedMemoryMapping(),
+  ).subbuffer(32, 32);
+
+  task.value = original;
+  assertEquals(encode(task, 0), true);
+  assertEquals(task[TaskIndex.Type], PayloadBuffer.ProcessSharedBuffer);
+
+  decode(task, 0);
+  assertEquals(task.value instanceof ProcessSharedBuffer, true);
+  assertEquals(
+    (task.value as ProcessSharedBuffer).toMetadata(),
+    original.toMetadata(),
+  );
+});
+
+test("process-boundary encoder rejects process-local pointer payloads", () => {
+  if (typeof SharedArrayBuffer === "function") {
+    const { encode } = makeCodec(undefined, {
+      encodeProcessBoundary: true,
+    });
+    const task = makeTask();
+    task.value = new SharedArrayBuffer(8);
+    assert.throws(
+      () => encode(task, 0),
+      /cannot cross a process-worker boundary.*ProcessSharedBuffer/i,
+    );
+  }
+
+  let reference: BufferReference | undefined;
+  try {
+    reference = new BufferReference(new Uint8Array([1, 2, 3, 4]));
+  } catch {
+    return;
+  }
+
+  try {
+    const { encode } = makeCodec(undefined, {
+      encodeProcessBoundary: true,
+    });
+    const task = makeTask();
+    task.value = reference;
+    assert.throws(
+      () => encode(task, 0),
+      /cannot cross a process-worker boundary.*ProcessSharedBuffer/i,
+    );
+  } finally {
+    reference.release();
+  }
+});
+
+test("process-boundary decoder rejects pointer signals before metadata decode", () => {
+  const { decode } = makeCodec(undefined, {
+    decodeProcessBoundary: true,
+  });
+
+  for (
+    const payloadType of [
+      PayloadBuffer.SharedArrayBuffer,
+      PayloadBuffer.BufferReference,
+    ]
+  ) {
+    const task = makeTask();
+    task[TaskIndex.Type] = payloadType;
+    task[TaskIndex.PayloadLen] = 0xffffffff;
+    assert.throws(
+      () => decode(task, 0),
+      /cannot cross a process-worker boundary.*ProcessSharedBuffer/i,
+    );
+  }
+});
+
+test("process-boundary decoder rejects forged textual pointer codecs", () => {
+  const lockSector = new SharedArrayBuffer(PAYLOAD_LOCK_SECTOR_BYTE_LENGTH);
+  const payload = new SharedArrayBuffer(40000);
+  const headersBuffer = new Uint32Array(HEADER_U32_LENGTH);
+  const encode = encodePayload({
+    lockSector,
+    headersBuffer,
+    payload: { sab: payload },
+  });
+  const decode = decodePayload({
+    lockSector,
+    headersBuffer,
+    payload: { sab: payload },
+    processBoundary: true,
+  });
+  const externalPayloadBrand = Symbol.for("knitting.payloadCodec");
+
+  for (
+    const codecId of [
+      "knitting.sharedArrayBuffer",
+      "knitting.bufferReference",
+    ]
+  ) {
+    const task = makeTask();
+    const forged = Object.create({ constructor: undefined }) as Record<
+      string | symbol,
+      unknown
+    >;
+    forged[externalPayloadBrand] = codecId;
+    forged.toMetadata = () => ({
+      kind: codecId,
+      origin: "node:0",
+      runtime: "node",
+      pointer: "1",
+      token: "1",
+      byteOffset: 0,
+      byteLength: 8,
+    });
+    task.value = forged;
+
+    assertEquals(encode(task, 0), true);
+    assertEquals(
+      task[TaskIndex.Type],
+      PayloadBuffer.StaticExternalPayload,
+    );
+    assert.throws(
+      () => decode(task, 0),
+      /cannot cross a process-worker boundary.*ProcessSharedBuffer/i,
+    );
+  }
+});
+
+test("process-boundary codec rejects pointer payloads inside envelopes", () => {
+  const lockSector = new SharedArrayBuffer(PAYLOAD_LOCK_SECTOR_BYTE_LENGTH);
+  const payload = new SharedArrayBuffer(40000);
+  const headersBuffer = new Uint32Array(HEADER_U32_LENGTH);
+  const encode = encodePayload({
+    lockSector,
+    headersBuffer,
+    payload: { sab: payload },
+  });
+  const decode = decodePayload({
+    lockSector,
+    headersBuffer,
+    payload: { sab: payload },
+    processBoundary: true,
+  });
+  const externalPayloadBrand = Symbol.for("knitting.payloadCodec");
+  const forged = Object.create({ constructor: undefined }) as Record<
+    string | symbol,
+    unknown
+  >;
+  forged[externalPayloadBrand] = "knitting.sharedArrayBuffer";
+  forged.toMetadata = () => ({
+    kind: "knitting.sharedArrayBuffer",
+    origin: "node:0",
+    runtime: "node",
+    pointer: "1",
+    token: "1",
+    byteLength: 8,
+  });
+
+  const task = makeTask();
+  task.value = new Envelope({ kind: "forged" }, forged as never);
+  assertEquals(encode(task, 0), true);
+  assert.throws(
+    () => decode(task, 0),
+    /cannot cross a process-worker boundary.*ProcessSharedBuffer/i,
+  );
 });
 
 test("SharedArrayBuffer payload warms to a token-only numeric fast path", () => {

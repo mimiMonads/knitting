@@ -1,5 +1,6 @@
 import { RUNTIME } from "../common/runtime.ts";
 import { loadNodeBufferPointerAddon } from "./node-buffer-pointer.ts";
+import { getNodeFfi, isNodeFfiTarget } from "./node-ffi.ts";
 
 export type BufferReferenceRuntime = "node" | "deno" | "bun";
 
@@ -279,6 +280,29 @@ const createBunCapabilities = (): BufferReferenceCapabilities => {
   };
 };
 
+const createNodeFfiCapabilities = (): BufferReferenceCapabilities => {
+  const ffi = getNodeFfi();
+  const readPointer = (region: ArrayBufferView): bigint =>
+    ffi.getRawPointer(region);
+  return {
+    runtime: "node",
+    supportsOwningAdopt: false,
+    produce: (view) => produceFfi(view, readPointer),
+    adopt: ({ pointer, byteLength }, opts) => {
+      const alias = ffi.toArrayBuffer(pointer, byteLength, false);
+      return finishAlias(alias, opts?.copy);
+    },
+    release: releaseFfi,
+    supportsSharedAdopt: false,
+    produceShared: (sab) => produceSharedFfi(sab, readPointer),
+    adoptShared: ({ pointer, byteLength }) => {
+      const alias = ffi.toArrayBuffer(pointer, byteLength, false);
+      return { buffer: alias, byteOffset: 0, byteLength, isShared: false };
+    },
+    releaseShared: releaseFfi,
+  };
+};
+
 // ---------------------------------------------------------------------------
 // Node: addon-backed owning move via shared_ptr<BackingStore>.
 // Older prebuilds fall back to non-owning retain/wrap.
@@ -360,7 +384,9 @@ export const getBufferReferenceCapabilities =
     if (cached !== undefined) return cached;
     switch (RUNTIME) {
       case "node":
-        return cached = createNodeCapabilities();
+        return cached = isNodeFfiTarget()
+          ? createNodeFfiCapabilities()
+          : createNodeCapabilities();
       case "deno":
         return cached = createDenoCapabilities();
       case "bun":

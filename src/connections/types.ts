@@ -42,6 +42,10 @@ export type MapSharedMemoryOptions = {
   fd: number;
   name?: string;
   size: number;
+  /**
+   * When false, map the supplied descriptor directly. Ownership transfers to
+   * the returned mapping only after mapping succeeds; failures leave it open.
+   */
   duplicateFd?: boolean;
 };
 

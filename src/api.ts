@@ -16,10 +16,16 @@ import {
   RUNTIME_WORKER_DATA,
 } from "./common/worker-runtime.ts";
 import {
+  classifyProcessPermissionCompatibility,
+  enforceProcessPermissionCompatibility,
   resolvePermissionProtocol,
   toRuntimePermissionFlags,
 } from "./permission/index.ts";
 import { getNodeProcess } from "./common/node-compat.ts";
+import {
+  readProcessWorkerCommandPrefix,
+  readProcessWorkerRuntime,
+} from "./runtime/process-worker.ts";
 
 import { managerMethod } from "./runtime/balancer.ts";
 import { createInlineExecutor } from "./runtime/inline-executor.ts";
@@ -108,6 +114,19 @@ const readHostCwd = (): string | undefined => {
   }
 
   return undefined;
+};
+
+const readKnownProcessWorkerNodeMajor = (
+  worker: WorkerSettings,
+): number | undefined => {
+  if (RUNTIME !== "node") return undefined;
+  if (readProcessWorkerCommandPrefix(worker) !== undefined) return undefined;
+
+  const nodeProcess = getNodeProcess();
+  if (nodeProcess?.env?.NODE_BINARY !== undefined) return undefined;
+  const raw = nodeProcess?.versions?.node;
+  const major = Number.parseInt(String(raw).split(".", 1)[0] ?? "", 10);
+  return Number.isInteger(major) && major > 0 ? major : undefined;
 };
 
 const formatDebugList = (
@@ -399,7 +418,9 @@ export const createPool: CreatePoolFactory = ({
       key === "--allow-fs-write" ||
       key === "--allow-worker" ||
       key === "--allow-child-process" ||
+      key === "--allow-net" ||
       key === "--allow-addons" ||
+      key === "--allow-ffi" ||
       key === "--allow-wasi";
   };
   const stripNodePermissionFlags = (flags?: string[]) =>
@@ -477,6 +498,21 @@ export const createPool: CreatePoolFactory = ({
   }
   if (usingInliner && resolvedWorker?.bootstrap !== undefined) {
     throw new Error("worker.bootstrap cannot be used with the inliner");
+  }
+  if (resolvedWorker?.runtime === "process") {
+    const processRuntime = readProcessWorkerRuntime(resolvedWorker);
+    enforceProcessPermissionCompatibility(
+      classifyProcessPermissionCompatibility({
+        permission,
+        resolved: permissionProtocol,
+        target: {
+          runtime: processRuntime,
+          nodeMajor: processRuntime === "node"
+            ? readKnownProcessWorkerNodeMajor(resolvedWorker)
+            : undefined,
+        },
+      }),
+    );
   }
   const hardTimeoutMs = Number.isFinite(resolvedWorker?.hardTimeoutMs)
     ? Math.max(1, Math.floor(resolvedWorker?.hardTimeoutMs as number))

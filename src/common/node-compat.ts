@@ -1,6 +1,7 @@
 export type NodeProcessLike = {
   getBuiltinModule?: (id: string) => unknown;
   versions?: {
+    modules?: string;
     node?: string;
   };
   platform?: string;

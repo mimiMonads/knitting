@@ -426,6 +426,7 @@ export const lock2 = ({
   resultList,
   toSentList,
   recycleList,
+  processBoundary,
 }: {
   headers?: SharedBufferSource;
   headerSlotStrideU32?: number;
@@ -437,6 +438,7 @@ export const lock2 = ({
   toSentList?: RingQueue<Task>;
   resultList?: RingQueue<Task>;
   recycleList?: RingQueue<Task>;
+  processBoundary?: boolean;
 }) => {
   // Layout within `lockSectorRegion`:
   // - hostBits starts at byte 0
@@ -518,6 +520,7 @@ export const lock2 = ({
     headerSlotStrideU32: headersSlotStride,
     lockSector: payloadLockRegion,
     textCompat: resolvedTextCompat,
+    processBoundary,
     onPromise: (task, isRejected, value) => {
       if (
         (task[TASK_LOCAL_FLAGS_INDEX] & TASK_LOCAL_PROMISE_TRACKED_FLAG) !==
@@ -541,6 +544,7 @@ export const lock2 = ({
     headerSlotStrideU32: headersSlotStride,
     lockSector: payloadLockRegion,
     textCompat: resolvedTextCompat,
+    processBoundary,
   });
 
   let LastLocal = 0 | 0;

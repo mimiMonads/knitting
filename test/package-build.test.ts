@@ -92,6 +92,10 @@ packageBuildTest("npm package build ships compiled source files and compatibilit
     "src/worker/loop.d.ts",
     "src/connections/package-assets.js",
     "src/connections/package-assets.d.ts",
+    "src/connections/node-ffi.js",
+    "src/connections/node-ffi.d.ts",
+    "src/connections/external-array-buffer.js",
+    "src/connections/external-array-buffer.d.ts",
     "src/connections/process-shared-buffer.js",
     "src/connections/process-shared-buffer.d.ts",
   ]) {

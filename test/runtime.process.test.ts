@@ -4,7 +4,11 @@ import test from "./_runner.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import { createPool } from "../knitting.ts";
 import { loadNodeSharedMemoryAddon } from "../src/connections/node.ts";
-import { addOnePromise, reportIsMain } from "./fixtures/runtime_tasks.ts";
+import {
+  addOnePromise,
+  reportIsMain,
+  returnSharedArrayBuffer,
+} from "./fixtures/runtime_tasks.ts";
 import { spawnChildProcess } from "./fixtures/permission_tasks.ts";
 
 const PROMISE_TIMEOUT_MS = 5_000;
@@ -196,6 +200,27 @@ test("process worker diagnostics harness is alive", {
   assert.equal(true, true);
 });
 
+test("process workers fail before spawn for explicit unsupported restrictions", {
+  concurrency: false,
+  skip: processRuntimeTestSkip,
+}, () => {
+  assert.throws(
+    () =>
+      createPool({
+        threads: 1,
+        worker: {
+          runtime: "process",
+          processRuntime: "node",
+        },
+        permission: {
+          mode: "strict",
+          net: ["api.example.com:443"],
+        },
+      })({ addOnePromise }),
+    /Node.*process workers cannot enforce.*permission\.net/is,
+  );
+});
+
 test("process worker spawns a Bun child from this runtime", {
   concurrency: false,
   skip: processRuntimeTestSkip,
@@ -257,6 +282,58 @@ test("process worker supports a command prefix wrapper", {
   }
 });
 
+test("process workers reject process-local pointer payloads and stay healthy", {
+  concurrency: false,
+  skip: processRuntimeTestSkip,
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
+  for (const processRuntime of ["bun", "deno", "node"] as const) {
+    if (!hasProcessRuntime(processRuntime)) continue;
+
+    const pool = createPool({
+      threads: 1,
+      worker: {
+        runtime: "process",
+        processRuntime,
+      },
+      payload: {
+        payloadMaxByteLength: 1024 * 1024,
+      },
+    })({
+      addOnePromise,
+      returnSharedArrayBuffer,
+    });
+
+    let testError: unknown;
+    try {
+      await assert.rejects(
+        () =>
+          withTimeout(
+            `${processRuntime} process worker SharedArrayBuffer rejection`,
+            pool.call.returnSharedArrayBuffer(),
+          ),
+        /cannot cross a process-worker boundary.*ProcessSharedBuffer/i,
+      );
+      assert.equal(
+        await withTimeout(
+          `${processRuntime} process worker post-rejection health`,
+          pool.call.addOnePromise(41),
+        ),
+        42,
+      );
+    } catch (error) {
+      testError = error;
+      throw error;
+    } finally {
+      await shutdownWithTimeout(
+        `${processRuntime} process worker pointer rejection shutdown`,
+        pool.shutdown(),
+        testError,
+      );
+    }
+  }
+});
+
 test("Deno process worker honors runtime permission flags", {
   concurrency: false,
   skip: processRuntimeTestSkip,
@@ -300,6 +377,98 @@ test("Deno process worker honors runtime permission flags", {
   } finally {
     await shutdownWithTimeout(
       "Deno process worker permission test shutdown",
+      pool.shutdown(),
+      testError,
+    );
+  }
+});
+
+test("Node process worker strict permissions block child processes", {
+  concurrency: false,
+  skip: processRuntimeTestSkip,
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
+  if (!hasProcessRuntime("node")) return;
+
+  const pool = createPool({
+    threads: 1,
+    worker: {
+      runtime: "process",
+      processRuntime: "node",
+    },
+    permission: {
+      mode: "strict",
+      allowImport: true,
+    },
+    payload: {
+      payloadMaxByteLength: 1024 * 1024,
+    },
+  })({
+    spawnChildProcess,
+  });
+
+  let testError: unknown;
+  try {
+    await assert.rejects(
+      () =>
+        withTimeout(
+          "Node process worker strict child-process rejection",
+          pool.call.spawnChildProcess(),
+        ),
+      /access.*restricted|permission|ERR_ACCESS_DENIED|child.?process/i,
+    );
+  } catch (error) {
+    testError = error;
+    throw error;
+  } finally {
+    await shutdownWithTimeout(
+      "Node process worker strict permission shutdown",
+      pool.shutdown(),
+      testError,
+    );
+  }
+});
+
+test("Node process worker explicit run permission allows child processes", {
+  concurrency: false,
+  skip: processRuntimeTestSkip,
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
+  if (!hasProcessRuntime("node")) return;
+
+  const pool = createPool({
+    threads: 1,
+    worker: {
+      runtime: "process",
+      processRuntime: "node",
+    },
+    permission: {
+      mode: "strict",
+      allowImport: true,
+      run: true,
+    },
+    payload: {
+      payloadMaxByteLength: 1024 * 1024,
+    },
+  })({
+    spawnChildProcess,
+  });
+
+  let testError: unknown;
+  try {
+    assert.equal(
+      await withTimeout(
+        "Node process worker allowed child process",
+        pool.call.spawnChildProcess(),
+      ),
+      "spawn-ok",
+    );
+  } catch (error) {
+    testError = error;
+    throw error;
+  } finally {
+    await shutdownWithTimeout(
+      "Node process worker allowed permission shutdown",
       pool.shutdown(),
       testError,
     );

@@ -196,14 +196,16 @@ The core flow is:
   parsing, mapping support, and descriptor lifecycle helpers.
 - `src/connections/node-addons.ts`: Native addon specifier resolution for
   committed Node ABI prebuilds with `build/Release` fallback loading.
-- `src/connections/node.ts`: Loads POSIX Node native addons and exposes Node
-  shared memory, mapping, unlink, and futex primitives.
+- `src/connections/node.ts`: Selects the Node 22/24 addon backend or the
+  Node 26 FFI backend and exposes shared-memory and futex primitives.
+- `src/connections/node-ffi.ts`: Node 26 `node:ffi` implementation for POSIX
+  shared-memory creation, mapping, cleanup, and buffer-pointer aliases.
 - `src/connections/bun.ts`: Bun FFI implementation for POSIX shared memory.
 - `src/connections/deno.ts`: Deno FFI implementation for POSIX shared memory.
 - `src/connections/posix.ts`: POSIX constants, shared-memory naming, libc path
   detection, and close-on-exec helpers.
 - `src/connections/windows.ts`: Windows FFI loader and named file-mapping
-  primitives used by Deno and Bun.
+  primitives used by Node 26, Deno, and Bun.
 - `src/knitting_shared_memory.cc`: Native Node addon for shared-memory create,
   map, unlink, and descriptor operations, including Windows named mappings.
 - `src/knitting_shm.cc`: Native Node addon for futex/wait helpers used by parked
@@ -213,8 +215,8 @@ The core flow is:
   FFI runtimes.
 - `prebuilds/*/*.node`: Tracked Node native-addon prebuilds for supported
   platform/Node ABI combinations.
-- `prebuilds/win32-x64/*.dll`: Tracked Windows FFI DLL prebuild used by Bun and
-  Deno shared-memory primitives on Windows.
+- `prebuilds/win32-x64/*.dll`: Tracked Windows FFI DLL prebuild used by
+  Node 26, Bun, and Deno shared-memory primitives on Windows.
 
 ## Permissions
 

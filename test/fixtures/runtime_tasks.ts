@@ -12,3 +12,7 @@ export const addOneViaImportTask = importTask<number, number>({
 export const reportIsMain = task<void, boolean>({
   f: () => isMain,
 });
+
+export const returnSharedArrayBuffer = task<void, SharedArrayBuffer>({
+  f: () => new SharedArrayBuffer(8),
+});

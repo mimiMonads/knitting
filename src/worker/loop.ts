@@ -165,6 +165,7 @@ export const workerMainLoop = async (
     payloadSector: lock.payloadSector,
     payloadConfig,
     textCompat: lock.textCompat,
+    processBoundary: RUNTIME_IS_PROCESS_WORKER,
   });
   const returnLockState = lock2({
     headers: returnLock.headers,
@@ -174,6 +175,7 @@ export const workerMainLoop = async (
     payloadSector: returnLock.payloadSector,
     payloadConfig,
     textCompat: returnLock.textCompat,
+    processBoundary: RUNTIME_IS_PROCESS_WORKER,
   });
 
   const timers = workerOptions?.timers;

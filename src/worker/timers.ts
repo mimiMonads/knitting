@@ -82,6 +82,9 @@ const isPlainNodeWindows = runtimeGlobals.process?.platform === "win32" &&
 const nativeWaitTimeoutMs = (parkMs?: number): number =>
   isPlainNodeWindows ? 1 : Number.isFinite(parkMs) ? parkMs! : Infinity;
 
+const pollingWaitTimeoutMs = (parkMs?: number): number =>
+  Number.isFinite(parkMs) ? Math.min(Math.max(parkMs!, 0), 1) : 1;
+
 export const whilePausing = ({ pauseInNanoseconds }: PauseOptions) => {
   const forNanoseconds = pauseInNanoseconds ?? DEFAULT_PAUSE_TIME;
   if (!a_pause || forNanoseconds <= 0) return () => {};
@@ -183,8 +186,9 @@ export const sleepUntilChanged = (
       );
     } else if (a_wait && waitFallbackView) {
       // waitFallbackView is never notified — this wait only ever times out and
-      // re-polls, so it must stay finite or the worker would hang forever.
-      a_wait(waitFallbackView, 0, 0, Number.isFinite(parkMs) ? parkMs! : Infinity);
+      // re-polls. Keep the slice short and finite so FFI-backed process workers
+      // stay responsive without a cross-process native wake primitive.
+      a_wait(waitFallbackView, 0, 0, pollingWaitTimeoutMs(parkMs));
     }
 
     a_store(rxStatus, 0, 1);

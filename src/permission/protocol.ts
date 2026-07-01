@@ -46,6 +46,7 @@ type NodePermissionSettings = {
   allowWorker?: boolean;
   allowChildProcess?: boolean;
   allowAddons?: boolean;
+  allowFfi?: boolean;
   allowWasi?: boolean;
 };
 
@@ -566,11 +567,22 @@ const resolveNodePermissionActivationFlag = (): string => {
   return "--permission";
 };
 
+const nodeSupportsNetworkPermission = (): boolean => {
+  try {
+    const raw = getNodeProcess()?.versions?.node;
+    const major = Number.parseInt(String(raw).split(".", 1)[0] ?? "", 10);
+    return Number.isInteger(major) && major >= 25;
+  } catch {
+    return false;
+  }
+};
+
 const toNodeFlags = ({
   read,
   readAll,
   write,
   writeAll,
+  netAll,
   envFiles,
   node,
 }: {
@@ -578,6 +590,7 @@ const toNodeFlags = ({
   readAll: boolean;
   write: string[];
   writeAll: boolean;
+  netAll: boolean;
   envFiles: string[];
   node: Required<NodePermissionSettings>;
 }): string[] => {
@@ -585,19 +598,27 @@ const toNodeFlags = ({
 
   if (readAll) {
     modelFlags.push("--allow-fs-read=*");
-  } else if (read.length > 0) {
-    modelFlags.push(`--allow-fs-read=${read.join(",")}`);
+  } else {
+    for (const path of read) {
+      modelFlags.push(`--allow-fs-read=${path}`);
+    }
   }
 
   if (writeAll) {
     modelFlags.push("--allow-fs-write=*");
-  } else if (write.length > 0) {
-    modelFlags.push(`--allow-fs-write=${write.join(",")}`);
+  } else {
+    for (const path of write) {
+      modelFlags.push(`--allow-fs-write=${path}`);
+    }
   }
 
   if (node.allowWorker) modelFlags.push("--allow-worker");
   if (node.allowChildProcess) modelFlags.push("--allow-child-process");
+  if (netAll && nodeSupportsNetworkPermission()) {
+    modelFlags.push("--allow-net");
+  }
   if (node.allowAddons) modelFlags.push("--allow-addons");
+  if (node.allowFfi) modelFlags.push("--allow-ffi");
   if (node.allowWasi) modelFlags.push("--allow-wasi");
 
   const flags: string[] = [];
@@ -843,6 +864,7 @@ export const resolvePermissionProtocol = ({
         allowWorker: true,
         allowChildProcess: true,
         allowAddons: true,
+        allowFfi: true,
         allowWasi: true,
         flags: [],
       },
@@ -939,9 +961,7 @@ export const resolvePermissionProtocol = ({
     ? input.workers === true
     : input.node?.allowWorker === true;
 
-  const ffiSource = hasOwn(input, "ffi")
-    ? input.ffi
-    : (input.node?.allowAddons === true ? true : false);
+  const ffiSource = hasOwn(input, "ffi") ? input.ffi : false;
   const ffiAll = ffiSource === true;
   const ffi = ffiAll ? [] : toUniquePathList(
     Array.isArray(ffiSource) ? ffiSource : undefined,
@@ -964,7 +984,13 @@ export const resolvePermissionProtocol = ({
   const nodeSettings: Required<NodePermissionSettings> = {
     allowWorker: workers,
     allowChildProcess: runAll || run.length > 0,
-    allowAddons: ffiAll || ffi.length > 0,
+    // Top-level `ffi` is the explicit cross-runtime native-code capability.
+    // Runtime-specific overrides stay independent so allowing addons does not
+    // silently grant unrestricted node:ffi access.
+    allowAddons: input.node?.allowAddons === true ||
+      ffiAll ||
+      ffi.length > 0,
+    allowFfi: input.node?.allowFfi === true || ffiAll || ffi.length > 0,
     allowWasi: wasi,
   };
   const denoSettings: Required<Omit<DenoPermissionSettings, "lock">> = {
@@ -1025,6 +1051,7 @@ export const resolvePermissionProtocol = ({
         readAll,
         write: resolvedWrite,
         writeAll,
+        netAll,
         envFiles,
         node: nodeSettings,
       }),
