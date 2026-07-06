@@ -1,4 +1,8 @@
-import { getCallerFilePath, getCallerHref } from "./common/task-source.ts";
+import {
+  getCallerFilePath,
+  getCallerHref,
+  setModuleUrl,
+} from "./common/task-source.ts";
 import { DEBUG_ENABLED, resolveDebugNamespaces } from "./debug/gate.ts";
 import { genTaskID } from "./common/task-source.ts";
 import { toModuleUrl } from "./common/module-url.ts";
@@ -12,10 +16,16 @@ import {
   RUNTIME_WORKER_DATA,
 } from "./common/worker-runtime.ts";
 import {
+  classifyProcessPermissionCompatibility,
+  enforceProcessPermissionCompatibility,
   resolvePermissionProtocol,
   toRuntimePermissionFlags,
 } from "./permission/index.ts";
 import { getNodeProcess } from "./common/node-compat.ts";
+import {
+  readProcessWorkerCommandPrefix,
+  readProcessWorkerRuntime,
+} from "./runtime/process-worker.ts";
 
 import { managerMethod } from "./runtime/balancer.ts";
 import { createInlineExecutor } from "./runtime/inline-executor.ts";
@@ -106,6 +116,19 @@ const readHostCwd = (): string | undefined => {
   return undefined;
 };
 
+const readKnownProcessWorkerNodeMajor = (
+  worker: WorkerSettings,
+): number | undefined => {
+  if (RUNTIME !== "node") return undefined;
+  if (readProcessWorkerCommandPrefix(worker) !== undefined) return undefined;
+
+  const nodeProcess = getNodeProcess();
+  if (nodeProcess?.env?.NODE_BINARY !== undefined) return undefined;
+  const raw = nodeProcess?.versions?.node;
+  const major = Number.parseInt(String(raw).split(".", 1)[0] ?? "", 10);
+  return Number.isInteger(major) && major > 0 ? major : undefined;
+};
+
 const formatDebugList = (
   values: readonly string[] | undefined,
   empty = "(none)",
@@ -151,6 +174,21 @@ type InferredTaskShape<
 
 export const isMain: boolean = RUNTIME_IS_MAIN_THREAD;
 export { endpointSymbol as endpointSymbol };
+/**
+ * Declare the task module's URL for runtimes without stack traces (e.g.
+ * Andromeda) that can't auto-discover the caller. Call once at module top
+ * level, before defining tasks:
+ *
+ * ```ts
+ * import { setModuleUrl, task } from "knitting";
+ * setModuleUrl(import.meta.url);
+ * export const add = task({ f: ([a, b]: [number, number]) => a + b });
+ * ```
+ *
+ * Runs in both host and worker (same module re-imported), so both agree on the
+ * path. No-op-safe on Node/Deno/Bun, where stack discovery already works.
+ */
+export { setModuleUrl as setModuleUrl };
 
 /**
  * Reconstructs stable task order from top-level exports before names are bound.
@@ -380,7 +418,9 @@ export const createPool: CreatePoolFactory = ({
       key === "--allow-fs-write" ||
       key === "--allow-worker" ||
       key === "--allow-child-process" ||
+      key === "--allow-net" ||
       key === "--allow-addons" ||
+      key === "--allow-ffi" ||
       key === "--allow-wasi";
   };
   const stripNodePermissionFlags = (flags?: string[]) =>
@@ -458,6 +498,21 @@ export const createPool: CreatePoolFactory = ({
   }
   if (usingInliner && resolvedWorker?.bootstrap !== undefined) {
     throw new Error("worker.bootstrap cannot be used with the inliner");
+  }
+  if (resolvedWorker?.runtime === "process") {
+    const processRuntime = readProcessWorkerRuntime(resolvedWorker);
+    enforceProcessPermissionCompatibility(
+      classifyProcessPermissionCompatibility({
+        permission,
+        resolved: permissionProtocol,
+        target: {
+          runtime: processRuntime,
+          nodeMajor: processRuntime === "node"
+            ? readKnownProcessWorkerNodeMajor(resolvedWorker)
+            : undefined,
+        },
+      }),
+    );
   }
   const hardTimeoutMs = Number.isFinite(resolvedWorker?.hardTimeoutMs)
     ? Math.max(1, Math.floor(resolvedWorker?.hardTimeoutMs as number))

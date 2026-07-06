@@ -69,3 +69,28 @@ jobs:
       - name: Run Bun test script
         if: matrix.runtime == 'bun'
         run: npm run test:bun
+
+  node-26-ffi-test:
+    name: Node 26 FFI (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+      - uses: oven-sh/setup-bun@v2
+      - name: Install build dependencies
+        run: bun install --frozen-lockfile
+      - name: Build JavaScript package
+        run: npm run build
+      - name: Run Node 26 FFI integration
+        run: npm run test:node:26

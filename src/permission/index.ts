@@ -1,10 +1,21 @@
 export {
+  classifyProcessPermissionCompatibility,
+  enforceProcessPermissionCompatibility,
+} from "./compatibility.ts";
+export {
   resolvePermissionProtocol,
   toRuntimePermissionFlags,
 } from "./protocol.ts";
 
 // Type-only re-exports are erased at runtime; exclude from runtime coverage.
 /* c8 ignore start */
+export type {
+  PermissionCompatibilityCheck,
+  PermissionCompatibilityLevel,
+  ProcessPermissionCompatibilityReport,
+  ProcessPermissionRuntime,
+  ProcessPermissionTarget,
+} from "./compatibility.ts";
 export type {
   PermissionPath,
   PermissionMode,

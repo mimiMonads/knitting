@@ -320,6 +320,45 @@ test("resolvePermissionProtocol allows explicit process execution in strict mode
   assert.equal(resolved.runAll, true);
 });
 
+test("resolvePermissionProtocol emits one Node filesystem flag per path", () => {
+  const cwd = process.cwd();
+  const readA = path.resolve(cwd, "README.md");
+  const readB = path.resolve(cwd, "package.json");
+  const writeA = path.resolve(cwd, "out-a");
+  const writeB = path.resolve(cwd, "out-b");
+  const resolved = resolvePermissionProtocol({
+    permission: {
+      mode: "custom",
+      read: [readA, readB],
+      write: [writeA, writeB],
+    },
+  });
+
+  assert.ok(resolved);
+  assert.equal(
+    resolved.node.flags.includes(`--allow-fs-read=${readA}`),
+    true,
+  );
+  assert.equal(
+    resolved.node.flags.includes(`--allow-fs-read=${readB}`),
+    true,
+  );
+  assert.equal(
+    resolved.node.flags.includes(`--allow-fs-write=${writeA}`),
+    true,
+  );
+  assert.equal(
+    resolved.node.flags.includes(`--allow-fs-write=${writeB}`),
+    true,
+  );
+  assert.equal(
+    resolved.node.flags.some((flag) =>
+      flag.startsWith("--allow-fs-read=") && flag.includes(",")
+    ),
+    false,
+  );
+});
+
 test("resolvePermissionProtocol derives node booleans from top-level unified fields", () => {
   const cwd = process.cwd();
   const resolved = resolvePermissionProtocol({
@@ -346,11 +385,44 @@ test("resolvePermissionProtocol derives node booleans from top-level unified fie
   assert.equal(resolved.node.allowChildProcess, true);
   assert.equal(resolved.node.allowWorker, true);
   assert.equal(resolved.node.allowAddons, true);
+  assert.equal(resolved.node.allowFfi, true);
   assert.equal(resolved.node.allowWasi, true);
   assert.equal(resolved.node.flags.includes("--allow-child-process"), true);
   assert.equal(resolved.node.flags.includes("--allow-worker"), true);
   assert.equal(resolved.node.flags.includes("--allow-addons"), true);
+  assert.equal(resolved.node.flags.includes("--allow-ffi"), true);
   assert.equal(resolved.node.flags.includes("--allow-wasi"), true);
+});
+
+test("Node addon and FFI permissions remain independent", () => {
+  const addonsOnly = resolvePermissionProtocol({
+    permission: {
+      mode: "custom",
+      node: { allowAddons: true },
+    },
+  });
+  const ffiOnly = resolvePermissionProtocol({
+    permission: {
+      mode: "custom",
+      node: { allowFfi: true },
+    },
+  });
+
+  assert.ok(addonsOnly);
+  assert.equal(addonsOnly.ffiAll, false);
+  assert.equal(addonsOnly.ffi.length, 0);
+  assert.equal(addonsOnly.node.allowAddons, true);
+  assert.equal(addonsOnly.node.allowFfi, false);
+  assert.equal(addonsOnly.node.flags.includes("--allow-addons"), true);
+  assert.equal(addonsOnly.node.flags.includes("--allow-ffi"), false);
+
+  assert.ok(ffiOnly);
+  assert.equal(ffiOnly.ffiAll, false);
+  assert.equal(ffiOnly.ffi.length, 0);
+  assert.equal(ffiOnly.node.allowAddons, false);
+  assert.equal(ffiOnly.node.allowFfi, true);
+  assert.equal(ffiOnly.node.flags.includes("--allow-addons"), false);
+  assert.equal(ffiOnly.node.flags.includes("--allow-ffi"), true);
 });
 
 test("resolvePermissionProtocol emits deno flags for unified categories", () => {

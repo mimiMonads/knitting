@@ -1,4 +1,3 @@
-import { fileURLToPath as fileURLToPathCompat } from "node:url";
 import {
   HEADER_SLOT_STRIDE_U32,
   LOCK_SECTOR_BYTE_LENGTH,
@@ -48,6 +47,18 @@ import type {
   SharedMemoryBuffer,
   SharedMemoryMapping,
 } from "../connections/types.ts";
+
+// `node:url` resolved lazily so this module evaluates on runtimes without it
+// (e.g. Andromeda); process workers aren't used there, so it never runs.
+const fileURLToPathCompat = (value: string): string => {
+  const url = getNodeBuiltinModule<{ fileURLToPath: (u: string) => string }>(
+    "node:url",
+  );
+  if (url === undefined) {
+    throw new Error("node:url is not available in this runtime");
+  }
+  return url.fileURLToPath(value);
+};
 
 export type SpawnedWorker = {
   terminate: () => unknown;
@@ -222,10 +233,13 @@ const NODE_PERMISSION_EXEC_FLAGS = new Set<string>([
   "--allow-fs-write",
   "--allow-worker",
   "--allow-child-process",
+  "--allow-net",
   "--allow-addons",
+  "--allow-ffi",
   "--allow-wasi",
 ]);
 const NODE_WORKER_SAFE_EXEC_FLAGS = new Set<string>([
+  "--experimental-ffi",
   "--experimental-transform-types",
   "--expose-gc",
   "--no-warnings",
@@ -328,10 +342,25 @@ const DENO_PROCESS_WORKER_INTERNAL_FLAGS = [
   `--allow-env=${DENO_PROCESS_WORKER_BOOT_ENV_ALLOW}`,
   "--allow-ffi",
 ];
-const NODE_PROCESS_WORKER_EXEC_ARGV = [
-  "--no-warnings",
-  "--experimental-transform-types",
-];
+const nodeMajorVersion = (): number => {
+  const version = getNodeProcess()?.versions?.node ?? "";
+  const major = Number.parseInt(version.split(".", 1)[0] ?? "", 10);
+  return Number.isInteger(major) ? major : 0;
+};
+
+const nodeProcessWorkerUsesFfi = (): boolean => {
+  const major = nodeMajorVersion();
+  return major >= 26 && major % 2 === 0;
+};
+
+const nodeProcessWorkerInternalExecArgv = (): string[] => {
+  return [
+    "--no-warnings",
+    ...(nodeProcessWorkerUsesFfi()
+      ? ["--experimental-ffi"]
+      : ["--experimental-transform-types"]),
+  ];
+};
 
 const getProcessWorkerSharedMemoryPrimitives = () => {
   switch (RUNTIME) {
@@ -746,7 +775,9 @@ const processWorkerNodeBinary = (
     DEFAULT_NODE_BINARY;
 };
 
-const processWorkerNodeExecArgv = (): string[] => {
+const processWorkerNodeExecArgv = (
+  permission: WorkerData["permission"] | undefined,
+): string[] => {
   const out: string[] = [];
   const seen = new Set<string>();
   const add = (flag: string) => {
@@ -758,7 +789,14 @@ const processWorkerNodeExecArgv = (): string[] => {
   for (const flag of toWorkerCompatExecArgv(getNodeProcess()?.execArgv) ?? []) {
     add(flag);
   }
-  for (const flag of NODE_PROCESS_WORKER_EXEC_ARGV) add(flag);
+  for (const flag of nodeProcessWorkerInternalExecArgv()) add(flag);
+  if (permission?.enabled === true && permission.unsafe !== true) {
+    for (const flag of permission.node.flags) add(flag);
+    if (permission.netAll && nodeMajorVersion() >= 25) add("--allow-net");
+    // Node process workers need one native transport capability regardless of
+    // task permissions: addons on Node 22/24, node:ffi on supported Node 26+ LTS.
+    add(nodeProcessWorkerUsesFfi() ? "--allow-ffi" : "--allow-addons");
+  }
   return out;
 };
 
@@ -789,7 +827,7 @@ const processWorkerCommand = ({
   } else if (processRuntime === "node") {
     command = [
       processWorkerNodeBinary(commandPrefix),
-      ...processWorkerNodeExecArgv(),
+      ...processWorkerNodeExecArgv(permission),
       workerPath,
     ];
   } else {
@@ -1119,5 +1157,10 @@ export const cleanupProcessWorkerMemoryQuietly = (
   try {
     memory?.cleanup();
   } catch {
+  } finally {
+    try {
+      memory?.mapping.close?.();
+    } catch {
+    }
   }
 };

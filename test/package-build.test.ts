@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 import test from "./_runner.ts";
 
 const root = fileURLToPath(new URL("..", import.meta.url));
+const isBun = typeof process.versions.bun === "string";
+const packageBuildTest = isBun ? test.skip : test;
 const npmBin = process.platform === "win32" ? "npm.cmd" : "npm";
 const npmCli = join(
   dirname(process.execPath),
@@ -53,7 +55,7 @@ const visit = (dir: string, predicate: (path: string) => void): void => {
   }
 };
 
-test("npm package build ships compiled source files and compatibility entries", {
+packageBuildTest("npm package build ships compiled source files and compatibility entries", {
   concurrency: false,
   timeout: 60_000,
 }, () => {
@@ -90,6 +92,10 @@ test("npm package build ships compiled source files and compatibility entries", 
     "src/worker/loop.d.ts",
     "src/connections/package-assets.js",
     "src/connections/package-assets.d.ts",
+    "src/connections/node-ffi.js",
+    "src/connections/node-ffi.d.ts",
+    "src/connections/external-array-buffer.js",
+    "src/connections/external-array-buffer.d.ts",
     "src/connections/process-shared-buffer.js",
     "src/connections/process-shared-buffer.d.ts",
   ]) {

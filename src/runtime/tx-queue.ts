@@ -1,3 +1,6 @@
+// Side-effect import: registers the payload codec (cycle break for Andromeda;
+// see lock.ts), ensuring registration before any lock2() call.
+import "../memory/payloadCodec.ts";
 import {
   type Lock2,
   makeTask,
@@ -13,7 +16,10 @@ import {
   OneShotDeferred,
   type SignalAbortStore,
 } from "../shared/abortSignal.ts";
-import { withBufferReferenceReturnReleaser } from "../connections/buffer-reference.ts";
+import {
+  type BufferReferenceReturnHooks,
+  withBufferReferenceReturnReleaser,
+} from "../connections/buffer-reference.ts";
 
 type RawArguments = unknown;
 type WorkerResponse = unknown;
@@ -34,7 +40,9 @@ type CreateHostTxQueueArgs = {
   max?: number;
   lock: Lock2;
   returnLock: Lock2;
-  releaseBufferReferenceReturn?: (token: bigint) => void;
+  releaseBufferReferenceReturn?:
+    | ((token: bigint) => void)
+    | BufferReferenceReturnHooks;
   abortSignals?: Pick<
     SignalAbortStore,
     "getSignal" | "setSignal" | "resetSignal" | "closeNow"

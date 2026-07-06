@@ -2,7 +2,6 @@ import type {
   SharedBuffer,
   SharedBufferRegion,
 } from "../common/shared-buffer-region.ts";
-import { getNodeBuiltinModule } from "../common/node-compat.ts";
 import {
   FileDescriptor,
   type FileDescriptorMetadata,
@@ -10,15 +9,15 @@ import {
 import { RUNTIME } from "../common/runtime.ts";
 import { createBunConnectionPrimitives } from "./bun.ts";
 import { createDenoConnectionPrimitives } from "./deno.ts";
-import { loadNodeNativeAddon } from "./node-addons.ts";
+import { createNodeConnectionPrimitives } from "./node.ts";
 import {
   type CreateSharedMemoryOptions,
   expectFd,
   expectPositiveSize,
   readCreateMode,
   readCreateName,
-  readRequiredCreateName,
   readCreateSize,
+  readRequiredCreateName,
   type SharedMemoryConnectionPrimitives,
   type SharedMemoryMapping,
 } from "./types.ts";
@@ -65,12 +64,14 @@ export type ProcessSharedBufferMapper = Pick<
   "mapSharedMemory"
 >;
 
-export type ProcessSharedBufferPrimitives = Pick<
-  SharedMemoryConnectionPrimitives,
-  "createSharedMemory" | "mapSharedMemory"
-> & {
-  unlinkSharedMemory?: (name: string) => boolean;
-};
+export type ProcessSharedBufferPrimitives =
+  & Pick<
+    SharedMemoryConnectionPrimitives,
+    "createSharedMemory" | "mapSharedMemory"
+  >
+  & {
+    unlinkSharedMemory?: (name: string) => boolean;
+  };
 
 export type ProcessSharedBufferView =
   | Int8Array
@@ -134,92 +135,16 @@ const decodeKind = (
   }
 };
 
-type NodeModuleBuiltin = {
-  createRequire: (url: string) => (specifier: string) => unknown;
-};
-
-type DefaultNodeSharedMemoryNativeMapping = {
-  sab: SharedArrayBuffer;
-  fd: number;
-  name?: string;
-  size: number;
-  baseAddressMod64?: number;
-};
-
-type DefaultNodeSharedMemoryAddon = {
-  createSharedMemory: (
-    size: number,
-    name?: string,
-    mode?: CreateSharedMemoryOptions["mode"],
-  ) => DefaultNodeSharedMemoryNativeMapping;
-  mapSharedMemory: (
-    fd: number,
-    size: number,
-    name?: string,
-  ) => DefaultNodeSharedMemoryNativeMapping;
-  unlinkSharedMemory?: (name: string) => boolean;
-};
-
 let defaultPrimitives: ProcessSharedBufferPrimitives | undefined;
-
-const fromDefaultNodeNativeMapping = (
-  mapped: DefaultNodeSharedMemoryNativeMapping,
-): SharedMemoryMapping<SharedArrayBuffer> => {
-  const mapping: SharedMemoryMapping<SharedArrayBuffer> = {
-    runtime: "node",
-    fd: mapped.fd,
-    size: mapped.size,
-    byteLength: mapped.sab.byteLength,
-    buffer: mapped.sab,
-    kind: "shared-array-buffer",
-    sab: mapped.sab,
-    baseAddressMod64: mapped.baseAddressMod64,
-  };
-  if (mapped.name !== undefined && mapped.name.length > 0) {
-    mapping.name = mapped.name;
-  }
-  return mapping;
-};
-
-const createDefaultNodePrimitives = (): ProcessSharedBufferPrimitives => {
-  const nodeModule = getNodeBuiltinModule<NodeModuleBuiltin>("node:module");
-  if (nodeModule === undefined) {
-    throw new TypeError(
-      "ProcessSharedBuffer needs connection primitives in this runtime",
-    );
-  }
-
-  const require = nodeModule.createRequire(import.meta.url);
-  const addon = loadNodeNativeAddon<DefaultNodeSharedMemoryAddon>(
-    require,
-    "knitting_shared_memory",
-  );
-
-  return {
-    createSharedMemory: (options) => {
-      const size = expectPositiveSize(readCreateSize(options));
-      const mode = readCreateMode(options);
-      const name = mode === "anonymous"
-        ? readCreateName(options, "knitting_shared_memory")
-        : readRequiredCreateName(options);
-      return fromDefaultNodeNativeMapping(
-        addon.createSharedMemory(size, name, mode),
-      );
-    },
-    mapSharedMemory: (options) => {
-      const fd = expectFd(options.fd);
-      const size = expectPositiveSize(options.size);
-      return fromDefaultNodeNativeMapping(
-        addon.mapSharedMemory(fd, size, options.name),
-      );
-    },
-  };
-};
+const processSharedBufferInstances = new WeakSet<object>();
 
 const createDefaultPrimitives = (): ProcessSharedBufferPrimitives => {
   if (RUNTIME === "bun") return createBunConnectionPrimitives();
   if (RUNTIME === "deno") return createDenoConnectionPrimitives();
-  return createDefaultNodePrimitives();
+  if (RUNTIME === "node") return createNodeConnectionPrimitives();
+  throw new TypeError(
+    "ProcessSharedBuffer needs connection primitives in this runtime",
+  );
 };
 
 export const setDefaultProcessSharedBufferPrimitives = (
@@ -298,6 +223,7 @@ export class ProcessSharedBuffer {
     this.descriptor = descriptor;
     this.byteOffset = byteOffset;
     this.byteLength = byteLength;
+    processSharedBufferInstances.add(this);
   }
 
   static create(
@@ -489,6 +415,13 @@ export class ProcessSharedBuffer {
   }
 }
 
+export const isProcessSharedBufferValue = (
+  value: unknown,
+): value is ProcessSharedBuffer =>
+  value !== null &&
+  typeof value === "object" &&
+  processSharedBufferInstances.has(value);
+
 export const parseProcessSharedBufferMetadata = (
   input: unknown,
 ): ProcessSharedBufferMetadata => {
@@ -531,8 +464,8 @@ const processSharedBufferGlobal = globalThis as typeof globalThis & {
   >;
 };
 
-const codecs = processSharedBufferGlobal.__KNITTING_PAYLOAD_CODECS__ ??=
-  Object.create(null) as Record<
+const codecs = processSharedBufferGlobal.__KNITTING_PAYLOAD_CODECS__ ??= Object
+  .create(null) as Record<
     string,
     {
       decode: (metadata: unknown) => unknown;

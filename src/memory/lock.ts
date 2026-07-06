@@ -1,5 +1,22 @@
 import RingQueue from "../ipc/tools/ring-queue.ts";
-import { decodePayload, encodePayload } from "./payloadCodec.ts";
+// payloadCodec is intentionally NOT statically imported: lock.ts and
+// payloadCodec.ts form a cycle, and Andromeda's Nova engine stack-overflows on
+// circular ES imports. Instead payloadCodec self registers its factories on
+// load (see `registerLockPayloadCodec`); lock-building modules import it so it
+// runs before `lock2()`. Node/Deno/Bun are unaffected.
+type EncodePayloadFactory = typeof import("./payloadCodec.ts").encodePayload;
+type DecodePayloadFactory = typeof import("./payloadCodec.ts").decodePayload;
+
+let registeredEncodePayload: EncodePayloadFactory | undefined;
+let registeredDecodePayload: DecodePayloadFactory | undefined;
+
+export const registerLockPayloadCodec = (
+  encode: EncodePayloadFactory,
+  decode: DecodePayloadFactory,
+): void => {
+  registeredEncodePayload = encode;
+  registeredDecodePayload = decode;
+};
 import {
   createSharedArrayBuffer,
   createWasmSharedArrayBuffer,
@@ -21,69 +38,84 @@ import {
  * TODO: Compose all the instance where the array is passed as argument
  */
 
-export enum PayloadSignal {
-  UNREACHABLE = 0,
-  BigInt = 2,
-  True = 3,
-  False = 4,
-  Undefined = 5,
-  NaN = 6,
+// const objects replace `enum`s throughout this module: Andromeda's Nova engine
+// panics on `enum`. Value access, duplicate-value members, and type preserved;
+// identical emit on Node/Deno/Bun.
+export const PayloadSignal = {
+  UNREACHABLE: 0,
+  BigInt: 2,
+  True: 3,
+  False: 4,
+  Undefined: 5,
+  NaN: 6,
 
-  Float64 = 9,
-  Null = 10,
-}
+  Float64: 9,
+  Null: 10,
+} as const;
+export type PayloadSignal = typeof PayloadSignal[keyof typeof PayloadSignal];
 
-export enum PayloadBuffer {
-  BORDER_SIGNAL_BUFFER = 11,
-  String = 11,
-  Json = 12,
-  StaticString = 15,
-  StaticJson = 16,
-  Binary = 17,
-  StaticBinary = 18,
-  Int32Array = 19,
-  Float64Array = 20,
-  BigInt64Array = 21,
-  BigUint64Array = 22,
-  DataView = 23,
-  Error = 24,
-  Date = 25,
-  Symbol = 26,
-  StaticSymbol = 27,
-  BigInt = 28,
-  StaticBigInt = 29,
-  StaticInt32Array = 31,
-  StaticFloat64Array = 32,
-  StaticBigInt64Array = 33,
-  StaticBigUint64Array = 34,
-  StaticDataView = 35,
-  ArrayBuffer = 36,
-  StaticArrayBuffer = 37,
-  Buffer = 38,
-  StaticBuffer = 39,
-  EnvelopeStaticHeader = 40,
-  EnvelopeDynamicHeader = 41,
-  EnvelopeStaticHeaderString = 42,
-  EnvelopeDynamicHeaderString = 43,
-  ExternalPayload = 44,
-  StaticExternalPayload = 45,
-  ProcessSharedBuffer = 46,
-  BufferReference = 47,
-  SharedArrayBuffer = 48,
-  EnvelopeStaticHeaderExternal = 49,
-  EnvelopeDynamicHeaderExternal = 50,
-  EnvelopeStaticHeaderStringExternal = 51,
-  EnvelopeDynamicHeaderStringExternal = 52,
-  NumericArray = 53,
-  StaticNumericArray = 54,
-}
+export const PayloadBuffer = {
+  BORDER_SIGNAL_BUFFER: 11,
+  String: 11,
+  Json: 12,
+  StaticString: 15,
+  StaticJson: 16,
+  Binary: 17,
+  StaticBinary: 18,
+  Int32Array: 19,
+  Float64Array: 20,
+  BigInt64Array: 21,
+  BigUint64Array: 22,
+  DataView: 23,
+  Error: 24,
+  Date: 25,
+  Symbol: 26,
+  StaticSymbol: 27,
+  BigInt: 28,
+  StaticBigInt: 29,
+  StaticInt32Array: 31,
+  StaticFloat64Array: 32,
+  StaticBigInt64Array: 33,
+  StaticBigUint64Array: 34,
+  StaticDataView: 35,
+  ArrayBuffer: 36,
+  StaticArrayBuffer: 37,
+  Buffer: 38,
+  StaticBuffer: 39,
+  EnvelopeStaticHeader: 40,
+  EnvelopeDynamicHeader: 41,
+  EnvelopeStaticHeaderString: 42,
+  EnvelopeDynamicHeaderString: 43,
+  ExternalPayload: 44,
+  StaticExternalPayload: 45,
+  ProcessSharedBuffer: 46,
+  BufferReference: 47,
+  SharedArrayBuffer: 48,
+  EnvelopeStaticHeaderExternal: 49,
+  EnvelopeDynamicHeaderExternal: 50,
+  EnvelopeStaticHeaderStringExternal: 51,
+  EnvelopeDynamicHeaderStringExternal: 52,
+  NumericArray: 53,
+  StaticNumericArray: 54,
+} as const;
+export type PayloadBuffer = typeof PayloadBuffer[keyof typeof PayloadBuffer];
 
-export enum LockBound {
-  paddingLock = 0,
-  padding = 0,
-  slots = 32,
-  header = 0,
+// Value -> name lookup (enum reverse-map), for payload-limit error labels.
+// Later keys win on duplicate values (11 -> "String"), as TS enums do.
+const PayloadBufferName: Record<number, string> = {};
+for (const key of Object.keys(PayloadBuffer)) {
+  PayloadBufferName[PayloadBuffer[key as keyof typeof PayloadBuffer]] = key;
 }
+export const payloadBufferName = (value: number): string =>
+  PayloadBufferName[value] ?? String(value);
+
+export const LockBound = {
+  paddingLock: 0,
+  padding: 0,
+  slots: 32,
+  header: 0,
+} as const;
+export type LockBound = typeof LockBound[keyof typeof LockBound];
 
 export const LOCK_CACHE_LINE_BYTES = 64;
 export const LOCK_SECTOR_BYTES = 256;
@@ -187,33 +219,34 @@ export const runTaskFinalizers = (task: Task): void => {
   }
 };
 
-export enum TaskIndex {
+export const TaskIndex = {
   /**
    * Worker -> host response flags word.
    */
-  FlagsToHost = 0,
+  FlagsToHost: 0,
   /**
    * Host -> worker request function id (low 16 bits).
    * High 16 bits are reserved for caller metadata on request path.
    * NOTE: shares the same storage word as `FlagsToHost`.
    */
-  FunctionID = 0,
-  ID = 1,
-  Type = 2,
-  Start = 3,
-  End = 4,
-  PayloadLen = 5,
+  FunctionID: 0,
+  ID: 1,
+  Type: 2,
+  Start: 3,
+  End: 4,
+  PayloadLen: 5,
   /**
    * Low 5 bits: region slot index (0..31).
    * High 27 bits: reserved for caller metadata (e.g. enqueue timing).
    */
-  slotBuffer = 6,
-  Size = 8,
+  slotBuffer: 6,
+  Size: 8,
   /**
    * Total slot length in Uint32 words, including the task header.
    */
-  TotalBuff = 144,
-}
+  TotalBuff: 144,
+} as const;
+export type TaskIndex = typeof TaskIndex[keyof typeof TaskIndex];
 
 export const TASK_SLOT_INDEX_BITS = 5;
 export const TASK_SLOT_INDEX_MASK = (1 << TASK_SLOT_INDEX_BITS) - 1;
@@ -270,9 +303,10 @@ export const setTaskSlotMeta = (task: Task, value: number): void => {
     ((task[TaskIndex.slotBuffer] & TASK_SLOT_INDEX_MASK) | encodedMeta) >>> 0;
 };
 
-export enum TaskFlag {
-  Reject = 1 << 0,
-}
+export const TaskFlag = {
+  Reject: 1,
+} as const;
+export type TaskFlag = typeof TaskFlag[keyof typeof TaskFlag];
 
 // Main queue lock layout in bytes.
 // The queue protocol uses two Int32 signal words, each on its own cache line:
@@ -342,7 +376,9 @@ type ResolveHostOptions = {
 const fillTaskFrom = (task: Task, array: ArrayLike<number>, at: number) => {
   task[0] = array[at];
   task[1] = array[at + 1];
-  task[2] = array[at + 2];
+  // Raw numeric tag word; const-object payload "enums" are strict literal unions
+  // (numeric `enum` accepted any number), so cast back on restore.
+  task[2] = array[at + 2] as PayloadSignal | PayloadBuffer;
   task[3] = array[at + 3];
   task[4] = array[at + 4];
   task[5] = array[at + 5];
@@ -390,6 +426,7 @@ export const lock2 = ({
   resultList,
   toSentList,
   recycleList,
+  processBoundary,
 }: {
   headers?: SharedBufferSource;
   headerSlotStrideU32?: number;
@@ -401,6 +438,7 @@ export const lock2 = ({
   toSentList?: RingQueue<Task>;
   resultList?: RingQueue<Task>;
   recycleList?: RingQueue<Task>;
+  processBoundary?: boolean;
 }) => {
   // Layout within `lockSectorRegion`:
   // - hostBits starts at byte 0
@@ -463,7 +501,17 @@ export const lock2 = ({
 
   let promiseHandler: PromisePayloadHandler | undefined;
 
-  const encodeTask = encodePayload({
+  if (
+    registeredEncodePayload === undefined ||
+    registeredDecodePayload === undefined
+  ) {
+    throw new Error(
+      "Payload codec not registered before lock2(). Ensure the module that " +
+        'builds locks imports "./payloadCodec.ts" (it self-registers on load).',
+    );
+  }
+
+  const encodeTask = registeredEncodePayload({
     payload: {
       sab: payloadSAB,
       config: resolvedPayloadConfig,
@@ -472,6 +520,7 @@ export const lock2 = ({
     headerSlotStrideU32: headersSlotStride,
     lockSector: payloadLockRegion,
     textCompat: resolvedTextCompat,
+    processBoundary,
     onPromise: (task, isRejected, value) => {
       if (
         (task[TASK_LOCAL_FLAGS_INDEX] & TASK_LOCAL_PROMISE_TRACKED_FLAG) !==
@@ -486,7 +535,7 @@ export const lock2 = ({
       promiseHandler!(task, isRejected, value);
     },
   });
-  const decodeTask = decodePayload({
+  const decodeTask = registeredDecodePayload({
     payload: {
       sab: payloadSAB,
       config: resolvedPayloadConfig,
@@ -495,6 +544,7 @@ export const lock2 = ({
     headerSlotStrideU32: headersSlotStride,
     lockSector: payloadLockRegion,
     textCompat: resolvedTextCompat,
+    processBoundary,
   });
 
   let LastLocal = 0 | 0;

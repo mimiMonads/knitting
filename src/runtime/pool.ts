@@ -34,6 +34,9 @@ import {
   LockBound,
   type Task,
 } from "../memory/lock.ts";
+// Side-effect import: registers the payload codec (cycle break for Andromeda;
+// see lock.ts). Must run before any lock2() call.
+import "../memory/payloadCodec.ts";
 import type {
   DebugOptions,
   DispatcherSettings,
@@ -60,7 +63,12 @@ import {
   type PayloadBufferOptions,
   resolvePayloadBufferOptions,
 } from "../memory/payload-config.ts";
-import { createBufferReferenceReturnReleaseMessage } from "../connections/buffer-reference.ts";
+import {
+  type BufferReference,
+  type BufferReferenceRuntime,
+  createBufferReferenceReturnReleaseMessage,
+  detachArrayBufferBestEffort,
+} from "../connections/buffer-reference.ts";
 
 const WORKER_FATAL_MESSAGE_KEY = "__knittingWorkerFatal";
 const isWorkerFatalMessage = (
@@ -271,6 +279,7 @@ export const spawnWorkerContext = ({
     payloadSector: lockBuffers.payloadSector,
     payloadConfig: resolvedPayloadConfig,
     textCompat: lockBuffers.textCompat,
+    processBoundary: useProcessWorkerRuntime,
   });
   const returnLock = lock2({
     headers: returnLockBuffers.headers,
@@ -280,6 +289,7 @@ export const spawnWorkerContext = ({
     payloadSector: returnLockBuffers.payloadSector,
     payloadConfig: resolvedPayloadConfig,
     textCompat: returnLockBuffers.textCompat,
+    processBoundary: useProcessWorkerRuntime,
   });
   const abortSignalSAB = usesAbortSignal === true
     ? controlLayout.abortSignals
@@ -307,13 +317,76 @@ export const spawnWorkerContext = ({
     signal: signalBox.opView,
   });
 
+  // Outstanding borrowed returns, revoked before this lane's worker dies so
+  // no borrowed alias can outlive the isolate that pins its bytes.
+  type BorrowedReturnRecord = {
+    ref: WeakRef<BufferReference>;
+    /** Set on first materialize; absent while the borrow was never read. */
+    aliasBuffer?: WeakRef<ArrayBuffer>;
+    runtime: BufferReferenceRuntime;
+  };
+
+  const outstandingBorrowedReturns =
+    bufferReferenceReturn === "borrow" && typeof WeakRef === "function"
+      ? new Map<bigint, BorrowedReturnRecord>()
+      : undefined;
+
+  const releaseBorrowedReturnToken = (token: bigint): void => {
+    outstandingBorrowedReturns?.delete(token);
+    worker?.postMessage?.(
+      createBufferReferenceReturnReleaseMessage(token),
+    );
+  };
+
+  const revokeOutstandingBorrowedReturns = (copyBytes: boolean): void => {
+    if (outstandingBorrowedReturns === undefined) return;
+    for (const [token, record] of outstandingBorrowedReturns) {
+      try {
+        const ref = record.ref.deref();
+        if (ref !== undefined) {
+          ref.revokeBorrow(copyBytes);
+          continue;
+        }
+
+        const aliasBuffer = record.aliasBuffer?.deref();
+        if (
+          aliasBuffer !== undefined &&
+          detachArrayBufferBestEffort(record.runtime, aliasBuffer) &&
+          copyBytes
+        ) {
+          releaseBorrowedReturnToken(token);
+        }
+      } catch {
+        // best effort
+      }
+    }
+    outstandingBorrowedReturns.clear();
+  };
+
   const queue = createHostTxQueue({
     lock,
     returnLock,
     abortSignals,
     releaseBufferReferenceReturn: bufferReferenceReturn === "borrow"
-      ? (token) => {
-        worker?.postMessage?.(createBufferReferenceReturnReleaseMessage(token));
+      ? {
+        release: releaseBorrowedReturnToken,
+        track: (ref, token, aliasBuffer) => {
+          if (outstandingBorrowedReturns === undefined) return;
+          const record = outstandingBorrowedReturns.get(token);
+          if (record !== undefined) {
+            if (aliasBuffer !== undefined) {
+              record.aliasBuffer = new WeakRef(aliasBuffer);
+            }
+            return;
+          }
+          outstandingBorrowedReturns.set(token, {
+            ref: new WeakRef(ref),
+            aliasBuffer: aliasBuffer === undefined
+              ? undefined
+              : new WeakRef(aliasBuffer),
+            runtime: ref.runtime,
+          });
+        },
       }
       : undefined,
   });
@@ -486,9 +559,16 @@ export const spawnWorkerContext = ({
   }
 
   let closedReason: string | undefined;
-  const markWorkerClosed = (reason: string): void => {
+  // `workerBytesReadable`: while the worker is still alive its pinned bytes
+  // can be copied out; after a crash/exit they are gone and borrows are
+  // detached so stale reads fail loud instead of aliasing freed memory.
+  const markWorkerClosed = (
+    reason: string,
+    workerBytesReadable = false,
+  ): void => {
     if (closedReason) return;
     closedReason = reason;
+    revokeOutstandingBorrowedReturns(workerBytesReadable);
     rejectAll(reason);
     channelHandler?.close();
   };
@@ -497,6 +577,7 @@ export const spawnWorkerContext = ({
     if (!isWorkerFatalMessage(message)) return;
     markWorkerClosed(
       `Worker startup failed: ${message[WORKER_FATAL_MESSAGE_KEY]}`,
+      true,
     );
     terminateWorkerQuietly(worker);
   };
@@ -565,7 +646,7 @@ export const spawnWorkerContext = ({
     txIdle,
     call,
     kills: async () => {
-      markWorkerClosed("Thread closed");
+      markWorkerClosed("Thread closed", true);
       terminateWorkerQuietly(worker);
       cleanupProcessWorkerMemoryQuietly(processWorkerMemory);
     },

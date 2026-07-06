@@ -1,3 +1,5 @@
+// Register the payload codec into lock.ts (cycle broken for Andromeda; see lock.ts).
+import "../../src/memory/payloadCodec.ts";
 import { bench, group, run as mitataRun, summary } from "mitata";
 import { Buffer as NodeBuffer } from "node:buffer";
 import { lock2, makeTask } from "../../src/memory/lock.ts";

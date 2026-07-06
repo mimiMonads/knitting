@@ -1,3 +1,5 @@
+// Register the payload codec into lock.ts (cycle broken for Andromeda; see lock.ts).
+import "../../src/memory/payloadCodec.ts";
 import { bench, group, run as mitataRun } from "mitata";
 import RingQueue from "../../src/ipc/tools/ring-queue.ts";
 import {

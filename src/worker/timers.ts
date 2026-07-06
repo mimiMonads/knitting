@@ -9,9 +9,10 @@ export type NativeWaitU32 = (
   timeoutMs?: number,
 ) => unknown;
 
-enum Comment {
-  thisIsAHint = 0,
-}
+// const object, not `enum`: Andromeda's Nova engine can't parse `enum`.
+const Comment = {
+  thisIsAHint: 0,
+} as const;
 
 const maybeGc = (() => {
   type GcHost = {
@@ -80,6 +81,9 @@ const isPlainNodeWindows = runtimeGlobals.process?.platform === "win32" &&
 // just bounding each poll slice.
 const nativeWaitTimeoutMs = (parkMs?: number): number =>
   isPlainNodeWindows ? 1 : Number.isFinite(parkMs) ? parkMs! : Infinity;
+
+const pollingWaitTimeoutMs = (parkMs?: number): number =>
+  Number.isFinite(parkMs) ? Math.min(Math.max(parkMs!, 0), 1) : 1;
 
 export const whilePausing = ({ pauseInNanoseconds }: PauseOptions) => {
   const forNanoseconds = pauseInNanoseconds ?? DEFAULT_PAUSE_TIME;
@@ -182,8 +186,9 @@ export const sleepUntilChanged = (
       );
     } else if (a_wait && waitFallbackView) {
       // waitFallbackView is never notified — this wait only ever times out and
-      // re-polls, so it must stay finite or the worker would hang forever.
-      a_wait(waitFallbackView, 0, 0, Number.isFinite(parkMs) ? parkMs! : Infinity);
+      // re-polls. Keep the slice short and finite so FFI-backed process workers
+      // stay responsive without a cross-process native wake primitive.
+      a_wait(waitFallbackView, 0, 0, pollingWaitTimeoutMs(parkMs));
     }
 
     a_store(rxStatus, 0, 1);

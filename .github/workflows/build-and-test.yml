@@ -158,3 +158,36 @@ jobs:
       - name: Run Bun test script
         if: matrix.runtime == 'bun'
         run: npm run test:bun
+
+  node-26-ffi-test:
+    name: node-26-ffi-test (${{ matrix.os }})
+    needs: build-native
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+          - os: macos-latest
+          - os: windows-latest
+            ffi-prebuild: win32-x64
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+      - uses: oven-sh/setup-bun@v2
+      - name: Download Windows FFI prebuild
+        if: matrix.ffi-prebuild != ''
+        uses: actions/download-artifact@v4
+        with:
+          name: native-${{ matrix.ffi-prebuild }}
+          path: prebuilds/${{ matrix.ffi-prebuild }}
+      - name: Install build dependencies
+        run: bun install --frozen-lockfile
+      - name: Build JavaScript package
+        run: npm run build
+      - name: Run Node 26 FFI integration
+        run: npm run test:node:26

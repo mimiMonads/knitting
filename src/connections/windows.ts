@@ -1,4 +1,10 @@
 import { resolveKnittingPackageAsset } from "./package-assets.ts";
+import { requireDetachedExternalArrayBuffer } from "./external-array-buffer.ts";
+import {
+  getNodeFfi,
+  type NodeFfiFunctionSignature,
+  type NodeFfiLibrary,
+} from "./node-ffi-api.ts";
 import {
   type CreateSharedMemoryOptions,
   expectFd,
@@ -18,6 +24,9 @@ const POINTER_OFFSET = 0;
 const HANDLE_OFFSET = 8;
 const SIZE_OFFSET = 16;
 const BASE_ADDRESS_MOD_64_OFFSET = 24;
+const WINDOWS_CREATE_SHARED_MEMORY = "knitting_windows_create_shared_memory";
+const WINDOWS_MAP_SHARED_MEMORY = "knitting_windows_map_shared_memory";
+const WINDOWS_CLOSE_SHARED_MEMORY = "knitting_windows_close_shared_memory";
 
 type WindowsNativeMapping = {
   address: bigint;
@@ -26,22 +35,34 @@ type WindowsNativeMapping = {
   baseAddressMod64: number;
 };
 
+type WindowsSharedMemorySymbols = {
+  [WINDOWS_CREATE_SHARED_MEMORY]: (
+    size: bigint,
+    name: Uint16Array,
+    mode: number,
+    out: Uint8Array,
+  ) => number;
+  [WINDOWS_MAP_SHARED_MEMORY]: (
+    handle: bigint,
+    size: bigint,
+    name: Uint16Array,
+    out: Uint8Array,
+  ) => number;
+  [WINDOWS_CLOSE_SHARED_MEMORY]: (mapping: Uint8Array) => number;
+};
+
+type WindowsCreateSharedMemory =
+  WindowsSharedMemorySymbols[typeof WINDOWS_CREATE_SHARED_MEMORY];
+type WindowsMapSharedMemory =
+  WindowsSharedMemorySymbols[typeof WINDOWS_MAP_SHARED_MEMORY];
+type WindowsRecordReader<Library> = (
+  record: Uint8Array,
+  name: string | undefined,
+  lib: Library,
+) => SharedMemoryMapping<ArrayBuffer>;
+
 type DenoWindowsLibrary = {
-  symbols: {
-    knitting_windows_create_shared_memory: (
-      size: bigint,
-      name: Uint16Array,
-      mode: number,
-      out: Uint8Array,
-    ) => number;
-    knitting_windows_map_shared_memory: (
-      handle: bigint,
-      size: bigint,
-      name: Uint16Array,
-      out: Uint8Array,
-    ) => number;
-    knitting_windows_close_shared_memory: (mapping: Uint8Array) => number;
-  };
+  symbols: WindowsSharedMemorySymbols;
   close: () => void;
 };
 
@@ -74,21 +95,12 @@ type BunFFIApi = {
 };
 
 type BunWindowsLibrary = {
-  symbols: {
-    knitting_windows_create_shared_memory: (
-      size: bigint,
-      name: Uint16Array,
-      mode: number,
-      out: Uint8Array,
-    ) => number;
-    knitting_windows_map_shared_memory: (
-      handle: bigint,
-      size: bigint,
-      name: Uint16Array,
-      out: Uint8Array,
-    ) => number;
-    knitting_windows_close_shared_memory: (mapping: Uint8Array) => number;
-  };
+  symbols: WindowsSharedMemorySymbols;
+};
+
+type NodeWindowsLibrary = {
+  functions: WindowsSharedMemorySymbols;
+  lib: NodeFfiLibrary;
 };
 
 const FFIType = {
@@ -244,37 +256,73 @@ const createRecord = (): Uint8Array =>
     WINDOWS_MAPPING_RECORD_BYTES,
   );
 
+const DENO_WINDOWS_SYMBOLS = {
+  [WINDOWS_CREATE_SHARED_MEMORY]: {
+    parameters: ["u64", "buffer", "u32", "buffer"],
+    result: "i32",
+  },
+  [WINDOWS_MAP_SHARED_MEMORY]: {
+    parameters: ["u64", "u64", "buffer", "buffer"],
+    result: "i32",
+  },
+  [WINDOWS_CLOSE_SHARED_MEMORY]: {
+    parameters: ["buffer"],
+    result: "i32",
+  },
+} as const;
+
+const BUN_WINDOWS_SYMBOLS = {
+  [WINDOWS_CREATE_SHARED_MEMORY]: {
+    args: [FFIType.i64, FFIType.ptr, FFIType.u32, FFIType.ptr],
+    returns: FFIType.i32,
+  },
+  [WINDOWS_MAP_SHARED_MEMORY]: {
+    args: [FFIType.i64, FFIType.i64, FFIType.ptr, FFIType.ptr],
+    returns: FFIType.i32,
+  },
+  [WINDOWS_CLOSE_SHARED_MEMORY]: {
+    args: [FFIType.ptr],
+    returns: FFIType.i32,
+  },
+} as const;
+
+const NODE_WINDOWS_SYMBOLS = {
+  [WINDOWS_CREATE_SHARED_MEMORY]: {
+    arguments: ["u64", "pointer", "u32", "pointer"],
+    return: "i32",
+  },
+  [WINDOWS_MAP_SHARED_MEMORY]: {
+    arguments: ["u64", "u64", "pointer", "pointer"],
+    return: "i32",
+  },
+  [WINDOWS_CLOSE_SHARED_MEMORY]: {
+    arguments: ["pointer"],
+    return: "i32",
+  },
+} satisfies Record<keyof WindowsSharedMemorySymbols, NodeFfiFunctionSignature>;
+
 export const openDenoWindowsSharedMemoryLibrary = (): DenoWindowsLibrary =>
-  getDeno().dlopen(windowsSharedMemoryPrebuildPath(), {
-    knitting_windows_create_shared_memory: {
-      parameters: ["u64", "buffer", "u32", "buffer"],
-      result: "i32",
-    },
-    knitting_windows_map_shared_memory: {
-      parameters: ["u64", "u64", "buffer", "buffer"],
-      result: "i32",
-    },
-    knitting_windows_close_shared_memory: {
-      parameters: ["buffer"],
-      result: "i32",
-    },
-  });
+  getDeno().dlopen(windowsSharedMemoryPrebuildPath(), DENO_WINDOWS_SYMBOLS);
 
 export const openBunWindowsSharedMemoryLibrary = (): BunWindowsLibrary =>
-  getBunFFI().dlopen(windowsSharedMemoryPrebuildPath(), {
-    knitting_windows_create_shared_memory: {
-      args: [FFIType.i64, FFIType.ptr, FFIType.u32, FFIType.ptr],
-      returns: FFIType.i32,
-    },
-    knitting_windows_map_shared_memory: {
-      args: [FFIType.i64, FFIType.i64, FFIType.ptr, FFIType.ptr],
-      returns: FFIType.i32,
-    },
-    knitting_windows_close_shared_memory: {
-      args: [FFIType.ptr],
-      returns: FFIType.i32,
-    },
-  }) as BunWindowsLibrary;
+  getBunFFI().dlopen(
+    windowsSharedMemoryPrebuildPath(),
+    BUN_WINDOWS_SYMBOLS,
+  ) as BunWindowsLibrary;
+
+let cachedNodeWindowsLibrary: NodeWindowsLibrary | undefined;
+
+export const openNodeWindowsSharedMemoryLibrary = (): NodeWindowsLibrary => {
+  if (cachedNodeWindowsLibrary !== undefined) {
+    return cachedNodeWindowsLibrary;
+  }
+  const opened = getNodeFfi().dlopen(
+    windowsSharedMemoryPrebuildPath(),
+    NODE_WINDOWS_SYMBOLS,
+  ) as unknown as NodeWindowsLibrary;
+  cachedNodeWindowsLibrary = opened;
+  return opened;
+};
 
 const closeWindowsMapping = (
   record: Uint8Array,
@@ -290,6 +338,27 @@ const closeWindowsMapping = (
     );
   };
 };
+
+const makeWindowsMapping = (
+  runtime: "deno" | "bun" | "node",
+  mapping: WindowsNativeMapping,
+  name: string | undefined,
+  arrayBuffer: ArrayBuffer,
+  unsafePointer: unknown,
+  close: () => void,
+): SharedMemoryMapping<ArrayBuffer> => ({
+  runtime,
+  fd: fdFromHandle(mapping.handle),
+  name,
+  size: mapping.size,
+  byteLength: arrayBuffer.byteLength,
+  buffer: arrayBuffer,
+  kind: "external-array-buffer",
+  arrayBuffer,
+  unsafePointer,
+  baseAddressMod64: mapping.baseAddressMod64,
+  close,
+});
 
 const fromDenoWindowsRecord = (
   record: Uint8Array,
@@ -307,22 +376,17 @@ const fromDenoWindowsRecord = (
   const arrayBuffer = new (getDeno().UnsafePointerView)(pointer)
     .getArrayBuffer(mapping.size);
 
-  return {
-    runtime: "deno",
-    fd: fdFromHandle(mapping.handle),
+  return makeWindowsMapping(
+    "deno",
+    mapping,
     name,
-    size: mapping.size,
-    byteLength: arrayBuffer.byteLength,
-    buffer: arrayBuffer,
-    kind: "external-array-buffer",
     arrayBuffer,
-    unsafePointer: pointer,
-    baseAddressMod64: mapping.baseAddressMod64,
-    close: closeWindowsMapping(
+    pointer,
+    closeWindowsMapping(
       record,
-      lib.symbols.knitting_windows_close_shared_memory,
+      lib.symbols[WINDOWS_CLOSE_SHARED_MEMORY],
     ),
-  };
+  );
 };
 
 const fromBunWindowsRecord = (
@@ -341,116 +405,207 @@ const fromBunWindowsRecord = (
     mapping.size,
   );
 
-  return {
-    runtime: "bun",
-    fd: fdFromHandle(mapping.handle),
+  return makeWindowsMapping(
+    "bun",
+    mapping,
     name,
-    size: mapping.size,
-    byteLength: arrayBuffer.byteLength,
-    buffer: arrayBuffer,
-    kind: "external-array-buffer",
     arrayBuffer,
-    unsafePointer: Number(mapping.address),
-    baseAddressMod64: mapping.baseAddressMod64,
-    close: closeWindowsMapping(
+    Number(mapping.address),
+    closeWindowsMapping(
       record,
-      lib.symbols.knitting_windows_close_shared_memory,
+      lib.symbols[WINDOWS_CLOSE_SHARED_MEMORY],
     ),
-  };
+  );
+};
+
+const fromNodeWindowsRecord = (
+  record: Uint8Array,
+  name: string | undefined,
+  lib: NodeWindowsLibrary,
+): SharedMemoryMapping<ArrayBuffer> => {
+  const mapping = readWindowsNativeMapping(record);
+  const arrayBuffer = getNodeFfi().toArrayBuffer(
+    mapping.address,
+    mapping.size,
+    false,
+  );
+  let closed = false;
+
+  return makeWindowsMapping(
+    "node",
+    mapping,
+    name,
+    arrayBuffer,
+    mapping.address,
+    () => {
+      if (closed) return;
+      requireDetachedExternalArrayBuffer(arrayBuffer);
+      checkWindowsResult(
+        lib.functions[WINDOWS_CLOSE_SHARED_MEMORY](record),
+        WINDOWS_CLOSE_SHARED_MEMORY,
+      );
+      closed = true;
+    },
+  );
+};
+
+const createWindowsSharedMemory = <Library>(
+  options: number | CreateSharedMemoryOptions,
+  runtime: "deno" | "bun" | "node",
+  lib: Library,
+  createSharedMemory: WindowsCreateSharedMemory,
+  fromRecord: WindowsRecordReader<Library>,
+): SharedMemoryMapping<ArrayBuffer> => {
+  const size = expectPositiveSize(readCreateSize(options));
+  const { mode, name } = readWindowsCreate(options, runtime);
+  const record = createRecord();
+  checkWindowsResult(
+    createSharedMemory(
+      BigInt(size),
+      encodeWideCString(name),
+      mode,
+      record,
+    ),
+    WINDOWS_CREATE_SHARED_MEMORY,
+  );
+
+  return fromRecord(record, name, lib);
+};
+
+const mapWindowsSharedMemory = <Library>(
+  options: MapSharedMemoryOptions,
+  lib: Library,
+  mapSharedMemory: WindowsMapSharedMemory,
+  fromRecord: WindowsRecordReader<Library>,
+): SharedMemoryMapping<ArrayBuffer> => {
+  const fd = expectFd(options.fd);
+  const size = expectPositiveSize(options.size);
+  const record = createRecord();
+  checkWindowsResult(
+    mapSharedMemory(
+      BigInt(fd),
+      BigInt(size),
+      encodeWideCString(options.name),
+      record,
+    ),
+    WINDOWS_MAP_SHARED_MEMORY,
+  );
+
+  return fromRecord(record, options.name, lib);
 };
 
 export const createDenoWindowsSharedMemory = (
   options: number | CreateSharedMemoryOptions,
   lib = openDenoWindowsSharedMemoryLibrary(),
-): SharedMemoryMapping<ArrayBuffer> => {
-  const size = expectPositiveSize(readCreateSize(options));
-  const { mode, name } = readWindowsCreate(options, "deno");
-  const record = createRecord();
-  checkWindowsResult(
-    lib.symbols.knitting_windows_create_shared_memory(
-      BigInt(size),
-      encodeWideCString(name),
-      mode,
-      record,
-    ),
-    "knitting_windows_create_shared_memory",
+): SharedMemoryMapping<ArrayBuffer> =>
+  createWindowsSharedMemory(
+    options,
+    "deno",
+    lib,
+    lib.symbols[WINDOWS_CREATE_SHARED_MEMORY],
+    fromDenoWindowsRecord,
   );
-
-  return fromDenoWindowsRecord(record, name, lib);
-};
 
 export const mapDenoWindowsSharedMemory = (
   options: MapSharedMemoryOptions,
   lib = openDenoWindowsSharedMemoryLibrary(),
-): SharedMemoryMapping<ArrayBuffer> => {
-  const fd = expectFd(options.fd);
-  const size = expectPositiveSize(options.size);
-  const record = createRecord();
-  checkWindowsResult(
-    lib.symbols.knitting_windows_map_shared_memory(
-      BigInt(fd),
-      BigInt(size),
-      encodeWideCString(options.name),
-      record,
-    ),
-    "knitting_windows_map_shared_memory",
+): SharedMemoryMapping<ArrayBuffer> =>
+  mapWindowsSharedMemory(
+    options,
+    lib,
+    lib.symbols[WINDOWS_MAP_SHARED_MEMORY],
+    fromDenoWindowsRecord,
   );
 
-  return fromDenoWindowsRecord(record, options.name, lib);
-};
+const createWindowsConnectionPrimitives = <Library>(
+  runtime: "deno" | "bun" | "node",
+  lib: Library,
+  createSharedMemory: (
+    options: number | CreateSharedMemoryOptions,
+    lib: Library,
+  ) => SharedMemoryMapping<ArrayBuffer>,
+  mapSharedMemory: (
+    options: MapSharedMemoryOptions,
+    lib: Library,
+  ) => SharedMemoryMapping<ArrayBuffer>,
+): SharedMemoryConnectionPrimitives<SharedMemoryMapping<ArrayBuffer>> => ({
+  runtime,
+  createSharedMemory: (options) => createSharedMemory(options, lib),
+  mapSharedMemory: (options) => mapSharedMemory(options, lib),
+});
 
 export const createDenoWindowsConnectionPrimitives = (
   lib = openDenoWindowsSharedMemoryLibrary(),
-): SharedMemoryConnectionPrimitives<SharedMemoryMapping<ArrayBuffer>> => ({
-  runtime: "deno",
-  createSharedMemory: (options) => createDenoWindowsSharedMemory(options, lib),
-  mapSharedMemory: (options) => mapDenoWindowsSharedMemory(options, lib),
-});
+): SharedMemoryConnectionPrimitives<SharedMemoryMapping<ArrayBuffer>> =>
+  createWindowsConnectionPrimitives(
+    "deno",
+    lib,
+    createDenoWindowsSharedMemory,
+    mapDenoWindowsSharedMemory,
+  );
 
 export const createBunWindowsSharedMemory = (
   options: number | CreateSharedMemoryOptions,
   lib = openBunWindowsSharedMemoryLibrary(),
-): SharedMemoryMapping<ArrayBuffer> => {
-  const size = expectPositiveSize(readCreateSize(options));
-  const { mode, name } = readWindowsCreate(options, "bun");
-  const record = createRecord();
-  checkWindowsResult(
-    lib.symbols.knitting_windows_create_shared_memory(
-      BigInt(size),
-      encodeWideCString(name),
-      mode,
-      record,
-    ),
-    "knitting_windows_create_shared_memory",
+): SharedMemoryMapping<ArrayBuffer> =>
+  createWindowsSharedMemory(
+    options,
+    "bun",
+    lib,
+    lib.symbols[WINDOWS_CREATE_SHARED_MEMORY],
+    fromBunWindowsRecord,
   );
-
-  return fromBunWindowsRecord(record, name, lib);
-};
 
 export const mapBunWindowsSharedMemory = (
   options: MapSharedMemoryOptions,
   lib = openBunWindowsSharedMemoryLibrary(),
-): SharedMemoryMapping<ArrayBuffer> => {
-  const fd = expectFd(options.fd);
-  const size = expectPositiveSize(options.size);
-  const record = createRecord();
-  checkWindowsResult(
-    lib.symbols.knitting_windows_map_shared_memory(
-      BigInt(fd),
-      BigInt(size),
-      encodeWideCString(options.name),
-      record,
-    ),
-    "knitting_windows_map_shared_memory",
+): SharedMemoryMapping<ArrayBuffer> =>
+  mapWindowsSharedMemory(
+    options,
+    lib,
+    lib.symbols[WINDOWS_MAP_SHARED_MEMORY],
+    fromBunWindowsRecord,
   );
-
-  return fromBunWindowsRecord(record, options.name, lib);
-};
 
 export const createBunWindowsConnectionPrimitives = (
   lib = openBunWindowsSharedMemoryLibrary(),
-): SharedMemoryConnectionPrimitives<SharedMemoryMapping<ArrayBuffer>> => ({
-  runtime: "bun",
-  createSharedMemory: (options) => createBunWindowsSharedMemory(options, lib),
-  mapSharedMemory: (options) => mapBunWindowsSharedMemory(options, lib),
-});
+): SharedMemoryConnectionPrimitives<SharedMemoryMapping<ArrayBuffer>> =>
+  createWindowsConnectionPrimitives(
+    "bun",
+    lib,
+    createBunWindowsSharedMemory,
+    mapBunWindowsSharedMemory,
+  );
+
+export const createNodeWindowsSharedMemory = (
+  options: number | CreateSharedMemoryOptions,
+  lib = openNodeWindowsSharedMemoryLibrary(),
+): SharedMemoryMapping<ArrayBuffer> =>
+  createWindowsSharedMemory(
+    options,
+    "node",
+    lib,
+    lib.functions[WINDOWS_CREATE_SHARED_MEMORY],
+    fromNodeWindowsRecord,
+  );
+
+export const mapNodeWindowsSharedMemory = (
+  options: MapSharedMemoryOptions,
+  lib = openNodeWindowsSharedMemoryLibrary(),
+): SharedMemoryMapping<ArrayBuffer> =>
+  mapWindowsSharedMemory(
+    options,
+    lib,
+    lib.functions[WINDOWS_MAP_SHARED_MEMORY],
+    fromNodeWindowsRecord,
+  );
+
+export const createNodeWindowsConnectionPrimitives = (
+  lib = openNodeWindowsSharedMemoryLibrary(),
+): SharedMemoryConnectionPrimitives<SharedMemoryMapping<ArrayBuffer>> =>
+  createWindowsConnectionPrimitives(
+    "node",
+    lib,
+    createNodeWindowsSharedMemory,
+    mapNodeWindowsSharedMemory,
+  );

@@ -8,8 +8,10 @@ import {
   HEADER_STATIC_PAYLOAD_U32,
   LockBound,
   PayloadBuffer,
+  payloadBufferName,
   PayloadSignal,
   type PromisePayloadHandler,
+  registerLockPayloadCodec,
   type Task,
   TaskIndex,
 } from "./lock.ts";
@@ -34,6 +36,15 @@ import {
   SHARED_ARRAY_BUFFER_NUMERIC_WORDS,
 } from "../connections/shared-array-buffer-payload.ts";
 import {
+  BUFFER_REFERENCE_NUMERIC_TRANSFER,
+  BufferReference,
+  isBufferReferenceValue,
+} from "../connections/buffer-reference.ts";
+import {
+  isProcessSharedBufferValue,
+  ProcessSharedBuffer,
+} from "../connections/process-shared-buffer.ts";
+import {
   isNumericArray,
   type NumericArray,
   numericArrayFromFloat64,
@@ -42,10 +53,6 @@ import {
 type ExternalPayloadLike = {
   toMetadata: () => unknown;
 };
-
-const BUFFER_REFERENCE_NUMERIC_TRANSFER = Symbol.for(
-  "knitting.bufferReference.numericTransfer",
-);
 
 type ExternalPayloadCodec = {
   decode: (metadata: unknown) => unknown;
@@ -131,6 +138,19 @@ const ENVELOPE_PROMISE_DETAIL =
 const DYNAMIC_PAYLOAD_LIMIT_DETAIL = "Dynamic payload exceeds maxPayloadBytes.";
 const DYNAMIC_PAYLOAD_CAPACITY_DETAIL =
   "Dynamic payload buffer capacity exceeded.";
+const PROCESS_BOUNDARY_POINTER_PAYLOAD_DETAIL =
+  "SharedArrayBuffer and BufferReference are process-local pointer payloads " +
+  "and cannot cross a process-worker boundary; use ProcessSharedBuffer instead.";
+const RESERVED_EXTERNAL_PAYLOAD_DETAIL =
+  "Reserved Knitting external payload codec cannot be forged.";
+
+const isProcessLocalPointerCodec = (codecId: string): boolean =>
+  codecId === SHARED_ARRAY_BUFFER_CODEC_ID ||
+  codecId === BUFFER_REFERENCE_CODEC_ID;
+
+const isReservedExternalPayloadCodec = (codecId: string): boolean =>
+  isProcessLocalPointerCodec(codecId) ||
+  codecId === PROCESS_SHARED_BUFFER_CODEC_ID;
 
 const isPlainJsonObject = (value: object) => {
   const proto = objectGetPrototypeOf(value);
@@ -177,7 +197,22 @@ const isExternalPayloadLike = (value: object): value is ExternalPayloadLike =>
   typeof (value as Record<symbol, unknown>)[EXTERNAL_PAYLOAD_BRAND] ===
     "string";
 
-const decodeExternalPayload = (raw: string): unknown => {
+const readTrustedExternalPayloadMetadata = (
+  value: ExternalPayloadLike,
+): unknown => {
+  if (isBufferReferenceValue(value)) {
+    return BufferReference.prototype.toMetadata.call(value);
+  }
+  if (isProcessSharedBufferValue(value)) {
+    return ProcessSharedBuffer.prototype.toMetadata.call(value);
+  }
+  return value.toMetadata();
+};
+
+const decodeExternalPayload = (
+  raw: string,
+  processBoundary: boolean,
+): unknown => {
   const payload = parseJSON(raw);
   if (!arrayIsArray(payload) || payload.length !== 2) return payload;
 
@@ -185,6 +220,9 @@ const decodeExternalPayload = (raw: string): unknown => {
   const metadata = payload[1];
   if (typeof codecId !== "string") {
     return { codec: codecId, metadata };
+  }
+  if (processBoundary && isProcessLocalPointerCodec(codecId)) {
+    throw new TypeError(PROCESS_BOUNDARY_POINTER_PAYLOAD_DETAIL);
   }
 
   const codec = externalPayloadGlobal.__KNITTING_PAYLOAD_CODECS__?.[codecId];
@@ -427,6 +465,7 @@ export const encodePayload = ({
   headerSlotStrideU32,
   textCompat,
   onPromise,
+  processBoundary = false,
 }: {
   lockSector?: SharedBufferSource;
   payload?: {
@@ -445,6 +484,11 @@ export const encodePayload = ({
   headerSlotStrideU32?: number;
   textCompat?: LockBufferTextCompat;
   onPromise?: PromisePayloadHandler;
+  /**
+   * Reject process-local pointer payloads while preserving ProcessSharedBuffer.
+   * Process transports must set this on both encoders and decoders.
+   */
+  processBoundary?: boolean;
 }) => {
   const payloadSab = payload?.sab ?? sab;
   const resolvedPayloadConfig = resolvePayloadBufferOptions({
@@ -635,7 +679,9 @@ export const encodePayload = ({
     }
 
     task[TaskIndex.Type] = dynamicType;
-    if (!ensureWithinDynamicLimit(task, bytes, PayloadBuffer[dynamicType])) {
+    if (
+      !ensureWithinDynamicLimit(task, bytes, payloadBufferName(dynamicType))
+    ) {
       return false;
     }
     const reservedSlot = reserveDynamicObject(task, bytes);
@@ -841,7 +887,11 @@ export const encodePayload = ({
     slotIndex: number,
     value: BufferReferencePayloadLike,
   ): boolean => {
-    const words = value[BUFFER_REFERENCE_NUMERIC_TRANSFER]?.();
+    const words = isBufferReferenceValue(value)
+      ? BufferReference.prototype[BUFFER_REFERENCE_NUMERIC_TRANSFER].call(
+        value,
+      )
+      : value[BUFFER_REFERENCE_NUMERIC_TRANSFER]?.();
     if (words === undefined) return false;
 
     task[TaskIndex.Type] = PayloadBuffer.BufferReference;
@@ -886,6 +936,7 @@ export const encodePayload = ({
     task: Task,
     slotIndex: number,
     externalPayload: ExternalPayloadLike,
+    trustedReservedCodec = false,
   ) => {
     const codecId = readExternalPayloadCodecId(externalPayload as object);
     if (codecId === undefined) {
@@ -896,43 +947,67 @@ export const encodePayload = ({
         detail: UNSUPPORTED_OBJECT_DETAIL,
       });
     }
+    if (trustedReservedCodec) {
+      if (processBoundary && isProcessLocalPointerCodec(codecId)) {
+        return encoderError({
+          task,
+          type: ErrorKnitting.Serializable,
+          onPromise,
+          detail: PROCESS_BOUNDARY_POINTER_PAYLOAD_DETAIL,
+        });
+      }
 
-    if (
-      codecId === SHARED_ARRAY_BUFFER_CODEC_ID &&
-      tryEncodeSharedArrayBufferNumeric(
-        task,
-        slotIndex,
-        externalPayload as SharedArrayBufferPayloadLike,
-      )
-    ) {
-      return true;
-    }
+      if (
+        codecId === SHARED_ARRAY_BUFFER_CODEC_ID &&
+        tryEncodeSharedArrayBufferNumeric(
+          task,
+          slotIndex,
+          externalPayload as SharedArrayBufferPayloadLike,
+        )
+      ) {
+        return true;
+      }
 
-    if (
-      codecId === BUFFER_REFERENCE_CODEC_ID &&
-      tryEncodeBufferReferenceNumeric(
-        task,
-        slotIndex,
-        externalPayload as BufferReferencePayloadLike,
-      )
-    ) {
-      return true;
-    }
+      if (
+        codecId === BUFFER_REFERENCE_CODEC_ID &&
+        tryEncodeBufferReferenceNumeric(
+          task,
+          slotIndex,
+          externalPayload as BufferReferencePayloadLike,
+        )
+      ) {
+        return true;
+      }
 
-    if (
-      codecId === PROCESS_SHARED_BUFFER_CODEC_ID &&
-      tryEncodeProcessSharedBufferNumeric(
+      if (
+        codecId === PROCESS_SHARED_BUFFER_CODEC_ID &&
+        tryEncodeProcessSharedBufferNumeric(
+          task,
+          slotIndex,
+          externalPayload as ProcessSharedBufferPayloadLike,
+        )
+      ) {
+        return true;
+      }
+    } else if (isReservedExternalPayloadCodec(codecId)) {
+      return encoderError({
         task,
-        slotIndex,
-        externalPayload as ProcessSharedBufferPayloadLike,
-      )
-    ) {
-      return true;
+        type: ErrorKnitting.Serializable,
+        onPromise,
+        detail: processBoundary && isProcessLocalPointerCodec(codecId)
+          ? PROCESS_BOUNDARY_POINTER_PAYLOAD_DETAIL
+          : RESERVED_EXTERNAL_PAYLOAD_DETAIL,
+      });
     }
 
     let text: string | undefined;
     try {
-      text = stringifyJSON([codecId, externalPayload.toMetadata()]);
+      text = stringifyJSON([
+        codecId,
+        trustedReservedCodec
+          ? readTrustedExternalPayloadMetadata(externalPayload)
+          : externalPayload.toMetadata(),
+      ]);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       return encoderError({
@@ -1027,12 +1102,28 @@ export const encodePayload = ({
 
   const resolveEnvelopeExternalBody = (
     body: unknown,
-  ): ExternalPayloadLike | undefined => {
+  ):
+    | { payload: ExternalPayloadLike; trustedReservedCodec: boolean }
+    | undefined => {
     if (body === null || typeof body !== "object") return undefined;
     const sharedArrayBuffer = getSharedArrayBufferPayload(body as object);
-    if (sharedArrayBuffer !== undefined) return sharedArrayBuffer;
+    if (sharedArrayBuffer !== undefined) {
+      return { payload: sharedArrayBuffer, trustedReservedCodec: true };
+    }
+    if (
+      isBufferReferenceValue(body) ||
+      isProcessSharedBufferValue(body)
+    ) {
+      return {
+        payload: body as ExternalPayloadLike,
+        trustedReservedCodec: true,
+      };
+    }
     if (isExternalPayloadLike(body as object)) {
-      return body as ExternalPayloadLike;
+      return {
+        payload: body as ExternalPayloadLike,
+        trustedReservedCodec: false,
+      };
     }
     return undefined;
   };
@@ -1125,6 +1216,7 @@ export const encodePayload = ({
     headerText: string,
     headerIsString: boolean,
     externalBody: ExternalPayloadLike,
+    trustedReservedCodec: boolean,
   ) => {
     const codecId = readExternalPayloadCodecId(externalBody as object);
     if (codecId === undefined) {
@@ -1135,10 +1227,34 @@ export const encodePayload = ({
         detail: ENVELOPE_PAYLOAD_DETAIL,
       });
     }
+    if (trustedReservedCodec) {
+      if (processBoundary && isProcessLocalPointerCodec(codecId)) {
+        return encoderError({
+          task,
+          type: ErrorKnitting.Serializable,
+          onPromise,
+          detail: PROCESS_BOUNDARY_POINTER_PAYLOAD_DETAIL,
+        });
+      }
+    } else if (isReservedExternalPayloadCodec(codecId)) {
+      return encoderError({
+        task,
+        type: ErrorKnitting.Serializable,
+        onPromise,
+        detail: processBoundary && isProcessLocalPointerCodec(codecId)
+          ? PROCESS_BOUNDARY_POINTER_PAYLOAD_DETAIL
+          : RESERVED_EXTERNAL_PAYLOAD_DETAIL,
+      });
+    }
 
     let bodyText: string | undefined;
     try {
-      bodyText = stringifyJSON([codecId, externalBody.toMetadata()]);
+      bodyText = stringifyJSON([
+        codecId,
+        trustedReservedCodec
+          ? readTrustedExternalPayloadMetadata(externalBody)
+          : externalBody.toMetadata(),
+      ]);
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       return encoderError({
@@ -1255,7 +1371,8 @@ export const encodePayload = ({
         slotIndex,
         headerText,
         headerIsString,
-        externalBody,
+        externalBody.payload,
+        externalBody.trustedReservedCodec,
       );
     }
 
@@ -1341,6 +1458,7 @@ export const encodePayload = ({
               task,
               slotIndex,
               sharedArrayBufferPayload,
+              true,
             );
           }
 
@@ -1406,6 +1524,18 @@ export const encodePayload = ({
             setSlotLength(reservedSlot, written);
             task.value = null;
             return true;
+          }
+
+          if (
+            isBufferReferenceValue(objectValue) ||
+            isProcessSharedBufferValue(objectValue)
+          ) {
+            return encodeObjectExternalPayload(
+              task,
+              slotIndex,
+              objectValue as ExternalPayloadLike,
+              true,
+            );
           }
 
           const objectCtor = (objectValue as { constructor?: unknown })
@@ -1620,6 +1750,7 @@ export const decodePayload = ({
   headerSlotStrideU32,
   textCompat,
   host,
+  processBoundary = false,
 }: {
   lockSector?: SharedBufferSource;
   payload?: {
@@ -1638,6 +1769,10 @@ export const decodePayload = ({
   headerSlotStrideU32?: number;
   textCompat?: LockBufferTextCompat;
   host?: true;
+  /**
+   * Reject process-local pointer payloads before reading pointer/token metadata.
+   */
+  processBoundary?: boolean;
 }) => {
   const payloadSab = payload?.sab ?? sab;
   const resolvedPayloadConfig = resolvePayloadBufferOptions({
@@ -1691,7 +1826,18 @@ export const decodePayload = ({
   // store the slot in their Task, to just get it when it comes
   // to the static versions of decoding
   return (task: Task, slotIndex: number, specialFlags?: number) => {
-    switch (task[TaskIndex.Type]) {
+    const payloadType = task[TaskIndex.Type];
+    if (
+      processBoundary &&
+      (
+        payloadType === PayloadBuffer.SharedArrayBuffer ||
+        payloadType === PayloadBuffer.BufferReference
+      )
+    ) {
+      throw new TypeError(PROCESS_BOUNDARY_POINTER_PAYLOAD_DETAIL);
+    }
+
+    switch (payloadType) {
       case PayloadSignal.BigInt:
         Uint32View[0] = task[TaskIndex.Start];
         Uint32View[1] = task[TaskIndex.End];
@@ -1790,14 +1936,14 @@ export const decodePayload = ({
           task[TaskIndex.PayloadLen],
           slotIndex,
         );
-        const header =
-          task[TaskIndex.Type] ===
-              PayloadBuffer.EnvelopeStaticHeaderStringExternal
-            ? rawHeader
-            : parseJSON(rawHeader);
+        const header = task[TaskIndex.Type] ===
+            PayloadBuffer.EnvelopeStaticHeaderStringExternal
+          ? rawHeader
+          : parseJSON(rawHeader);
         const bodyStart = task[TaskIndex.Start];
         const body = decodeExternalPayload(
           readDynamicUtf8(bodyStart, bodyStart + task[TaskIndex.End]),
+          processBoundary,
         );
         task.value = new Envelope(header as any, body as any);
         freeTaskSlot(task);
@@ -1808,13 +1954,13 @@ export const decodePayload = ({
         const headerStart = task[TaskIndex.Start];
         const bodyStart = headerStart + task[TaskIndex.PayloadLen];
         const rawHeader = readDynamicUtf8(headerStart, bodyStart);
-        const header =
-          task[TaskIndex.Type] ===
-              PayloadBuffer.EnvelopeDynamicHeaderStringExternal
-            ? rawHeader
-            : parseJSON(rawHeader);
+        const header = task[TaskIndex.Type] ===
+            PayloadBuffer.EnvelopeDynamicHeaderStringExternal
+          ? rawHeader
+          : parseJSON(rawHeader);
         const body = decodeExternalPayload(
           readDynamicUtf8(bodyStart, bodyStart + task[TaskIndex.End]),
+          processBoundary,
         );
         task.value = new Envelope(header as any, body as any);
         freeTaskSlot(task);
@@ -1988,12 +2134,14 @@ export const decodePayload = ({
             task[TaskIndex.Start],
             task[TaskIndex.Start] + task[TaskIndex.PayloadLen],
           ),
+          processBoundary,
         );
         freeTaskSlot(task);
         return;
       case PayloadBuffer.StaticExternalPayload:
         task.value = decodeExternalPayload(
           readStaticUtf8(0, task[TaskIndex.PayloadLen], slotIndex),
+          processBoundary,
         );
         return;
       case PayloadBuffer.ProcessSharedBuffer:
@@ -2089,3 +2237,7 @@ export const decodePayload = ({
     }
   };
 };
+
+// Break the lock.ts <-> payloadCodec.ts cycle (see lock.ts): register the codec
+// factories on load instead of having lock.ts import them.
+registerLockPayloadCodec(encodePayload, decodePayload);

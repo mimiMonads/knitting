@@ -1,26 +1,56 @@
-import {
-  existsSync,
-  realpathSync,
-} from "node:fs";
-import {
-  basename as pathBasename,
-  dirname as pathDirname,
-  join as pathJoin,
-  resolve as pathResolve,
-} from "node:path";
+import { getNodeBuiltinModule } from "./node-compat.ts";
+
+// `node:fs`/`node:path` resolved lazily so this module evaluates on runtimes
+// that lack them (e.g. Andromeda); only host-side canonicalization uses them.
+type RealpathSync = ((candidate: string) => string) & {
+  native?: (candidate: string) => string;
+};
+type FsModule = {
+  existsSync: (candidate: string) => boolean;
+  realpathSync: RealpathSync;
+};
+type PathModule = {
+  basename: (path: string) => string;
+  dirname: (path: string) => string;
+  join: (...segments: string[]) => string;
+  resolve: (...segments: string[]) => string;
+};
+
+const nodeFs = (): FsModule | undefined =>
+  getNodeBuiltinModule<FsModule>("node:fs");
+
+const nodePath = (): PathModule => {
+  const module = getNodeBuiltinModule<PathModule>("node:path");
+  if (module === undefined) {
+    throw new Error("node:path is not available in this runtime");
+  }
+  return module;
+};
 
 type CanonicalPathFsApi = {
   existsSync?: (candidate: string) => boolean;
   realpathSync?: (candidate: string) => string;
 };
 
+const defaultFsApi = (): CanonicalPathFsApi => {
+  const fs = nodeFs();
+  if (fs === undefined) return {};
+  return {
+    existsSync: fs.existsSync,
+    realpathSync: fs.realpathSync.native ?? fs.realpathSync,
+  };
+};
+
 export const toCanonicalPath = (
   candidate: string,
-  fsApi: CanonicalPathFsApi = {
-    existsSync,
-    realpathSync: realpathSync.native ?? realpathSync,
-  },
+  fsApi: CanonicalPathFsApi = defaultFsApi(),
 ): string => {
+  const {
+    basename: pathBasename,
+    dirname: pathDirname,
+    join: pathJoin,
+    resolve: pathResolve,
+  } = nodePath();
   const absolute = pathResolve(candidate);
   const { existsSync, realpathSync } = fsApi;
 

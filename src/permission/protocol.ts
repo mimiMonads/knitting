@@ -1,16 +1,44 @@
-import {
-  existsSync as existsSyncCompat,
-  realpathSync as realpathSyncCompat,
-} from "node:fs";
-import {
-  isAbsolute as pathIsAbsolute,
-  relative as pathRelative,
-  resolve as pathResolve,
-} from "node:path";
-import { fileURLToPath as fileURLToPathCompat } from "node:url";
 import { RUNTIME } from "../common/runtime.ts";
 import { toCanonicalPath as toSharedCanonicalPath } from "../common/path-canonical.ts";
-import { getNodeProcess } from "../common/node-compat.ts";
+import { getNodeBuiltinModule, getNodeProcess } from "../common/node-compat.ts";
+
+// `node:fs`/`node:path`/`node:url` resolved lazily so this module evaluates on
+// runtimes without them (e.g. Andromeda); the wrappers only run when a
+// permission policy resolves filesystem paths.
+type RealpathSync = ((candidate: string) => string) & {
+  native?: (candidate: string) => string;
+};
+type FsModule = {
+  existsSync: (path: string) => boolean;
+  realpathSync: RealpathSync;
+};
+type PathModule = {
+  isAbsolute: (path: string) => boolean;
+  relative: (from: string, to: string) => string;
+  resolve: (...segments: string[]) => string;
+};
+type UrlModule = { fileURLToPath: (url: string | URL) => string };
+
+const requireNodeModule = <T>(specifier: string): T => {
+  const module = getNodeBuiltinModule<T>(specifier);
+  if (module === undefined) {
+    throw new Error(`${specifier} is not available in this runtime`);
+  }
+  return module;
+};
+
+const nodeFs = (): FsModule => requireNodeModule<FsModule>("node:fs");
+const nodePath = (): PathModule => requireNodeModule<PathModule>("node:path");
+const nodeUrl = (): UrlModule => requireNodeModule<UrlModule>("node:url");
+
+const existsSyncCompat = (path: string): boolean => nodeFs().existsSync(path);
+const pathIsAbsolute = (path: string): boolean => nodePath().isAbsolute(path);
+const pathRelative = (from: string, to: string): string =>
+  nodePath().relative(from, to);
+const pathResolve = (...segments: string[]): string =>
+  nodePath().resolve(...segments);
+const fileURLToPathCompat = (url: string | URL): string =>
+  nodeUrl().fileURLToPath(url);
 
 type PermissionPath = string | URL;
 
@@ -18,6 +46,7 @@ type NodePermissionSettings = {
   allowWorker?: boolean;
   allowChildProcess?: boolean;
   allowAddons?: boolean;
+  allowFfi?: boolean;
   allowWasi?: boolean;
 };
 
@@ -436,7 +465,10 @@ const toEnvFiles = (
   return toUniquePathList(values, cwd, home);
 };
 
-const rawRealpathSync = realpathSyncCompat.native ?? realpathSyncCompat;
+const rawRealpathSync = (candidate: string): string => {
+  const { realpathSync } = nodeFs();
+  return (realpathSync.native ?? realpathSync)(candidate);
+};
 
 const toCanonicalPath = (candidate: string): string => {
   return toSharedCanonicalPath(candidate, {
@@ -535,11 +567,22 @@ const resolveNodePermissionActivationFlag = (): string => {
   return "--permission";
 };
 
+const nodeSupportsNetworkPermission = (): boolean => {
+  try {
+    const raw = getNodeProcess()?.versions?.node;
+    const major = Number.parseInt(String(raw).split(".", 1)[0] ?? "", 10);
+    return Number.isInteger(major) && major >= 25;
+  } catch {
+    return false;
+  }
+};
+
 const toNodeFlags = ({
   read,
   readAll,
   write,
   writeAll,
+  netAll,
   envFiles,
   node,
 }: {
@@ -547,6 +590,7 @@ const toNodeFlags = ({
   readAll: boolean;
   write: string[];
   writeAll: boolean;
+  netAll: boolean;
   envFiles: string[];
   node: Required<NodePermissionSettings>;
 }): string[] => {
@@ -554,19 +598,27 @@ const toNodeFlags = ({
 
   if (readAll) {
     modelFlags.push("--allow-fs-read=*");
-  } else if (read.length > 0) {
-    modelFlags.push(`--allow-fs-read=${read.join(",")}`);
+  } else {
+    for (const path of read) {
+      modelFlags.push(`--allow-fs-read=${path}`);
+    }
   }
 
   if (writeAll) {
     modelFlags.push("--allow-fs-write=*");
-  } else if (write.length > 0) {
-    modelFlags.push(`--allow-fs-write=${write.join(",")}`);
+  } else {
+    for (const path of write) {
+      modelFlags.push(`--allow-fs-write=${path}`);
+    }
   }
 
   if (node.allowWorker) modelFlags.push("--allow-worker");
   if (node.allowChildProcess) modelFlags.push("--allow-child-process");
+  if (netAll && nodeSupportsNetworkPermission()) {
+    modelFlags.push("--allow-net");
+  }
   if (node.allowAddons) modelFlags.push("--allow-addons");
+  if (node.allowFfi) modelFlags.push("--allow-ffi");
   if (node.allowWasi) modelFlags.push("--allow-wasi");
 
   const flags: string[] = [];
@@ -812,6 +864,7 @@ export const resolvePermissionProtocol = ({
         allowWorker: true,
         allowChildProcess: true,
         allowAddons: true,
+        allowFfi: true,
         allowWasi: true,
         flags: [],
       },
@@ -908,9 +961,7 @@ export const resolvePermissionProtocol = ({
     ? input.workers === true
     : input.node?.allowWorker === true;
 
-  const ffiSource = hasOwn(input, "ffi")
-    ? input.ffi
-    : (input.node?.allowAddons === true ? true : false);
+  const ffiSource = hasOwn(input, "ffi") ? input.ffi : false;
   const ffiAll = ffiSource === true;
   const ffi = ffiAll ? [] : toUniquePathList(
     Array.isArray(ffiSource) ? ffiSource : undefined,
@@ -933,7 +984,13 @@ export const resolvePermissionProtocol = ({
   const nodeSettings: Required<NodePermissionSettings> = {
     allowWorker: workers,
     allowChildProcess: runAll || run.length > 0,
-    allowAddons: ffiAll || ffi.length > 0,
+    // Top-level `ffi` is the explicit cross-runtime native-code capability.
+    // Runtime-specific overrides stay independent so allowing addons does not
+    // silently grant unrestricted node:ffi access.
+    allowAddons: input.node?.allowAddons === true ||
+      ffiAll ||
+      ffi.length > 0,
+    allowFfi: input.node?.allowFfi === true || ffiAll || ffi.length > 0,
     allowWasi: wasi,
   };
   const denoSettings: Required<Omit<DenoPermissionSettings, "lock">> = {
@@ -994,6 +1051,7 @@ export const resolvePermissionProtocol = ({
         readAll,
         write: resolvedWrite,
         writeAll,
+        netAll,
         envFiles,
         node: nodeSettings,
       }),
