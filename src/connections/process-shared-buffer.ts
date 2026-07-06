@@ -16,8 +16,8 @@ import {
   expectPositiveSize,
   readCreateMode,
   readCreateName,
-  readRequiredCreateName,
   readCreateSize,
+  readRequiredCreateName,
   type SharedMemoryConnectionPrimitives,
   type SharedMemoryMapping,
 } from "./types.ts";
@@ -64,12 +64,14 @@ export type ProcessSharedBufferMapper = Pick<
   "mapSharedMemory"
 >;
 
-export type ProcessSharedBufferPrimitives = Pick<
-  SharedMemoryConnectionPrimitives,
-  "createSharedMemory" | "mapSharedMemory"
-> & {
-  unlinkSharedMemory?: (name: string) => boolean;
-};
+export type ProcessSharedBufferPrimitives =
+  & Pick<
+    SharedMemoryConnectionPrimitives,
+    "createSharedMemory" | "mapSharedMemory"
+  >
+  & {
+    unlinkSharedMemory?: (name: string) => boolean;
+  };
 
 export type ProcessSharedBufferView =
   | Int8Array
@@ -134,6 +136,7 @@ const decodeKind = (
 };
 
 let defaultPrimitives: ProcessSharedBufferPrimitives | undefined;
+const processSharedBufferInstances = new WeakSet<object>();
 
 const createDefaultPrimitives = (): ProcessSharedBufferPrimitives => {
   if (RUNTIME === "bun") return createBunConnectionPrimitives();
@@ -220,6 +223,7 @@ export class ProcessSharedBuffer {
     this.descriptor = descriptor;
     this.byteOffset = byteOffset;
     this.byteLength = byteLength;
+    processSharedBufferInstances.add(this);
   }
 
   static create(
@@ -411,6 +415,13 @@ export class ProcessSharedBuffer {
   }
 }
 
+export const isProcessSharedBufferValue = (
+  value: unknown,
+): value is ProcessSharedBuffer =>
+  value !== null &&
+  typeof value === "object" &&
+  processSharedBufferInstances.has(value);
+
 export const parseProcessSharedBufferMetadata = (
   input: unknown,
 ): ProcessSharedBufferMetadata => {
@@ -453,8 +464,8 @@ const processSharedBufferGlobal = globalThis as typeof globalThis & {
   >;
 };
 
-const codecs = processSharedBufferGlobal.__KNITTING_PAYLOAD_CODECS__ ??=
-  Object.create(null) as Record<
+const codecs = processSharedBufferGlobal.__KNITTING_PAYLOAD_CODECS__ ??= Object
+  .create(null) as Record<
     string,
     {
       decode: (metadata: unknown) => unknown;

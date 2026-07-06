@@ -4,6 +4,7 @@ import {
   type BufferReferenceCapabilities,
   getBufferReferenceCapabilities,
 } from "../src/connections/buffer-reference-native.ts";
+import { detachArrayBufferBestEffort } from "../src/connections/buffer-reference.ts";
 
 const isDetached = (buffer: ArrayBuffer): boolean =>
   (buffer as ArrayBuffer & { detached?: boolean }).detached === true ||
@@ -49,6 +50,29 @@ test("adopt materializes the same bytes the producer moved", () => {
       region.byteLength,
     );
     assert.deepEqual([...view], [5, 6, 7, 8]);
+  } finally {
+    caps.release(produced.token);
+  }
+});
+
+// CI canary for the revocation primitive `release()` relies on: adopted alias
+// buffers must be detachable so escaped views can be neutralized before the
+// producer pin drops. Guards future backends (e.g. Node 26 node:ffi).
+test("adopted alias buffers are detachable (revocation primitive)", () => {
+  if (!caps) return;
+
+  const produced = caps.produce(new Uint8Array([1, 2, 3, 4]));
+  try {
+    const region = caps.adopt(produced);
+    const view = new Uint8Array(
+      region.buffer,
+      region.byteOffset,
+      region.byteLength,
+    );
+    const detached = detachArrayBufferBestEffort(caps.runtime, region.buffer);
+    assert.equal(detached, true, "alias must be revocable");
+    assert.equal(isDetached(region.buffer), true, "alias must be detached");
+    assert.equal(view.byteLength, 0, "alias views must be revoked");
   } finally {
     caps.release(produced.token);
   }

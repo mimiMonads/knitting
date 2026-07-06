@@ -520,8 +520,8 @@ const pool = createPool({
 })({ add });
 ```
 
-For production or plugin-like workloads, prefer an explicit policy. This
-example is fully representable by a Deno process worker:
+For production or plugin-like workloads, prefer an explicit policy. This example
+is fully representable by a Deno process worker:
 
 ```ts
 const pool = createPool({
@@ -538,22 +538,22 @@ const pool = createPool({
 ```
 
 Before a process worker is spawned, Knitting checks explicit restrictions
-against the selected runtime. A restriction that would be broader than
-requested or ignored is rejected synchronously. Implicit strict-default gaps
-remain backward compatible and produce a once-per-runtime warning.
+against the selected runtime. A restriction that would be broader than requested
+or ignored is rejected synchronously. Implicit strict-default gaps remain
+backward compatible and produce a once-per-runtime warning.
 
-| Process-worker permission | Deno | Node 22/24 | Node 26+ | Bun |
-| --- | --- | --- | --- | --- |
-| Filesystem allow-list | Scoped | Scoped | Scoped | Unsupported |
-| Filesystem deny-list | Scoped | Unsupported | Unsupported | Unsupported |
-| Network | Scoped allow/deny | Unsupported | Deny-all or allow-all only | Unsupported |
-| Environment allow/deny | Scoped | Unsupported | Unsupported | Unsupported |
-| Child processes | Scoped allow/deny | All-or-none | All-or-none | Unsupported |
-| Worker creation | Unsupported | All-or-none | All-or-none | Unsupported |
-| Import hosts | Scoped | Unsupported | Unsupported | Unsupported |
-| System information | Scoped | Unsupported | Unsupported | Unsupported |
-| WASI denial | Unsupported | All-or-none | All-or-none | Unsupported |
-| Native code / FFI denial | Transport exception | Transport exception | Transport exception | Unsupported |
+| Process-worker permission | Deno                | Node 22/24          | Node 26+                   | Bun         |
+| ------------------------- | ------------------- | ------------------- | -------------------------- | ----------- |
+| Filesystem allow-list     | Scoped              | Scoped              | Scoped                     | Unsupported |
+| Filesystem deny-list      | Scoped              | Unsupported         | Unsupported                | Unsupported |
+| Network                   | Scoped allow/deny   | Unsupported         | Deny-all or allow-all only | Unsupported |
+| Environment allow/deny    | Scoped              | Unsupported         | Unsupported                | Unsupported |
+| Child processes           | Scoped allow/deny   | All-or-none         | All-or-none                | Unsupported |
+| Worker creation           | Unsupported         | All-or-none         | All-or-none                | Unsupported |
+| Import hosts              | Scoped              | Unsupported         | Unsupported                | Unsupported |
+| System information        | Scoped              | Unsupported         | Unsupported                | Unsupported |
+| WASI denial               | Unsupported         | All-or-none         | All-or-none                | Unsupported |
+| Native code / FFI denial  | Transport exception | Transport exception | Transport exception        | Unsupported |
 
 “All-or-none” means an explicit scoped list fails closed. Node 26's
 `--allow-net` switch is emitted for `net: true`, but a host allow-list still
@@ -571,11 +571,11 @@ capability. On Node it enables both native addons and `node:ffi`; Node's
 `node.allowAddons` and `node.allowFfi` switches are independent—enabling addons
 does not silently enable FFI.
 
-Node process workers are a transport exception: Knitting needs
-`--allow-addons` on Node 22/24 or `--allow-ffi` on Node 26 to map their shared
-memory. Deno process workers likewise need `--allow-ffi`. Those capabilities
-apply to the entire worker process, including task code, so explicit native-code
-denial fails closed. Use an OS sandbox when task code is hostile.
+Node process workers are a transport exception: Knitting needs `--allow-addons`
+on Node 22/24 or `--allow-ffi` on Node 26 to map their shared memory. Deno
+process workers likewise need `--allow-ffi`. Those capabilities apply to the
+entire worker process, including task code, so explicit native-code denial fails
+closed. Use an OS sandbox when task code is hostile.
 
 ## Payloads
 
@@ -646,12 +646,12 @@ if (isMain) {
 The body is generic — `Envelope<Header, Body>` — and accepts any of the binary
 shapes the transport understands:
 
-| Body                 | Copy?                | Workers          | Notes                                            |
-| -------------------- | -------------------- | ---------------- | ------------------------------------------------ |
-| `ArrayBuffer`        | copied               | thread + process | The default body; works everywhere.              |
-| `SharedArrayBuffer`  | zero-copy, shared    | thread only      | Shared by reference; process workers reject it.  |
-| `ProcessSharedBuffer`| zero-copy, shared    | thread + process | Cross-process shared memory.                     |
-| `BufferReference`    | zero-copy, moved     | thread only      | From `knitting/unsafe`; same constraints as bare `BufferReference`. |
+| Body                  | Copy?             | Workers          | Notes                                                               |
+| --------------------- | ----------------- | ---------------- | ------------------------------------------------------------------- |
+| `ArrayBuffer`         | copied            | thread + process | The default body; works everywhere.                                 |
+| `SharedArrayBuffer`   | zero-copy, shared | thread only      | Shared by reference; process workers reject it.                     |
+| `ProcessSharedBuffer` | zero-copy, shared | thread + process | Cross-process shared memory.                                        |
+| `BufferReference`     | zero-copy, moved  | thread only      | From `knitting/unsafe`; same constraints as bare `BufferReference`. |
 
 The header keeps its fast paths regardless of the body: a small header is
 written inline, and only large headers spill to the dynamic payload region. A
@@ -925,11 +925,15 @@ Read these constraints before reaching for it:
   `unsafe: { BufferReferenceReturn: "copy" }` — the safe single copy described
   above. Set it to `"borrow"` to skip that copy by borrowing the worker's
   backing store until the returned `BufferReference` is released. Call
-  `ref.release()` or use `using`, and do it before shutting down the producing
-  worker. **After `release()` the borrowed bytes are gone — reading the
-  reference, or any view you took from it, is a use-after-free.** If the bytes
-  escape into HTTP responses, streams, timers, callbacks, or caches, copy them
-  before the borrowed reference is released.
+  `ref.release()` or use `using`. Releasing **revokes** the borrow: the
+  reference and every view taken from it are detached first, so later reads see
+  empty views or throw instead of touching freed memory. A reference that is
+  never released drops its borrow only once it and all of its views are
+  unreachable. Pool shutdown revokes outstanding borrows too — references you
+  still hold survive on a private copy, while stale views read as empty. If the
+  bytes escape into HTTP responses, streams, timers, callbacks, or caches, copy
+  them before the borrowed reference is released, or they will read as empty
+  afterward.
 - **Unsafe escape hatch.** This is not a security boundary. Forged metadata or
   unsynchronized host/worker mutation can still be unsafe.
 - **Node backend depends on the Node line.** Node 22 and 24 use the
@@ -950,7 +954,7 @@ using pool = createPool({
   using result = await pool.call.invert(new BufferReference(pixels));
   const out = result.toUint8Array(); // borrowed — valid only while `result` lives
   console.log([...out]);
-} // `using` releases the borrow here; do not read `out` after this point
+} // `using` releases the borrow here; `out` is detached and reads as empty now
 ```
 
 When in doubt, a plain `ArrayBuffer` or typed-array payload — which knitting
@@ -984,8 +988,8 @@ When using Node's Permission Model, also grant `--allow-ffi`. Knitting passes
 the experimental FFI flag to Node process workers it starts, but the host must
 be started with the flag so it can create the shared mappings. The FFI backend
 uses external `ArrayBuffer` mappings, so `ProcessSharedBuffer.view()`,
-`.getBuffer()`, and `.bytes()` work; `.getSAB()` is available only on the
-Node 22/24 addon backend.
+`.getBuffer()`, and `.bytes()` work; `.getSAB()` is available only on the Node
+22/24 addon backend.
 
 If you are developing locally on another Node ABI or architecture, you can
 compile the current V8 addon for that exact runtime:

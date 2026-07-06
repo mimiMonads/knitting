@@ -144,10 +144,12 @@ and refreshed `prebuilds/`.
 - The worker function returns a `BufferReference`; it is encoded as a dedicated
   raw-word `BufferReference` static payload on the return lock (same finalizer
   attachment as the forward leg, but no JSON metadata encode/decode).
-- **Host adopts eagerly in the codec `decode`**, gated by
-  `RUNTIME_IS_MAIN_THREAD` (host = return = eager owning/copy/borrow; worker
-  thread = forward = lazy alias). This runs inside `resolveHost` _before_ it
-  flips `workerBits`, so the host has the bytes before it acks.
+- **Host claims eagerly in the codec `decode`**, gated by
+  `RUNTIME_IS_MAIN_THREAD` (host = return; worker thread = forward = lazy
+  alias). This runs inside `resolveHost` _before_ it flips `workerBits`.
+  Owning/copy modes take the bytes right there; borrow mode only records the
+  claim and adopts on first read (see “Borrow hardening” below), which is safe
+  because the explicit release protocol keeps the worker pin held either way.
 - Safe Deno/Bun returns copy during decode. Opt-in borrowed Deno/Bun returns
   alias the pointer during decode, keep the worker producer hold in an
   explicit-release map, and release it when `BufferReference.release()` /
@@ -247,6 +249,40 @@ an output buffer and copies bytes into it (`out.set(src)`). A no-work identity
 task would isolate pointer-move overhead more directly, but it would also need a
 separate ownership protocol for returning the same host-produced buffer.
 
+## Borrow hardening: revocation instead of lifetime (2026-07)
+
+Non-owning engines cannot keep a foreign isolate's backing store alive, so the
+borrowed return path enforces the dual invariant instead: **no reachable view
+may ever observe freed memory.** Two proofs are used, and every path to dropping
+a pin is preceded by one of them:
+
+1. **Revocation.** `release()` detaches every alias buffer the reference handed
+   out (`detachArrayBufferBestEffort`) _before_ the worker pin drops. Detaching
+   neutralizes all views (they read as empty / throw); it is free
+   (`transferToFixedLength(0)` on FFI aliases, addon `Detach` on Node) and
+   verified by a CI canary in `buffer-reference-native.test.ts`.
+2. **Proof of deadness.** Before the first read no view can exist, so the
+   borrow's `FinalizationRegistry` backstop watches the `BufferReference`
+   itself; the first materialize migrates it onto the **alias ArrayBuffer**.
+   Views strongly reference their buffer, so the GC-driven release can only fire
+   once no view can reach the bytes — a ref dropped while a view escapes no
+   longer unpins. The adopt stays lazy on purpose: FFI aliases charge their
+   byteLength to the consumer's GC, so an eager adopt made every borrowed return
+   pay a size-scaled GC-accounting cost even when never read (measured ~4x on
+   Bun 4 MiB returns).
+
+The fallback rule is **leak-not-UAF**: if a detach fails, `release()` does not
+send the token release; the backstop stays registered and retries once the
+buffers are truly unreachable. The producer backstop uses the same idea as a
+shared countdown over the reference plus every materialized alias buffer.
+
+**Shutdown barrier.** Each lane tracks outstanding borrowed returns in a
+`Map<token, WeakRef<BufferReference>>` (fed by the `track` hook of
+`BufferReferenceReturnHooks`). Before a worker dies, `markWorkerClosed` revokes
+them via `revokeBorrow`: on graceful shutdown/kill the bytes are copied first,
+so held references stay readable while stale views go empty; on crash/exit the
+aliases are detached only, so reads fail loud instead of aliasing freed memory.
+
 ## First-class SharedArrayBuffer transport
 
 Separate feature, built on the same capability layer (`produceShared` /
@@ -290,9 +326,10 @@ the `SharedArrayBuffer::New` path was removed from the addon entirely.
 - Sustained return traffic defers reclamation until the channel next quiesces;
   the pending-release queue holds pinned buffers until then (bounded by memory;
   backpressure is otherwise desirable). Consider a high-water fallback later.
-- Borrowed Deno/Bun returns must be released before shutting down the producing
-  worker. If the worker is terminated while the host still holds a borrowed
-  alias, the alias no longer has an owning backing store behind it.
+- ~~Borrowed Deno/Bun returns must be released before shutting down the
+  producing worker.~~ Resolved by the shutdown barrier (see “Borrow hardening”
+  above): outstanding borrows are revoked — copy-then-detach on graceful
+  shutdown, detach-only after a crash — before the worker terminates.
 - `GetBackingStore()` / `ArrayBuffer::New(isolate, store)` are stable V8 APIs
   since 7.9; confirm no deprecation noise on the Node 22 ABI used by
   `prebuilds/`.

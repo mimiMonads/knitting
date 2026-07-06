@@ -66,6 +66,9 @@ const HOST_DEBUG_RUNTIME = process.versions.bun ? "bun" : "node";
 const faultConstructorProbePath = fileURLToPath(
   new URL("./fixtures/probes/fault_constructor_probe.ts", import.meta.url),
 );
+const faultPoisonProbePath = fileURLToPath(
+  new URL("./fixtures/probes/fault_poison_probe.ts", import.meta.url),
+);
 const processGuardProbePath = fileURLToPath(
   new URL("./fixtures/probes/process_guard_probe.ts", import.meta.url),
 );
@@ -367,6 +370,24 @@ test("node:test constructor poisoning is neutralized and worker stays alive", {
     result.code,
     0,
     `constructor probe failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+  );
+});
+
+test("node:test worker poison payloads are rejected and host stays alive", {
+  concurrency: false,
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
+  const result = await runProbe(faultPoisonProbePath);
+
+  assert.equal(
+    result.timedOut,
+    false,
+    `probe timed out\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
+  );
+  assert.equal(
+    result.code,
+    0,
+    `poison probe failed\nstdout:\n${result.stdout}\nstderr:\n${result.stderr}`,
   );
 });
 

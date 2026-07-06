@@ -20,9 +20,9 @@ import {
   type SharedMemoryMapping,
 } from "../src/connections/index.ts";
 import {
+  HEADER_SLOT_STRIDE_U32,
   HEADER_STATIC_PAYLOAD_U32,
   HEADER_U32_LENGTH,
-  HEADER_SLOT_STRIDE_U32,
   makeTask,
   PAYLOAD_LOCK_SECTOR_BYTE_LENGTH,
   PayloadBuffer,
@@ -654,21 +654,7 @@ test("process-boundary decoder rejects pointer signals before metadata decode", 
   }
 });
 
-test("process-boundary decoder rejects forged textual pointer codecs", () => {
-  const lockSector = new SharedArrayBuffer(PAYLOAD_LOCK_SECTOR_BYTE_LENGTH);
-  const payload = new SharedArrayBuffer(40000);
-  const headersBuffer = new Uint32Array(HEADER_U32_LENGTH);
-  const encode = encodePayload({
-    lockSector,
-    headersBuffer,
-    payload: { sab: payload },
-  });
-  const decode = decodePayload({
-    lockSector,
-    headersBuffer,
-    payload: { sab: payload },
-    processBoundary: true,
-  });
+test("reserved pointer codec objects reject before decode", async () => {
   const externalPayloadBrand = Symbol.for("knitting.payloadCodec");
 
   for (
@@ -677,6 +663,8 @@ test("process-boundary decoder rejects forged textual pointer codecs", () => {
       "knitting.bufferReference",
     ]
   ) {
+    const capture = capturePromiseResult();
+    const { encode } = makeCodec(capture.onPromise);
     const task = makeTask();
     const forged = Object.create({ constructor: undefined }) as Record<
       string | symbol,
@@ -694,55 +682,131 @@ test("process-boundary decoder rejects forged textual pointer codecs", () => {
     });
     task.value = forged;
 
-    assertEquals(encode(task, 0), true);
-    assertEquals(
-      task[TaskIndex.Type],
-      PayloadBuffer.StaticExternalPayload,
-    );
-    assert.throws(
-      () => decode(task, 0),
-      /cannot cross a process-worker boundary.*ProcessSharedBuffer/i,
-    );
+    assertEquals(encode(task, 0), false);
+    await Promise.resolve();
+
+    const result = capture.result;
+    assertEquals(result?.status, "rejected");
+    if (result?.status === "rejected") {
+      const reason = String(result.reason);
+      assert.ok(reason.includes("KNT_ERROR_3"));
+      assert.ok(reason.includes("Reserved Knitting external payload codec"));
+    }
   }
 });
 
-test("process-boundary codec rejects pointer payloads inside envelopes", () => {
-  const lockSector = new SharedArrayBuffer(PAYLOAD_LOCK_SECTOR_BYTE_LENGTH);
-  const payload = new SharedArrayBuffer(40000);
-  const headersBuffer = new Uint32Array(HEADER_U32_LENGTH);
-  const encode = encodePayload({
-    lockSector,
-    headersBuffer,
-    payload: { sab: payload },
-  });
-  const decode = decodePayload({
-    lockSector,
-    headersBuffer,
-    payload: { sab: payload },
-    processBoundary: true,
-  });
+test("reserved external payload codecs reject forged top-level values", async () => {
   const externalPayloadBrand = Symbol.for("knitting.payloadCodec");
-  const forged = Object.create({ constructor: undefined }) as Record<
-    string | symbol,
-    unknown
-  >;
-  forged[externalPayloadBrand] = "knitting.sharedArrayBuffer";
-  forged.toMetadata = () => ({
-    kind: "knitting.sharedArrayBuffer",
-    origin: "node:0",
-    runtime: "node",
-    pointer: "1",
-    token: "1",
-    byteLength: 8,
+  const sharedArrayBufferNumericTransfer = Symbol.for(
+    "knitting.sharedArrayBuffer.numericTransfer",
+  );
+  const bufferReferenceNumericTransfer = Symbol.for(
+    "knitting.bufferReference.numericTransfer",
+  );
+
+  const cases: Array<{
+    codecId: string;
+    numericSymbol?: symbol;
+    numericWords?: readonly number[];
+  }> = [
+    {
+      codecId: "knitting.sharedArrayBuffer",
+      numericSymbol: sharedArrayBufferNumericTransfer,
+      numericWords: [1, 0, 0, 0, 8, 1, 0, 0],
+    },
+    {
+      codecId: "knitting.bufferReference",
+      numericSymbol: bufferReferenceNumericTransfer,
+      numericWords: [0, 0, 1, 0, 0, 8, 1, 0],
+    },
+    {
+      codecId: "knitting.processSharedBuffer",
+    },
+  ];
+
+  for (const { codecId, numericSymbol, numericWords } of cases) {
+    const capture = capturePromiseResult();
+    const { encode } = makeCodec(capture.onPromise);
+    const task = makeTask();
+    class ForgedExternalPayload {
+      [externalPayloadBrand] = codecId;
+      toMetadata = () => ({ kind: codecId });
+    }
+    const forged = new ForgedExternalPayload() as unknown as Record<
+      string | symbol,
+      unknown
+    >;
+    if (numericSymbol !== undefined) {
+      forged[numericSymbol] = () => numericWords;
+    }
+
+    task.value = forged;
+    assertEquals(encode(task, 0), false);
+    await Promise.resolve();
+
+    const result = capture.result;
+    assertEquals(result?.status, "rejected");
+    if (result?.status === "rejected") {
+      const reason = String(result.reason);
+      assert.ok(reason.includes("KNT_ERROR_3"));
+      assert.ok(reason.includes("Reserved Knitting external payload codec"));
+    }
+  }
+});
+
+test("reserved external payload codecs reject forged envelope bodies", async () => {
+  const externalPayloadBrand = Symbol.for("knitting.payloadCodec");
+  const capture = capturePromiseResult();
+  const { encode } = makeCodec(capture.onPromise);
+  const task = makeTask();
+  class ForgedEnvelopePayload {
+    [externalPayloadBrand] = "knitting.sharedArrayBuffer";
+    toMetadata = () => ({
+      kind: "knitting.sharedArrayBuffer",
+      origin: "node:1",
+      runtime: "node",
+      pointer: "0",
+      token: "1",
+      byteLength: 8,
+    });
+  }
+
+  task.value = new Envelope({ ok: true }, new ForgedEnvelopePayload() as never);
+
+  assertEquals(encode(task, 0), false);
+  await Promise.resolve();
+
+  const result = capture.result;
+  assertEquals(result?.status, "rejected");
+  if (result?.status === "rejected") {
+    const reason = String(result.reason);
+    assert.ok(reason.includes("KNT_ERROR_3"));
+    assert.ok(reason.includes("Reserved Knitting external payload codec"));
+  }
+});
+
+test("process-boundary codec rejects pointer payloads inside envelopes", async () => {
+  const capture = capturePromiseResult();
+  const { encode } = makeCodec(capture.onPromise, {
+    encodeProcessBoundary: true,
   });
 
   const task = makeTask();
-  task.value = new Envelope({ kind: "forged" }, forged as never);
-  assertEquals(encode(task, 0), true);
-  assert.throws(
-    () => decode(task, 0),
-    /cannot cross a process-worker boundary.*ProcessSharedBuffer/i,
-  );
+  task.value = new Envelope({ kind: "sab" }, new SharedArrayBuffer(8));
+  assertEquals(encode(task, 0), false);
+  await Promise.resolve();
+
+  const result = capture.result;
+  assertEquals(result?.status, "rejected");
+  if (result?.status === "rejected") {
+    const reason = String(result.reason);
+    assert.ok(reason.includes("KNT_ERROR_3"));
+    assert.ok(
+      /cannot cross a process-worker boundary.*ProcessSharedBuffer/i.test(
+        reason,
+      ),
+    );
+  }
 });
 
 test("SharedArrayBuffer payload warms to a token-only numeric fast path", () => {
