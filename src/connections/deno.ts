@@ -1,4 +1,5 @@
 import {
+  assertNamedSharedMemoryIsReopenable,
   checkPosixResult,
   DARWIN_O_CREAT,
   DARWIN_O_EXCL,
@@ -19,8 +20,9 @@ import {
   type PosixPlatform,
   PROT_READ,
   PROT_WRITE,
-  repairDarwinSharedMemoryMode,
   setCloseOnExec,
+  SHM_OPEN_STACK_PAD,
+  shmOpenModeIsStackPassed,
   toPosixSharedMemoryName,
 } from "./posix.ts";
 import {
@@ -43,13 +45,16 @@ import {
 type DenoLibc = {
   symbols: {
     memfd_create?: (name: Uint8Array, flags: number) => number;
-    shm_open?: (name: Uint8Array, flags: number, mode: number) => number;
+    shm_open?: (
+      name: Uint8Array,
+      flags: number,
+      ...rest: number[]
+    ) => number;
     shm_unlink?: (name: Uint8Array) => number;
     __error?: () => unknown;
     __errno_location?: () => unknown;
     ftruncate: (fd: number, length: bigint) => number;
     dup: (fd: number) => number;
-    fchmod: (fd: number, mode: number) => number;
     fcntl: (fd: number, cmd: number, arg: number) => number;
     mmap: (
       address: null,
@@ -104,10 +109,6 @@ export const openDenoLibc = (): DenoLibc =>
       parameters: ["i32"],
       result: "i32",
     },
-    fchmod: {
-      parameters: ["i32", "u32"],
-      result: "i32",
-    },
     fcntl: {
       parameters: ["i32", "i32", "i32"],
       result: "i32",
@@ -130,7 +131,14 @@ const getDenoCreateSymbols = (platform = detectPosixPlatform()) =>
   platform === "darwin"
     ? {
       shm_open: {
-        parameters: ["buffer", "i32", "u32"],
+        parameters: shmOpenModeIsStackPassed(platform)
+          ? [
+            "buffer",
+            "i32",
+            ...SHM_OPEN_STACK_PAD.map(() => "i32"),
+            "u32",
+          ]
+          : ["buffer", "i32", "u32"],
         result: "i32",
       },
       shm_unlink: {
@@ -152,6 +160,19 @@ const getDenoCreateSymbols = (platform = detectPosixPlatform()) =>
         result: "i32",
       },
     };
+
+type ShmOpen = NonNullable<DenoLibc["symbols"]["shm_open"]>;
+
+const callShmOpen = (
+  shmOpen: ShmOpen,
+  name: Uint8Array,
+  flags: number,
+  mode: number,
+  platform: PosixPlatform,
+): number =>
+  shmOpenModeIsStackPassed(platform)
+    ? shmOpen(name, flags, ...SHM_OPEN_STACK_PAD, mode)
+    : shmOpen(name, flags, mode);
 
 const errnoOf = (
   libc: DenoLibc,
@@ -187,10 +208,12 @@ const createDenoSharedMemoryFd = (
 
     const shmName = encodeCString(makeDarwinSharedMemoryName(name, "deno"));
     const fd = checkPosixResult(
-      shmOpen(
+      callShmOpen(
+        shmOpen,
         shmName,
         O_RDWR | DARWIN_O_CREAT | DARWIN_O_EXCL,
         DARWIN_SHM_MODE,
+        platform,
       ),
       "shm_open failed",
       errnoOf(libc, platform),
@@ -243,24 +266,21 @@ const createNamedDenoSharedMemoryFd = (
     ? O_RDWR | createFlags | exclusiveFlags
     : O_RDWR;
   const shmMode = platform === "darwin" ? DARWIN_SHM_MODE : POSIX_SHM_MODE;
+  const shmName = encodeCString(toPosixSharedMemoryName(name));
   const fd = checkPosixResult(
-    shmOpen(
-      encodeCString(toPosixSharedMemoryName(name)),
-      flags,
-      shmMode,
-    ),
+    callShmOpen(shmOpen, shmName, flags, shmMode, platform),
     "shm_open failed",
     errnoOf(libc, platform),
     platform,
   );
 
   if (mode === "create") {
-    repairDarwinSharedMemoryMode(
-      libc,
-      fd,
+    assertNamedSharedMemoryIsReopenable(
       platform,
+      fd,
+      () => callShmOpen(shmOpen, shmName, O_RDWR, shmMode, platform),
+      libc.symbols.close,
       errnoOf(libc, platform),
-      shmMode,
     );
   }
 

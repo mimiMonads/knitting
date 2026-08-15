@@ -1,4 +1,5 @@
 import {
+  assertNamedSharedMemoryIsReopenable,
   checkPosixResult,
   DARWIN_O_CREAT,
   DARWIN_O_EXCL,
@@ -19,8 +20,9 @@ import {
   type PosixPlatform,
   PROT_READ,
   PROT_WRITE,
-  repairDarwinSharedMemoryMode,
   setCloseOnExec,
+  SHM_OPEN_STACK_PAD,
+  shmOpenModeIsStackPassed,
   toPosixSharedMemoryName,
 } from "./posix.ts";
 import {
@@ -56,13 +58,12 @@ export type {
 
 type NodePosixFunctions = {
   memfd_create?: (name: Uint8Array, flags: number) => number;
-  shm_open?: (name: Uint8Array, flags: number, mode: number) => number;
+  shm_open?: (name: Uint8Array, flags: number, ...rest: number[]) => number;
   shm_unlink?: (name: Uint8Array) => number;
   __error?: () => bigint;
   __errno_location?: () => bigint;
   ftruncate: (fd: number, length: bigint) => number;
   dup: (fd: number) => number;
-  fchmod: (fd: number, mode: number) => number;
   fcntl: (fd: number, cmd: number, arg: number) => number;
   mmap: (
     address: null,
@@ -89,7 +90,9 @@ const getNodeCreateSymbols = (
   if (platform === "darwin") {
     return {
       shm_open: {
-        arguments: ["pointer", "i32", "u32"],
+        arguments: shmOpenModeIsStackPassed(platform)
+          ? ["pointer", "i32", ...SHM_OPEN_STACK_PAD.map(() => "i32"), "u32"]
+          : ["pointer", "i32", "u32"],
         return: "i32",
       },
       shm_unlink: {
@@ -134,10 +137,6 @@ const getNodePosixSymbols = (): Record<string, NodeFfiFunctionSignature> => ({
     arguments: ["i32"],
     return: "i32",
   },
-  fchmod: {
-    arguments: ["i32", "u32"],
-    return: "i32",
-  },
   fcntl: {
     arguments: ["i32", "i32", "i32"],
     return: "i32",
@@ -176,6 +175,19 @@ export const openNodePosixLibrary = (): NodePosixLibrary => {
   return opened;
 };
 
+type NodeShmOpen = NonNullable<NodePosixFunctions["shm_open"]>;
+
+const callShmOpen = (
+  shmOpen: NodeShmOpen,
+  name: Uint8Array,
+  flags: number,
+  mode: number,
+  platform: PosixPlatform,
+): number =>
+  shmOpenModeIsStackPassed(platform)
+    ? shmOpen(name, flags, ...SHM_OPEN_STACK_PAD, mode)
+    : shmOpen(name, flags, mode);
+
 const errnoOf = (
   libc: NodePosixFunctions,
   platform = detectPosixPlatform(),
@@ -205,10 +217,12 @@ const createAnonymousFd = (
 
     const shmName = encodeCString(makeDarwinSharedMemoryName(name, "node"));
     const fd = checkPosixResult(
-      shmOpen(
+      callShmOpen(
+        shmOpen,
         shmName,
         O_RDWR | DARWIN_O_CREAT | DARWIN_O_EXCL,
         DARWIN_SHM_MODE,
+        platform,
       ),
       "shm_open failed",
       errnoOf(libc, platform),
@@ -258,24 +272,21 @@ const createNamedFd = (
     ? O_RDWR | createFlag | exclusiveFlag
     : O_RDWR;
   const shmMode = platform === "darwin" ? DARWIN_SHM_MODE : POSIX_SHM_MODE;
+  const shmName = encodeCString(toPosixSharedMemoryName(name));
   const fd = checkPosixResult(
-    shmOpen(
-      encodeCString(toPosixSharedMemoryName(name)),
-      flags,
-      shmMode,
-    ),
+    callShmOpen(shmOpen, shmName, flags, shmMode, platform),
     "shm_open failed",
     errnoOf(libc, platform),
     platform,
   );
 
   if (mode === "create") {
-    repairDarwinSharedMemoryMode(
-      { symbols: libc },
-      fd,
+    assertNamedSharedMemoryIsReopenable(
       platform,
+      fd,
+      () => callShmOpen(shmOpen, shmName, O_RDWR, shmMode, platform),
+      libc.close,
       errnoOf(libc, platform),
-      shmMode,
     );
   }
 

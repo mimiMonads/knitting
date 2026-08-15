@@ -83,12 +83,18 @@ const describeErrno = (
   return name === undefined ? `errno ${errno}` : `${name} (${errno})`;
 };
 
-/** Builds `<message>: EACCES (13)`, reading errno as late as possible. */
+/**
+ * Builds `<message>: EACCES (13)`, reading errno as late as possible, or the
+ * bare message when the runtime has no errno reader.
+ */
 export const posixError = (
   message: string,
-  errno: ErrnoReader,
+  errno?: ErrnoReader,
   platform = detectPosixPlatform(),
-): Error => new Error(`${message}: ${describeErrno(errno(), platform)}`);
+): Error =>
+  errno === undefined
+    ? new Error(message)
+    : new Error(`${message}: ${describeErrno(errno(), platform)}`);
 
 export const checkPosixResult = (
   result: number,
@@ -96,11 +102,7 @@ export const checkPosixResult = (
   errno?: ErrnoReader,
   platform?: PosixPlatform,
 ): number => {
-  if (result < 0) {
-    throw errno === undefined
-      ? new Error(message)
-      : posixError(message, errno, platform);
-  }
+  if (result < 0) throw posixError(message, errno, platform);
 
   return result;
 };
@@ -111,39 +113,65 @@ type FcntlLibc = {
   };
 };
 
-type SharedMemoryModeLibc = {
-  symbols: {
-    fchmod: (fd: number, mode: number) => number;
-    close: (fd: number) => number;
-  };
-};
+const detectArch = (): string =>
+  (globalThis as typeof globalThis & { Deno?: { build?: { arch?: string } } })
+    .Deno?.build?.arch ??
+    (globalThis as typeof globalThis & { process?: { arch?: string } })
+      .process?.arch ??
+    "";
 
 /**
- * Restores the mode on a freshly created macOS shared memory segment.
+ * Whether `shm_open`'s mode argument has to be delivered on the stack.
  *
- * macOS declares `shm_open(const char *, int, ...)` as variadic, and Apple's
- * arm64 ABI passes variadic arguments on the stack rather than in registers.
- * Every FFI engine here emits a fixed-arity call, so the mode argument lands in
- * a register the callee never reads and the segment is created with whatever
- * the stack happened to hold. The creator keeps a working descriptor either
- * way, so the damage only surfaces later: a second process opening the same
- * name with O_RDWR fails the permission check with EACCES.
+ * macOS declares `shm_open(const char *, int, ...)` variadic and its libc
+ * wrapper reads the mode with `va_arg`. Apple's arm64 ABI passes variadic
+ * arguments on the stack, not in registers, so the mode a fixed-arity FFI call
+ * leaves in a register is never read: the segment is created with whatever the
+ * stack happened to hold. The creator's own descriptor still works, so the
+ * damage only surfaces when the name is opened again and fails with EACCES —
+ * and because the value comes from uninitialized stack, unrelated changes to
+ * the calling code can flip it between working and not.
  *
- * `fchmod(2)` has a fixed prototype, so it sets the mode reliably regardless of
- * how the FFI engine lays out variadic arguments. No-ops off macOS, where the
- * mode argument arrives intact. Closes the descriptor before throwing.
+ * Declaring six extra register arguments moves the mode into the first stack
+ * slot, which is exactly where `va_arg` looks. Linux (fixed prototype) and
+ * x86-64 macOS (variadic arguments in registers) both want the plain form.
  */
-export const repairDarwinSharedMemoryMode = <T extends SharedMemoryModeLibc>(
-  libc: T,
-  fd: number,
-  platform: PosixPlatform,
-  errno: ErrnoReader,
-  mode: number = POSIX_SHM_MODE,
-): void => {
-  if (platform !== "darwin" || libc.symbols.fchmod(fd, mode) >= 0) return;
+export const shmOpenModeIsStackPassed = (
+  platform = detectPosixPlatform(),
+): boolean => platform === "darwin" && /arm64|aarch64/.test(detectArch());
 
-  const error = posixError("fchmod(shared memory) failed", errno, platform);
-  libc.symbols.close(fd);
+/** Fills x2–x7 so the mode becomes the first stack argument. */
+export const SHM_OPEN_STACK_PAD: readonly number[] = [0, 0, 0, 0, 0, 0];
+
+/**
+ * Proves a freshly created macOS segment can be reopened by name, closing the
+ * owner descriptor and throwing if it cannot.
+ *
+ * Without this, a mode that failed to apply produces a confusing EACCES in
+ * whichever process later opens the name, far from the call that caused it.
+ * No-ops off macOS, where the mode always applies.
+ */
+export const assertNamedSharedMemoryIsReopenable = (
+  platform: PosixPlatform,
+  ownerFd: number,
+  reopen: () => number,
+  close: (fd: number) => number,
+  errno?: ErrnoReader,
+): void => {
+  if (platform !== "darwin") return;
+
+  const probe = reopen();
+  if (probe >= 0) {
+    close(probe);
+    return;
+  }
+
+  const error = posixError(
+    "created shared memory could not be reopened by name",
+    errno,
+    platform,
+  );
+  close(ownerFd);
   throw error;
 };
 
