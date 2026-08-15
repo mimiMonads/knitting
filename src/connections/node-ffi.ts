@@ -1,19 +1,25 @@
 import {
+  checkPosixResult,
   DARWIN_O_CREAT,
   DARWIN_O_EXCL,
   DARWIN_SHM_MODE,
   detectPosixPlatform,
   encodeCString,
+  type ErrnoReader,
+  getErrnoSymbolName,
   getPosixLibcPath,
   LINUX_O_CREAT,
   LINUX_O_EXCL,
   makeDarwinSharedMemoryName,
+  makeErrnoReader,
   MAP_SHARED,
   O_RDWR,
   POSIX_SHM_MODE,
+  posixError,
   type PosixPlatform,
   PROT_READ,
   PROT_WRITE,
+  repairDarwinSharedMemoryMode,
   setCloseOnExec,
   toPosixSharedMemoryName,
 } from "./posix.ts";
@@ -52,8 +58,11 @@ type NodePosixFunctions = {
   memfd_create?: (name: Uint8Array, flags: number) => number;
   shm_open?: (name: Uint8Array, flags: number, mode: number) => number;
   shm_unlink?: (name: Uint8Array) => number;
+  __error?: () => bigint;
+  __errno_location?: () => bigint;
   ftruncate: (fd: number, length: bigint) => number;
   dup: (fd: number) => number;
+  fchmod: (fd: number, mode: number) => number;
   fcntl: (fd: number, cmd: number, arg: number) => number;
   mmap: (
     address: null,
@@ -106,47 +115,76 @@ const getNodeCreateSymbols = (
   };
 };
 
+const getNodeErrnoSymbols = (
+  platform = detectPosixPlatform(),
+): Record<string, NodeFfiFunctionSignature> => ({
+  [getErrnoSymbolName(platform)]: {
+    arguments: [],
+    return: "pointer",
+  },
+});
+
+const getNodePosixSymbols = (): Record<string, NodeFfiFunctionSignature> => ({
+  ...getNodeCreateSymbols(),
+  ftruncate: {
+    arguments: ["i32", "i64"],
+    return: "i32",
+  },
+  dup: {
+    arguments: ["i32"],
+    return: "i32",
+  },
+  fchmod: {
+    arguments: ["i32", "u32"],
+    return: "i32",
+  },
+  fcntl: {
+    arguments: ["i32", "i32", "i32"],
+    return: "i32",
+  },
+  mmap: {
+    arguments: ["pointer", "u64", "i32", "i32", "i32", "i64"],
+    return: "pointer",
+  },
+  munmap: {
+    arguments: ["pointer", "u64"],
+    return: "i32",
+  },
+  close: {
+    arguments: ["i32"],
+    return: "i32",
+  },
+});
+
 export const openNodePosixLibrary = (): NodePosixLibrary => {
   if (cachedNodePosixLibrary !== undefined) return cachedNodePosixLibrary;
 
-  const opened = getNodeFfi().dlopen<NodePosixFunctions>(
-    getPosixLibcPath(),
-    {
-      ...getNodeCreateSymbols(),
-      ftruncate: {
-        arguments: ["i32", "i64"],
-        return: "i32",
-      },
-      dup: {
-        arguments: ["i32"],
-        return: "i32",
-      },
-      fcntl: {
-        arguments: ["i32", "i32", "i32"],
-        return: "i32",
-      },
-      mmap: {
-        arguments: ["pointer", "u64", "i32", "i32", "i32", "i64"],
-        return: "pointer",
-      },
-      munmap: {
-        arguments: ["pointer", "u64"],
-        return: "i32",
-      },
-      close: {
-        arguments: ["i32"],
-        return: "i32",
-      },
-    },
-  );
+  const symbols = getNodePosixSymbols();
+  const ffi = getNodeFfi();
+  // errno is diagnostics only: if this libc or FFI build will not bind the
+  // nullary errno accessor, open without it rather than lose shared memory.
+  let opened: NodePosixLibrary;
+  try {
+    opened = ffi.dlopen<NodePosixFunctions>(getPosixLibcPath(), {
+      ...symbols,
+      ...getNodeErrnoSymbols(),
+    });
+  } catch {
+    opened = ffi.dlopen<NodePosixFunctions>(getPosixLibcPath(), symbols);
+  }
   cachedNodePosixLibrary = opened;
   return opened;
 };
 
-const checkResult = (result: number, message: string): number => {
-  if (result < 0) throw new Error(message);
-  return result;
-};
+const errnoOf = (
+  libc: NodePosixFunctions,
+  platform = detectPosixPlatform(),
+): ErrnoReader =>
+  makeErrnoReader(
+    platform === "darwin" ? libc.__error : libc.__errno_location,
+    (pointer) =>
+      new Int32Array(getNodeFfi().toArrayBuffer(pointer, 4, true))[0],
+  );
 
 const isMapFailed = (pointer: bigint): boolean =>
   pointer === 0n ||
@@ -166,13 +204,15 @@ const createAnonymousFd = (
     }
 
     const shmName = encodeCString(makeDarwinSharedMemoryName(name, "node"));
-    const fd = checkResult(
+    const fd = checkPosixResult(
       shmOpen(
         shmName,
         O_RDWR | DARWIN_O_CREAT | DARWIN_O_EXCL,
         DARWIN_SHM_MODE,
       ),
       "shm_open failed",
+      errnoOf(libc, platform),
+      platform,
     );
     shmUnlink(shmName);
     try {
@@ -187,9 +227,11 @@ const createAnonymousFd = (
   if (memfdCreate === undefined) {
     throw new Error("memfd_create symbol is not available");
   }
-  const fd = checkResult(
+  const fd = checkPosixResult(
     memfdCreate(encodeCString(name), 0),
     "memfd_create failed",
+    errnoOf(libc, platform),
+    platform,
   );
   try {
     return setCloseOnExec({ symbols: libc }, fd);
@@ -215,14 +257,28 @@ const createNamedFd = (
   const flags = mode === "create"
     ? O_RDWR | createFlag | exclusiveFlag
     : O_RDWR;
-  const fd = checkResult(
+  const shmMode = platform === "darwin" ? DARWIN_SHM_MODE : POSIX_SHM_MODE;
+  const fd = checkPosixResult(
     shmOpen(
       encodeCString(toPosixSharedMemoryName(name)),
       flags,
-      platform === "darwin" ? DARWIN_SHM_MODE : POSIX_SHM_MODE,
+      shmMode,
     ),
     "shm_open failed",
+    errnoOf(libc, platform),
+    platform,
   );
+
+  if (mode === "create") {
+    repairDarwinSharedMemoryMode(
+      { symbols: libc },
+      fd,
+      platform,
+      errnoOf(libc, platform),
+      shmMode,
+    );
+  }
+
   try {
     return setCloseOnExec({ symbols: libc }, fd);
   } catch (error) {
@@ -247,11 +303,13 @@ const mapFd = (
     0n,
   );
   if (isMapFailed(pointer)) {
+    // errno first: fcntl below overwrites it.
+    const error = posixError("mmap failed", errnoOf(libc));
     const descriptorFlags = libc.fcntl(fd, 1, 0);
     if (closeFdOnFailure) libc.close(fd);
-    throw new Error(
-      `mmap failed (fd ${fd}, size ${size}, descriptor flags ${descriptorFlags})`,
-    );
+    error.message +=
+      ` (fd ${fd}, size ${size}, descriptor flags ${descriptorFlags})`;
+    throw error;
   }
 
   let arrayBuffer: ArrayBuffer;
@@ -306,7 +364,7 @@ export const mapNodeFfiSharedMemory = (
     const sourceFd = expectFd(options.fd);
     closeFdOnFailure = options.duplicateFd !== false;
     fd = closeFdOnFailure
-      ? checkResult(libc.dup(sourceFd), "dup(fd) failed")
+      ? checkPosixResult(libc.dup(sourceFd), "dup(fd) failed", errnoOf(libc))
       : sourceFd;
     if (closeFdOnFailure) {
       try {
@@ -338,8 +396,13 @@ export const createNodeFfiSharedMemory = (
     : createNamedFd(name, mode, platform, libc);
 
   if (mode !== "open" && libc.ftruncate(fd, BigInt(size)) < 0) {
+    const error = posixError(
+      "ftruncate failed",
+      errnoOf(libc, platform),
+      platform,
+    );
     libc.close(fd);
-    throw new Error("ftruncate failed");
+    throw error;
   }
   return mapFd(
     fd,

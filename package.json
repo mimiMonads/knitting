@@ -44,6 +44,9 @@
     "prebuilds/**/*.node",
     "prebuilds/**/*.dll",
     "scripts/build-native-addons.ts",
+    "scripts/build-compiled-worker.ts",
+    "scripts/compiled-worker/**/*.ts",
+    "scripts/compiled-worker/**/*.d.ts",
     "src/**/*.cc",
     "src/**/*.d.ts",
     "src/**/*.js",
@@ -59,11 +62,13 @@
     "utils.js"
   ],
   "scripts": {
+    "clean": "bun run scripts/clean-generated.ts",
     "build": "bun run build.ts && node scripts/rewrite-declaration-imports.mjs",
     "build:js": "bun run build.ts && node scripts/rewrite-declaration-imports.mjs",
     "build:types": "bun run build.ts && node scripts/rewrite-declaration-imports.mjs",
     "build:npm": "bun run build.ts && node scripts/rewrite-declaration-imports.mjs",
     "build:native": "bun run scripts/build-native-addons.ts",
+    "build:compiled": "bun run scripts/build-compiled-worker.ts",
     "build:release": "bun run build:native && npm run build",
     "build:node": "bun run build.ts && node scripts/rewrite-declaration-imports.mjs",
     "prepack": "npm run build",

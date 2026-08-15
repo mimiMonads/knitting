@@ -1,20 +1,26 @@
 import {
+  checkPosixResult,
   DARWIN_O_CREAT,
   DARWIN_O_EXCL,
   DARWIN_SHM_MODE,
-  LINUX_O_CREAT,
-  LINUX_O_EXCL,
-  setCloseOnExec,
   detectPosixPlatform,
   encodeCString,
+  type ErrnoReader,
+  getErrnoSymbolName,
   getPosixLibcPath,
+  LINUX_O_CREAT,
+  LINUX_O_EXCL,
   makeDarwinSharedMemoryName,
+  makeErrnoReader,
   MAP_SHARED,
   O_RDWR,
   POSIX_SHM_MODE,
+  posixError,
   type PosixPlatform,
   PROT_READ,
   PROT_WRITE,
+  repairDarwinSharedMemoryMode,
+  setCloseOnExec,
   toPosixSharedMemoryName,
 } from "./posix.ts";
 import {
@@ -22,10 +28,10 @@ import {
   expectFd,
   expectPositiveSize,
   type MapSharedMemoryOptions,
-  readCreateName,
   readCreateMode,
-  readRequiredCreateName,
+  readCreateName,
   readCreateSize,
+  readRequiredCreateName,
   type SharedMemoryConnectionPrimitives,
   type SharedMemoryMapping,
 } from "./types.ts";
@@ -76,8 +82,11 @@ type BunLibc = {
     memfd_create?: (name: Uint8Array, flags: number) => number;
     shm_open?: (name: Uint8Array, flags: number, mode: number) => number;
     shm_unlink?: (name: Uint8Array) => number;
+    __error?: () => BunPointer;
+    __errno_location?: () => BunPointer;
     ftruncate: (fd: number, length: bigint) => number;
     dup: (fd: number) => number;
+    fchmod: (fd: number, mode: number) => number;
     fcntl: (fd: number, cmd: number, arg: number) => number;
     mmap: (
       address: null,
@@ -92,15 +101,27 @@ type BunLibc = {
   };
 };
 
+const getBunErrnoSymbols = (platform = detectPosixPlatform()) => ({
+  [getErrnoSymbolName(platform)]: {
+    args: [],
+    returns: FFIType.ptr,
+  },
+});
+
 export const openBunLibc = (): BunLibc =>
   getBunFFI().dlopen(getPosixLibcPath(), {
     ...getBunCreateSymbols(),
+    ...getBunErrnoSymbols(),
     ftruncate: {
       args: [FFIType.i32, FFIType.i64],
       returns: FFIType.i32,
     },
     dup: {
       args: [FFIType.i32],
+      returns: FFIType.i32,
+    },
+    fchmod: {
+      args: [FFIType.i32, FFIType.u32],
       returns: FFIType.i32,
     },
     fcntl: {
@@ -155,10 +176,16 @@ const getBunCreateSymbols = (platform = detectPosixPlatform()) =>
       },
     };
 
-const checkResult = (result: number, message: string): number => {
-  if (result < 0) throw new Error(message);
-  return result;
-};
+const errnoOf = (
+  libc: BunLibc,
+  platform = detectPosixPlatform(),
+): ErrnoReader =>
+  makeErrnoReader(
+    platform === "darwin"
+      ? libc.symbols.__error
+      : libc.symbols.__errno_location,
+    (pointer) => new Int32Array(getBunFFI().toArrayBuffer(pointer, 0, 4))[0],
+  );
 
 const isBunMmapFailed = (pointer: BunPointer): boolean =>
   !pointer || pointer < 0 || pointer >= Number.MAX_SAFE_INTEGER;
@@ -176,13 +203,15 @@ const createBunSharedMemoryFd = (
     }
 
     const shmName = encodeCString(makeDarwinSharedMemoryName(name, "bun"));
-    const fd = checkResult(
+    const fd = checkPosixResult(
       shmOpen(
         shmName,
         O_RDWR | DARWIN_O_CREAT | DARWIN_O_EXCL,
         DARWIN_SHM_MODE,
       ),
       "shm_open failed",
+      errnoOf(libc, platform),
+      platform,
     );
 
     shmUnlink(shmName);
@@ -199,9 +228,11 @@ const createBunSharedMemoryFd = (
     throw new Error("memfd_create symbol is not available");
   }
 
-  const fd = checkResult(
+  const fd = checkPosixResult(
     memfdCreate(encodeCString(name), 0),
     "memfd_create failed",
+    errnoOf(libc, platform),
+    platform,
   );
 
   try {
@@ -228,14 +259,27 @@ const createNamedBunSharedMemoryFd = (
   const flags = mode === "create"
     ? O_RDWR | createFlags | exclusiveFlags
     : O_RDWR;
-  const fd = checkResult(
+  const shmMode = platform === "darwin" ? DARWIN_SHM_MODE : POSIX_SHM_MODE;
+  const fd = checkPosixResult(
     shmOpen(
       encodeCString(toPosixSharedMemoryName(name)),
       flags,
-      platform === "darwin" ? DARWIN_SHM_MODE : POSIX_SHM_MODE,
+      shmMode,
     ),
     "shm_open failed",
+    errnoOf(libc, platform),
+    platform,
   );
+
+  if (mode === "create") {
+    repairDarwinSharedMemoryMode(
+      libc,
+      fd,
+      platform,
+      errnoOf(libc, platform),
+      shmMode,
+    );
+  }
 
   try {
     return setCloseOnExec(libc, fd);
@@ -260,7 +304,11 @@ export const mapBunSharedMemory = (
       libc,
     );
   } else if (options.duplicateFd !== false) {
-    fd = checkResult(libc.symbols.dup(sourceFd), "dup(fd) failed");
+    fd = checkPosixResult(
+      libc.symbols.dup(sourceFd),
+      "dup(fd) failed",
+      errnoOf(libc),
+    );
     try {
       setCloseOnExec(libc, fd);
     } catch (error) {
@@ -278,8 +326,9 @@ export const mapBunSharedMemory = (
   );
 
   if (isBunMmapFailed(pointer)) {
+    const error = posixError("mmap failed", errnoOf(libc));
     if (options.duplicateFd !== false) libc.symbols.close(fd);
-    throw new Error("mmap failed");
+    throw error;
   }
 
   const arrayBuffer = getBunFFI().toArrayBuffer(pointer, 0, size);
@@ -317,9 +366,11 @@ export const createBunSharedMemory = (
 
   try {
     if (mode !== "open") {
-      checkResult(
+      checkPosixResult(
         libc.symbols.ftruncate(fd, BigInt(size)),
         "ftruncate failed",
+        errnoOf(libc, platform),
+        platform,
       );
     }
 

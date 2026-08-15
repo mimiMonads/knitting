@@ -1,20 +1,26 @@
 import {
+  checkPosixResult,
   DARWIN_O_CREAT,
   DARWIN_O_EXCL,
   DARWIN_SHM_MODE,
-  LINUX_O_CREAT,
-  LINUX_O_EXCL,
-  setCloseOnExec,
   detectPosixPlatform,
   encodeCString,
+  type ErrnoReader,
+  getErrnoSymbolName,
   getPosixLibcPath,
+  LINUX_O_CREAT,
+  LINUX_O_EXCL,
   makeDarwinSharedMemoryName,
+  makeErrnoReader,
   MAP_SHARED,
   O_RDWR,
   POSIX_SHM_MODE,
+  posixError,
   type PosixPlatform,
   PROT_READ,
   PROT_WRITE,
+  repairDarwinSharedMemoryMode,
+  setCloseOnExec,
   toPosixSharedMemoryName,
 } from "./posix.ts";
 import {
@@ -22,10 +28,10 @@ import {
   expectFd,
   expectPositiveSize,
   type MapSharedMemoryOptions,
-  readCreateName,
   readCreateMode,
-  readRequiredCreateName,
+  readCreateName,
   readCreateSize,
+  readRequiredCreateName,
   type SharedMemoryConnectionPrimitives,
   type SharedMemoryMapping,
 } from "./types.ts";
@@ -39,8 +45,11 @@ type DenoLibc = {
     memfd_create?: (name: Uint8Array, flags: number) => number;
     shm_open?: (name: Uint8Array, flags: number, mode: number) => number;
     shm_unlink?: (name: Uint8Array) => number;
+    __error?: () => unknown;
+    __errno_location?: () => unknown;
     ftruncate: (fd: number, length: bigint) => number;
     dup: (fd: number) => number;
+    fchmod: (fd: number, mode: number) => number;
     fcntl: (fd: number, cmd: number, arg: number) => number;
     mmap: (
       address: null,
@@ -76,15 +85,27 @@ const getDeno = (): DenoLike => {
   return deno;
 };
 
+const getDenoErrnoSymbols = (platform = detectPosixPlatform()) => ({
+  [getErrnoSymbolName(platform)]: {
+    parameters: [],
+    result: "pointer",
+  },
+});
+
 export const openDenoLibc = (): DenoLibc =>
   getDeno().dlopen(getPosixLibcPath(), {
     ...getDenoCreateSymbols(),
+    ...getDenoErrnoSymbols(),
     ftruncate: {
       parameters: ["i32", "i64"],
       result: "i32",
     },
     dup: {
       parameters: ["i32"],
+      result: "i32",
+    },
+    fchmod: {
+      parameters: ["i32", "u32"],
       result: "i32",
     },
     fcntl: {
@@ -132,10 +153,18 @@ const getDenoCreateSymbols = (platform = detectPosixPlatform()) =>
       },
     };
 
-const checkResult = (result: number, message: string): number => {
-  if (result < 0) throw new Error(message);
-  return result;
-};
+const errnoOf = (
+  libc: DenoLibc,
+  platform = detectPosixPlatform(),
+): ErrnoReader =>
+  makeErrnoReader(
+    platform === "darwin"
+      ? libc.symbols.__error
+      : libc.symbols.__errno_location,
+    (pointer) => new Int32Array(
+      new (getDeno().UnsafePointerView)(pointer).getArrayBuffer(4),
+    )[0],
+  );
 
 const isDenoMmapFailed = (pointer: unknown): boolean => {
   if (pointer === null) return true;
@@ -157,13 +186,15 @@ const createDenoSharedMemoryFd = (
     }
 
     const shmName = encodeCString(makeDarwinSharedMemoryName(name, "deno"));
-    const fd = checkResult(
+    const fd = checkPosixResult(
       shmOpen(
         shmName,
         O_RDWR | DARWIN_O_CREAT | DARWIN_O_EXCL,
         DARWIN_SHM_MODE,
       ),
       "shm_open failed",
+      errnoOf(libc, platform),
+      platform,
     );
 
     shmUnlink(shmName);
@@ -180,9 +211,11 @@ const createDenoSharedMemoryFd = (
     throw new Error("memfd_create symbol is not available");
   }
 
-  const fd = checkResult(
+  const fd = checkPosixResult(
     memfdCreate(encodeCString(name), 0),
     "memfd_create failed",
+    errnoOf(libc, platform),
+    platform,
   );
 
   try {
@@ -209,14 +242,27 @@ const createNamedDenoSharedMemoryFd = (
   const flags = mode === "create"
     ? O_RDWR | createFlags | exclusiveFlags
     : O_RDWR;
-  const fd = checkResult(
+  const shmMode = platform === "darwin" ? DARWIN_SHM_MODE : POSIX_SHM_MODE;
+  const fd = checkPosixResult(
     shmOpen(
       encodeCString(toPosixSharedMemoryName(name)),
       flags,
-      platform === "darwin" ? DARWIN_SHM_MODE : POSIX_SHM_MODE,
+      shmMode,
     ),
     "shm_open failed",
+    errnoOf(libc, platform),
+    platform,
   );
+
+  if (mode === "create") {
+    repairDarwinSharedMemoryMode(
+      libc,
+      fd,
+      platform,
+      errnoOf(libc, platform),
+      shmMode,
+    );
+  }
 
   try {
     return setCloseOnExec(libc, fd);
@@ -241,7 +287,11 @@ export const mapDenoSharedMemory = (
       libc,
     );
   } else if (options.duplicateFd !== false) {
-    fd = checkResult(libc.symbols.dup(sourceFd), "dup(fd) failed");
+    fd = checkPosixResult(
+      libc.symbols.dup(sourceFd),
+      "dup(fd) failed",
+      errnoOf(libc),
+    );
     try {
       setCloseOnExec(libc, fd);
     } catch (error) {
@@ -259,8 +309,9 @@ export const mapDenoSharedMemory = (
   );
 
   if (isDenoMmapFailed(pointer)) {
+    const error = posixError("mmap failed", errnoOf(libc));
     if (options.duplicateFd !== false) libc.symbols.close(fd);
-    throw new Error("mmap failed");
+    throw error;
   }
 
   const arrayBuffer = new (getDeno().UnsafePointerView)(pointer)
@@ -299,9 +350,11 @@ export const createDenoSharedMemory = (
 
   try {
     if (mode !== "open") {
-      checkResult(
+      checkPosixResult(
         libc.symbols.ftruncate(fd, BigInt(size)),
         "ftruncate failed",
+        errnoOf(libc, platform),
+        platform,
       );
     }
 

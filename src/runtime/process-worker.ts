@@ -181,9 +181,7 @@ export type ProcessWorkerMemoryLayout = {
   cleanup: () => void;
 };
 
-export type ProcessWorkerRuntime = NonNullable<
-  WorkerSettings["processRuntime"]
->;
+export type ProcessWorkerRuntime = "bun" | "deno" | "node";
 export type ProcessWorkerCommandPrefix = NonNullable<
   WorkerSettings["processCommandPrefix"]
 >;

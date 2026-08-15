@@ -336,7 +336,8 @@ Common options you might tweak:
 | `worker.resolveAfterFinishingAll` | Let submitted calls finish before shutdown resolves.                                                                              |
 | `worker.bootstrap`                | Privileged async hook imported and awaited before task modules load.                                                              |
 | `worker.hardTimeoutMs`            | Force pool shutdown when a task exceeds this many milliseconds.                                                                   |
-| `worker.runtime`                  | Choose `"thread"` or `"process"` workers.                                                                                         |
+| `worker.runtime`                  | Choose `"thread"`, `"process"`, or experimental `"compiled"` workers.                                                             |
+| `worker.processRuntime`           | Choose `"node"`, `"deno"`, or `"bun"`; standalone `"porffor"` selects compilation and rebuilds once per pool.                    |
 | `worker.processSharedMemory`      | Process-worker memory discovery: `"inherit"` by default on POSIX, or `"named"` for wrappers/containers that cannot preserve fd 0. |
 | `permission`                      | Runtime permission policy for workers.                                                                                            |
 | `host.dispatcher`                 | Experimental host dispatcher topology: `"per-thread"` or `"serial-channel"`.                                                      |
@@ -398,6 +399,27 @@ const pool = createPool({
 ```
 
 `processRuntime` can be `"node"`, `"deno"`, or `"bun"` and defaults to `"deno"`.
+Using `processRuntime: "porffor"` is shorthand for the compiled backend and
+forces one fresh native build whenever `createPool(...)` is called:
+
+```ts
+using pool = createPool({
+  worker: { processRuntime: "porffor" },
+})({ add });
+```
+
+Add `runtime: "compiled"` to reuse a compatible `.knt` instead. Missing or
+stale artifacts still build automatically:
+
+```ts
+using pool = createPool({
+  worker: {
+    runtime: "compiled",
+    processRuntime: "porffor",
+  },
+})({ add });
+```
+
 You can also provide a `processCommandPrefix` when workers need to be launched
 through a wrapper such as a package manager, container command, or runtime shim.
 
@@ -445,6 +467,103 @@ const pool = createPool({
   },
 })({ add });
 ```
+
+### Experimental compiled workers
+
+A native worker uses the same task declaration and pool call syntax. For a
+task module named tasks.ts, Knitting looks for tasks.knt plus tasks.knt.json.
+If they are missing, incompatible, or older than the task module, the first
+pool builds them automatically with a pinned Porffor compiler; later pools
+reuse the validated artifact:
+
+| Worker settings | Compilation behavior |
+| --- | --- |
+| `runtime: "compiled"` | Reuse a compatible `.knt`; build when missing, stale, or incompatible. |
+| `processRuntime: "porffor"` | Select the compiled backend and always rebuild once per pool. |
+| `runtime: "compiled", processRuntime: "porffor"` | Reuse a compatible `.knt`; build when missing, stale, or incompatible. |
+
+For example, this bare-function form uses `hello.knt` when it is current:
+
+```ts
+import { createPool, isMain } from "knitting";
+
+export const hello = (name: string) => "Hello " + name;
+
+using pool = createPool({
+  worker: {
+    runtime: "compiled",
+    processRuntime: "porffor",
+  },
+})({ hello });
+
+if (isMain) console.log(await pool.call.hello("World!"));
+```
+
+Remove `runtime: "compiled"` from that example when you want a fresh build on
+every `createPool(...)`. A multi-worker pool still compiles only once, then
+starts every native worker from the resulting artifact.
+
+The `task(...)` declaration form works the same way:
+
+```ts
+import { createPool, isMain, task } from "knitting";
+
+export const addOne = task<number, number>({
+  f: (value) => value + 1,
+});
+
+if (isMain) {
+  using pool = createPool({
+    threads: 2,
+    worker: { runtime: "compiled" },
+  })({ addOne });
+
+  console.log(await pool.call.addOne(41)); // 42
+}
+```
+
+Use worker.compiled.artifact when artifacts live in a build directory:
+
+```ts
+const pool = createPool({
+  worker: {
+    runtime: "compiled",
+    compiled: { artifact: "./build/tasks-linux-x64.knt" },
+  },
+})({ addOne });
+```
+
+`worker.compiled.manifest` selects a non-default sidecar location.
+`worker.compiled.build` controls generation directly:
+
+- `true` or omitted: build only when the artifact cannot be reused.
+- `false`: never build; fail if the prebuilt artifact is unavailable.
+- `"always"`: rebuild once whenever a pool is created.
+
+The extension is .knt rather than .out because it identifies a Knitting worker
+artifact; executability is never inferred from the suffix alone. Knitting also
+requires the sidecar to match the protocol version, current platform and
+architecture, source module, source timestamp, and requested task names before
+spawning it. `checkCompiledWorker(...)` remains a read-only way to inspect that
+state without building or executing anything.
+
+Automatic builds use Porffor main from `worker.compiled.compiler`,
+`PORFFOR_MAIN`/`PORF`, or `porf` on PATH. If none exists, Knitting downloads a
+pinned compiler into `$XDG_CACHE_HOME/knitting`, or `~/.cache/knitting` when
+`XDG_CACHE_HOME` is unset. Native builds use Porffor `-O3` and parallel LTO.
+Set `worker.compiled.build: false` for deployment environments that must use
+only a prebuilt artifact.
+
+To build ahead of time, run
+`bun run build:compiled --module tasks.ts --out tasks.knt --tasks addOne`.
+
+Compiled workers currently accept synchronous JSON-compatible primitives,
+arrays, and plain objects up to 1 MiB. BMP Unicode is supported; supplementary
+Unicode code points and async results are not yet supported. Task timeouts,
+abort signals, bootstrap hooks, permission policies, and host inlining fail
+during pool creation or invocation. The executable is native, unsandboxed code;
+only run artifacts you trust. `worker.hardTimeoutMs` remains available because
+it is enforced by the host.
 
 ### Windows process workers
 
