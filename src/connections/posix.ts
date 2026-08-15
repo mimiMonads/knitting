@@ -111,42 +111,6 @@ type FcntlLibc = {
   };
 };
 
-type SharedMemoryModeLibc = {
-  symbols: {
-    fchmod: (fd: number, mode: number) => number;
-    close: (fd: number) => number;
-  };
-};
-
-/**
- * Restores the mode on a freshly created macOS shared memory segment.
- *
- * macOS declares `shm_open(const char *, int, ...)` as variadic, and Apple's
- * arm64 ABI passes variadic arguments on the stack rather than in registers.
- * Every FFI engine here emits a fixed-arity call, so the mode argument lands in
- * a register the callee never reads and the segment is created with whatever
- * the stack happened to hold. The creator keeps a working descriptor either
- * way, so the damage only surfaces later: a second process opening the same
- * name with O_RDWR fails the permission check with EACCES.
- *
- * `fchmod(2)` has a fixed prototype, so it sets the mode reliably regardless of
- * how the FFI engine lays out variadic arguments. No-ops off macOS, where the
- * mode argument arrives intact. Closes the descriptor before throwing.
- */
-export const repairDarwinSharedMemoryMode = <T extends SharedMemoryModeLibc>(
-  libc: T,
-  fd: number,
-  platform: PosixPlatform,
-  errno: ErrnoReader,
-  mode: number = POSIX_SHM_MODE,
-): void => {
-  if (platform !== "darwin" || libc.symbols.fchmod(fd, mode) >= 0) return;
-
-  const error = posixError("fchmod(shared memory) failed", errno, platform);
-  libc.symbols.close(fd);
-  throw error;
-};
-
 export const setCloseOnExec = <T extends FcntlLibc>(
   libc: T,
   fd: number,

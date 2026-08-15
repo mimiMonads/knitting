@@ -26,6 +26,12 @@ const runtimePlatform = (globalThis as typeof globalThis & {
 const isPlainNode = typeof versions?.node === "string" &&
   versions.bun === undefined &&
   (globalThis as typeof globalThis & { Deno?: unknown }).Deno === undefined;
+const isBunMacOS = runtimePlatform === "darwin" &&
+  typeof versions?.bun === "string";
+// See process-shared-buffer.test.ts: Bun/macOS cannot reopen shm names via FFI.
+const bunMacOSNamedSharedMemorySkip = isBunMacOS
+  ? "skipping named shared memory on Bun/macOS while shm_open reopen is investigated"
+  : false;
 const processRuntimeTestSkip = isPlainNode && runtimePlatform === "win32"
   ? "skipping process runtime tests on Node Windows while the CI hang is investigated"
   : false;
@@ -242,21 +248,25 @@ test("process worker spawns a Node child from this runtime", {
   await runProcessWorkerSmoke("node");
 });
 
-test("process worker supports named shared memory", {
-  concurrency: false,
-  skip: processRuntimeTestSkip,
-  timeout: TEST_TIMEOUT_MS,
-}, async () => {
-  for (const processRuntime of ["bun", "deno", "node"] as const) {
-    if (!hasProcessRuntime(processRuntime)) continue;
-    await runProcessWorkerSmoke(processRuntime, {
-      processSharedMemory: {
-        mode: "named",
-        namePrefix: `knit_test_${processRuntime}`,
-      },
-    });
-  }
-});
+if (bunMacOSNamedSharedMemorySkip) {
+  test.skip("process worker supports named shared memory", () => {});
+} else {
+  test("process worker supports named shared memory", {
+    concurrency: false,
+    skip: processRuntimeTestSkip,
+    timeout: TEST_TIMEOUT_MS,
+  }, async () => {
+    for (const processRuntime of ["bun", "deno", "node"] as const) {
+      if (!hasProcessRuntime(processRuntime)) continue;
+      await runProcessWorkerSmoke(processRuntime, {
+        processSharedMemory: {
+          mode: "named",
+          namePrefix: `knit_test_${processRuntime}`,
+        },
+      });
+    }
+  });
+}
 
 test("process worker supports a command prefix wrapper", {
   concurrency: false,

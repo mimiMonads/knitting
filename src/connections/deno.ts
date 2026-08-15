@@ -19,7 +19,6 @@ import {
   type PosixPlatform,
   PROT_READ,
   PROT_WRITE,
-  repairDarwinSharedMemoryMode,
   setCloseOnExec,
   toPosixSharedMemoryName,
 } from "./posix.ts";
@@ -49,7 +48,6 @@ type DenoLibc = {
     __errno_location?: () => unknown;
     ftruncate: (fd: number, length: bigint) => number;
     dup: (fd: number) => number;
-    fchmod: (fd: number, mode: number) => number;
     fcntl: (fd: number, cmd: number, arg: number) => number;
     mmap: (
       address: null,
@@ -102,10 +100,6 @@ export const openDenoLibc = (): DenoLibc =>
     },
     dup: {
       parameters: ["i32"],
-      result: "i32",
-    },
-    fchmod: {
-      parameters: ["i32", "u32"],
       result: "i32",
     },
     fcntl: {
@@ -253,16 +247,6 @@ const createNamedDenoSharedMemoryFd = (
     errnoOf(libc, platform),
     platform,
   );
-
-  if (mode === "create") {
-    repairDarwinSharedMemoryMode(
-      libc,
-      fd,
-      platform,
-      errnoOf(libc, platform),
-      shmMode,
-    );
-  }
 
   try {
     return setCloseOnExec(libc, fd);

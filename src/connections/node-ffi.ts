@@ -19,7 +19,6 @@ import {
   type PosixPlatform,
   PROT_READ,
   PROT_WRITE,
-  repairDarwinSharedMemoryMode,
   setCloseOnExec,
   toPosixSharedMemoryName,
 } from "./posix.ts";
@@ -62,7 +61,6 @@ type NodePosixFunctions = {
   __errno_location?: () => bigint;
   ftruncate: (fd: number, length: bigint) => number;
   dup: (fd: number) => number;
-  fchmod: (fd: number, mode: number) => number;
   fcntl: (fd: number, cmd: number, arg: number) => number;
   mmap: (
     address: null,
@@ -132,10 +130,6 @@ const getNodePosixSymbols = (): Record<string, NodeFfiFunctionSignature> => ({
   },
   dup: {
     arguments: ["i32"],
-    return: "i32",
-  },
-  fchmod: {
-    arguments: ["i32", "u32"],
     return: "i32",
   },
   fcntl: {
@@ -268,16 +262,6 @@ const createNamedFd = (
     errnoOf(libc, platform),
     platform,
   );
-
-  if (mode === "create") {
-    repairDarwinSharedMemoryMode(
-      { symbols: libc },
-      fd,
-      platform,
-      errnoOf(libc, platform),
-      shmMode,
-    );
-  }
 
   try {
     return setCloseOnExec({ symbols: libc }, fd);
