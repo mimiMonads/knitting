@@ -223,3 +223,13 @@ __pycache__/
 # Benchmark outputs / generated graphs
 /results/graphs/*.png
 /results/graphs/*.pdf
+
+# Andromeda worker-side investigation: parked until upstream implements
+# FFI argument marshalling, the module-map fix, and terminate() vs Atomics.wait
+/andromeda/
+
+# Local Porffor compiler probes, generated workers, and benchmark harnesses
+/porffor/
+.knitting-compiled/
+*.knt
+*.knt.json

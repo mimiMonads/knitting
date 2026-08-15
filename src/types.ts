@@ -391,6 +391,45 @@ type WorkerBootstrapOptions<Data = unknown> = {
   data?: Data;
 };
 
+/** Native worker artifact and on-demand compiler settings. */
+type CompiledWorkerOptions = {
+  /**
+   * Native executable path. Relative paths resolve from the createPool caller.
+   * Defaults to the task module path with its extension replaced by `.knt`.
+   */
+  artifact?: string;
+  /**
+   * Versioned metadata sidecar. Defaults to `<artifact>.json`.
+   */
+  manifest?: string;
+  /**
+   * Build a missing/incompatible artifact, or use `"always"` to rebuild once
+   * whenever a pool is created. Defaults to true.
+   */
+  build?: boolean | "always";
+  /**
+   * Porffor main executable or checkout. Defaults to PORFFOR_MAIN/PORF, then
+   * `porf` on PATH; a pinned compiler is cached locally when none is present.
+   */
+  compiler?: string;
+};
+
+type CompiledWorkerSource =
+  | string
+  | URL
+  | { readonly importedFrom: string };
+
+type CompiledWorkerCheck = {
+  /** True only when the executable and compatible manifest both validate. */
+  compiled: boolean;
+  artifact: string;
+  manifest: string;
+  reason?: string;
+  compiler?: string;
+  protocol?: string;
+  tasks?: readonly string[];
+};
+
 type WorkerSettings = {
   resolveAfterFinishingAll?: true;
   /**
@@ -401,13 +440,18 @@ type WorkerSettings = {
   /**
    * Experimental worker runtime.
    * "thread" uses Worker/worker_threads. "process" spawns another JavaScript
-   * runtime, useful for process isolation, bwrap, and containers.
+   * runtime, useful for process isolation, bwrap, and containers. "compiled"
+   * validates and runs a `.knt` native worker, building it on first use.
    */
-  runtime?: "thread" | "process";
+  runtime?: "thread" | "process" | "compiled";
+  /** Artifact settings used when runtime is "compiled". */
+  compiled?: CompiledWorkerOptions;
   /**
-   * Runtime executable to use when runtime is "process". Defaults to "deno".
+   * Runtime executable for process workers. Standalone `"porffor"` selects the
+   * compiled backend and rebuilds once per pool; with `runtime: "compiled"` it
+   * reuses the validated artifact.
    */
-  processRuntime?: "bun" | "deno" | "node";
+  processRuntime?: "bun" | "deno" | "node" | "porffor";
   /**
    * Command argv to prepend before the process worker runtime command.
    * Useful for wrappers such as systemd-run, cgexec, nice, taskset, or
@@ -538,6 +582,9 @@ export type {
   Args as Args,
   Balancer as Balancer,
   BalancerStrategy as BalancerStrategy,
+  CompiledWorkerCheck as CompiledWorkerCheck,
+  CompiledWorkerOptions as CompiledWorkerOptions,
+  CompiledWorkerSource as CompiledWorkerSource,
   Composed as Composed,
   ComposedWithKey as ComposedWithKey,
   CreateContext as CreateContext,

@@ -36,8 +36,10 @@ The core flow is:
 
 ## Build And Scripts
 
-- `build.ts`: Cleans generated npm artifacts, then compiles public entries and
-  `src/**/*.ts` to `.js` and `.d.ts` files with TypeScript.
+- `build.ts`: Runs the generated-output cleaner, then compiles public entries
+  and `src/**/*.ts` to `.js` and `.d.ts` files with TypeScript.
+- `scripts/clean-generated.ts`: Removes npm-generated root entry files and
+  generated `.js`/`.d.ts` files under `src/`; exposed as `npm run clean`.
 - `tsconfig.npm.json`: TypeScript config used by the npm release build.
 - `scripts/rewrite-declaration-imports.mjs`: Rewrites generated declaration
   imports from `.ts` to `.js` so npm consumers resolve the compiled files.
@@ -65,8 +67,8 @@ The core flow is:
 - `docs/AGENTS.md`: Agent/contributor orientation, invariants, and workflow
   notes.
 - `docs/CLAUDE.md`: Pointer to the shared agent guidance.
-- `docs/buffer-reference-ownership-move.md`: Design record for
-  `BufferReference` ownership transfer.
+- `docs/buffer-reference-ownership-move.md`: Design record for `BufferReference`
+  ownership transfer.
 - `docs/knitting.pdf`: Longer-form project design/theory document.
 
 ## Public API Layer
@@ -120,6 +122,12 @@ The core flow is:
 - `src/runtime/process-worker.ts`: Process-worker spawning, command/runtime
   selection, process shared-memory layout, inherited/named mapping metadata, and
   child boot payload construction.
+- `src/runtime/compiled-artifact.ts`: Resolves `.knt` executables and validates
+  their versioned manifests, source/task identity, target platform, and execute
+  permission without launching them.
+- `src/runtime/compiled-worker.ts`: Experimental host adapter for compiled
+  worker executables. Spawns the artifact and maps pool calls onto the current
+  numeric framed-pipe protocol.
 
 ## Worker Side
 
@@ -196,8 +204,8 @@ The core flow is:
   parsing, mapping support, and descriptor lifecycle helpers.
 - `src/connections/node-addons.ts`: Native addon specifier resolution for
   committed Node ABI prebuilds with `build/Release` fallback loading.
-- `src/connections/node.ts`: Selects the Node 22/24 addon backend or the
-  Node 26 FFI backend and exposes shared-memory and futex primitives.
+- `src/connections/node.ts`: Selects the Node 22/24 addon backend or the Node 26
+  FFI backend and exposes shared-memory and futex primitives.
 - `src/connections/node-ffi.ts`: Node 26 `node:ffi` implementation for POSIX
   shared-memory creation, mapping, cleanup, and buffer-pointer aliases.
 - `src/connections/bun.ts`: Bun FFI implementation for POSIX shared memory.
@@ -215,8 +223,8 @@ The core flow is:
   FFI runtimes.
 - `prebuilds/*/*.node`: Tracked Node native-addon prebuilds for supported
   platform/Node ABI combinations.
-- `prebuilds/win32-x64/*.dll`: Tracked Windows FFI DLL prebuild used by
-  Node 26, Bun, and Deno shared-memory primitives on Windows.
+- `prebuilds/win32-x64/*.dll`: Tracked Windows FFI DLL prebuild used by Node 26,
+  Bun, and Deno shared-memory primitives on Windows.
 
 ## Permissions
 
@@ -273,6 +281,8 @@ The core flow is:
 - `test/_runner.ts`: Runtime-neutral test runner shim used by the test suite.
 - `test/abortSignal.test.ts`: Shared abort bitset behavior.
 - `test/api-cap.test.ts`: API limits such as maximum task id count.
+- `test/compiled-worker.test.ts`: Compiled-artifact validation, public pool
+  integration, source-derived `.knt` paths, and unsupported-feature guards.
 - `test/shared-buffer-io.test.ts`: Shared-buffer IO read/write behavior.
 - `test/file-descriptor.test.ts`: File descriptor metadata and mapping behavior.
 - `test/inliner.test.ts`: Inline executor behavior and thresholds.

@@ -69,6 +69,7 @@ import {
   createBufferReferenceReturnReleaseMessage,
   detachArrayBufferBestEffort,
 } from "../connections/buffer-reference.ts";
+import { spawnCompiledWorkerContext } from "./compiled-worker.ts";
 
 const WORKER_FATAL_MESSAGE_KEY = "__knittingWorkerFatal";
 const isWorkerFatalMessage = (
@@ -152,6 +153,15 @@ export const spawnWorkerContext = ({
    */
   sharedChannelHandler?: ChannelHandler;
 }) => {
+  if (workerOptions?.runtime === "compiled") {
+    return spawnCompiledWorkerContext({
+      list,
+      names,
+      workerOptions,
+      hostDebug,
+    });
+  }
+
   const tsFileUrl = new URL(import.meta.url);
   const poliWorker = RUNTIME_WORKER;
   const resolvedWorkerOptions = serializeWorkerBootstrapData(

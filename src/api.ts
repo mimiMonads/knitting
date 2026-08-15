@@ -26,6 +26,7 @@ import {
   readProcessWorkerCommandPrefix,
   readProcessWorkerRuntime,
 } from "./runtime/process-worker.ts";
+import { inspectCompiledWorkerArtifact } from "./runtime/compiled-artifact.ts";
 
 import { managerMethod } from "./runtime/balancer.ts";
 import { createInlineExecutor } from "./runtime/inline-executor.ts";
@@ -34,6 +35,9 @@ import type {
   AbortSignalOption,
   AbortSignalToolkit,
   Args,
+  CompiledWorkerCheck,
+  CompiledWorkerOptions,
+  CompiledWorkerSource,
   Composed,
   ComposedWithKey,
   CreateContext,
@@ -234,29 +238,140 @@ const resolveImportHref = (href: string, callerHref: string): string => {
   }
 };
 
-const resolveWorkerBootstrapSettings = (
+const resolveWorkerSettings = (
   worker: WorkerSettings | undefined,
   callerHref: string,
 ): WorkerSettings | undefined => {
-  const bootstrap = worker?.bootstrap;
-  if (bootstrap === undefined) return worker;
-
-  const name = bootstrap.name ?? DEFAULT_IMPORT_EXPORT_NAME;
-  if (typeof bootstrap.href !== "string" || bootstrap.href.length === 0) {
-    throw new TypeError("worker.bootstrap.href must be a non-empty string");
+  if (worker === undefined) return undefined;
+  const usingPorffor = worker.processRuntime === "porffor";
+  if (
+    usingPorffor && worker.runtime !== undefined &&
+    worker.runtime !== "compiled"
+  ) {
+    throw new Error(
+      'worker.processRuntime "porffor" requires worker.runtime to be compiled or omitted',
+    );
   }
-  if (typeof name !== "string" || name.length === 0) {
-    throw new TypeError("worker.bootstrap.name must be a non-empty string");
+  const forcePorfforBuild = usingPorffor && worker.runtime === undefined;
+  let resolved: WorkerSettings = usingPorffor
+    ? {
+      ...worker,
+      runtime: "compiled",
+      processRuntime: undefined,
+      compiled: forcePorfforBuild
+        ? { ...worker.compiled, build: "always" }
+        : worker.compiled,
+    }
+    : worker;
+  const bootstrap = resolved.bootstrap;
+  if (bootstrap !== undefined) {
+    const name = bootstrap.name ?? DEFAULT_IMPORT_EXPORT_NAME;
+    if (typeof bootstrap.href !== "string" || bootstrap.href.length === 0) {
+      throw new TypeError("worker.bootstrap.href must be a non-empty string");
+    }
+    if (typeof name !== "string" || name.length === 0) {
+      throw new TypeError("worker.bootstrap.name must be a non-empty string");
+    }
+
+    resolved = {
+      ...resolved,
+      bootstrap: {
+        ...bootstrap,
+        href: resolveImportHref(bootstrap.href, callerHref),
+        name,
+      },
+    };
   }
 
-  return {
-    ...worker,
-    bootstrap: {
-      ...bootstrap,
-      href: resolveImportHref(bootstrap.href, callerHref),
-      name,
-    },
+  const compiled = resolved.compiled;
+  if (compiled !== undefined) {
+    if (
+      compiled.build !== undefined && typeof compiled.build !== "boolean" &&
+      compiled.build !== "always"
+    ) {
+      throw new TypeError(
+        'worker.compiled.build must be a boolean or "always"',
+      );
+    }
+    for (const [name, value] of Object.entries({
+      artifact: compiled.artifact,
+      manifest: compiled.manifest,
+      compiler: compiled.compiler,
+    })) {
+      if (
+        value !== undefined &&
+        (typeof value !== "string" || value.length === 0)
+      ) {
+        throw new TypeError(
+          "worker.compiled." + name + " must be a non-empty string",
+        );
+      }
+    }
+    resolved = {
+      ...resolved,
+      compiled: {
+        build: compiled.build,
+        compiler: compiled.compiler === undefined
+          ? undefined
+          : compiled.compiler.startsWith(".") ||
+              compiled.compiler.startsWith("/") ||
+              compiled.compiler.startsWith("file:") ||
+              /^[A-Za-z]:[\\/]/.test(compiled.compiler)
+          ? resolveImportHref(compiled.compiler, callerHref)
+          : compiled.compiler,
+        artifact: compiled.artifact === undefined
+          ? undefined
+          : resolveImportHref(compiled.artifact, callerHref),
+        manifest: compiled.manifest === undefined
+          ? undefined
+          : resolveImportHref(compiled.manifest, callerHref),
+      },
+    };
+  }
+
+  return resolved;
+};
+
+/**
+ * Check whether a task module has a compatible prebuilt native worker.
+ *
+ * By default tasks.ts resolves to tasks.knt plus tasks.knt.json.
+ * This only inspects the artifact; it never executes it.
+ */
+export const checkCompiledWorker = (
+  source: CompiledWorkerSource,
+  options?: CompiledWorkerOptions,
+): CompiledWorkerCheck => {
+  const moduleSource = typeof source === "string" || source instanceof URL
+    ? source
+    : source?.importedFrom;
+  if (typeof moduleSource !== "string" && !(moduleSource instanceof URL)) {
+    throw new TypeError(
+      "checkCompiledWorker expects a task definition, module path, or URL",
+    );
+  }
+  const callerHref = getCallerHref(2);
+  const resolvedOptions = options === undefined ? undefined : {
+    build: options.build,
+    compiler: options.compiler,
+    artifact: options.artifact === undefined
+      ? undefined
+      : resolveImportHref(options.artifact, callerHref),
+    manifest: options.manifest === undefined
+      ? undefined
+      : resolveImportHref(options.manifest, callerHref),
   };
+  const inspection = inspectCompiledWorkerArtifact({
+    source: moduleSource,
+    options: resolvedOptions,
+  });
+  const {
+    artifactHref: _artifactHref,
+    manifestHref: _manifestHref,
+    taskEntries: _taskEntries,
+    ...result
+  } = inspection;
+  return result;
 };
 
 const isTaskDefinition = (
@@ -486,10 +601,57 @@ export const createPool: CreatePoolFactory = ({
   const usesAbortSignal = listOfFunctions.some((fn) =>
     fn.abortSignal !== undefined
   );
-  const resolvedWorker = resolveWorkerBootstrapSettings(
+  const resolvedWorker = resolveWorkerSettings(
     worker,
     callerHref,
   );
+  const usingCompiledWorker = resolvedWorker?.runtime === "compiled";
+  if (resolvedWorker?.compiled !== undefined && !usingCompiledWorker) {
+    throw new Error(
+      "worker.compiled requires worker.runtime to be compiled",
+    );
+  }
+  if (usingCompiledWorker) {
+    const unsupported: string[] = [];
+    if (usingInliner) unsupported.push("inliner");
+    if (payload !== undefined) unsupported.push("payload");
+    if (unsafe !== undefined) unsupported.push("unsafe");
+    if (abortSignalCapacity !== undefined) {
+      unsupported.push("abortSignalCapacity");
+    }
+    if (source !== undefined) unsupported.push("source");
+    if (workerExecArgv !== undefined) unsupported.push("workerExecArgv");
+    if (permission !== undefined) unsupported.push("permission");
+    if (host !== undefined) unsupported.push("host");
+    if (resolvedWorker.bootstrap !== undefined) {
+      unsupported.push("worker.bootstrap");
+    }
+    if (resolvedWorker.timers !== undefined) unsupported.push("worker.timers");
+    if (resolvedWorker.processRuntime !== undefined) {
+      unsupported.push("worker.processRuntime");
+    }
+    if (resolvedWorker.processCommandPrefix !== undefined) {
+      unsupported.push("worker.processCommandPrefix");
+    }
+    if (resolvedWorker.processSharedMemory !== undefined) {
+      unsupported.push("worker.processSharedMemory");
+    }
+    if (resolvedWorker.resolveAfterFinishingAll !== undefined) {
+      unsupported.push("worker.resolveAfterFinishingAll");
+    }
+    if (usesAbortSignal) unsupported.push("task abortSignal");
+    if (listOfFunctions.some((fn) => fn.timeout !== undefined)) {
+      unsupported.push("task timeout");
+    }
+    if (listOfFunctions.some((fn) => fn.imported === true)) {
+      unsupported.push("importTask");
+    }
+    if (unsupported.length > 0) {
+      throw new Error(
+        "Compiled workers do not support: " + unsupported.join(", "),
+      );
+    }
+  }
   if (resolvedWorker?.bootstrap !== undefined) {
     hostDebug?.log(
       `bootstrap href=${resolvedWorker.bootstrap.href}` +
@@ -546,7 +708,8 @@ export const createPool: CreatePoolFactory = ({
     return "serial-channel";
   })();
   const dispatcher = explicitDispatcher ?? autoDispatcher;
-  const serialChannel = dispatcher === "serial-channel";
+  const serialChannel = !usingCompiledWorker &&
+    dispatcher === "serial-channel";
   const serialDispatcherChannel = serialChannel
     ? new ChannelHandler()
     : undefined;
