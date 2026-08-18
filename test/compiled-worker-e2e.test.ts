@@ -90,8 +90,10 @@ const uniqueShmName = (): string =>
     Math.random().toString(36).slice(2, 8)
   }`;
 
+// Porffor compiles the fixture on first use, which outruns bun's 5s default.
 test("compiled workers round-trip binary values and shared buffers", {
   skip,
+  timeout: 120_000,
 }, async () => {
   const names = [
     "incrementBytes",
@@ -165,6 +167,7 @@ test("compiled workers round-trip binary values and shared buffers", {
 
 test("compiled workers observe aborts and shut down gracefully", {
   skip,
+  timeout: 120_000,
 }, async () => {
   const { context, call } = openWorker(
     "compiled_abort_tasks",
