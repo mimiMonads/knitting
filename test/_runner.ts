@@ -69,12 +69,20 @@ const adaptToBun = (variant: AnyTest): AnyTest =>
   );
 };
 
+// bun exposes these as getters, and reading `only` throws outright under CI.
+// Forward them lazily so a variant is touched only when a suite asks for it.
+const withVariants = (adapted: AnyTest): AnyTest => {
+  for (const variant of ["skip", "only", "todo"] as const) {
+    Object.defineProperty(adapted, variant, {
+      configurable: true,
+      get: () => adaptToBun(baseTest[variant]),
+    });
+  }
+  return adapted;
+};
+
 const test: TestFunction = (isBun
-  ? Object.assign(adaptToBun(baseTest), {
-    skip: adaptToBun(baseTest.skip),
-    only: adaptToBun(baseTest.only),
-    todo: adaptToBun(baseTest.todo),
-  })
+  ? withVariants(adaptToBun(baseTest))
   : baseTest) as TestFunction;
 
 export default test;
