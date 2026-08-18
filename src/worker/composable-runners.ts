@@ -12,6 +12,7 @@ type HasAborted = (signal: number) => boolean;
 type HasAbortedMethod = () => boolean;
 type WorkerAbortToolkit = {
   hasAborted: HasAbortedMethod;
+  now: () => number;
 };
 
 const ABORT_SIGNAL_META_OFFSET = 1;
@@ -87,7 +88,7 @@ const readSignal = (slot: Task): number => {
   return signal >= 0 ? signal : NO_ABORT_SIGNAL;
 };
 
-const makeToolkitCache = (hasAborted: HasAborted) => {
+const makeToolkitCache = (hasAborted: HasAborted, now: () => number) => {
   const bySignal: Array<WorkerAbortToolkit | undefined> = [];
 
   return (signal: number): WorkerAbortToolkit => {
@@ -97,6 +98,7 @@ const makeToolkitCache = (hasAborted: HasAborted) => {
     const hasAbortedMethod = () => hasAborted(signal);
     toolkit = {
       hasAborted: hasAbortedMethod,
+      now,
     };
     bySignal[signal] = toolkit;
     return toolkit;
@@ -128,7 +130,7 @@ export const composeWorkerRunner = ({
     };
   }
 
-  const getToolkit = makeToolkitCache(hasAborted);
+  const getToolkit = makeToolkitCache(hasAborted, nowTime);
 
   if (!timeout) {
     return (slot: Task) => {

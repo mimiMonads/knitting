@@ -91,8 +91,10 @@ const raceTimeout = (
 
 const INLINE_ABORT_TOOLKIT = (() => {
   const hasAborted = () => false;
+  const now = () => performance.now();
   return {
     hasAborted,
+    now,
   };
 })();
 

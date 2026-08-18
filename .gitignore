@@ -228,8 +228,13 @@ __pycache__/
 # FFI argument marshalling, the module-map fix, and terminate() vs Atomics.wait
 /andromeda/
 
-# Local Porffor compiler probes, generated workers, and benchmark harnesses
-/porffor/
+# Local Porffor compiler probes, generated workers, and benchmark harnesses.
+# Keep the compatibility plan tracked while leaving the research outputs ignored.
+!/porffor/
+/porffor/*
+!/porffor/COMPATIBILITY.md
+# Draft of the docs-site page, kept tracked so it can be copied to the website.
+!/porffor/compiled-workers.md
 .knitting-compiled/
 *.knt
 *.knt.json

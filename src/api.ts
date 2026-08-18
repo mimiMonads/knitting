@@ -616,9 +616,6 @@ export const createPool: CreatePoolFactory = ({
     if (usingInliner) unsupported.push("inliner");
     if (payload !== undefined) unsupported.push("payload");
     if (unsafe !== undefined) unsupported.push("unsafe");
-    if (abortSignalCapacity !== undefined) {
-      unsupported.push("abortSignalCapacity");
-    }
     if (source !== undefined) unsupported.push("source");
     if (workerExecArgv !== undefined) unsupported.push("workerExecArgv");
     if (permission !== undefined) unsupported.push("permission");
@@ -639,7 +636,6 @@ export const createPool: CreatePoolFactory = ({
     if (resolvedWorker.resolveAfterFinishingAll !== undefined) {
       unsupported.push("worker.resolveAfterFinishingAll");
     }
-    if (usesAbortSignal) unsupported.push("task abortSignal");
     if (listOfFunctions.some((fn) => fn.timeout !== undefined)) {
       unsupported.push("task timeout");
     }

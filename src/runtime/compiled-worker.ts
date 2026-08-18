@@ -1,10 +1,34 @@
-import { getNodeBuiltinModule } from "../common/node-compat.ts";
+import { getNodeBuiltinModule, getNodeProcess } from "../common/node-compat.ts";
+import {
+  ProcessSharedBuffer,
+  getDefaultProcessSharedBufferPrimitives,
+  isProcessSharedBufferValue,
+} from "../connections/process-shared-buffer.ts";
+import { withResolvers } from "../common/with-resolvers.ts";
+import {
+  AbortSignalPoolExhausted,
+  OneShotDeferred,
+  signalAbortFactory,
+  type SignalAbortStore,
+} from "../shared/abortSignal.ts";
 import type { WorkerContext, WorkerSettings } from "../types.ts";
 import {
   COMPILED_WORKER_JSON_PROTOCOL,
   inspectCompiledWorkerArtifact,
 } from "./compiled-artifact.ts";
 import { buildCompiledWorkerArtifact } from "./compiled-builder.ts";
+
+/** Matches the `abortSignalCapacity` default documented on pool options. */
+const DEFAULT_ABORT_SLOTS = 258;
+/** Both directions of the JSON protocols share this frame budget. */
+const MAX_PAYLOAD_BYTES = 1024 * 1024;
+/** Sentinel written to the slot field when a task is not abort-aware. */
+const NO_ABORT_SLOT = -1;
+/** Requests carry i32 task, i32 abort slot, then either a length or an f64. */
+const JSON_HEADER_BYTES = 12;
+const NUMBER_FRAME_BYTES = 16;
+const NUMBER_ARGUMENT_OFFSET = 8;
+const EMPTY_PAYLOAD = new Uint8Array(0);
 
 type NodeWritable = {
   end: (callback?: () => void) => void;
@@ -41,6 +65,7 @@ type DenoChild = {
 };
 
 type DenoLike = {
+  pid?: number;
   Command?: new (
     command: string,
     options: Record<string, unknown>,
@@ -56,9 +81,18 @@ type NativeProcess = {
   onError: (listener: (error: unknown) => void) => void;
 };
 
+type CompiledAbortChannel = SignalAbortStore & {
+  /** Passed to the child so it can map the same bitmap. */
+  environment: Record<string, string>;
+  close: () => void;
+};
+
 const deno = (globalThis as typeof globalThis & { Deno?: DenoLike }).Deno;
 
-const spawnNodeProcess = (artifact: string): NativeProcess | undefined => {
+const spawnNodeProcess = (
+  artifact: string,
+  environment?: Record<string, string>,
+): NativeProcess | undefined => {
   const childProcess = getNodeBuiltinModule<ChildProcessModule>(
     "node:child_process",
   );
@@ -66,6 +100,9 @@ const spawnNodeProcess = (artifact: string): NativeProcess | undefined => {
 
   const child = childProcess.spawn(artifact, [], {
     stdio: ["pipe", "pipe", "inherit"],
+    env: environment === undefined
+      ? undefined
+      : { ...(getNodeProcess()?.env ?? {}), ...environment },
   });
   let dataListener: (data: Uint8Array) => void = () => {};
   let errorListener: (error: unknown) => void = () => {};
@@ -90,12 +127,16 @@ const spawnNodeProcess = (artifact: string): NativeProcess | undefined => {
   };
 };
 
-const spawnDenoProcess = (artifact: string): NativeProcess | undefined => {
+const spawnDenoProcess = (
+  artifact: string,
+  environment?: Record<string, string>,
+): NativeProcess | undefined => {
   if (deno?.Command === undefined) return undefined;
   const child = new deno.Command(artifact, {
     stdin: "piped",
     stdout: "piped",
     stderr: "inherit",
+    ...(environment === undefined ? {} : { env: environment }),
   }).spawn();
   const writer = child.stdin.getWriter();
   const reader = child.stdout.getReader();
@@ -127,12 +168,61 @@ const spawnDenoProcess = (artifact: string): NativeProcess | undefined => {
   };
 };
 
-const spawnNativeProcess = (artifact: string): NativeProcess => {
-  const process = spawnNodeProcess(artifact) ?? spawnDenoProcess(artifact);
+const spawnNativeProcess = (
+  artifact: string,
+  environment?: Record<string, string>,
+): NativeProcess => {
+  const process = spawnNodeProcess(artifact, environment) ??
+    spawnDenoProcess(artifact, environment);
   if (process === undefined) {
     throw new Error("Compiled workers require child-process support");
   }
   return process;
+};
+
+const compiledAbortName = (): string => {
+  const pid = getNodeProcess()?.pid ?? deno?.pid ?? 0;
+  const nonce = Math.floor(Math.random() * 0x1000000).toString(36);
+  return `knit_abort_${Math.abs(pid).toString(36)}_${nonce}`.slice(0, 30);
+};
+
+/**
+ * Host half of the abort bitmap. Slot bookkeeping is the same allocator every
+ * other lane uses; only the backing store differs, because a compiled child is
+ * a separate process and reads the words through named POSIX shared memory.
+ */
+export const createCompiledAbortChannel = (
+  requestedMax = DEFAULT_ABORT_SLOTS,
+): CompiledAbortChannel => {
+  const max = Number.isFinite(requestedMax) && requestedMax > 0
+    ? Math.floor(requestedMax)
+    : DEFAULT_ABORT_SLOTS;
+  const byteLength = Math.max(1, Math.ceil(max / 32)) *
+    Uint32Array.BYTES_PER_ELEMENT;
+  const primitives = getDefaultProcessSharedBufferPrimitives();
+  const name = compiledAbortName();
+  const shared = ProcessSharedBuffer.create(
+    { mode: "create", name, size: byteLength },
+    primitives,
+  );
+  let closed = false;
+
+  return {
+    ...signalAbortFactory({
+      sab: shared.subbuffer(0, byteLength).getRegion(primitives),
+      maxSignals: max,
+    }),
+    environment: {
+      KNITTING_COMPILED_ABORT_SHM: name.startsWith("/") ? name : `/${name}`,
+      KNITTING_COMPILED_ABORT_BYTES: String(byteLength),
+    },
+    close: () => {
+      if (closed) return;
+      closed = true;
+      shared.descriptor.mapping?.close?.();
+      primitives.unlinkSharedMemory?.(name);
+    },
+  };
 };
 
 type PendingCall = {
@@ -167,50 +257,178 @@ const responseError = (status: number, taskName: string): Error => {
   return new Error("Compiled worker returned unknown status " + status);
 };
 
-const assertJsonValue = (
+/** Reserved wire key: a plain object carrying it would be ambiguous. */
+const COMPILED_VALUE_TAG = "$knitting";
+const ARRAY_BUFFER_TAG = "array-buffer";
+const DATA_VIEW_TAG = "data-view";
+
+/** Wire tag to view constructor, read by both directions of the codec. */
+const TYPED_ARRAYS: Record<string, {
+  new (buffer: ArrayBuffer): ArrayBufferView;
+  readonly BYTES_PER_ELEMENT: number;
+}> = {
+  u8: Uint8Array,
+  u8c: Uint8ClampedArray,
+  i8: Int8Array,
+  u16: Uint16Array,
+  i16: Int16Array,
+  u32: Uint32Array,
+  i32: Int32Array,
+  f32: Float32Array,
+  f64: Float64Array,
+};
+
+const typedArrayTags = new Map<unknown, string>(
+  Object.entries(TYPED_ARRAYS).map(([tag, view]) => [view, tag]),
+);
+
+const binaryTagOf = (value: object): string | undefined =>
+  value instanceof ArrayBuffer
+    ? ARRAY_BUFFER_TAG
+    : value instanceof DataView
+    ? DATA_VIEW_TAG
+    : typedArrayTags.get(value.constructor);
+
+const rawBytes = (value: ArrayBuffer | ArrayBufferView): Uint8Array =>
+  value instanceof ArrayBuffer
+    ? new Uint8Array(value)
+    : new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+
+// String.fromCharCode is applied in chunks so a megabyte payload cannot
+// overflow the argument list.
+const BASE64_CHUNK = 0x8000;
+
+const toBase64 = (bytes: Uint8Array): string => {
+  let latin1 = "";
+  for (let at = 0; at < bytes.length; at += BASE64_CHUNK) {
+    latin1 += String.fromCharCode(...bytes.subarray(at, at + BASE64_CHUNK));
+  }
+  return btoa(latin1);
+};
+
+const fromBase64 = (text: unknown): Uint8Array => {
+  if (typeof text !== "string") {
+    throw new TypeError("Compiled binary value is not base64 text");
+  }
+  return Uint8Array.from(atob(text), (character) => character.charCodeAt(0));
+};
+
+/**
+ * Validates a value and rewrites it for the wire: buffers and views travel as
+ * tagged base64, and a named ProcessSharedBuffer travels as a mapping request
+ * the child fulfils by mapping the same shared memory itself.
+ */
+const encodeCompiledValue = (
   value: unknown,
   ancestors = new Set<object>(),
-): void => {
-  if (value === null || typeof value === "string" || typeof value === "boolean") {
-    return;
-  }
+): unknown => {
+  if (
+    value === null || typeof value === "string" || typeof value === "boolean"
+  ) return value;
   if (typeof value === "number") {
     if (!Number.isFinite(value) || Object.is(value, -0)) {
       throw new TypeError("Compiled workers require lossless JSON numbers");
     }
-    return;
+    return value;
   }
   if (typeof value !== "object") {
-    throw new TypeError(
-      "Compiled workers only accept JSON-compatible values",
-    );
+    throw new TypeError("Compiled workers only accept JSON-compatible values");
   }
   if (ancestors.has(value)) {
     throw new TypeError("Compiled workers do not accept cyclic values");
   }
+
+  if (isProcessSharedBufferValue(value)) {
+    const name = value.descriptor.name;
+    if (name === undefined) {
+      throw new TypeError(
+        "Compiled workers require a named ProcessSharedBuffer",
+      );
+    }
+    if (value.size > MAX_PAYLOAD_BYTES) {
+      throw new RangeError(
+        "Compiled ProcessSharedBuffer values are limited to 1 MiB",
+      );
+    }
+    return {
+      [COMPILED_VALUE_TAG]: "process-shared",
+      name: name.startsWith("/") ? name : `/${name}`,
+      size: value.size,
+      offset: value.byteOffset,
+      length: value.byteLength,
+    };
+  }
+
+  const tag = binaryTagOf(value);
+  if (tag !== undefined) {
+    return {
+      [COMPILED_VALUE_TAG]: tag,
+      data: toBase64(rawBytes(value as ArrayBuffer | ArrayBufferView)),
+    };
+  }
+  if (ArrayBuffer.isView(value)) {
+    throw new TypeError("Compiled workers do not support BigInt typed arrays");
+  }
+
   ancestors.add(value);
+  let encoded: unknown;
   if (Array.isArray(value)) {
+    const entries: unknown[] = [];
     for (let index = 0; index < value.length; index++) {
       if (!(index in value)) {
         throw new TypeError("Compiled workers do not accept sparse arrays");
       }
-      assertJsonValue(value[index], ancestors);
+      entries.push(encodeCompiledValue(value[index], ancestors));
     }
+    encoded = entries;
   } else {
     const prototype = Object.getPrototypeOf(value);
     if (prototype !== Object.prototype && prototype !== null) {
       throw new TypeError("Compiled workers only accept plain objects");
     }
-    for (const entry of Object.values(value as Record<string, unknown>)) {
-      assertJsonValue(entry, ancestors);
+    const record: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      if (key === COMPILED_VALUE_TAG) {
+        throw new TypeError(
+          "Compiled workers reserve the " + COMPILED_VALUE_TAG + " key",
+        );
+      }
+      record[key] = encodeCompiledValue(entry, ancestors);
     }
+    encoded = record;
   }
   ancestors.delete(value);
+  return encoded;
+};
+
+const decodeCompiledValue = (value: unknown): unknown => {
+  if (Array.isArray(value)) return value.map(decodeCompiledValue);
+  if (value === null || typeof value !== "object") return value;
+  const record = value as Record<string, unknown>;
+  const tag = record[COMPILED_VALUE_TAG];
+  if (typeof tag === "string") {
+    const bytes = fromBase64(record.data);
+    if (tag === ARRAY_BUFFER_TAG) return bytes.buffer;
+    if (tag === DATA_VIEW_TAG) return new DataView(bytes.buffer);
+    const view = TYPED_ARRAYS[tag];
+    if (view === undefined) {
+      throw new TypeError("Compiled worker returned an unknown binary value");
+    }
+    if (bytes.byteLength % view.BYTES_PER_ELEMENT !== 0) {
+      throw new TypeError("Compiled worker returned misaligned binary data");
+    }
+    return new view(bytes.buffer as ArrayBuffer);
+  }
+  const decoded: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(record)) {
+    decoded[key] = decodeCompiledValue(entry);
+  }
+  return decoded;
 };
 
 const asciiJson = (value: unknown): string | undefined => {
-  assertJsonValue(value);
-  const serialized = JSON.stringify(value);
+  const wireValue = encodeCompiledValue(value);
+  const serialized = JSON.stringify(wireValue);
   if (serialized !== undefined) {
     for (let index = 0; index < serialized.length; index++) {
       const unit = serialized.charCodeAt(index);
@@ -231,11 +449,15 @@ export const spawnCompiledWorkerContext = ({
   names,
   workerOptions,
   hostDebug,
+  abortSignalCapacity,
+  usesAbortSignal,
 }: {
   list: string[];
   names: string[];
   workerOptions: WorkerSettings;
   hostDebug?: (message: string) => void;
+  abortSignalCapacity?: number;
+  usesAbortSignal?: boolean;
 }): CompiledWorkerContext => {
   if (list.length !== 1) {
     throw new Error("A compiled worker pool must use one task module");
@@ -291,8 +513,20 @@ export const spawnCompiledWorkerContext = ({
       " compiler=" + inspection.compiler,
   );
 
-  const native = spawnNativeProcess(inspection.artifact);
+  const abortChannel = usesAbortSignal === true
+    ? createCompiledAbortChannel(abortSignalCapacity)
+    : undefined;
+  let native: NativeProcess;
+  try {
+    native = spawnNativeProcess(inspection.artifact, abortChannel?.environment);
+  } catch (error) {
+    abortChannel?.close();
+    throw error;
+  }
   const jsonProtocol = inspection.protocol === COMPILED_WORKER_JSON_PROTOCOL;
+  const requestHeaderBytes = jsonProtocol
+    ? JSON_HEADER_BYTES
+    : NUMBER_FRAME_BYTES;
   const pending: PendingCall[] = [];
   let responseBytes = new Uint8Array(0);
   let closing = false;
@@ -342,7 +576,8 @@ export const spawnCompiledWorkerContext = ({
       } else if (jsonProtocol) {
         try {
           const bytes = merged.subarray(offset + 8, offset + frameLength);
-          pendingCall.resolve(JSON.parse(new TextDecoder().decode(bytes)));
+          const decoded = JSON.parse(new TextDecoder().decode(bytes));
+          pendingCall.resolve(decodeCompiledValue(decoded));
         } catch (error) {
           pendingCall.reject(
             new Error("Compiled worker returned invalid JSON", { cause: error }),
@@ -367,53 +602,109 @@ export const spawnCompiledWorkerContext = ({
     return writeTail;
   };
 
-  const call = ({ fnNumber }: { fnNumber: number }) => {
+  /**
+   * Everything that can reject a call lives here, so it all runs before an
+   * abort slot is claimed and a claimed slot can never leak.
+   */
+  const encodePayload = (taskName: string, value: unknown): Uint8Array => {
+    if (!jsonProtocol) {
+      if (typeof value !== "number") {
+        throw new TypeError(
+          "Compiled worker task " + taskName + " only accepts a number",
+        );
+      }
+      return EMPTY_PAYLOAD;
+    }
+    // Porffor's JSON parser is reliable with escaped UTF-16 code units;
+    // keeping request bytes ASCII also avoids depending on its internal
+    // string representation for supplementary Unicode code points.
+    const serialized = asciiJson(value);
+    if (serialized === undefined) {
+      throw new TypeError(
+        "Compiled worker task " + taskName +
+          " only accepts JSON-compatible values",
+      );
+    }
+    const payload = new TextEncoder().encode(serialized);
+    if (payload.byteLength > MAX_PAYLOAD_BYTES) {
+      throw new RangeError("Compiled worker input is too large");
+    }
+    return payload;
+  };
+
+  const call = ({
+    fnNumber,
+    abortSignal,
+  }: {
+    fnNumber: number;
+    abortSignal?: unknown;
+  }) => {
     const taskName = names[fnNumber]!;
     const targetIndex = taskIndices[fnNumber]!;
-    return (rawArgs: Uint8Array): Promise<unknown> =>
-      Promise.resolve(rawArgs as unknown).then((value) => {
+    const usesSignal = abortSignal !== undefined;
+    return (rawArgs: Uint8Array): Promise<unknown> => {
+      const deferred = withResolvers<unknown>();
+      const send = (value: unknown): void => {
         if (closedReason !== undefined || closing) {
-          throw new Error(closedReason ?? "Compiled worker is shut down");
+          deferred.reject(
+            new Error(closedReason ?? "Compiled worker is shut down"),
+          );
+          return;
         }
-        if (!jsonProtocol && typeof value !== "number") {
-          throw new TypeError(
-            "Compiled worker task " + taskName + " only accepts a number",
+        if (usesSignal && abortChannel === undefined) {
+          deferred.reject(
+            new Error("Compiled worker abort channel is unavailable"),
+          );
+          return;
+        }
+
+        let payload: Uint8Array;
+        try {
+          payload = encodePayload(taskName, value);
+        } catch (error) {
+          deferred.reject(error);
+          return;
+        }
+
+        const signal = usesSignal ? abortChannel!.getSignal() : NO_ABORT_SLOT;
+        if (usesSignal && signal === abortChannel!.closeNow) {
+          deferred.reject(AbortSignalPoolExhausted);
+          return;
+        }
+        if (usesSignal) {
+          new OneShotDeferred(
+            deferred,
+            () => abortChannel!.resetSignal(signal),
+            () => abortChannel!.setSignal(signal),
           );
         }
 
-        let frame: Uint8Array;
+        const frame = new Uint8Array(requestHeaderBytes + payload.byteLength);
+        const header = new DataView(frame.buffer);
+        header.setInt32(0, targetIndex, true);
+        header.setInt32(4, signal, true);
         if (jsonProtocol) {
-          // Porffor's JSON parser is reliable with escaped UTF-16 code units;
-          // keeping request bytes ASCII also avoids depending on its internal
-          // string representation for supplementary Unicode code points.
-          const serialized = asciiJson(value);
-          if (serialized === undefined) {
-            throw new TypeError(
-              "Compiled worker task " + taskName +
-                " only accepts JSON-compatible values",
-            );
-          }
-          const payload = new TextEncoder().encode(serialized);
-          if (payload.byteLength > 1024 * 1024) {
-            throw new RangeError("Compiled worker input is too large");
-          }
-          frame = new Uint8Array(8 + payload.byteLength);
-          const view = new DataView(frame.buffer);
-          view.setInt32(0, targetIndex, true);
-          view.setUint32(4, payload.byteLength, true);
-          frame.set(payload, 8);
+          header.setUint32(8, payload.byteLength, true);
+          frame.set(payload, requestHeaderBytes);
         } else {
-          frame = new Uint8Array(16);
-          const view = new DataView(frame.buffer);
-          view.setInt32(0, targetIndex, true);
-          view.setFloat64(8, value as number, true);
+          header.setFloat64(NUMBER_ARGUMENT_OFFSET, value as number, true);
         }
-        const result = new Promise<unknown>((resolve, reject) => {
-          pending.push({ taskName, resolve, reject });
+
+        pending.push({
+          taskName,
+          resolve: deferred.resolve,
+          reject: deferred.reject,
         });
         void queueWrite(frame);
-        return result;
-      });
+      };
+
+      if (rawArgs instanceof Promise) {
+        void rawArgs.then(send, deferred.reject);
+      } else {
+        send(rawArgs as unknown);
+      }
+      return deferred.promise;
+    };
   };
 
   let closePromise: Promise<void> | undefined;
@@ -430,9 +721,10 @@ export const spawnCompiledWorkerContext = ({
           native.kill();
           await native.exited;
           closedReason ??= "Compiled worker is shut down";
+          abortChannel?.close();
           return;
         }
-        const shutdown = new Uint8Array(jsonProtocol ? 8 : 16);
+        const shutdown = new Uint8Array(requestHeaderBytes);
         new DataView(shutdown.buffer).setInt32(0, -1, true);
         try {
           await queueWrite(shutdown);
@@ -448,6 +740,7 @@ export const spawnCompiledWorkerContext = ({
           if (!exited) native.kill();
         } finally {
           closedReason ??= "Compiled worker is shut down";
+          abortChannel?.close();
         }
       })();
       return closePromise;

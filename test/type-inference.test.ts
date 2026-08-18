@@ -119,7 +119,7 @@ test("task inference keeps README-style sync and abort-aware signatures", () => 
   void assertRawFunctionPoolTypes;
   assert.equal(hello.f("world"), "hello world");
   assert.equal(
-    slowHello.f("world", { hasAborted: () => false }),
+    slowHello.f("world", { hasAborted: () => false, now: () => 0 }),
     "hello world",
   );
 });
@@ -146,7 +146,10 @@ test("createPool preserves abort-aware call signatures", async () => {
   await pool.shutdown();
 });
 
-test("createPool accepts non-abort tasks when strictNullChecks is disabled", () => {
+// Building a TypeScript program from scratch can outrun bun's 5s default.
+test("createPool accepts non-abort tasks when strictNullChecks is disabled", {
+  timeout: 60_000,
+}, () => {
   assertTypeScriptFixturePasses(
     "test/fixtures/strict_null_checks_off.ts",
     {

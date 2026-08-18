@@ -260,7 +260,13 @@ const run = async (): Promise<void> => {
       target: { platform: process.platform, arch: process.arch },
       source: relative(outputDirectory, options.modulePath).replaceAll("\\", "/"),
       sourceMtimeMs: statSync(options.modulePath).mtimeMs,
-      capabilities: { input: "json", output: "json", async: false },
+      capabilities: {
+        input: "json",
+        output: "json",
+        async: false,
+        abortSignal: true,
+        binaryValues: true,
+      },
       tasks: options.tasks.map((exportName, index) => ({ index, exportName })),
     }, null, 2) + "\n",
   );
