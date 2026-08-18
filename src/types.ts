@@ -147,6 +147,7 @@ type AbortSignalMethods<AS extends AbortSignalOption> = AS extends undefined
   ? never
   : {
     hasAborted: () => boolean;
+    now: () => number;
   };
 
 type AbortSignalToolkit<AS extends AbortSignalOption> = AbortSignalMethods<AS>;

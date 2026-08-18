@@ -4,6 +4,7 @@ export type NodeProcessLike = {
     modules?: string;
     node?: string;
   };
+  pid?: number;
   platform?: string;
   allowedNodeEnvironmentFlags?: ReadonlySet<string>;
   execArgv?: string[];

@@ -159,6 +159,8 @@ export const spawnWorkerContext = ({
       names,
       workerOptions,
       hostDebug,
+      abortSignalCapacity,
+      usesAbortSignal,
     });
   }
 

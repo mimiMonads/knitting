@@ -15,7 +15,8 @@ Website: [knittingdocs.netlify.app](https://knittingdocs.netlify.app/)
 
 If you are an agent trying to understand the project, the website also serves an
 [`llms.txt`](https://knittingdocs.netlify.app/llms.txt) file with a compact map
-of the docs.
+of the docs, plus a full inlined version at
+[`llms-full.txt`](https://knittingdocs.netlify.app/llms-full.txt).
 
 Knitting is a worker pool built on shared-memory IPC for Node.js, Deno, and Bun.
 It lets you call work running on other threads or processes as if it were a
@@ -235,6 +236,9 @@ export const countUntilStopped = task({
   },
 });
 ```
+
+The signal also carries `signal.now()`, a monotonic millisecond clock for
+measuring elapsed time inside the task.
 
 The pool also has an `abortSignalCapacity` option for sizing the shared abort
 signal storage when many abort-aware calls may be in flight.
@@ -557,13 +561,22 @@ only a prebuilt artifact.
 To build ahead of time, run
 `bun run build:compiled --module tasks.ts --out tasks.knt --tasks addOne`.
 
-Compiled workers currently accept synchronous JSON-compatible primitives,
-arrays, and plain objects up to 1 MiB. BMP Unicode is supported; supplementary
-Unicode code points and async results are not yet supported. Task timeouts,
-abort signals, bootstrap hooks, permission policies, and host inlining fail
-during pool creation or invocation. The executable is native, unsandboxed code;
-only run artifacts you trust. `worker.hardTimeoutMs` remains available because
-it is enforced by the host.
+Treat this backend as experimental. Porffor is a young ahead-of-time compiler,
+the artifact format is pre-release and changes without a compatibility path, and
+the executable is native, unsandboxed code — only run artifacts you trust.
+
+Compiled workers accept synchronous JSON-compatible primitives, arrays, and
+plain objects up to 1 MiB per call, plus `ArrayBuffer`, `DataView`, and typed
+arrays, which are copied. A `ProcessSharedBuffer` is mapped by the worker rather
+than copied. BMP Unicode is supported; supplementary code points and async
+results are not.
+
+Abort-aware tasks work on POSIX: the pool shares an abort bitmap through named
+shared memory, so `signal.hasAborted()` and `signal.now()` are native reads
+inside the worker. Windows has no implementation yet. Task timeouts, bootstrap
+hooks, permission policies, and host inlining still fail during pool creation or
+invocation; `worker.hardTimeoutMs` remains available because the host enforces
+it.
 
 ### Windows process workers
 
@@ -998,6 +1011,24 @@ worker. It is the same-process counterpart to `ProcessSharedBuffer`: reach for
 it when you hold a large `ArrayBuffer` or typed array and the copy cost to a
 thread worker actually matters.
 
+The ownership and revocation paths are hardened against ordinary
+use-after-free: sources are detached on move, aliases are detached before a
+borrow is released, and outstanding borrowed returns are revoked during pool
+shutdown. This is still an **unsafe capability**, not a memory-safety or
+security boundary. Do not accept `BufferReferenceMetadata` or raw pointer data
+from untrusted code, and do not mutate the same bytes concurrently without
+your own synchronization.
+
+| Path | Node 22/24 owning addon | Node 26 FFI | Deno/Bun FFI |
+| --- | --- | --- | --- |
+| Forward input | Moved, zero-copy | Moved, zero-copy alias | Moved, zero-copy alias |
+| Default returned reference | Co-owned, zero-copy | One safe copy | One safe copy |
+| `BufferReferenceReturn: "borrow"` | Revocable borrow | Revocable borrow | Revocable borrow |
+| Worker shutdown | Outstanding borrows revoked | Copy while readable, then revoke | Copy while readable, then revoke |
+
+Older Node addons without the owning primitives use the non-owning fallback and
+therefore follow the copy/borrow rules rather than the owning-addon row.
+
 ```ts
 import { createPool, isMain, task } from "knitting";
 import { BufferReference } from "knitting/unsafe";
@@ -1032,14 +1063,16 @@ Read these constraints before reaching for it:
 - **Move semantics.** Constructing a `BufferReference` detaches its source — the
   original buffer is empty afterward, and reads/writes through it are gone. The
   bytes now belong to the reference; to get a result back, the worker returns
-  its own `BufferReference`. Each handle is one-shot. Forward inputs the worker
+  its own `BufferReference`. Each source ownership transfer is one-shot, but an
+  active reference may be read more than once. Forward inputs the worker
   materializes with `.toArrayBuffer()`/`.toUint8Array()` are borrowed for the
   duration of the call and detached once it settles; do not keep using them from
   fire-and-forget work after the task returns.
 - **Forward is zero-copy everywhere.** Sending a buffer to the worker never
-  copies. Node 22 and 24 also return the buffer without copying because their
-  addon co-owns the V8 backing store. Node 26, Deno, and Bun take one safe copy
-  on return because their FFI aliases cannot own the worker's backing store.
+  copies. Node 22 and 24 with the owning addon also return the buffer without
+  copying because the addon co-owns the V8 backing store. Node 26, Deno, and Bun
+  take one safe copy on return because their FFI aliases cannot own the worker's
+  backing store.
 - **Borrowed FFI returns are opt-in.** The default on Node 26, Deno, and Bun is
   `unsafe: { BufferReferenceReturn: "copy" }` — the safe single copy described
   above. Set it to `"borrow"` to skip that copy by borrowing the worker's

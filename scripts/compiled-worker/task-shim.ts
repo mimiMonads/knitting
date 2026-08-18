@@ -1,7 +1,12 @@
 /** Worker-side replacement for the small part of Knitting task modules use. */
 
+export type PorfforAbortSignal = {
+  hasAborted: () => boolean;
+  now: () => number;
+};
+
 export type PorfforTaskDefinition<A = unknown, B = unknown> = {
-  f: (value: A) => B;
+  f: (value: A, signal?: PorfforAbortSignal) => B;
   [key: string | symbol]: unknown;
 };
 

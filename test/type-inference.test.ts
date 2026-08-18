@@ -119,7 +119,7 @@ test("task inference keeps README-style sync and abort-aware signatures", () => 
   void assertRawFunctionPoolTypes;
   assert.equal(hello.f("world"), "hello world");
   assert.equal(
-    slowHello.f("world", { hasAborted: () => false }),
+    slowHello.f("world", { hasAborted: () => false, now: () => 0 }),
     "hello world",
   );
 });
