@@ -4,19 +4,21 @@ import {
   createProcessSharedMemoryAllocator,
   createProcessWorkerMemoryLayout,
   createProcessWorkerNativeSignalNotifier,
-  type NodeWorkerLike,
   type ProcessSharedMemoryBacking,
   readProcessSharedMemorySettings,
   readProcessWorkerCommandPrefix,
   readProcessWorkerRuntime,
+  spawnProcessWorker,
+  toProcessWorkerBootPayload,
+} from "./process-worker.ts";
+import {
+  type NodeWorkerLike,
   serializeWorkerBootstrapData,
   type SpawnedWorker,
-  spawnProcessWorker,
   terminateWorkerQuietly,
-  toProcessWorkerBootPayload,
   toWorkerCompatExecArgv,
   toWorkerSafeExecArgv,
-} from "./process-worker.ts";
+} from "./worker-common.ts";
 import {
   createSharedMemoryTransport,
   type Sab,
@@ -50,6 +52,7 @@ import "../worker/loop.ts";
 import {
   createSharedArrayBuffer,
   createWasmSharedArrayBuffer,
+  IS_BROWSER,
 } from "../common/runtime.ts";
 import {
   HAS_NODE_WORKER_THREADS,
@@ -182,6 +185,15 @@ export const spawnWorkerContext = ({
 
   if (!useProcessWorkerRuntime && typeof poliWorker !== "function") {
     throw new Error("Worker is not available in this runtime");
+  }
+  // Without this the failure is a `ReferenceError` from whichever module
+  // happens to allocate first.
+  if (IS_BROWSER && typeof SharedArrayBuffer !== "function") {
+    throw new Error(
+      "SharedArrayBuffer is unavailable: serve the page cross-origin isolated " +
+        "(Cross-Origin-Opener-Policy: same-origin, " +
+        "Cross-Origin-Embedder-Policy: require-corp).",
+    );
   }
   const WorkerCtor = poliWorker as NonNullable<typeof poliWorker>;
 

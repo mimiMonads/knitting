@@ -1,6 +1,12 @@
 import { getNodeProcess } from "./node-compat.ts";
 
-type RuntimeName = "deno" | "bun" | "node" | "andromeda" | "unknown";
+type RuntimeName =
+  | "deno"
+  | "bun"
+  | "node"
+  | "andromeda"
+  | "browser"
+  | "unknown";
 
 type GlobalWithRuntimes = typeof globalThis & {
   Deno?: { version?: { deno?: string } };
@@ -8,6 +14,8 @@ type GlobalWithRuntimes = typeof globalThis & {
   __andromeda__?: unknown;
   WebAssembly?: typeof WebAssembly;
   setImmediate?: (cb: () => void) => void;
+  document?: unknown;
+  WorkerGlobalScope?: unknown;
 };
 
 const globals = globalThis as GlobalWithRuntimes;
@@ -20,6 +28,11 @@ export const IS_NODE =
 // Andromeda (Nova engine): no `node:` builtins or `WebAssembly`; detect via
 // its private bootstrap global.
 export const IS_ANDROMEDA = typeof globals.__andromeda__ !== "undefined";
+// A page or a web worker: no `node:` builtins, but `Worker`, `MessageChannel`,
+// and a cross-origin isolated `SharedArrayBuffer` are all the pool needs.
+export const IS_BROWSER = !IS_DENO && !IS_BUN && !IS_NODE && !IS_ANDROMEDA &&
+  (typeof globals.document !== "undefined" ||
+    typeof globals.WorkerGlobalScope === "function");
 
 export const RUNTIME = (
   IS_DENO
@@ -30,6 +43,8 @@ export const RUNTIME = (
     ? "node"
     : IS_ANDROMEDA
     ? "andromeda"
+    : IS_BROWSER
+    ? "browser"
     : "unknown"
 ) as RuntimeName;
 

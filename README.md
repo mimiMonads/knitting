@@ -632,6 +632,84 @@ const pool = createPool({
 })({ add });
 ```
 
+## Browsers
+
+Knitting also runs in the browser, where the pool spawns web workers over
+`SharedArrayBuffer` instead of threads. Two rules apply there and nowhere else.
+
+**The page must be cross-origin isolated.** Browsers hand out
+`SharedArrayBuffer` only under these two response headers, and `createPool`
+fails with a clear error when they are missing:
+
+```
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+```
+
+**Task modules must declare their own URL.** On Node, Deno, and Bun a task
+finds its module by walking the stack; a bundler erases the paths that depends
+on, so call `setModuleUrl(import.meta.url)` in the module that exports tasks:
+
+```ts
+import { createPool, isMain, setModuleUrl, task } from "knitting/browser";
+
+setModuleUrl(import.meta.url);
+
+export const square = task({ f: (value: number) => value * value });
+
+if (isMain) {
+  const pool = createPool({ threads: 4 })({ square });
+  console.log(await pool.call.square(7)); // 49
+  await pool.shutdown();
+}
+```
+
+Bundle that module with any browser-targeting bundler. The result is
+self-hosting: the page loads it, and every worker the pool spawns loads the
+same file, which is why both sides agree on the module URL.
+
+`knitting/browser` ships as one self-contained file, so it also works without a
+bundler at all — serve it next to a plain task module:
+
+```html
+<script type="module" src="./tasks.js"></script>
+```
+
+```js
+// tasks.js
+import { createPool, isMain, setModuleUrl, task } from "./knitting.browser.js";
+
+setModuleUrl(import.meta.url);
+
+export const square = task({ f: (value) => value * value });
+
+if (isMain) {
+  const pool = createPool({ threads: 2 })({ square });
+  console.log(await pool.call.square(7)); // 49
+  await pool.shutdown();
+}
+```
+
+It is the same API as the main entry without the compiled worker (Porffor)
+helpers, which need a filesystem. Process workers, native addons, FFI, and the
+permission system are inert in a browser — permissions are skipped entirely,
+since there is no filesystem or process to police.
+
+Process workers, compiled workers, native addons, FFI, `BufferReference`, and
+`ProcessSharedBuffer` are all unavailable in a page, and permissions are
+skipped rather than enforced. [BROWSER.md](BROWSER.md) documents every one of
+those, with the error each raises.
+
+The published file is bundled and minified, with the Node-only subsystems
+(process workers, compiled workers, native addons, FFI, permissions) replaced
+by stubs that keep their browser behaviour — roughly 94 KB, 32 KB over gzip.
+Both layouts above are covered by the browser test lane:
+
+```bash
+npm run build:browser   # build/knitting.browser.js and .min.js
+npm run test:browser    # end-to-end checks in headless Chromium
+```
+
 ## Permissions
 
 Knitting defaults to a strict worker permission policy:

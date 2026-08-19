@@ -19,6 +19,11 @@ import type {
 import { RUNTIME } from "../common/runtime.ts";
 import { debugHas } from "../debug/gate.ts";
 import {
+  type NodeWorkerLike,
+  type SpawnedWorker,
+  toWorkerCompatExecArgv,
+} from "./worker-common.ts";
+import {
   RUNTIME_POOL_DEPTH,
   RUNTIME_POOL_DEPTH_ENV,
   RUNTIME_PROCESS_WORKER_BOOT_ENV,
@@ -58,19 +63,6 @@ const fileURLToPathCompat = (value: string): string => {
     throw new Error("node:url is not available in this runtime");
   }
   return url.fileURLToPath(value);
-};
-
-export type SpawnedWorker = {
-  terminate: () => unknown;
-  unref?: () => unknown;
-  postMessage?: (message: unknown) => void;
-};
-
-export type NodeWorkerLike = {
-  on?: (
-    event: "error" | "exit" | "message",
-    listener: (...args: unknown[]) => void,
-  ) => void;
 };
 
 type ProcessWorkerWireLockBuffers =
@@ -223,58 +215,6 @@ type ProcessSharedMemoryAllocator = {
   backings: ProcessSharedMemoryBacking[];
 };
 
-const execFlagKey = (flag: string): string => flag.split("=", 1)[0]!;
-const NODE_PERMISSION_EXEC_FLAGS = new Set<string>([
-  "--permission",
-  "--experimental-permission",
-  "--allow-fs-read",
-  "--allow-fs-write",
-  "--allow-worker",
-  "--allow-child-process",
-  "--allow-net",
-  "--allow-addons",
-  "--allow-ffi",
-  "--allow-wasi",
-]);
-const NODE_WORKER_SAFE_EXEC_FLAGS = new Set<string>([
-  "--experimental-ffi",
-  "--experimental-transform-types",
-  "--expose-gc",
-  "--no-warnings",
-  ...NODE_PERMISSION_EXEC_FLAGS,
-]);
-
-const isNodeWorkerSafeExecFlag = (flag: string): boolean =>
-  NODE_WORKER_SAFE_EXEC_FLAGS.has(execFlagKey(flag));
-
-const isNodePermissionExecFlag = (flag: string): boolean =>
-  NODE_PERMISSION_EXEC_FLAGS.has(execFlagKey(flag));
-
-export const toWorkerSafeExecArgv = (
-  flags: string[] | undefined,
-): string[] | undefined => {
-  if (!flags || flags.length === 0) return undefined;
-  const filtered = flags.filter(isNodeWorkerSafeExecFlag);
-  if (filtered.length === 0) return undefined;
-  const seen = new Set<string>();
-  const deduped: string[] = [];
-  for (const flag of filtered) {
-    if (seen.has(flag)) continue;
-    seen.add(flag);
-    deduped.push(flag);
-  }
-  return deduped;
-};
-
-export const toWorkerCompatExecArgv = (
-  flags: string[] | undefined,
-): string[] | undefined => {
-  const safe = toWorkerSafeExecArgv(flags);
-  if (!safe || safe.length === 0) return undefined;
-  const compat = safe.filter((flag) => !isNodePermissionExecFlag(flag));
-  return compat.length > 0 ? compat : undefined;
-};
-
 const toProcessSharedMemorySize = (byteLength: number): number => {
   if (!Number.isFinite(byteLength) || byteLength <= 0) {
     throw new RangeError("process shared memory byteLength must be positive");
@@ -408,7 +348,10 @@ const makeProcessWorkerMemoryName = (
   const threadTag = (thread % 4096).toString(36);
   const nextTag = (next % 1296).toString(36);
   const randomTag = Math.random().toString(36).slice(2, 7);
-  const safePrefix = (prefix.replace(/[^a-z0-9_-]/gi, "_") || "kpw").slice(0, 8);
+  const safePrefix = (prefix.replace(/[^a-z0-9_-]/gi, "_") || "kpw").slice(
+    0,
+    8,
+  );
   return `${safePrefix}_${pidTag}_${threadTag}_${nextTag}_${randomTag}`;
 };
 
@@ -546,56 +489,6 @@ const toProcessWorkerWireLockBuffers = (
     descriptor,
   ),
 });
-
-const isPlainRecord = (value: unknown): value is Record<string, unknown> => {
-  if (value === null || typeof value !== "object") return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-};
-
-const serializeWorkerBootstrapValue = (
-  value: unknown,
-  seen = new WeakMap<object, unknown>(),
-): unknown => {
-  if (value instanceof ProcessSharedBuffer) return value.toMetadata();
-  if (value === null || typeof value !== "object") return value;
-
-  const existing = seen.get(value);
-  if (existing !== undefined) return existing;
-
-  if (Array.isArray(value)) {
-    const out: unknown[] = [];
-    seen.set(value, out);
-    for (const item of value) {
-      out.push(serializeWorkerBootstrapValue(item, seen));
-    }
-    return out;
-  }
-
-  if (!isPlainRecord(value)) return value;
-
-  const out: Record<string, unknown> = {};
-  seen.set(value, out);
-  for (const [key, item] of Object.entries(value)) {
-    out[key] = serializeWorkerBootstrapValue(item, seen);
-  }
-  return out;
-};
-
-export const serializeWorkerBootstrapData = (
-  options: WorkerSettings,
-): WorkerSettings => {
-  const bootstrap = options.bootstrap;
-  if (bootstrap === undefined || bootstrap.data === undefined) return options;
-
-  return {
-    ...options,
-    bootstrap: {
-      ...bootstrap,
-      data: serializeWorkerBootstrapValue(bootstrap.data),
-    },
-  };
-};
 
 export const toProcessWorkerBootPayload = (
   workerData: WorkerData,
@@ -1136,16 +1029,6 @@ export const spawnProcessWorker = (
       throw new Error(
         "process worker runtime is only available in Node, Deno, or Bun",
       );
-  }
-};
-
-export const terminateWorkerQuietly = (worker: SpawnedWorker): void => {
-  try {
-    // Runaway worker termination can be slow or stuck on some runtimes; once the
-    // pool is closing it must not keep the host process alive.
-    worker.unref?.();
-    void Promise.resolve(worker.terminate()).catch(() => {});
-  } catch {
   }
 };
 

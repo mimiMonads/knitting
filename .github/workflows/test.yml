@@ -70,6 +70,20 @@ jobs:
         if: matrix.runtime == 'bun'
         run: npm run test:bun
 
+  browser-test:
+    name: Browser (ubuntu-latest)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      # Skips itself when the runner image ships no Chromium-family browser.
+      - name: Run browser end-to-end checks
+        run: npm run test:browser
+
   node-26-ffi-test:
     name: Node 26 FFI (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

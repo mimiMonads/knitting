@@ -2,6 +2,8 @@ import { readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 const generatedRootOutputs = [
+  "knitting.browser.d.ts",
+  "knitting.browser.js",
   "knitting.d.ts",
   "knitting.js",
   "process-shared-buffer.d.ts",

@@ -1,4 +1,4 @@
-import { RUNTIME } from "../common/runtime.ts";
+import { IS_BROWSER, RUNTIME } from "../common/runtime.ts";
 import { toCanonicalPath as toSharedCanonicalPath } from "../common/path-canonical.ts";
 import { getNodeBuiltinModule, getNodeProcess } from "../common/node-compat.ts";
 
@@ -795,6 +795,9 @@ export const resolvePermissionProtocol = ({
 }): ResolvedPermissionProtocol | undefined => {
   const input = normalizeProtocolInput(permission);
   if (!input) return undefined;
+  // Browsers have no filesystem, process, or runtime flags to police, and the
+  // strict default would otherwise reach for `node:path` and throw.
+  if (IS_BROWSER) return undefined;
 
   const rawMode = (input as { mode?: unknown }).mode;
   const mode: PermissionMode = (rawMode === "unsafe" || rawMode === "off")

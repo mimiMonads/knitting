@@ -52,9 +52,12 @@ const a_load = Atomics.load;
 const a_store = Atomics.store;
 const a_wait = typeof Atomics.wait === "function" ? Atomics.wait : undefined;
 const p_now = performance.now.bind(performance);
-const waitFallbackView = a_wait === undefined
-  ? undefined
-  : new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+// `SharedArrayBuffer` is undeclared on pages that are not cross-origin
+// isolated, and this module has to load anyway so the pool can report why.
+const waitFallbackView =
+  a_wait === undefined || typeof SharedArrayBuffer !== "function"
+    ? undefined
+    : new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
 const a_pause: ((n: number) => void) | undefined = "pause" in Atomics
   ? (Atomics.pause as (n: number) => void)
   : undefined;

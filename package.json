@@ -20,6 +20,10 @@
       "types": "./knitting.d.ts",
       "default": "./knitting.js"
     },
+    "./browser": {
+      "types": "./knitting.browser.d.ts",
+      "default": "./knitting.browser.js"
+    },
     "./process-shared-buffer": {
       "types": "./process-shared-buffer.d.ts",
       "default": "./process-shared-buffer.js"
@@ -39,6 +43,7 @@
   },
   "files": [
     "README.md",
+    "BROWSER.md",
     "map.md",
     "LICENSE",
     "prebuilds/**/*.node",
@@ -50,6 +55,8 @@
     "src/**/*.cc",
     "src/**/*.d.ts",
     "src/**/*.js",
+    "knitting.browser.d.ts",
+    "knitting.browser.js",
     "knitting.d.ts",
     "knitting.js",
     "process-shared-buffer.d.ts",
@@ -69,6 +76,7 @@
     "build:npm": "bun run build.ts && node scripts/rewrite-declaration-imports.mjs",
     "build:native": "bun run scripts/build-native-addons.ts",
     "build:compiled": "bun run scripts/build-compiled-worker.ts",
+    "build:browser": "bun run scripts/build-browser.ts",
     "build:release": "bun run build:native && npm run build",
     "build:node": "bun run build.ts && node scripts/rewrite-declaration-imports.mjs",
     "prepack": "npm run build",
@@ -79,8 +87,9 @@
     "test:node": "node --no-warnings --experimental-transform-types --test \"./test/*.test.ts\"",
     "test:node:26": "node --no-warnings --experimental-ffi test/node26-ffi.integration.mjs",
     "test:bun": "bun test ./test/*.test.ts --path-ignore-patterns=**/tx-queue.test.ts",
+    "test:browser": "bun run scripts/test-browser.ts",
     "test:runtimes": "npm run test:node && npm run test:bun",
-    "test:all": "npm run test:deno && npm run test:runtimes",
+    "test:all": "npm run test:deno && npm run test:runtimes && npm run test:browser",
     "coverage:node": "node --no-warnings --experimental-transform-types --experimental-test-coverage --test \"./test/*.test.ts\"",
     "coverage:node:90": "node --no-warnings --experimental-transform-types --experimental-test-coverage --test-coverage-lines=90 --test-coverage-exclude=src/common/task-source.ts --test-coverage-exclude=src/ipc/protocol/parsers/NumericBuffer.ts --test-coverage-exclude=src/runtime/balancer.ts --test-coverage-exclude=src/worker/task-loader.ts --test \"./test/*.test.ts\"",
     "bench": "./run.sh",
