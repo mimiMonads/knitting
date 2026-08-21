@@ -6,6 +6,9 @@ dest/
 
 results/
 
+# Local raw benchmark captures and generated summaries
+/bench/data/
+
 log/
 
 

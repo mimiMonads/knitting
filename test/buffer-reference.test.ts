@@ -500,6 +500,35 @@ test("pool shutdown revokes outstanding borrowed returns safely", async () => {
   ref.release();
 });
 
+test("default stealing tracks borrowed returns on the producing worker", async () => {
+  if (!supported) return;
+
+  const pool = createPool({
+    threads: 3,
+    unsafe: {
+      BufferReferenceReturn: "borrow",
+    },
+  })({ returnsBuffer });
+
+  let ref!: BufferReference;
+  let view!: Uint8Array;
+  try {
+    ref = await pool.call.returnsBuffer(5);
+    view = ref.toUint8Array();
+    assert.deepEqual([...view], [0, 3, 6, 9, 12]);
+  } finally {
+    await pool.shutdown();
+  }
+
+  assert.equal(view.byteLength, 0, "the producing lane's borrow was revoked");
+  assert.deepEqual(
+    [...ref.toUint8Array()],
+    [0, 3, 6, 9, 12],
+    "the returned reference survives shutdown on copied bytes",
+  );
+  ref.release();
+});
+
 test("BufferReference round-trips host -> worker -> host", async () => {
   if (!supported) return;
 

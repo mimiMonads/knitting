@@ -86,6 +86,19 @@ const isWorkerFatalMessage = (
 
 // Keep idle workers self-healing if an Atomics.notify wake is missed.
 const DEFAULT_WORKER_PARK_MS = 1;
+const DEFAULT_ABORT_SIGNAL_CAPACITY = 258;
+
+const sanitizePositiveInteger = (value: number | undefined) => {
+  if (!Number.isFinite(value)) return undefined;
+  const parsed = Math.floor(value as number);
+  return parsed > 0 ? parsed : undefined;
+};
+
+const resolveAbortSignalCapacity = (value: number | undefined): number =>
+  sanitizePositiveInteger(value) ?? DEFAULT_ABORT_SIGNAL_CAPACITY;
+
+const abortSignalByteLength = (capacity: number): number =>
+  Math.max(1, Math.ceil(capacity / 32)) * Uint32Array.BYTES_PER_ELEMENT;
 
 const withDefaultWorkerTimers = (
   options: WorkerSettings | undefined,
@@ -110,6 +123,147 @@ const withFixedPayloadConfig = (
   payloadInitialBytes: config.payloadMaxByteLength,
 });
 
+/**
+ * Build the buffers, host-side locks and pending registry that a stealing pool
+ * shares. One submit region for every worker to claim from, one private return
+ * region per worker, and a single pool-global queue so a response arriving on
+ * any lane settles the right promise.
+ *
+ * Region width follows paper §6.1: the largest power-of-two `g` leaving a spare
+ * region for a delayed claimant (`slots / g >= consumers + 1`). At 32 slots that
+ * caps how wide a region can be well before it caps the worker count.
+ */
+export const resolveStealRegionLanes = (consumers: number): number => {
+  for (let lanes = LockBound.slots; lanes >= 1; lanes >>= 1) {
+    if (LockBound.slots / lanes >= consumers + 1) return lanes;
+  }
+  throw new RangeError(
+    `${consumers} stealing workers need more than ${LockBound.slots} lanes`,
+  );
+};
+
+/** Maximum claimants that leave the protocol's required spare region. */
+export const MAX_STEAL_CONSUMERS = LockBound.slots - 1;
+
+export const createStealPoolBuffers = ({
+  threads,
+  payload,
+  regionLanes,
+  abortSignalCapacity,
+  usesAbortSignal,
+}: {
+  threads: number;
+  payload?: PayloadBufferOptions;
+  regionLanes?: number;
+  abortSignalCapacity?: number;
+  usesAbortSignal?: boolean;
+}) => {
+  const payloadConfig = resolvePayloadBufferOptions({ options: payload });
+  const makePayload = () =>
+    payloadConfig.mode === "growable"
+      ? createSharedArrayBuffer(
+        payloadConfig.payloadInitialBytes,
+        payloadConfig.payloadMaxByteLength,
+      )
+      : createSharedArrayBuffer(payloadConfig.payloadInitialBytes);
+
+  const carpet = () =>
+    createLockControlCarpet({
+      signalBytes: 0,
+      abortBytes: 0,
+      lockSectorBytes: LOCK_SECTOR_BYTE_LENGTH,
+      headerSlotStrideU32: HEADER_SLOT_STRIDE_U32,
+      slotCount: LockBound.slots,
+      headerLayout: "split",
+    });
+
+  const toBuffers = (
+    half: Omit<LockBuffers, "payload" | "textCompat">,
+    payloadSab: LockBuffers["payload"],
+  ): LockBuffers =>
+    ({
+      ...half,
+      payload: payloadSab,
+      textCompat: probeLockBufferTextCompat({
+        headers: half.headers,
+        payload: payloadSab,
+      }),
+    }) as LockBuffers;
+
+  const maxLanes = resolveStealRegionLanes(threads);
+  const lanes = regionLanes === undefined
+    ? maxLanes
+    : Math.min(Math.max(1, regionLanes | 0), maxLanes);
+
+  const submitCarpet = carpet();
+  const submitBuffers = toBuffers(submitCarpet.lock, makePayload());
+  const hostSubmitLock = lock2({
+    headers: submitBuffers.headers,
+    headerSlotStrideU32: submitBuffers.headerSlotStrideU32,
+    LockBoundSector: submitBuffers.lockSector,
+    payload: submitBuffers.payload,
+    payloadSector: submitBuffers.payloadSector,
+    payloadConfig,
+    textCompat: submitBuffers.textCompat,
+    consumers: threads,
+    regionLanes: lanes,
+  });
+
+  const returnBuffers: LockBuffers[] = [];
+  const hostReturnLocks: ReturnType<typeof lock2>[] = [];
+  for (let i = 0; i < threads; i++) {
+    const buffers = toBuffers(carpet().returnLock, makePayload());
+    returnBuffers.push(buffers);
+    hostReturnLocks.push(lock2({
+      headers: buffers.headers,
+      headerSlotStrideU32: buffers.headerSlotStrideU32,
+      LockBoundSector: buffers.lockSector,
+      payload: buffers.payload,
+      payloadSector: buffers.payloadSector,
+      payloadConfig,
+      textCompat: buffers.textCompat,
+    }));
+  }
+
+  // Abort-aware tasks can execute on any claimant, so all workers and the
+  // pool-global queue must observe one bitmap. Per-lane abort buffers would
+  // encode an id from one allocator and test it against another lane's bits.
+  const resolvedAbortSignalCapacity = resolveAbortSignalCapacity(
+    abortSignalCapacity,
+  );
+  const abortSignalSAB = usesAbortSignal === true
+    ? createSharedArrayBuffer(
+      abortSignalByteLength(resolvedAbortSignalCapacity),
+    )
+    : undefined;
+  const abortSignals = abortSignalSAB === undefined
+    ? undefined
+    : signalAbortFactory({
+      sab: abortSignalSAB,
+      maxSignals: resolvedAbortSignalCapacity,
+    });
+
+  const sharedQueue = createHostTxQueue({
+    lock: hostSubmitLock,
+    returnLock: hostReturnLocks[0]!,
+    extraReturnLocks: hostReturnLocks.slice(1),
+    abortSignals,
+  });
+
+  return {
+    submitBuffers,
+    returnBuffers,
+    hostSubmitLock,
+    hostReturnLocks,
+    sharedQueue,
+    regionLanes: lanes,
+    abortSignalSAB,
+    abortSignalMax: abortSignalSAB === undefined
+      ? undefined
+      : resolvedAbortSignalCapacity,
+  };
+};
+
 export const spawnWorkerContext = ({
   list,
   ids,
@@ -130,6 +284,7 @@ export const spawnWorkerContext = ({
   abortSignalCapacity,
   usesAbortSignal,
   sharedChannelHandler,
+  stealPool,
 }: {
   list: string[];
   ids: number[];
@@ -155,6 +310,25 @@ export const spawnWorkerContext = ({
    * macro channel that runs all lane checks.
    */
   sharedChannelHandler?: ChannelHandler;
+  /**
+   * Work-stealing wiring. When present the submit region, both host-side locks
+   * and the pending registry are owned by `createPool` and shared: every worker
+   * claims from one request region, and the host demultiplexes responses by
+   * task id. This lane only contributes its private return region and its
+   * worker. The dispatcher is owned by the pool too, so none is built here.
+   */
+  stealPool?: {
+    submitBuffers: LockBuffers;
+    returnBuffers: LockBuffers;
+    hostSubmitLock: ReturnType<typeof lock2>;
+    hostReturnLock: ReturnType<typeof lock2>;
+    sharedQueue: ReturnType<typeof createHostTxQueue>;
+    consumers: number;
+    consumerId: number;
+    regionLanes: number;
+    abortSignalSAB?: LockBuffers["headers"];
+    abortSignalMax?: number;
+  };
 }) => {
   if (workerOptions?.runtime === "compiled") {
     return spawnCompiledWorkerContext({
@@ -198,24 +372,15 @@ export const spawnWorkerContext = ({
   const WorkerCtor = poliWorker as NonNullable<typeof poliWorker>;
 
   // Lock buffers must be shared between host and worker.
-  const sanitizeBytes = (value: number | undefined) => {
-    if (!Number.isFinite(value)) return undefined;
-    const bytes = Math.floor(value as number);
-    return bytes > 0 ? bytes : undefined;
-  };
+  const sanitizeBytes = sanitizePositiveInteger;
   const basePayloadConfig = resolvePayloadBufferOptions({
     options: payload,
   });
   const resolvedPayloadConfig = useProcessWorkerRuntime
     ? withFixedPayloadConfig(basePayloadConfig)
     : basePayloadConfig;
-  const defaultAbortSignalCapacity = 258;
-  const requestedAbortSignalCapacity = sanitizeBytes(abortSignalCapacity);
-  const resolvedAbortSignalCapacity = requestedAbortSignalCapacity ??
-    defaultAbortSignalCapacity;
-  const abortSignalWords = Math.max(
-    1,
-    Math.ceil(resolvedAbortSignalCapacity / 32),
+  const resolvedAbortSignalCapacity = resolveAbortSignalCapacity(
+    abortSignalCapacity,
   );
   const requestedSignalBytes = sanitizeBytes(sab?.size);
   const externalSignalSab = sab?.sharedSab;
@@ -228,7 +393,9 @@ export const spawnWorkerContext = ({
     TRANSPORT_SIGNAL_BYTES,
     requestedSignalBytes ?? TRANSPORT_SIGNAL_BYTES,
   );
-  const abortBytes = abortSignalWords * Uint32Array.BYTES_PER_ELEMENT;
+  const abortBytes = stealPool === undefined && usesAbortSignal === true
+    ? abortSignalByteLength(resolvedAbortSignalCapacity)
+    : 0;
   const processWorkerMemory = useProcessWorkerRuntime
     ? createProcessWorkerMemoryLayout({
       signalBytes,
@@ -276,7 +443,7 @@ export const spawnWorkerContext = ({
   const controlLayout = processWorkerMemory?.controlLayout ??
     makeLockControlLayout();
   const lockPayload = processWorkerMemory?.lockPayload ?? makePayloadBuffer();
-  const lockBuffers: LockBuffers = {
+  const lockBuffers: LockBuffers = stealPool?.submitBuffers ?? {
     ...controlLayout.lock,
     payload: lockPayload,
     textCompat: probeLockBufferTextCompat({
@@ -286,7 +453,7 @@ export const spawnWorkerContext = ({
   };
   const returnPayload = processWorkerMemory?.returnPayload ??
     makePayloadBuffer();
-  const returnLockBuffers: LockBuffers = {
+  const returnLockBuffers: LockBuffers = stealPool?.returnBuffers ?? {
     ...controlLayout.returnLock,
     payload: returnPayload,
     textCompat: probeLockBufferTextCompat({
@@ -295,7 +462,7 @@ export const spawnWorkerContext = ({
     }),
   };
 
-  const lock = lock2({
+  const lock = stealPool?.hostSubmitLock ?? lock2({
     headers: lockBuffers.headers,
     headerSlotStrideU32: lockBuffers.headerSlotStrideU32,
     LockBoundSector: lockBuffers.lockSector,
@@ -305,7 +472,7 @@ export const spawnWorkerContext = ({
     textCompat: lockBuffers.textCompat,
     processBoundary: useProcessWorkerRuntime,
   });
-  const returnLock = lock2({
+  const returnLock = stealPool?.hostReturnLock ?? lock2({
     headers: returnLockBuffers.headers,
     headerSlotStrideU32: returnLockBuffers.headerSlotStrideU32,
     LockBoundSector: returnLockBuffers.lockSector,
@@ -315,10 +482,9 @@ export const spawnWorkerContext = ({
     textCompat: returnLockBuffers.textCompat,
     processBoundary: useProcessWorkerRuntime,
   });
-  const abortSignalSAB = usesAbortSignal === true
-    ? controlLayout.abortSignals
-    : undefined;
-  const abortSignals = abortSignalSAB
+  const abortSignalSAB = stealPool?.abortSignalSAB ??
+    (usesAbortSignal === true ? controlLayout.abortSignals : undefined);
+  const abortSignals = abortSignalSAB && stealPool === undefined
     ? signalAbortFactory({
       sab: abortSignalSAB,
       maxSignals: resolvedAbortSignalCapacity,
@@ -387,33 +553,42 @@ export const spawnWorkerContext = ({
     outstandingBorrowedReturns.clear();
   };
 
-  const queue = createHostTxQueue({
+  const returnHooks = bufferReferenceReturn === "borrow"
+    ? {
+      release: releaseBorrowedReturnToken,
+      track: (
+        ref: BufferReference,
+        token: bigint,
+        aliasBuffer?: ArrayBuffer,
+      ) => {
+        if (outstandingBorrowedReturns === undefined) return;
+        const record = outstandingBorrowedReturns.get(token);
+        if (record !== undefined) {
+          if (aliasBuffer !== undefined) {
+            record.aliasBuffer = new WeakRef(aliasBuffer);
+          }
+          return;
+        }
+        outstandingBorrowedReturns.set(token, {
+          ref: new WeakRef(ref),
+          aliasBuffer: aliasBuffer === undefined
+            ? undefined
+            : new WeakRef(aliasBuffer),
+          runtime: ref.runtime,
+        });
+      },
+    }
+    : undefined;
+
+  const queue = stealPool?.sharedQueue ?? createHostTxQueue({
     lock,
     returnLock,
     abortSignals,
-    releaseBufferReferenceReturn: bufferReferenceReturn === "borrow"
-      ? {
-        release: releaseBorrowedReturnToken,
-        track: (ref, token, aliasBuffer) => {
-          if (outstandingBorrowedReturns === undefined) return;
-          const record = outstandingBorrowedReturns.get(token);
-          if (record !== undefined) {
-            if (aliasBuffer !== undefined) {
-              record.aliasBuffer = new WeakRef(aliasBuffer);
-            }
-            return;
-          }
-          outstandingBorrowedReturns.set(token, {
-            ref: new WeakRef(ref),
-            aliasBuffer: aliasBuffer === undefined
-              ? undefined
-              : new WeakRef(aliasBuffer),
-            runtime: ref.runtime,
-          });
-        },
-      }
-      : undefined,
+    releaseBufferReferenceReturn: returnHooks,
   });
+  if (stealPool !== undefined) {
+    stealPool.sharedQueue.setReturnHooks(stealPool.consumerId, returnHooks);
+  }
 
   const {
     enqueue,
@@ -441,16 +616,21 @@ export const spawnWorkerContext = ({
   const send = () => dispatchSend();
 
   let channelHandler: ChannelHandler | undefined;
-  const ownsChannel = sharedChannelHandler === undefined;
+  const ownsChannel = sharedChannelHandler === undefined &&
+    stealPool === undefined;
   const ownChannel = sharedChannelHandler ?? new ChannelHandler();
-  const { check: dispatcherCheck } = hostDispatcherLoop({
-    signalBox,
-    queue,
-    channelHandler: ownChannel,
-    dispatcherOptions: host,
-    notifySignal: nativeNotifySignal,
-  });
-  if (ownsChannel) {
+  // Under stealing there is one queue, so one dispatcher drives it from the
+  // pool; a per-lane dispatcher would double-drain the shared registry.
+  const { check: dispatcherCheck } = stealPool !== undefined
+    ? { check: undefined }
+    : hostDispatcherLoop({
+      signalBox,
+      queue,
+      channelHandler: ownChannel,
+      dispatcherOptions: host,
+      notifySignal: nativeNotifySignal,
+    });
+  if (ownsChannel && dispatcherCheck !== undefined) {
     ownChannel.open(dispatcherCheck);
     channelHandler = ownChannel;
     dispatchSend = () => {
@@ -477,9 +657,8 @@ export const spawnWorkerContext = ({
   const workerDataPayload = {
     sab: signals.sab,
     abortSignalSAB,
-    abortSignalMax: usesAbortSignal === true
-      ? resolvedAbortSignalCapacity
-      : undefined,
+    abortSignalMax: stealPool?.abortSignalMax ??
+      (usesAbortSignal === true ? resolvedAbortSignalCapacity : undefined),
     list,
     ids,
     names,
@@ -494,6 +673,11 @@ export const spawnWorkerContext = ({
     payloadConfig: resolvedPayloadConfig,
     bufferReferenceReturn,
     permission,
+    steal: stealPool === undefined ? undefined : {
+      consumers: stealPool.consumers,
+      consumerId: stealPool.consumerId,
+      regionLanes: stealPool.regionLanes,
+    },
   } as WorkerData;
   const baseWorkerOptions = {
     //@ts-ignore Reason
@@ -583,6 +767,21 @@ export const spawnWorkerContext = ({
   }
 
   let closedReason: string | undefined;
+  const deactivateStealConsumer = () => {
+    stealPool?.hostSubmitLock.deactivateStealConsumer(
+      stealPool.consumerId,
+    );
+  };
+  const terminateFailedWorker = () => {
+    try {
+      worker.unref?.();
+      void Promise.resolve(worker.terminate())
+        .catch(() => {})
+        .finally(deactivateStealConsumer);
+    } catch {
+      deactivateStealConsumer();
+    }
+  };
   // `workerBytesReadable`: while the worker is still alive its pinned bytes
   // can be copied out; after a crash/exit they are gone and borrows are
   // detached so stale reads fail loud instead of aliasing freed memory.
@@ -603,18 +802,22 @@ export const spawnWorkerContext = ({
       `Worker startup failed: ${message[WORKER_FATAL_MESSAGE_KEY]}`,
       true,
     );
-    terminateWorkerQuietly(worker);
+    terminateFailedWorker();
   };
   const onWorkerError = (error: unknown) => {
     const message = String((error as { message?: unknown })?.message ?? error);
     markWorkerClosed(`Worker crashed: ${message}`);
+    terminateFailedWorker();
   };
   const nodeWorker = worker as unknown as NodeWorkerLike;
   if (typeof nodeWorker.on === "function") {
     nodeWorker.on("message", onWorkerMessage);
     nodeWorker.on("error", onWorkerError);
     nodeWorker.on("exit", (code: unknown) => {
-      if (typeof code === "number" && code === 0) return;
+      // Exit is the point at which this endpoint can no longer write WANT, so
+      // survivors may safely ignore any intent it left behind.
+      deactivateStealConsumer();
+      if (closedReason !== undefined) return;
       const normalized = typeof code === "number" ? code : -1;
       markWorkerClosed(`Worker exited with code ${normalized}`);
     });
@@ -677,8 +880,10 @@ export const spawnWorkerContext = ({
     lock,
     processSharedMemoryBackings: processSharedMemory?.backings,
     dispatcherCheck,
-    laneWake: sharedChannelHandler !== undefined ? laneWake : undefined,
-    bindSend: sharedChannelHandler !== undefined
+    laneWake: sharedChannelHandler !== undefined || stealPool !== undefined
+      ? laneWake
+      : undefined,
+    bindSend: sharedChannelHandler !== undefined || stealPool !== undefined
       ? ((fn: () => void) => void (dispatchSend = fn))
       : undefined,
   };

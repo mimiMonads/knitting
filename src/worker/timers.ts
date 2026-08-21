@@ -108,6 +108,7 @@ export const sleepUntilChanged = (
     write,
     nativeWaitU32,
     useSharedMemoryWait = true,
+    flushBeforeClaim = false,
   }: {
     opView: Int32Array;
     rxStatus: Int32Array;
@@ -118,28 +119,35 @@ export const sleepUntilChanged = (
     write?: () => number | boolean;
     nativeWaitU32?: NativeWaitU32;
     useSharedMemoryWait?: boolean;
+    /**
+     * Stealing only: write results back before attempting to claim more work.
+     * A claim can spin waiting for a peer to withdraw its intent, so claiming
+     * first puts arbitration latency in front of a finished response. Measured
+     * to hurt the per-lane path, so it stays off by default.
+     */
+    flushBeforeClaim?: boolean;
   },
 ) => {
   const pause = pauseInNanoseconds === undefined
     ? pauseGeneric
     : whilePausing({ pauseInNanoseconds });
 
-  const tryProgress = () => {
-    let progressed = false;
-
-    if (enqueueLock()) progressed = true;
-
-    if (write) {
-      const wrote = write();
-      if (typeof wrote === "number") {
-        if (wrote > 0) progressed = true;
-      } else if (wrote === true) {
-        progressed = true;
-      }
-    }
-
-    return progressed;
+  const flushWrite = () => {
+    if (!write) return false;
+    const wrote = write();
+    if (typeof wrote === "number") return wrote > 0;
+    return wrote === true;
   };
+
+  const tryProgress = flushBeforeClaim
+    ? () => {
+      const wrote = flushWrite();
+      return enqueueLock() || wrote;
+    }
+    : () => {
+      const claimed = enqueueLock();
+      return flushWrite() || claimed;
+    };
 
   return (
     value: number,

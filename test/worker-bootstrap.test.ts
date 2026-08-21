@@ -26,7 +26,7 @@ const withTimeout = async <T>(
 
 test("worker bootstrap runs before task modules import", async () => {
   const pool = createPool({
-    threads: 1,
+    threads: 2,
     worker: {
       bootstrap: {
         href: "./fixtures/bootstrap_setup.ts",
@@ -39,12 +39,17 @@ test("worker bootstrap runs before task modules import", async () => {
   });
 
   try {
-    assert.deepEqual(await withTimeout(pool.call.readBootstrapState()), {
+    const state = await withTimeout(pool.call.readBootstrapState());
+    assert.deepEqual({
+      importValue: state.importValue,
+      runtimeValue: state.runtimeValue,
+      sharedByteLength: state.sharedByteLength,
+    }, {
       importValue: "ready",
       runtimeValue: "ready",
       sharedByteLength: null,
-      thread: 0,
     });
+    assert.equal(state.thread === 0 || state.thread === 1, true);
   } finally {
     await pool.shutdown();
   }

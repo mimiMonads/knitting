@@ -7,9 +7,13 @@ import { DEBUG_ENABLED, resolveDebugNamespaces } from "./debug/gate.ts";
 import { genTaskID } from "./common/task-source.ts";
 import { toModuleUrl } from "./common/module-url.ts";
 import { endpointSymbol } from "./common/task-symbol.ts";
-import { spawnWorkerContext } from "./runtime/pool.ts";
-import { ChannelHandler } from "./runtime/dispatcher.ts";
-import { RUNTIME } from "./common/runtime.ts";
+import {
+  createStealPoolBuffers,
+  MAX_STEAL_CONSUMERS,
+  spawnWorkerContext,
+} from "./runtime/pool.ts";
+import { ChannelHandler, hostDispatcherLoop } from "./runtime/dispatcher.ts";
+import { createSharedArrayBuffer, RUNTIME } from "./common/runtime.ts";
 import {
   RUNTIME_IS_MAIN_THREAD,
   RUNTIME_POOL_DEPTH,
@@ -23,7 +27,7 @@ import {
 } from "./permission/index.ts";
 import { getNodeProcess } from "./common/node-compat.ts";
 import {
-  readProcessWorkerCommandPrefix,
+  readProcessWorkerNodeMajor,
   readProcessWorkerRuntime,
 } from "./runtime/process-worker.ts";
 import { inspectCompiledWorkerArtifact } from "./runtime/compiled-artifact.ts";
@@ -118,19 +122,6 @@ const readHostCwd = (): string | undefined => {
   }
 
   return undefined;
-};
-
-const readKnownProcessWorkerNodeMajor = (
-  worker: WorkerSettings,
-): number | undefined => {
-  if (RUNTIME !== "node") return undefined;
-  if (readProcessWorkerCommandPrefix(worker) !== undefined) return undefined;
-
-  const nodeProcess = getNodeProcess();
-  if (nodeProcess?.env?.NODE_BINARY !== undefined) return undefined;
-  const raw = nodeProcess?.versions?.node;
-  const major = Number.parseInt(String(raw).split(".", 1)[0] ?? "", 10);
-  return Number.isInteger(major) && major > 0 ? major : undefined;
 };
 
 const formatDebugList = (
@@ -293,11 +284,13 @@ const resolveWorkerSettings = (
         'worker.compiled.build must be a boolean or "always"',
       );
     }
-    for (const [name, value] of Object.entries({
-      artifact: compiled.artifact,
-      manifest: compiled.manifest,
-      compiler: compiled.compiler,
-    })) {
+    for (
+      const [name, value] of Object.entries({
+        artifact: compiled.artifact,
+        manifest: compiled.manifest,
+        compiler: compiled.compiler,
+      })
+    ) {
       if (
         value !== undefined &&
         (typeof value !== "string" || value.length === 0)
@@ -605,6 +598,24 @@ export const createPool: CreatePoolFactory = ({
     worker,
     callerHref,
   );
+  const dispatcherEnv = nodeProcess?.env?.KNITTING_DISPATCHER;
+  const stealEnvRaw = nodeProcess?.env?.KNITTING_STEAL?.trim().toLowerCase();
+  const stealEnv = stealEnvRaw === "1" || stealEnvRaw === "true"
+    ? true
+    : stealEnvRaw === "0" || stealEnvRaw === "false"
+    ? false
+    : undefined;
+  // Shared-submit stealing is the default for compatible multi-worker thread
+  // pools. An explicit option wins over the environment; process/compiled/
+  // inline transports retain their existing topology unless the caller
+  // explicitly requests an unsupported combination.
+  const dispatcherExplicitlySelected = host?.dispatcher !== undefined ||
+    dispatcherEnv === "serial-channel" || dispatcherEnv === "per-thread";
+  const stealDefaultCompatible = balancer === undefined &&
+    !dispatcherExplicitlySelected && (threads ?? 1) <= MAX_STEAL_CONSUMERS;
+  const stealRequested = host?.steal ?? stealEnv ?? stealDefaultCompatible;
+  const stealExplicitlyEnabled = host?.steal === true ||
+    (host?.steal === undefined && stealEnv === true);
   const usingCompiledWorker = resolvedWorker?.runtime === "compiled";
   if (resolvedWorker?.compiled !== undefined && !usingCompiledWorker) {
     throw new Error(
@@ -657,6 +668,11 @@ export const createPool: CreatePoolFactory = ({
   if (usingInliner && resolvedWorker?.bootstrap !== undefined) {
     throw new Error("worker.bootstrap cannot be used with the inliner");
   }
+  if (stealExplicitlyEnabled && resolvedWorker?.runtime === "process") {
+    throw new Error(
+      "host.steal does not support process workers; use worker threads or disable stealing",
+    );
+  }
   if (resolvedWorker?.runtime === "process") {
     const processRuntime = readProcessWorkerRuntime(resolvedWorker);
     enforceProcessPermissionCompatibility(
@@ -666,7 +682,7 @@ export const createPool: CreatePoolFactory = ({
         target: {
           runtime: processRuntime,
           nodeMajor: processRuntime === "node"
-            ? readKnownProcessWorkerNodeMajor(resolvedWorker)
+            ? readProcessWorkerNodeMajor(resolvedWorker)
             : undefined,
         },
       }),
@@ -688,7 +704,6 @@ export const createPool: CreatePoolFactory = ({
     );
   }
 
-  const dispatcherEnv = nodeProcess?.env?.KNITTING_DISPATCHER;
   const explicitDispatcher = host?.dispatcher ??
     (
       dispatcherEnv === "serial-channel" || dispatcherEnv === "per-thread"
@@ -704,7 +719,25 @@ export const createPool: CreatePoolFactory = ({
     return "serial-channel";
   })();
   const dispatcher = explicitDispatcher ?? autoDispatcher;
-  const serialChannel = !usingCompiledWorker &&
+  // Work stealing: one shared submit region, private return lanes, one
+  // pool-global pending registry. It is the compatible multi-thread default;
+  // an explicit balancer/dispatcher keeps the private-lane topology unless
+  // stealing itself was explicitly requested.
+  const useSteal = stealRequested &&
+    !usingCompiledWorker &&
+    resolvedWorker?.runtime !== "process" &&
+    (threads ?? 1) > 1 &&
+    !usingInliner;
+  const stealBuffers = useSteal
+    ? createStealPoolBuffers({
+      threads: threads ?? 1,
+      payload,
+      regionLanes: host?.stealRegionLanes,
+      abortSignalCapacity,
+      usesAbortSignal,
+    })
+    : undefined;
+  const serialChannel = !usingCompiledWorker && !useSteal &&
     dispatcher === "serial-channel";
   const serialDispatcherChannel = serialChannel
     ? new ChannelHandler()
@@ -732,16 +765,95 @@ export const createPool: CreatePoolFactory = ({
       usesAbortSignal,
       permission: permissionProtocol,
       sharedChannelHandler: serialDispatcherChannel,
+      stealPool: stealBuffers === undefined ? undefined : {
+        submitBuffers: stealBuffers.submitBuffers,
+        returnBuffers: stealBuffers.returnBuffers[thread]!,
+        hostSubmitLock: stealBuffers.hostSubmitLock,
+        hostReturnLock: stealBuffers.hostReturnLocks[thread]!,
+        sharedQueue: stealBuffers.sharedQueue,
+        consumers: threads ?? 1,
+        consumerId: thread,
+        regionLanes: stealBuffers.regionLanes,
+        abortSignalSAB: stealBuffers.abortSignalSAB,
+        abortSignalMax: stealBuffers.abortSignalMax,
+      },
     })
   );
+
+  const stealChannel = useSteal ? new ChannelHandler() : undefined;
+  if (useSteal) {
+    const channel = stealChannel!;
+    const queue = stealBuffers!.sharedQueue;
+
+    // Wake exactly one worker per drain, round-robin. Stealing decouples the
+    // wake target from the assignment: if the woken worker is busy, any other
+    // idle endpoint claims the region instead. So this costs one notify per
+    // publish regardless of pool size, rather than one per lane.
+    let wakeCursor = 0;
+    const wakeOne = () => {
+      const lanes = workers.length;
+      if (lanes === 0) return;
+      const lane = wakeCursor;
+      wakeCursor = wakeCursor + 1 < lanes ? wakeCursor + 1 : 0;
+      workers[lane]!.laneWake?.();
+    };
+
+    // The shared dispatcher drives one queue, so it needs signal words of its
+    // own rather than any single lane's; waking is delegated to `wakeOne`.
+    const signalWords = new Int32Array(
+      createSharedArrayBuffer(
+        3 * Int32Array.BYTES_PER_ELEMENT,
+      ) as ArrayBufferLike,
+    );
+    const { check } = hostDispatcherLoop({
+      signalBox: {
+        opView: signalWords.subarray(0, 1),
+        txStatus: signalWords.subarray(1, 2),
+        rxStatus: signalWords.subarray(2, 3),
+      } as never,
+      queue,
+      channelHandler: channel,
+      dispatcherOptions: host,
+      notifySignal: wakeOne,
+    });
+
+    channel.open(check);
+    workers.forEach((context) => {
+      context.bindSend!(() => {
+        if (check.isRunning !== true) {
+          check.isRunning = true;
+          Promise.resolve().then(check);
+        }
+        wakeOne();
+      });
+    });
+    hostDebug?.log(
+      `dispatcher=steal lanes=${workers.length} g=${stealBuffers!.regionLanes}`,
+    );
+  }
 
   const sharedDispatcherChannel = serialDispatcherChannel;
   if (serialChannel) {
     const channel = serialDispatcherChannel!;
     const checks = workers.map((context) => context.dispatcherCheck!);
+    const laneIdle = workers.map((context) => context.txIdle);
     let serialScheduled = false;
     let serialInFlight = false;
     let serialRerun = false;
+
+    // Busy-lane set: a tick walks only the lanes that have work, not all of
+    // them. `active` is a dense list of lane indices; `isActive` keeps the
+    // membership test O(1). A lane joins on send() and leaves once its queue
+    // reports idle, so an N-worker pool with one busy lane costs one check per
+    // tick instead of N.
+    const active: number[] = [];
+    const isActive = new Uint8Array(checks.length);
+
+    const markActive = (lane: number) => {
+      if (isActive[lane] === 1) return;
+      isActive[lane] = 1;
+      active.push(lane);
+    };
 
     const runSerialChecks = () => {
       if (serialInFlight) {
@@ -754,10 +866,17 @@ export const createPool: CreatePoolFactory = ({
         serialRerun = false;
         serialScheduled = false;
 
-        for (let index = 0; index < checks.length; index++) {
-          const check = checks[index]!;
+        // Walk backwards so dropping an idle lane is a swap-with-last pop.
+        for (let index = active.length - 1; index >= 0; index--) {
+          const lane = active[index]!;
+          const check = checks[lane]!;
           if (check.isRunning !== true) check.isRunning = true;
           check();
+          if (laneIdle[lane]!()) {
+            isActive[lane] = 0;
+            const last = active.pop()!;
+            if (index < active.length) active[index] = last;
+          }
         }
       } while (serialRerun);
 
@@ -775,9 +894,10 @@ export const createPool: CreatePoolFactory = ({
     };
 
     channel.open(runSerialChecks);
-    workers.forEach((context) => {
+    workers.forEach((context, lane) => {
       const wake = context.laneWake!;
       context.bindSend!(() => {
+        markActive(lane);
         scheduleSerialCheck();
         wake();
       });
@@ -823,6 +943,7 @@ export const createPool: CreatePoolFactory = ({
     closePromise = Promise.allSettled(workers.map((context) => context.kills()))
       .then(() => {
         sharedDispatcherChannel?.close();
+        stealChannel?.close();
       });
     return closePromise;
   };

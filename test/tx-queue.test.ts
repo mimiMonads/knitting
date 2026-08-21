@@ -47,6 +47,25 @@ const makeQueue = () => {
   };
 };
 
+test("one-lane queue preserves the direct return resolver fast path", () => {
+  const lock = {
+    publish: () => true,
+    flushPending: () => false,
+    hasPendingFrames: () => false,
+    getPendingFrameCount: () => 0,
+    getPendingPromiseCount: () => 0,
+    resetPendingState: () => {},
+  } as unknown as Lock2;
+  const resolveReturn = () => 0;
+  const returnLock = {
+    resolveHost: () => resolveReturn,
+  } as unknown as Lock2;
+
+  const tx = createHostTxQueue({ lock, returnLock });
+
+  assert.equal(tx.completeFrame, resolveReturn);
+});
+
 test("tx enqueue encodes timeout into slotBuffer upper bits", () => {
   const { seen, setNow, tx } = makeQueue();
   const callWithoutTimeout = tx.enqueue(0);

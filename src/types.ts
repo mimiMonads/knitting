@@ -55,6 +55,17 @@ type WorkerData = {
   payloadConfig?: PayloadBufferOptions;
   bufferReferenceReturn?: "copy" | "borrow";
   permission?: ResolvedPermissionProtocol;
+  /**
+   * Work stealing. When present, `lock` is a submit region shared by every
+   * worker and this worker claims from it as consumer `consumerId` of
+   * `consumers`, rather than owning a private request lane. `returnLock` stays
+   * private — the endpoint that claims a task owns its response.
+   */
+  steal?: {
+    consumers: number;
+    consumerId: number;
+    regionLanes: number;
+  };
 };
 
 type UnsafeOptions = {
@@ -522,11 +533,38 @@ type DispatcherSettings = {
    * - `"serial-channel"`: each worker keeps its own dispatcher check state, but
    *   one shared channel runs all lane checks from first to last.
    *
-   * Experimental default: `"per-thread"` on Bun or with one worker, otherwise
-   * `"serial-channel"` for multi-worker Node/Deno pools. Can also be forced
-   * with the `KNITTING_DISPATCHER` env var (`serial-channel` or `per-thread`).
+   * Used by private-lane pools. Its experimental default is `"per-thread"` on
+   * Bun or with one worker, otherwise `"serial-channel"` for multi-worker
+   * Node/Deno pools. Selecting it explicitly keeps private lanes unless
+   * `steal: true` is also explicit. Can also be forced with the
+   * `KNITTING_DISPATCHER` env var (`serial-channel` or `per-thread`).
    */
   dispatcher?: "per-thread" | "serial-channel";
+  /**
+   * Work stealing: one shared submit region that any worker may
+   * claim from, private return lanes, and a pool-global pending registry. The
+   * endpoint that claims a task owns its response.
+   *
+   * Enabled by default for multi-worker thread pools unless a balancer or
+   * private-lane dispatcher was explicitly selected. One-worker pools,
+   * inliners, compiled/Porffor workers, process workers, and pools above the
+   * current 31-claimant protocol limit retain their existing transport.
+   * Explicitly requesting `true` with process workers is rejected because
+   * their transport uses separately mapped process-shared memory. Set `false`
+   * (or `KNITTING_STEAL=0`) to opt out; `KNITTING_STEAL=1` explicitly opts in
+   * and overrides a balancer/dispatcher selection.
+   */
+  steal?: boolean;
+  /**
+   * Lanes claimed per stealing handshake (a power of two, `slots / g >=
+   * workers + 1`). Defaults to the widest region the lane budget allows, which
+   * amortises arbitration best for cheap tasks.
+   *
+   * **A region is a batch.** For expensive tasks, a wide region lets one worker
+   * claim work the others could have run in parallel; set this to `1` (or a
+   * small value) when per-task cost dominates arbitration cost.
+   */
+  stealRegionLanes?: number;
 };
 
 type CreatePool = {

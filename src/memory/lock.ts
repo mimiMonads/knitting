@@ -336,6 +336,28 @@ export const HEADER_TASK_LINE_U32 = LOCK_CACHE_LINE_BYTES /
 export const HEADER_STATIC_PAYLOAD_U32 = TaskIndex.TotalBuff -
   HEADER_TASK_LINE_U32;
 export const HEADER_TASK_OFFSET_IN_SLOT_U32 = HEADER_STATIC_PAYLOAD_U32;
+// Work-stealing control words live in the unused tail of each slot's header
+// cache line. Task words occupy 0..7 (`TASK_LOCAL_FLAGS_INDEX = 7`) of the
+// 16-word line, leaving words 8..15 free. Consumer `c` owns slot `c`'s pair, and
+// because the slot stride is exactly 9 cache lines those pairs land on distinct
+// lines. `ACK[c]` and `WANT[c]` share one line on purpose: same single writer,
+// and a peer reading one pulls the other for free.
+export const STEAL_ACK_SLOT_OFFSET_U32 = HEADER_TASK_OFFSET_IN_SLOT_U32 +
+  TaskIndex.Size;
+export const STEAL_WANT_SLOT_OFFSET_U32 = STEAL_ACK_SLOT_OFFSET_U32 + 1;
+/**
+ * The payload allocator needs its own participant-owned ACK per consumer, since
+ * several workers can free payload slots from one shared allocator. No intent
+ * word: freeing needs no arbitration, a consumer only frees what it drained.
+ */
+export const STEAL_PAYLOAD_ACK_SLOT_OFFSET_U32 = STEAL_ACK_SLOT_OFFSET_U32 + 2;
+/**
+ * Host-owned liveness mask for stealing consumers. A dead claimant may leave
+ * its WANT word set forever; survivors ignore WANT from consumers whose bit is
+ * clear here. This preserves single-writer ownership of every WANT word.
+ */
+export const STEAL_LIVE_SLOT_OFFSET_U32 = STEAL_PAYLOAD_ACK_SLOT_OFFSET_U32 + 1;
+
 export const HEADER_U32_LENGTH = LockBound.header +
   (HEADER_SLOT_STRIDE_U32 * LockBound.slots);
 export const HEADER_BYTE_LENGTH = HEADER_U32_LENGTH *
@@ -427,6 +449,9 @@ export const lock2 = ({
   toSentList,
   recycleList,
   processBoundary,
+  consumers,
+  consumerId,
+  regionLanes,
 }: {
   headers?: SharedBufferSource;
   headerSlotStrideU32?: number;
@@ -439,6 +464,16 @@ export const lock2 = ({
   resultList?: RingQueue<Task>;
   recycleList?: RingQueue<Task>;
   processBoundary?: boolean;
+  /**
+   * Number of consumer endpoints sharing this lock. `1` (default) keeps the
+   * classic single-consumer path. `> 1` enables region-Dekker work stealing and
+   * is only valid on a host->worker submit lock, never on a return lock.
+   */
+  consumers?: number;
+  /** This endpoint's id, `0..consumers-1`. Priority is fixed by id. */
+  consumerId?: number;
+  /** Lanes claimed per Dekker handshake. Paper rule: `slots / regionLanes >= consumers + 1`. */
+  regionLanes?: number;
 }) => {
   // Layout within `lockSectorRegion`:
   // - hostBits starts at byte 0
@@ -498,6 +533,69 @@ export const lock2 = ({
     headers: headersRegion,
     payload: payloadSAB,
   });
+
+  // ---- work stealing (multi-consumer) state ----
+  // With N consumers the pending set is A ^ ACK[0] ^ ... ^ ACK[N-1]; every word
+  // still has exactly one writer, so no shared writable word is introduced.
+  const stealConsumers = Math.max(1, (consumers ?? 1) | 0);
+  const stealEnabled = stealConsumers > 1;
+  // A lock2 built without `consumerId` is the producer endpoint: it encodes but
+  // never claims. It still frees payload slots, so it needs an acknowledgement
+  // word of its own rather than sharing consumer 0's.
+  const stealIsProducer = consumerId === undefined;
+  const stealId = (consumerId ?? 0) | 0;
+  const stealRegionLanes = (regionLanes ?? 8) | 0;
+  const stealRegions = (LockBound.slots / stealRegionLanes) | 0;
+
+  if (stealEnabled) {
+    if (
+      stealRegionLanes < 1 || (stealRegionLanes & (stealRegionLanes - 1)) !== 0
+    ) {
+      throw new RangeError("regionLanes must be a power of two");
+    }
+    if (stealRegions < stealConsumers) {
+      throw new RangeError(
+        `regionLanes=${stealRegionLanes} yields ${stealRegions} regions, ` +
+          `too few for ${stealConsumers} consumers`,
+      );
+    }
+    if (stealId < 0 || stealId >= stealConsumers) {
+      throw new RangeError(`consumerId ${stealId} out of range`);
+    }
+  }
+
+  // Int32 alias over the headers SAB so the control words get signed bit math
+  // consistent with the rest of the protocol.
+  const stealView = new Int32Array(
+    headersRegion.sab,
+    headersRegion.byteOffset,
+    headersRegion.byteLength >>> 2,
+  );
+  const stealAckIndex = new Int32Array(stealConsumers);
+  const stealWantIndex = new Int32Array(stealConsumers);
+  for (let c = 0; c < stealConsumers; c++) {
+    const slotBase = (c * headersSlotStride) + LockBound.header;
+    stealAckIndex[c] = slotBase + STEAL_ACK_SLOT_OFFSET_U32;
+    stealWantIndex[c] = slotBase + STEAL_WANT_SLOT_OFFSET_U32;
+  }
+  const stealLiveIndex = LockBound.header + STEAL_LIVE_SLOT_OFFSET_U32;
+  const stealAllLiveMask = stealConsumers === 32
+    ? -1
+    : ((1 << stealConsumers) - 1) | 0;
+  if (stealEnabled && stealIsProducer) {
+    Atomics.store(stealView, stealLiveIndex, stealAllLiveMask);
+  }
+
+  const stealIsLive = (mask: number, consumer: number): boolean =>
+    (mask & (1 << consumer)) !== 0;
+
+  const stealAckXorAll = (): number => {
+    let x = 0 | 0;
+    for (let c = 0; c < stealConsumers; c++) {
+      x = (x ^ a_load(stealView, stealAckIndex[c]!)) | 0;
+    }
+    return x;
+  };
 
   let promiseHandler: PromisePayloadHandler | undefined;
 
@@ -566,8 +664,11 @@ export const lock2 = ({
   // false-busy-only sender-side staleness property, this may hide newly freed
   // lanes but cannot make a genuinely pending lane appear free. Refresh only
   // when the cached free set is exhausted.
-  let workerShadow = a_load(workerBits, 0) | 0;
-  const refreshWorkerShadow = () => workerShadow = a_load(workerBits, 0) | 0;
+  let workerShadow = 0 | 0;
+  const refreshWorkerShadow = stealEnabled
+    ? () => workerShadow = stealAckXorAll()
+    : () => workerShadow = a_load(workerBits, 0) | 0;
+  refreshWorkerShadow();
   const ensureSenderStateHasFree = (state: number): number =>
     (~state) !== 0 ? state : (LastLocal ^ refreshWorkerShadow()) | 0;
 
@@ -808,6 +909,124 @@ export const lock2 = ({
   };
 
   /**
+   * WORKER SIDE: decode, region-Dekker stealing variant.
+   *
+   * Claims one whole region of `stealRegionLanes` lanes per handshake, so the
+   * StoreLoad barrier is amortised over the region rather than paid per task.
+   * Priority is fixed by endpoint id: a junior withdraws for a senior, so at
+   * most one consumer ever acknowledges a published generation.
+   *
+   * The C reference needs an explicit mfence between the intent store and the
+   * peer loads. `Atomics.store` is sequentially consistent in JS, so that
+   * barrier is implicit here and holds on x86 and ARM alike.
+   */
+  const stealLaneMask = (region: number): number =>
+    stealRegionLanes === 32
+      ? -1
+      : ((((1 << stealRegionLanes) - 1) << (region * stealRegionLanes)) | 0);
+
+  const stealPeerAcks = (): number => {
+    let x = 0 | 0;
+    for (let c = 0; c < stealConsumers; c++) {
+      if (c !== stealId) x = (x ^ a_load(stealView, stealAckIndex[c]!)) | 0;
+    }
+    return x;
+  };
+
+  const stealJuniorWants = (intent: number): boolean => {
+    const live = a_load(stealView, stealLiveIndex) | 0;
+    for (let c = stealId + 1; c < stealConsumers; c++) {
+      if (!stealIsLive(live, c)) continue;
+      if ((a_load(stealView, stealWantIndex[c]!) & intent) !== 0) return true;
+    }
+    return false;
+  };
+
+  let stealCursor = ((stealRegions * stealId) / stealConsumers) | 0;
+
+  const decodeSteal = (): boolean => {
+    const pending = (a_load(hostBits, 0) ^ LastWorker ^ stealPeerAcks()) | 0;
+    if (pending === 0) return false;
+
+    let pendingRegions = 0 | 0;
+    if (stealRegions === 1) pendingRegions = 1;
+    else {
+      for (let r = 0; r < stealRegions; r++) {
+        if ((pending & stealLaneMask(r)) !== 0) pendingRegions |= 1 << r;
+      }
+    }
+
+    const liveBeforeClaim = a_load(stealView, stealLiveIndex) | 0;
+    let peerIntent = 0 | 0;
+    let seniorIntent = 0 | 0;
+    for (let c = 0; c < stealConsumers; c++) {
+      if (c === stealId || !stealIsLive(liveBeforeClaim, c)) continue;
+      const value = a_load(stealView, stealWantIndex[c]!) | 0;
+      peerIntent |= value;
+      if (c < stealId) seniorIntent |= value;
+    }
+
+    const notSenior = pendingRegions & ~seniorIntent;
+    if (notSenior === 0) return false;
+    const clean = pendingRegions & ~peerIntent;
+    const candidates = clean !== 0 ? clean : notSenior;
+
+    let region = -1;
+    for (let step = 0; step < stealRegions; step++) {
+      const candidate = (stealCursor + step) % stealRegions;
+      if ((candidates & (1 << candidate)) !== 0) {
+        region = candidate;
+        break;
+      }
+    }
+    if (region < 0) return false;
+    const intent = (1 << region) | 0;
+
+    a_store(stealView, stealWantIndex[stealId]!, intent);
+    // Dekker StoreLoad: implicit, `Atomics.store` above is seq-cst.
+
+    let seniorConflict = false;
+    let juniorConflict = false;
+    for (let c = 0; c < stealConsumers; c++) {
+      if (c === stealId || !stealIsLive(liveBeforeClaim, c)) continue;
+      if ((a_load(stealView, stealWantIndex[c]!) & intent) === 0) continue;
+      if (c < stealId) seniorConflict = true;
+      else juniorConflict = true;
+    }
+
+    if (seniorConflict) {
+      a_store(stealView, stealWantIndex[stealId]!, 0);
+      return false;
+    }
+    if (juniorConflict) {
+      while (stealJuniorWants(intent)) { /* junior withdraws */ }
+    }
+
+    // Last control loads before ownership. After this no control word is read
+    // until every slot in `take` has been decoded.
+    const take = ((a_load(hostBits, 0) ^ LastWorker ^ stealPeerAcks()) &
+      stealLaneMask(region)) | 0;
+    if (take === 0) {
+      a_store(stealView, stealWantIndex[stealId]!, 0);
+      return false;
+    }
+
+    let lanes = take;
+    while (lanes !== 0) {
+      decodeAt(31 - clz32((lanes & -lanes) >>> 0));
+      lanes = (lanes & (lanes - 1)) | 0;
+    }
+
+    // Retire the whole claimed mask with one ACK store, then release the region.
+    // ACK before intent-clear (paper Assumption 2(ii)).
+    LastWorker = (LastWorker ^ take) | 0;
+    a_store(stealView, stealAckIndex[stealId]!, LastWorker);
+    a_store(stealView, stealWantIndex[stealId]!, 0);
+    stealCursor = (region + 1) % stealRegions;
+    return true;
+  };
+
+  /**
    * HOST SIDE: decode version
    */
   const resolveHost = ({
@@ -1006,6 +1225,24 @@ export const lock2 = ({
     pendingPromiseCount = 0 | 0;
   };
 
+  /**
+   * HOST SIDE: remove a terminated consumer from stealing arbitration.
+   *
+   * Its ACK remains part of the generation XOR forever, because it records
+   * lanes that consumer retired while alive. Only its stale WANT becomes
+   * ineligible. The caller must invoke this only after the endpoint can no
+   * longer execute; there is deliberately no matching reactivation operation.
+   */
+  const deactivateStealConsumer = (id: number): boolean => {
+    if (!stealEnabled || !stealIsProducer) return false;
+    if (!Number.isInteger(id) || id < 0 || id >= stealConsumers) {
+      throw new RangeError(`consumerId ${id} out of range`);
+    }
+    const bit = 1 << id;
+    const previous = Atomics.and(stealView, stealLiveIndex, ~bit);
+    return (previous & bit) !== 0;
+  };
+
   return {
     enlist,
     encode,
@@ -1013,7 +1250,7 @@ export const lock2 = ({
     encodeAll,
     publish,
     flushPending,
-    decode,
+    decode: stealEnabled ? decodeSteal : decode,
     hasSpace,
     resolved,
     hostBits,
@@ -1024,6 +1261,7 @@ export const lock2 = ({
     getPendingFrameCount: () => toBeSent.size | 0,
     getPendingPromiseCount: () => pendingPromiseCount | 0,
     resetPendingState,
+    deactivateStealConsumer,
     takeDeferredCount: () => {
       const count = deferredCount | 0;
       deferredCount = 0 | 0;

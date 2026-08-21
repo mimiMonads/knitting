@@ -18,15 +18,12 @@ import {
 const SLOT_META_PACKED_MASK = 0xFFFFFFE0; // (~0x1F) >>> 0
 
 export type RegisterMalloc = ReturnType<typeof register>;
-export type RegionRegistryPublishMode = "plain" | "atomic";
 
 export const register = (
   {
     lockSector,
-    publishMode = "plain",
   }: {
     lockSector?: SharedBufferSource;
-    publishMode?: RegionRegistryPublishMode;
   },
 ) => {
   const lockRegion = toSharedBufferRegion(
@@ -51,7 +48,7 @@ export const register = (
   const clz32 = Math.clz32;
   const a_load = Atomics.load;
   const a_store = Atomics.store;
-  const useAtomicPublish = publishMode === "atomic";
+  const a_xor = Atomics.xor;
 
   const EMPTY = 0xFFFFFFFF >>> 0;
   const SLOT_MASK = TASK_SLOT_INDEX_MASK;
@@ -64,7 +61,6 @@ export const register = (
 
   // scalar state (faster than Uint32Array(1))
   let hostLast = 0 | 0;
-  let workerLast = 0 | 0;
 
   const startAndIndexToArray = (length: number) =>
     startAndIndex.slice(0, length);
@@ -142,10 +138,14 @@ export const register = (
       let freeBits = (~(hostLast ^ w)) >>> 0;
       if (freeBits !== 0) freeBits &= usedBits;
 
-      if (freeBits === EMPTY) {
+      // Every tracked slot is free, so restart the arena from offset 0. A free
+      // racing after this snapshot can only delay reclamation until the next
+      // allocation; it cannot make a live slot appear free.
+      if (freeBits === (usedBits >>> 0)) {
         tableLength = 0;
         usedBits = 0 | 0;
         tl = 0;
+        freeBits = 0 >>> 0;
       } else if (freeBits !== 0) {
         for (let i = 0; i < tl; i++) {
           const v = sai[i];
@@ -303,8 +303,7 @@ export const register = (
     const slotIndex = findAndInsert(task, size);
     if (slotIndex === -1) return -1;
 
-    if (useAtomicPublish) a_store(hostBits, 0, hostLast);
-    else hostBits[0] = hostLast;
+    a_store(hostBits, 0, hostLast);
     return slotIndex;
   };
 
@@ -323,11 +322,15 @@ export const register = (
     return true;
   };
 
+  // Always a read-modify-write. `free()` genuinely has two callers even without
+  // work stealing: the encode-side rollback (`failDynamicWriteAfterReserve`)
+  // and the decode-side release (`freeTaskSlot`). Each held a private
+  // `workerLast` shadow and blind-stored the whole word, so one overwrote the
+  // other's toggles — the allocator then handed out a region that was still
+  // live, aliasing payloads. XOR of distinct bits commutes, so one atomic
+  // toggle per free is correct for any number of writers.
   const free = (index: number) => {
-    index = index & TASK_SLOT_INDEX_MASK;
-    workerLast ^= 1 << index;
-    if (useAtomicPublish) a_store(workerBits, 0, workerLast);
-    else workerBits[0] = workerLast;
+    a_xor(workerBits, 0, 1 << (index & TASK_SLOT_INDEX_MASK));
   };
 
   return {

@@ -59,6 +59,17 @@ export const hostDispatcherLoop = ({
       check.rerun = true;
       return;
     }
+
+    // Nothing enqueued and nothing outstanding at the worker: skip the drain.
+    // Without this an idle lane still pays a txStatus write, an rxStatus load
+    // and — worst of all — an Atomics.notify that wakes a parked worker for no
+    // reason. Under the serial-channel dispatcher every lane is checked on
+    // every tick, so that waste is what makes latency grow with thread count.
+    if (txIdle()) {
+      check.isRunning = false;
+      return;
+    }
+
     inFlight = true;
 
     if (backoffTimer !== undefined) {

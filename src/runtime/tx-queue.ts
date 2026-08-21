@@ -40,6 +40,18 @@ type CreateHostTxQueueArgs = {
   max?: number;
   lock: Lock2;
   returnLock: Lock2;
+  /**
+   * Extra return locks to drain into the same pending registry.
+   *
+   * Under work stealing the host publishes into one shared submit lock and any
+   * worker may claim the task, so the response comes back on whichever lane
+   * executed it. Task IDs index this queue's `queue` array, which is
+   * pool-global, so every lane's `resolveHost` can settle into it — the
+   * stealing worker owns the response and the host demultiplexes by ID.
+   *
+   * When omitted, only `returnLock` is drained (the classic one-lane shape).
+   */
+  extraReturnLocks?: readonly Lock2[];
   releaseBufferReferenceReturn?:
     | ((token: bigint) => void)
     | BufferReferenceReturnHooks;
@@ -50,12 +62,17 @@ type CreateHostTxQueueArgs = {
   now?: () => number;
 };
 
+type ReturnHooks =
+  | ((token: bigint) => void)
+  | BufferReferenceReturnHooks;
+
 const p_now = performance.now.bind(performance);
 
 export function createHostTxQueue({
   max,
   lock,
   returnLock,
+  extraReturnLocks,
   releaseBufferReferenceReturn,
   abortSignals,
   now,
@@ -100,26 +117,64 @@ export function createHostTxQueue({
   const resetSignal = abortSignals?.resetSignal;
   const nowTime = now ?? p_now;
 
-  const resolveReturn = returnLock.resolveHost({
-    queue,
-    activeRejectPlaceholder: PLACE_HOLDER,
-    onResolved: (task) => {
-      inUsed = (inUsed - 1) | 0;
-      resetTaskLocalFlags(task);
-      runTaskFinalizers(task);
-      task.value = null;
-      task.resolve = PLACE_HOLDER;
-      task.reject = PLACE_HOLDER;
-      freePush(task[TaskIndex.ID]);
-    },
-  });
-  const completeFrame = releaseBufferReferenceReturn === undefined
-    ? resolveReturn
-    : () =>
-      withBufferReferenceReturnReleaser(
-        releaseBufferReferenceReturn,
-        resolveReturn,
-      );
+  const onReturnResolved = (task: Task) => {
+    inUsed = (inUsed - 1) | 0;
+    resetTaskLocalFlags(task);
+    runTaskFinalizers(task);
+    task.value = null;
+    task.resolve = PLACE_HOLDER;
+    task.reject = PLACE_HOLDER;
+    freePush(task[TaskIndex.ID]);
+  };
+
+  const returnResolvers = [
+    returnLock,
+    ...(extraReturnLocks ?? []),
+  ].map((each) =>
+    each.resolveHost({
+      queue,
+      activeRejectPlaceholder: PLACE_HOLDER,
+      onResolved: onReturnResolved,
+    })
+  );
+  // A stealing queue drains one private return lock per worker. Borrowed
+  // BufferReferences must therefore be claimed with the hooks belonging to the
+  // worker that produced that particular return. The hooks are bound after the
+  // worker context exists, while the pool-global queue is built before workers
+  // spawn, so keep one mutable hook slot per return lane.
+  const returnHooks = new Array<ReturnHooks | undefined>(
+    returnResolvers.length,
+  );
+  if (releaseBufferReferenceReturn !== undefined) {
+    returnHooks[0] = releaseBufferReferenceReturn;
+  }
+
+  const resolveReturnAt = (index: number): number => {
+    const resolve = returnResolvers[index]!;
+    const hooks = returnHooks[index];
+    return hooks === undefined
+      ? resolve()
+      : withBufferReferenceReturnReleaser(hooks, resolve);
+  };
+
+  // Preserve the original one-lane fast path exactly: no wrapper, array lookup,
+  // or hook branch is paid by the default one-worker transport. Mutable
+  // per-return-lane hooks are needed only by a multi-worker stealing queue.
+  const completeFrame = returnResolvers.length === 1
+    ? releaseBufferReferenceReturn === undefined
+      ? returnResolvers[0]!
+      : () =>
+        withBufferReferenceReturnReleaser(
+          releaseBufferReferenceReturn,
+          returnResolvers[0]!,
+        )
+    : () => {
+      let resolved = 0 | 0;
+      for (let i = 0; i < returnResolvers.length; i++) {
+        resolved = (resolved + resolveReturnAt(i)) | 0;
+      }
+      return resolved;
+    };
 
   const hasActiveTasks = () => {
     const count = (inUsed - getPendingPromiseCount()) | 0;
@@ -159,6 +214,12 @@ export function createHostTxQueue({
     hasPendingFrames,
     txIdle,
     completeFrame,
+    setReturnHooks: (lane: number, hooks: ReturnHooks | undefined) => {
+      if (!Number.isInteger(lane) || lane < 0 || lane >= returnHooks.length) {
+        throw new RangeError(`return lane ${lane} out of range`);
+      }
+      returnHooks[lane] = hooks;
+    },
     enqueue: (
       functionID: FunctionID,
       timeout?: TaskTimeout,

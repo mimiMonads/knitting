@@ -345,15 +345,24 @@ Common options you might tweak:
 | `worker.processSharedMemory`      | Process-worker memory discovery: `"inherit"` by default on POSIX, or `"named"` for wrappers/containers that cannot preserve fd 0. |
 | `permission`                      | Runtime permission policy for workers.                                                                                            |
 | `host.dispatcher`                 | Experimental host dispatcher topology: `"per-thread"` or `"serial-channel"`.                                                      |
+| `host.steal`                      | Shared-submit work stealing for multi-worker thread pools; enabled by default. Set `false` to use private submit lanes.            |
 | `debug`                           | Enable diagnostics (`host`, `globals`, `signals`, `imports`, `lifecycle`) or use `KNITTING_DEBUG`.                                |
 | `source`                          | Worker source override for advanced runtimes.                                                                                     |
 
-Most users can leave `host.dispatcher` alone. The current default is
-experimental: Bun and single-worker pools use `"per-thread"`, while multi-worker
-Node/Deno pools use `"serial-channel"` because it tends to behave well for
-bursty HTTP-style fan-out. If you are tuning a server or comparing runtimes, you
-can force either mode with `KNITTING_DISPATCHER=per-thread` or
-`KNITTING_DISPATCHER=serial-channel`.
+Most users can leave `host.dispatcher` alone. It selects the dispatcher for
+private-lane pools: Bun and single-worker pools default to `"per-thread"`, while
+multi-worker Node/Deno pools use `"serial-channel"`. Selecting a dispatcher or
+balancer explicitly preserves that private-lane topology unless
+`host.steal: true` is also explicit.
+
+Ordinary multi-worker thread pools use shared-submit work stealing by default.
+It is not used by one-worker pools, the inliner, process workers, compiled/
+Porffor workers, or pools with an explicit balancer/dispatcher, so those modes
+retain their existing transport. Pools above the current 31-claimant protocol
+limit also fall back. Set `host: { steal: false }` or `KNITTING_STEAL=0` to opt
+out for uniformly cheap, low-concurrency workloads where arbitration has
+nothing to rebalance. `host: { steal: true }` or `KNITTING_STEAL=1` forces it
+for an otherwise compatible thread pool.
 
 ### Worker bootstrap
 

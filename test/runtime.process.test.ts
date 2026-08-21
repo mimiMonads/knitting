@@ -147,13 +147,14 @@ const runProcessWorkerSmoke = async (
       unlinkOnShutdown?: boolean;
     };
   },
+  threads = 1,
 ): Promise<void> => {
   const labels = [`${processRuntime} process worker`];
   if (worker?.processCommandPrefix !== undefined) labels.push("command prefix");
   if (worker?.processSharedMemory !== undefined) labels.push("named shm");
   const workerLabel = labels.join(" with ");
   const pool = createPool({
-    threads: 1,
+    threads,
     worker: {
       runtime: "process",
       processRuntime,
@@ -200,26 +201,30 @@ test("process worker diagnostics harness is alive", {
   assert.equal(true, true);
 });
 
-test("process workers fail before spawn for explicit unsupported restrictions", {
-  concurrency: false,
-  skip: processRuntimeTestSkip,
-}, () => {
-  assert.throws(
-    () =>
-      createPool({
-        threads: 1,
-        worker: {
-          runtime: "process",
-          processRuntime: "node",
-        },
-        permission: {
-          mode: "strict",
-          net: ["api.example.com:443"],
-        },
-      })({ addOnePromise }),
-    /Node.*process workers cannot enforce.*permission\.net/is,
-  );
-});
+test(
+  "process workers fail before spawn for explicit unsupported restrictions",
+  {
+    concurrency: false,
+    skip: processRuntimeTestSkip,
+  },
+  () => {
+    assert.throws(
+      () =>
+        createPool({
+          threads: 1,
+          worker: {
+            runtime: "process",
+            processRuntime: "node",
+          },
+          permission: {
+            mode: "strict",
+            net: ["api.example.com:443"],
+          },
+        })({ addOnePromise }),
+      /Node.*process workers cannot enforce.*permission\.net/is,
+    );
+  },
+);
 
 test("process worker spawns a Bun child from this runtime", {
   concurrency: false,
@@ -228,6 +233,15 @@ test("process worker spawns a Bun child from this runtime", {
 }, async () => {
   if (!hasProcessRuntime("bun")) return;
   await runProcessWorkerSmoke("bun");
+});
+
+test("default stealing preference falls back for multi-process pools", {
+  concurrency: false,
+  skip: processRuntimeTestSkip,
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
+  if (!hasProcessRuntime("bun")) return;
+  await runProcessWorkerSmoke("bun", undefined, 2);
 });
 
 test("process worker spawns a Deno child from this runtime", {

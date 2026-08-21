@@ -135,6 +135,14 @@ type NodeChildProcessModuleLike = {
     args?: readonly string[],
     options?: Record<string, unknown>,
   ) => NodeChildProcessLike;
+  spawnSync?: (
+    command: string,
+    args?: readonly string[],
+    options?: Record<string, unknown>,
+  ) => {
+    status?: number | null;
+    stdout?: unknown;
+  };
 };
 
 type DenoFsFileLike = {
@@ -280,21 +288,23 @@ const DENO_PROCESS_WORKER_INTERNAL_FLAGS = [
   `--allow-env=${DENO_PROCESS_WORKER_BOOT_ENV_ALLOW}`,
   "--allow-ffi",
 ];
-const nodeMajorVersion = (): number => {
-  const version = getNodeProcess()?.versions?.node ?? "";
-  const major = Number.parseInt(version.split(".", 1)[0] ?? "", 10);
-  return Number.isInteger(major) ? major : 0;
+const parseNodeMajorVersion = (version: unknown): number | undefined => {
+  const match = /^v?(\d+)/.exec(String(version).trim());
+  if (match === null) return undefined;
+  const major = Number.parseInt(match[1]!, 10);
+  return Number.isInteger(major) && major > 0 ? major : undefined;
 };
 
-const nodeProcessWorkerUsesFfi = (): boolean => {
-  const major = nodeMajorVersion();
-  return major >= 26 && major % 2 === 0;
-};
+const nodeProcessWorkerUsesFfi = (
+  nodeMajor: number | undefined,
+): boolean => nodeMajor !== undefined && nodeMajor >= 26 && nodeMajor % 2 === 0;
 
-const nodeProcessWorkerInternalExecArgv = (): string[] => {
+const nodeProcessWorkerInternalExecArgv = (
+  nodeMajor: number | undefined,
+): string[] => {
   return [
     "--no-warnings",
-    ...(nodeProcessWorkerUsesFfi()
+    ...(nodeProcessWorkerUsesFfi(nodeMajor)
       ? ["--experimental-ffi"]
       : ["--experimental-transform-types"]),
   ];
@@ -666,12 +676,82 @@ const processWorkerNodeBinary = (
     DEFAULT_NODE_BINARY;
 };
 
+const processWorkerNodeMajorCache = new Map<string, number | undefined>();
+
+const resolveProcessWorkerNodeMajor = (
+  commandPrefix?: ProcessWorkerCommandPrefix,
+): number | undefined => {
+  const nodeProcess = getNodeProcess();
+  if (
+    commandPrefix === undefined &&
+    nodeProcess !== undefined &&
+    nodeProcess?.env?.NODE_BINARY === undefined &&
+    RUNTIME === "node"
+  ) {
+    return parseNodeMajorVersion(nodeProcess.versions?.node);
+  }
+
+  const nodeBinary = processWorkerNodeBinary(commandPrefix);
+  const cacheKey = JSON.stringify([commandPrefix ?? null, nodeBinary]);
+  if (processWorkerNodeMajorCache.has(cacheKey)) {
+    return processWorkerNodeMajorCache.get(cacheKey);
+  }
+
+  let major: number | undefined;
+  try {
+    const childProcess = getNodeBuiltinModule<NodeChildProcessModuleLike>(
+      "node:child_process",
+    );
+    if (typeof childProcess?.spawnSync === "function") {
+      const command = commandPrefix?.[0] ?? nodeBinary;
+      const args = commandPrefix === undefined
+        ? ["--version"]
+        : [...commandPrefix.slice(1), nodeBinary, "--version"];
+      const probe = childProcess.spawnSync(command, args, {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 2_000,
+        windowsHide: true,
+      });
+      if (probe.status === 0) {
+        major = parseNodeMajorVersion(probe.stdout);
+      }
+    }
+  } catch {
+    // Unknown targets conservatively use the Node 22/24 addon transport.
+  }
+
+  processWorkerNodeMajorCache.set(cacheKey, major);
+  return major;
+};
+
+export const readProcessWorkerNodeMajor = (
+  options: WorkerSettings | undefined,
+): number | undefined =>
+  resolveProcessWorkerNodeMajor(readProcessWorkerCommandPrefix(options));
+
+const nodeProcessWorkerFlagIsSupported = (
+  flag: string,
+  nodeMajor: number | undefined,
+): boolean => {
+  const key = flag.split("=", 1)[0];
+  if (key === "--experimental-ffi" || key === "--allow-ffi") {
+    return nodeProcessWorkerUsesFfi(nodeMajor);
+  }
+  if (key === "--allow-net") {
+    return nodeMajor !== undefined && nodeMajor >= 25;
+  }
+  return true;
+};
+
 const processWorkerNodeExecArgv = (
   permission: WorkerData["permission"] | undefined,
+  nodeMajor: number | undefined,
 ): string[] => {
   const out: string[] = [];
   const seen = new Set<string>();
   const add = (flag: string) => {
+    if (!nodeProcessWorkerFlagIsSupported(flag, nodeMajor)) return;
     if (seen.has(flag)) return;
     seen.add(flag);
     out.push(flag);
@@ -680,13 +760,17 @@ const processWorkerNodeExecArgv = (
   for (const flag of toWorkerCompatExecArgv(getNodeProcess()?.execArgv) ?? []) {
     add(flag);
   }
-  for (const flag of nodeProcessWorkerInternalExecArgv()) add(flag);
+  for (const flag of nodeProcessWorkerInternalExecArgv(nodeMajor)) add(flag);
   if (permission?.enabled === true && permission.unsafe !== true) {
     for (const flag of permission.node.flags) add(flag);
-    if (permission.netAll && nodeMajorVersion() >= 25) add("--allow-net");
+    if (permission.netAll && nodeMajor !== undefined && nodeMajor >= 25) {
+      add("--allow-net");
+    }
     // Node process workers need one native transport capability regardless of
     // task permissions: addons on Node 22/24, node:ffi on supported Node 26+ LTS.
-    add(nodeProcessWorkerUsesFfi() ? "--allow-ffi" : "--allow-addons");
+    add(
+      nodeProcessWorkerUsesFfi(nodeMajor) ? "--allow-ffi" : "--allow-addons",
+    );
   }
   return out;
 };
@@ -716,9 +800,10 @@ const processWorkerCommand = ({
       workerPath,
     ];
   } else if (processRuntime === "node") {
+    const nodeMajor = resolveProcessWorkerNodeMajor(commandPrefix);
     command = [
       processWorkerNodeBinary(commandPrefix),
-      ...processWorkerNodeExecArgv(permission),
+      ...processWorkerNodeExecArgv(permission, nodeMajor),
       workerPath,
     ];
   } else {
