@@ -6,6 +6,9 @@ dest/
 
 results/
 
+# Local raw benchmark captures and generated summaries
+/bench/data/
+
 log/
 
 
@@ -65,7 +68,13 @@ bower_components
 
 build/Release
 
+# Browser bundles from scripts/build-browser.ts
+/build/knitting.browser.js
+/build/knitting.browser.min.js
+
 # npm release build artifacts
+/knitting.browser.d.ts
+/knitting.browser.js
 /knitting.d.ts
 /knitting.js
 /process-shared-buffer.d.ts

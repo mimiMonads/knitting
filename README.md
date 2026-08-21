@@ -345,15 +345,24 @@ Common options you might tweak:
 | `worker.processSharedMemory`      | Process-worker memory discovery: `"inherit"` by default on POSIX, or `"named"` for wrappers/containers that cannot preserve fd 0. |
 | `permission`                      | Runtime permission policy for workers.                                                                                            |
 | `host.dispatcher`                 | Experimental host dispatcher topology: `"per-thread"` or `"serial-channel"`.                                                      |
+| `host.steal`                      | Shared-submit work stealing for multi-worker thread pools; enabled by default. Set `false` to use private submit lanes.            |
 | `debug`                           | Enable diagnostics (`host`, `globals`, `signals`, `imports`, `lifecycle`) or use `KNITTING_DEBUG`.                                |
 | `source`                          | Worker source override for advanced runtimes.                                                                                     |
 
-Most users can leave `host.dispatcher` alone. The current default is
-experimental: Bun and single-worker pools use `"per-thread"`, while multi-worker
-Node/Deno pools use `"serial-channel"` because it tends to behave well for
-bursty HTTP-style fan-out. If you are tuning a server or comparing runtimes, you
-can force either mode with `KNITTING_DISPATCHER=per-thread` or
-`KNITTING_DISPATCHER=serial-channel`.
+Most users can leave `host.dispatcher` alone. It selects the dispatcher for
+private-lane pools: Bun and single-worker pools default to `"per-thread"`, while
+multi-worker Node/Deno pools use `"serial-channel"`. Selecting a dispatcher or
+balancer explicitly preserves that private-lane topology unless
+`host.steal: true` is also explicit.
+
+Ordinary multi-worker thread pools use shared-submit work stealing by default.
+It is not used by one-worker pools, the inliner, process workers, compiled/
+Porffor workers, or pools with an explicit balancer/dispatcher, so those modes
+retain their existing transport. Pools above the current 31-claimant protocol
+limit also fall back. Set `host: { steal: false }` or `KNITTING_STEAL=0` to opt
+out for uniformly cheap, low-concurrency workloads where arbitration has
+nothing to rebalance. `host: { steal: true }` or `KNITTING_STEAL=1` forces it
+for an otherwise compatible thread pool.
 
 ### Worker bootstrap
 
@@ -630,6 +639,84 @@ const pool = createPool({
     ],
   },
 })({ add });
+```
+
+## Browsers
+
+Knitting also runs in the browser, where the pool spawns web workers over
+`SharedArrayBuffer` instead of threads. Two rules apply there and nowhere else.
+
+**The page must be cross-origin isolated.** Browsers hand out
+`SharedArrayBuffer` only under these two response headers, and `createPool`
+fails with a clear error when they are missing:
+
+```
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+```
+
+**Task modules must declare their own URL.** On Node, Deno, and Bun a task
+finds its module by walking the stack; a bundler erases the paths that depends
+on, so call `setModuleUrl(import.meta.url)` in the module that exports tasks:
+
+```ts
+import { createPool, isMain, setModuleUrl, task } from "knitting/browser";
+
+setModuleUrl(import.meta.url);
+
+export const square = task({ f: (value: number) => value * value });
+
+if (isMain) {
+  const pool = createPool({ threads: 4 })({ square });
+  console.log(await pool.call.square(7)); // 49
+  await pool.shutdown();
+}
+```
+
+Bundle that module with any browser-targeting bundler. The result is
+self-hosting: the page loads it, and every worker the pool spawns loads the
+same file, which is why both sides agree on the module URL.
+
+`knitting/browser` ships as one self-contained file, so it also works without a
+bundler at all — serve it next to a plain task module:
+
+```html
+<script type="module" src="./tasks.js"></script>
+```
+
+```js
+// tasks.js
+import { createPool, isMain, setModuleUrl, task } from "./knitting.browser.js";
+
+setModuleUrl(import.meta.url);
+
+export const square = task({ f: (value) => value * value });
+
+if (isMain) {
+  const pool = createPool({ threads: 2 })({ square });
+  console.log(await pool.call.square(7)); // 49
+  await pool.shutdown();
+}
+```
+
+It is the same API as the main entry without the compiled worker (Porffor)
+helpers, which need a filesystem. Process workers, native addons, FFI, and the
+permission system are inert in a browser — permissions are skipped entirely,
+since there is no filesystem or process to police.
+
+Process workers, compiled workers, native addons, FFI, `BufferReference`, and
+`ProcessSharedBuffer` are all unavailable in a page, and permissions are
+skipped rather than enforced. [BROWSER.md](BROWSER.md) documents every one of
+those, with the error each raises.
+
+The published file is bundled and minified, with the Node-only subsystems
+(process workers, compiled workers, native addons, FFI, permissions) replaced
+by stubs that keep their browser behaviour — roughly 94 KB, 32 KB over gzip.
+Both layouts above are covered by the browser test lane:
+
+```bash
+npm run build:browser   # build/knitting.browser.js and .min.js
+npm run test:browser    # end-to-end checks in headless Chromium
 ```
 
 ## Permissions

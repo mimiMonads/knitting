@@ -70,7 +70,7 @@ const fakeJsonCompiledWorker = [
   "",
 ].join("\n");
 
-test("compiled worker artifact check and public pool calls", async () => {
+test("compiled/Porffor workers keep their transport under the stealing default", async () => {
   if (runtimeTarget().platform === "win32") return;
   const dir = mkdtempSync(join(tmpdir(), "knitting-compiled-"));
   const artifact = join(dir, "loop_tasks.knt");

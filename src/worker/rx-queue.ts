@@ -20,6 +20,16 @@ type ArgumentsForCreateWorkerQueue = {
   borrowReturnedBufferReferences?: boolean;
   hasAborted?: (signal: number) => boolean;
   now?: () => number;
+  /**
+   * Work-stealing discipline: only claim when this worker has nothing left to
+   * run. Without it a worker keeps claiming whole regions on top of a backlog
+   * it has not started, which is exactly the hoarding stealing exists to
+   * prevent — the queued tasks would be better taken by an idle peer.
+   *
+   * Off for the classic per-lane path, where the host has already assigned
+   * these tasks to this lane and batching them is a win.
+   */
+  stealing?: boolean;
 };
 
 export type CreateWorkerRxQueue = ReturnType<typeof createWorkerRxQueue>;
@@ -32,6 +42,7 @@ export const createWorkerRxQueue = (
     borrowReturnedBufferReferences,
     hasAborted,
     now,
+    stealing,
   }: ArgumentsForCreateWorkerQueue,
 ) => {
   const PLACE_HOLDER = (_?: unknown) => {
@@ -108,6 +119,8 @@ export const createWorkerRxQueue = (
   const resolvedShift = () => resolved.shiftNoClear();
 
   const enqueueLock = () => {
+    // Steal only when idle: leaving work unclaimed lets a free peer take it.
+    if (stealing && toWork.size !== 0) return false;
     if (!decode()) return false;
 
     let task = resolvedShift();

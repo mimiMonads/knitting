@@ -128,6 +128,7 @@ export const workerMainLoop = async (
     ids,
     names,
     at,
+    steal,
   } = startupData as WorkerData;
 
   scrubWorkerDataSensitiveBuffers(startupData);
@@ -166,6 +167,11 @@ export const workerMainLoop = async (
     payloadConfig,
     textCompat: lock.textCompat,
     processBoundary: RUNTIME_IS_PROCESS_WORKER,
+    // Under stealing the request region is shared, so decode() becomes a
+    // region-Dekker claim against the other endpoints.
+    consumers: steal?.consumers,
+    consumerId: steal?.consumerId,
+    regionLanes: steal?.regionLanes,
   });
   const returnLockState = lock2({
     headers: returnLock.headers,
@@ -244,6 +250,7 @@ export const workerMainLoop = async (
     returnLock: returnLockState,
     borrowReturnedBufferReferences: bufferReferenceReturn === "borrow",
     hasAborted: abortSignals?.hasAborted,
+    stealing: steal !== undefined,
   });
   installBufferReferenceReleaseListener(releaseReturnedBufferReference);
 
@@ -259,6 +266,7 @@ export const workerMainLoop = async (
     pauseInNanoseconds: timers?.pauseNanoseconds,
     enqueueLock,
     write: () => hasCompleted() ? writeBatch(WRITE_MAX) : 0,
+    flushBeforeClaim: steal !== undefined,
     nativeWaitU32,
     useSharedMemoryWait: !(
       RUNTIME_IS_PROCESS_WORKER &&
@@ -338,15 +346,29 @@ export const workerMainLoop = async (
     }
     : pauseUntil;
 
+  const flushBeforeClaim = steal !== undefined;
+
   const loop = () => {
     isInMacro = false;
     let progressed = true;
     let awaiting = 0;
     while (true) {
-      progressed = _enqueueLock();
+      if (flushBeforeClaim) {
+        // Stealing only. Flush finished work before taking more on: a computed
+        // response should not wait behind a claim, and that claim can block on
+        // a peer withdrawing its intent. Measured to hurt the per-lane path,
+        // where a claim is a cheap private decode and picking work up promptly
+        // matters more, so the classic order is kept below.
+        if (_hasCompleted()) {
+          if (_writeBatch(WRITE_MAX) > 0) progressed = true;
+        }
+        progressed = _enqueueLock() || progressed;
+      } else {
+        progressed = _enqueueLock();
 
-      if (_hasCompleted()) {
-        if (_writeBatch(WRITE_MAX) > 0) progressed = true;
+        if (_hasCompleted()) {
+          if (_writeBatch(WRITE_MAX) > 0) progressed = true;
+        }
       }
 
       _drainReturnReleases();

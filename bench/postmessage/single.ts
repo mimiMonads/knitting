@@ -2,61 +2,85 @@ import { Worker } from "node:worker_threads";
 import { withResolvers } from "../../src/common/with-resolvers.ts";
 
 const workerCode = `
-  import { parentPort } from 'node:worker_threads';
+  const { parentPort } = require("node:worker_threads");
 
-  // function simulation
-  const fn = async (arg) => arg
-
-
-parentPort.on("message", async ({ id, payload }) => {
-  try {
-    const result = await fn(payload);
-    parentPort.postMessage({ id, result });
-  } catch (err) {
-    parentPort.postMessage({ id, error: String(err?.message ?? err) });
-  }
-});
+  parentPort.on("message", ({ id, payload }) => {
+    try {
+      parentPort.postMessage({ id, result: payload });
+    } catch (error) {
+      parentPort.postMessage({ id, error: String(error?.message ?? error) });
+    }
+  });
 `;
-
-const worker = new Worker(workerCode, {
-  eval: true,
-  type: "module",
-  name: "echo-worker",
-});
 
 type Deferred = {
   resolve: (value: unknown) => void;
-  reject: (reason?: any) => void;
+  reject: (reason?: unknown) => void;
 };
 
-const map = new Map<number, Deferred>();
+type MessageWorker = Worker & {
+  on(
+    event: "message",
+    listener: (
+      message: { id: number; result?: unknown; error?: string },
+    ) => void,
+  ): MessageWorker;
+};
 
-// message handler: either resolve or reject the right promise
-worker.on(
-  "message",
-  (msg: { id: number; result?: unknown; error?: string }) => {
-    const entry = map.get(msg.id);
-    if (!entry) return;
-    map.delete(msg.id);
+export const createWorkerPool = (threads: number) => {
+  if (!Number.isSafeInteger(threads) || threads < 1) {
+    throw new Error("worker pool size must be a positive integer");
+  }
 
-    if (msg.error != null) {
-      entry.reject(new Error(msg.error));
-    } else {
-      entry.resolve(msg.result);
-    }
-  },
-);
+  const workers = Array.from(
+    { length: threads },
+    (_, workerId) =>
+      new Worker(workerCode, {
+        eval: true,
+        name: `echo-worker-${workerId}`,
+      }) as MessageWorker,
+  );
+  const pending = new Map<number, Deferred>();
+  let nextId = 0;
+  let nextWorker = 0;
+  let closed = false;
 
-let nextId = 0;
+  for (const worker of workers) {
+    worker.on(
+      "message",
+      (message: { id: number; result?: unknown; error?: string }) => {
+        const deferred = pending.get(message.id);
+        if (deferred === undefined) return;
+        pending.delete(message.id);
 
-export function toResolve(message?: unknown) {
-  const id = nextId++;
-  const def = withResolvers();
-  map.set(id, def);
-  worker.postMessage({ id, payload: message });
-  return def.promise;
-}
+        if (message.error !== undefined) {
+          deferred.reject(new Error(message.error));
+        } else {
+          deferred.resolve(message.result);
+        }
+      },
+    );
+  }
 
-const shutdownWorkers = async () => worker.terminate();
+  const call = (payload?: unknown) => {
+    if (closed) throw new Error("worker pool is closed");
 
-export { shutdownWorkers as shutdownWorkers };
+    const id = nextId++;
+    const deferred = withResolvers();
+    pending.set(id, deferred);
+    workers[nextWorker]!.postMessage({ id, payload });
+    nextWorker = (nextWorker + 1) % workers.length;
+    return deferred.promise;
+  };
+
+  const shutdown = async () => {
+    if (closed) return;
+    closed = true;
+    const error = new Error("worker pool shut down with pending calls");
+    for (const deferred of pending.values()) deferred.reject(error);
+    pending.clear();
+    await Promise.all(workers.map((worker) => worker.terminate()));
+  };
+
+  return { call, shutdown };
+};

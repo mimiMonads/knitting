@@ -497,9 +497,7 @@ export const encodePayload = ({
   });
   const maxPayloadBytes = resolvedPayloadConfig.maxPayloadBytes;
 
-  const { allocTask, setSlotLength, free } = register({
-    lockSector,
-  });
+  const { allocTask, setSlotLength, free } = register({ lockSector });
   const {
     writeBinary: writeDynamicBinary,
     writeBuffer: writeDynamicBuffer,
@@ -1779,9 +1777,7 @@ export const decodePayload = ({
     sab: payloadSab,
     options: payload?.config ?? payloadConfig,
   });
-  const { free } = register({
-    lockSector,
-  });
+  const { free } = register({ lockSector });
   const freeTaskSlot = (task: Task) => free(getTaskSlotIndex(task));
   const {
     readUtf8: readDynamicUtf8,

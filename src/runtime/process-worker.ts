@@ -19,6 +19,11 @@ import type {
 import { RUNTIME } from "../common/runtime.ts";
 import { debugHas } from "../debug/gate.ts";
 import {
+  type NodeWorkerLike,
+  type SpawnedWorker,
+  toWorkerCompatExecArgv,
+} from "./worker-common.ts";
+import {
   RUNTIME_POOL_DEPTH,
   RUNTIME_POOL_DEPTH_ENV,
   RUNTIME_PROCESS_WORKER_BOOT_ENV,
@@ -58,19 +63,6 @@ const fileURLToPathCompat = (value: string): string => {
     throw new Error("node:url is not available in this runtime");
   }
   return url.fileURLToPath(value);
-};
-
-export type SpawnedWorker = {
-  terminate: () => unknown;
-  unref?: () => unknown;
-  postMessage?: (message: unknown) => void;
-};
-
-export type NodeWorkerLike = {
-  on?: (
-    event: "error" | "exit" | "message",
-    listener: (...args: unknown[]) => void,
-  ) => void;
 };
 
 type ProcessWorkerWireLockBuffers =
@@ -143,6 +135,14 @@ type NodeChildProcessModuleLike = {
     args?: readonly string[],
     options?: Record<string, unknown>,
   ) => NodeChildProcessLike;
+  spawnSync?: (
+    command: string,
+    args?: readonly string[],
+    options?: Record<string, unknown>,
+  ) => {
+    status?: number | null;
+    stdout?: unknown;
+  };
 };
 
 type DenoFsFileLike = {
@@ -223,58 +223,6 @@ type ProcessSharedMemoryAllocator = {
   backings: ProcessSharedMemoryBacking[];
 };
 
-const execFlagKey = (flag: string): string => flag.split("=", 1)[0]!;
-const NODE_PERMISSION_EXEC_FLAGS = new Set<string>([
-  "--permission",
-  "--experimental-permission",
-  "--allow-fs-read",
-  "--allow-fs-write",
-  "--allow-worker",
-  "--allow-child-process",
-  "--allow-net",
-  "--allow-addons",
-  "--allow-ffi",
-  "--allow-wasi",
-]);
-const NODE_WORKER_SAFE_EXEC_FLAGS = new Set<string>([
-  "--experimental-ffi",
-  "--experimental-transform-types",
-  "--expose-gc",
-  "--no-warnings",
-  ...NODE_PERMISSION_EXEC_FLAGS,
-]);
-
-const isNodeWorkerSafeExecFlag = (flag: string): boolean =>
-  NODE_WORKER_SAFE_EXEC_FLAGS.has(execFlagKey(flag));
-
-const isNodePermissionExecFlag = (flag: string): boolean =>
-  NODE_PERMISSION_EXEC_FLAGS.has(execFlagKey(flag));
-
-export const toWorkerSafeExecArgv = (
-  flags: string[] | undefined,
-): string[] | undefined => {
-  if (!flags || flags.length === 0) return undefined;
-  const filtered = flags.filter(isNodeWorkerSafeExecFlag);
-  if (filtered.length === 0) return undefined;
-  const seen = new Set<string>();
-  const deduped: string[] = [];
-  for (const flag of filtered) {
-    if (seen.has(flag)) continue;
-    seen.add(flag);
-    deduped.push(flag);
-  }
-  return deduped;
-};
-
-export const toWorkerCompatExecArgv = (
-  flags: string[] | undefined,
-): string[] | undefined => {
-  const safe = toWorkerSafeExecArgv(flags);
-  if (!safe || safe.length === 0) return undefined;
-  const compat = safe.filter((flag) => !isNodePermissionExecFlag(flag));
-  return compat.length > 0 ? compat : undefined;
-};
-
 const toProcessSharedMemorySize = (byteLength: number): number => {
   if (!Number.isFinite(byteLength) || byteLength <= 0) {
     throw new RangeError("process shared memory byteLength must be positive");
@@ -340,21 +288,23 @@ const DENO_PROCESS_WORKER_INTERNAL_FLAGS = [
   `--allow-env=${DENO_PROCESS_WORKER_BOOT_ENV_ALLOW}`,
   "--allow-ffi",
 ];
-const nodeMajorVersion = (): number => {
-  const version = getNodeProcess()?.versions?.node ?? "";
-  const major = Number.parseInt(version.split(".", 1)[0] ?? "", 10);
-  return Number.isInteger(major) ? major : 0;
+const parseNodeMajorVersion = (version: unknown): number | undefined => {
+  const match = /^v?(\d+)/.exec(String(version).trim());
+  if (match === null) return undefined;
+  const major = Number.parseInt(match[1]!, 10);
+  return Number.isInteger(major) && major > 0 ? major : undefined;
 };
 
-const nodeProcessWorkerUsesFfi = (): boolean => {
-  const major = nodeMajorVersion();
-  return major >= 26 && major % 2 === 0;
-};
+const nodeProcessWorkerUsesFfi = (
+  nodeMajor: number | undefined,
+): boolean => nodeMajor !== undefined && nodeMajor >= 26 && nodeMajor % 2 === 0;
 
-const nodeProcessWorkerInternalExecArgv = (): string[] => {
+const nodeProcessWorkerInternalExecArgv = (
+  nodeMajor: number | undefined,
+): string[] => {
   return [
     "--no-warnings",
-    ...(nodeProcessWorkerUsesFfi()
+    ...(nodeProcessWorkerUsesFfi(nodeMajor)
       ? ["--experimental-ffi"]
       : ["--experimental-transform-types"]),
   ];
@@ -408,7 +358,10 @@ const makeProcessWorkerMemoryName = (
   const threadTag = (thread % 4096).toString(36);
   const nextTag = (next % 1296).toString(36);
   const randomTag = Math.random().toString(36).slice(2, 7);
-  const safePrefix = (prefix.replace(/[^a-z0-9_-]/gi, "_") || "kpw").slice(0, 8);
+  const safePrefix = (prefix.replace(/[^a-z0-9_-]/gi, "_") || "kpw").slice(
+    0,
+    8,
+  );
   return `${safePrefix}_${pidTag}_${threadTag}_${nextTag}_${randomTag}`;
 };
 
@@ -546,56 +499,6 @@ const toProcessWorkerWireLockBuffers = (
     descriptor,
   ),
 });
-
-const isPlainRecord = (value: unknown): value is Record<string, unknown> => {
-  if (value === null || typeof value !== "object") return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
-};
-
-const serializeWorkerBootstrapValue = (
-  value: unknown,
-  seen = new WeakMap<object, unknown>(),
-): unknown => {
-  if (value instanceof ProcessSharedBuffer) return value.toMetadata();
-  if (value === null || typeof value !== "object") return value;
-
-  const existing = seen.get(value);
-  if (existing !== undefined) return existing;
-
-  if (Array.isArray(value)) {
-    const out: unknown[] = [];
-    seen.set(value, out);
-    for (const item of value) {
-      out.push(serializeWorkerBootstrapValue(item, seen));
-    }
-    return out;
-  }
-
-  if (!isPlainRecord(value)) return value;
-
-  const out: Record<string, unknown> = {};
-  seen.set(value, out);
-  for (const [key, item] of Object.entries(value)) {
-    out[key] = serializeWorkerBootstrapValue(item, seen);
-  }
-  return out;
-};
-
-export const serializeWorkerBootstrapData = (
-  options: WorkerSettings,
-): WorkerSettings => {
-  const bootstrap = options.bootstrap;
-  if (bootstrap === undefined || bootstrap.data === undefined) return options;
-
-  return {
-    ...options,
-    bootstrap: {
-      ...bootstrap,
-      data: serializeWorkerBootstrapValue(bootstrap.data),
-    },
-  };
-};
 
 export const toProcessWorkerBootPayload = (
   workerData: WorkerData,
@@ -773,12 +676,82 @@ const processWorkerNodeBinary = (
     DEFAULT_NODE_BINARY;
 };
 
+const processWorkerNodeMajorCache = new Map<string, number | undefined>();
+
+const resolveProcessWorkerNodeMajor = (
+  commandPrefix?: ProcessWorkerCommandPrefix,
+): number | undefined => {
+  const nodeProcess = getNodeProcess();
+  if (
+    commandPrefix === undefined &&
+    nodeProcess !== undefined &&
+    nodeProcess?.env?.NODE_BINARY === undefined &&
+    RUNTIME === "node"
+  ) {
+    return parseNodeMajorVersion(nodeProcess.versions?.node);
+  }
+
+  const nodeBinary = processWorkerNodeBinary(commandPrefix);
+  const cacheKey = JSON.stringify([commandPrefix ?? null, nodeBinary]);
+  if (processWorkerNodeMajorCache.has(cacheKey)) {
+    return processWorkerNodeMajorCache.get(cacheKey);
+  }
+
+  let major: number | undefined;
+  try {
+    const childProcess = getNodeBuiltinModule<NodeChildProcessModuleLike>(
+      "node:child_process",
+    );
+    if (typeof childProcess?.spawnSync === "function") {
+      const command = commandPrefix?.[0] ?? nodeBinary;
+      const args = commandPrefix === undefined
+        ? ["--version"]
+        : [...commandPrefix.slice(1), nodeBinary, "--version"];
+      const probe = childProcess.spawnSync(command, args, {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 2_000,
+        windowsHide: true,
+      });
+      if (probe.status === 0) {
+        major = parseNodeMajorVersion(probe.stdout);
+      }
+    }
+  } catch {
+    // Unknown targets conservatively use the Node 22/24 addon transport.
+  }
+
+  processWorkerNodeMajorCache.set(cacheKey, major);
+  return major;
+};
+
+export const readProcessWorkerNodeMajor = (
+  options: WorkerSettings | undefined,
+): number | undefined =>
+  resolveProcessWorkerNodeMajor(readProcessWorkerCommandPrefix(options));
+
+const nodeProcessWorkerFlagIsSupported = (
+  flag: string,
+  nodeMajor: number | undefined,
+): boolean => {
+  const key = flag.split("=", 1)[0];
+  if (key === "--experimental-ffi" || key === "--allow-ffi") {
+    return nodeProcessWorkerUsesFfi(nodeMajor);
+  }
+  if (key === "--allow-net") {
+    return nodeMajor !== undefined && nodeMajor >= 25;
+  }
+  return true;
+};
+
 const processWorkerNodeExecArgv = (
   permission: WorkerData["permission"] | undefined,
+  nodeMajor: number | undefined,
 ): string[] => {
   const out: string[] = [];
   const seen = new Set<string>();
   const add = (flag: string) => {
+    if (!nodeProcessWorkerFlagIsSupported(flag, nodeMajor)) return;
     if (seen.has(flag)) return;
     seen.add(flag);
     out.push(flag);
@@ -787,13 +760,17 @@ const processWorkerNodeExecArgv = (
   for (const flag of toWorkerCompatExecArgv(getNodeProcess()?.execArgv) ?? []) {
     add(flag);
   }
-  for (const flag of nodeProcessWorkerInternalExecArgv()) add(flag);
+  for (const flag of nodeProcessWorkerInternalExecArgv(nodeMajor)) add(flag);
   if (permission?.enabled === true && permission.unsafe !== true) {
     for (const flag of permission.node.flags) add(flag);
-    if (permission.netAll && nodeMajorVersion() >= 25) add("--allow-net");
+    if (permission.netAll && nodeMajor !== undefined && nodeMajor >= 25) {
+      add("--allow-net");
+    }
     // Node process workers need one native transport capability regardless of
     // task permissions: addons on Node 22/24, node:ffi on supported Node 26+ LTS.
-    add(nodeProcessWorkerUsesFfi() ? "--allow-ffi" : "--allow-addons");
+    add(
+      nodeProcessWorkerUsesFfi(nodeMajor) ? "--allow-ffi" : "--allow-addons",
+    );
   }
   return out;
 };
@@ -823,9 +800,10 @@ const processWorkerCommand = ({
       workerPath,
     ];
   } else if (processRuntime === "node") {
+    const nodeMajor = resolveProcessWorkerNodeMajor(commandPrefix);
     command = [
       processWorkerNodeBinary(commandPrefix),
-      ...processWorkerNodeExecArgv(permission),
+      ...processWorkerNodeExecArgv(permission, nodeMajor),
       workerPath,
     ];
   } else {
@@ -1136,16 +1114,6 @@ export const spawnProcessWorker = (
       throw new Error(
         "process worker runtime is only available in Node, Deno, or Bun",
       );
-  }
-};
-
-export const terminateWorkerQuietly = (worker: SpawnedWorker): void => {
-  try {
-    // Runaway worker termination can be slow or stuck on some runtimes; once the
-    // pool is closing it must not keep the host process alive.
-    worker.unref?.();
-    void Promise.resolve(worker.terminate()).catch(() => {});
-  } catch {
   }
 };
 

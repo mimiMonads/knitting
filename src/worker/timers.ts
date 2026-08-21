@@ -52,9 +52,12 @@ const a_load = Atomics.load;
 const a_store = Atomics.store;
 const a_wait = typeof Atomics.wait === "function" ? Atomics.wait : undefined;
 const p_now = performance.now.bind(performance);
-const waitFallbackView = a_wait === undefined
-  ? undefined
-  : new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+// `SharedArrayBuffer` is undeclared on pages that are not cross-origin
+// isolated, and this module has to load anyway so the pool can report why.
+const waitFallbackView =
+  a_wait === undefined || typeof SharedArrayBuffer !== "function"
+    ? undefined
+    : new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
 const a_pause: ((n: number) => void) | undefined = "pause" in Atomics
   ? (Atomics.pause as (n: number) => void)
   : undefined;
@@ -105,6 +108,7 @@ export const sleepUntilChanged = (
     write,
     nativeWaitU32,
     useSharedMemoryWait = true,
+    flushBeforeClaim = false,
   }: {
     opView: Int32Array;
     rxStatus: Int32Array;
@@ -115,28 +119,35 @@ export const sleepUntilChanged = (
     write?: () => number | boolean;
     nativeWaitU32?: NativeWaitU32;
     useSharedMemoryWait?: boolean;
+    /**
+     * Stealing only: write results back before attempting to claim more work.
+     * A claim can spin waiting for a peer to withdraw its intent, so claiming
+     * first puts arbitration latency in front of a finished response. Measured
+     * to hurt the per-lane path, so it stays off by default.
+     */
+    flushBeforeClaim?: boolean;
   },
 ) => {
   const pause = pauseInNanoseconds === undefined
     ? pauseGeneric
     : whilePausing({ pauseInNanoseconds });
 
-  const tryProgress = () => {
-    let progressed = false;
-
-    if (enqueueLock()) progressed = true;
-
-    if (write) {
-      const wrote = write();
-      if (typeof wrote === "number") {
-        if (wrote > 0) progressed = true;
-      } else if (wrote === true) {
-        progressed = true;
-      }
-    }
-
-    return progressed;
+  const flushWrite = () => {
+    if (!write) return false;
+    const wrote = write();
+    if (typeof wrote === "number") return wrote > 0;
+    return wrote === true;
   };
+
+  const tryProgress = flushBeforeClaim
+    ? () => {
+      const wrote = flushWrite();
+      return enqueueLock() || wrote;
+    }
+    : () => {
+      const claimed = enqueueLock();
+      return flushWrite() || claimed;
+    };
 
   return (
     value: number,

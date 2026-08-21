@@ -28,9 +28,15 @@ export const fn = task({
 });
 
 if (isMain) {
-  const N = 10_000_000; // search range: [1..N]
-  const CHUNK_SIZE = 250_000;
-  const THREADS = [2, 3, 4, 5]; // extra worker threads to compare
+  // Sized so a full A/B finishes in minutes rather than tens of them. The
+  // shape of the workload is what matters here, not the absolute range.
+  // Override with WITHLOAD_N / WITHLOAD_CHUNK / WITHLOAD_THREADS.
+  const N = Number(process.env.WITHLOAD_N ?? 2_000_000); // search range: [1..N]
+  const CHUNK_SIZE = Number(process.env.WITHLOAD_CHUNK ?? 250_000);
+  const THREADS = (process.env.WITHLOAD_THREADS ?? "2,4")
+    .split(",")
+    .map((value) => Number(value.trim()))
+    .filter((value) => Number.isFinite(value) && value >= 1);
 
   const partition = (end: number, chunk: number): [number, number][] => {
     const ranges: [number, number][] = [];

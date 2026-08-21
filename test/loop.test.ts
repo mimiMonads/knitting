@@ -209,6 +209,7 @@ test("serial-channel dispatcher drains multi-lane bursts", async () => {
   const { call, shutdown } = createPool({
     threads: 2,
     host: {
+      steal: false,
       dispatcher: "serial-channel",
       stallFreeLoops: 0,
       maxBackoffMs: 2,
@@ -227,5 +228,22 @@ test("serial-channel dispatcher drains multi-lane bursts", async () => {
     assert.equal(values[batch - 1], batch);
   } finally {
     await shutdown();
+  }
+});
+
+test("default stealing honors host-enforced hard timeouts", async () => {
+  const pool = createPool({
+    threads: 2,
+    worker: { hardTimeoutMs: 25 },
+  })({ addOne, delayedEcho });
+
+  try {
+    await assert.rejects(
+      withTimeout(pool.call.delayedEcho(100), 2_000),
+      /Task hard timeout after 25ms/,
+    );
+    await assert.rejects(pool.call.addOne(1), /Pool is shut down/);
+  } finally {
+    await pool.shutdown();
   }
 });

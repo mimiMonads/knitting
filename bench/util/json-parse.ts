@@ -32,18 +32,35 @@ type JsonRun = {
   }>;
 };
 
-export const print = process.argv.includes("--json")
-  ? (jsonString: string) => {
-    const user = JSON.parse(jsonString) as JsonRun;
-    const layouts = user.layout;
-    const endMap = new Map<string, { name: string; stats: object }[]>();
+export const parseJsonBench = (jsonString: string) => {
+  const user = JSON.parse(jsonString) as JsonRun;
+  const layouts = user.layout;
+  const endMap = new Map<string, { name: string; stats: object }[]>();
 
-    for (const { group, runs, alias } of user.benchmarks) {
-      const key = layouts[group as number].name!;
-      const arr = endMap.get(key) ?? [];
+  for (const { group, runs, alias } of user.benchmarks) {
+    const key = layouts[group as number].name!;
+    const arr = endMap.get(key) ?? [];
 
-      // Drop heavy fields (like samples) to keep JSON compact:
-      const {
+    // Drop heavy fields (like samples) to keep JSON compact:
+    const {
+      kind,
+      min,
+      max,
+      p25,
+      p50,
+      p75,
+      p99,
+      p999,
+      avg,
+      ticks,
+      heap,
+      gc,
+      // samples, counters, // purposely omitted
+    } = runs[0]!.stats;
+
+    arr.push({
+      name: alias,
+      stats: {
         kind,
         min,
         max,
@@ -56,31 +73,18 @@ export const print = process.argv.includes("--json")
         ticks,
         heap,
         gc,
-        // samples, counters, // purposely omitted
-      } = runs[0]!.stats;
+      },
+    });
 
-      arr.push({
-        name: alias,
-        stats: {
-          kind,
-          min,
-          max,
-          p25,
-          p50,
-          p75,
-          p99,
-          p999,
-          avg,
-          ticks,
-          heap,
-          gc,
-        },
-      });
+    endMap.set(key, arr);
+  }
 
-      endMap.set(key, arr);
-    }
+  return Object.fromEntries(endMap);
+};
 
-    console.log(JSON.stringify(Object.fromEntries(endMap), null, 2));
+export const print = process.argv.includes("--json")
+  ? (jsonString: string) => {
+    console.log(JSON.stringify(parseJsonBench(jsonString), null, 2));
   }
   : (s: string) => console.log(s);
 type JsonBench = Record<string, JsonBenchStats[]>;
