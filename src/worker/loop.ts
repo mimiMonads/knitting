@@ -123,6 +123,7 @@ export const workerMainLoop = async (
     payloadConfig,
     bufferReferenceReturn,
     permission,
+    notifyOnHostPublish,
     totalNumberOfThread,
     list,
     ids,
@@ -182,6 +183,9 @@ export const workerMainLoop = async (
     payloadConfig,
     textCompat: returnLock.textCompat,
     processBoundary: RUNTIME_IS_PROCESS_WORKER,
+    // The host parks on this lock's publication word when it has no work to
+    // flush. Request locks are host-produced and must not wake that waiter.
+    notifyOnHostPublish,
   });
 
   const timers = workerOptions?.timers;

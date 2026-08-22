@@ -9,38 +9,34 @@ import { RUNTIME, SET_IMMEDIATE } from "../common/runtime.ts";
 import type { DispatcherSettings } from "../types.ts";
 
 /**
- * The macrotask primitive the host pump hops through.
+ * Macrotask primitive for the host pump, picked per runtime: a round trip costs
+ * 757ns on Bun via MessageChannel but 4662ns on Deno, where `setImmediate` is
+ * 1110ns. Bun keeps the channel; browser and Andromeda have no choice.
  *
- * `check` re-arms the pump after every drain that leaves work outstanding, so
- * this is the hottest path on the host thread: profiling a heterogeneous pool
- * put it at roughly a third of host CPU, at ~70 hops per completion. Which
- * primitive is cheapest is not the same on every runtime (ns per round trip,
- * 200k hops, median of three):
- *
- *   runtime   MessageChannel   setImmediate
- *   bun              757            810
- *   node            1625           1326
- *   deno            4662           1110
- *
- * so pick per runtime rather than making every host pay Deno's 4x. Bun keeps
- * the channel; runtimes without `setImmediate` (browser, Andromeda) have no
- * choice to make.
- *
- * Cheaper per hop is not the same as better, and what decides it is the
- * dispatcher topology, not the runtime. Measured on Deno, 8 workers,
- * heterogeneous fanout, channel pump -> immediate pump:
- *
- *   per-thread      9.6k -> 9.8k rps, p99 10.0 -> 10.0ms, host CPU 0.90 -> 0.77
- *   serial-channel  9.0k -> 7.0k rps, p99 11.5 -> 30.9ms, host CPU 0.96 -> 0.75
- *
- * One `serial-channel` hop drives every lane's check in turn and depends on the
- * channel's delivery to do it; a pump that is only cheaper starves it. So
- * `serial-channel` asks for the channel explicitly and every other topology
- * takes the cheap pump.
+ * `serial-channel` opts back into the channel explicitly (see `src/api.ts`): one
+ * hop drives every lane's check in turn and relies on the channel's delivery to
+ * do it, so a merely cheaper pump starves it -- it cost 25% throughput there.
  */
 const IMMEDIATE_PUMP = RUNTIME === "deno" || RUNTIME === "node"
   ? SET_IMMEDIATE
   : undefined;
+
+/**
+ * Free drain hops before `scheduleNotify` stops re-arming the pump for free.
+ *
+ * The window has to match what the dispatcher escalates *to*, so these are
+ * chosen together and `canUseDoorbell` picks between them. Polling escalates to
+ * the `setTimeout` ladder, whose finest rung is ~1.1ms on every runtime, so it
+ * wants a wide window; that sleep is also load-bearing, since it batches
+ * completions. A doorbell escalates to `Atomics.waitAsync` at about the price of
+ * one hop, so it wants a narrow one.
+ *
+ * Mixing them is the trap: a doorbell behind the wide window keeps every poll
+ * hop *and* adds the arm, and loses to plain polling at every thread count.
+ * Measurements behind both values: `docs/host-doorbell-proposal.md`.
+ */
+const POLL_STALL_FREE_LOOPS = 128;
+const DOORBELL_STALL_FREE_LOOPS = 1;
 
 export const hostDispatcherLoop = ({
   signalBox: {
@@ -53,16 +49,21 @@ export const hostDispatcherLoop = ({
     hasPendingFrames,
     flushToWorker,
     txIdle,
+    waitForCompletion,
+    setCompletionWaiterArmed,
   },
   channelHandler,
   dispatcherOptions,
   notifySignal,
+  crossProcess,
 }: {
   queue: MultiQueue;
   signalBox: MainSignal;
   channelHandler: ChannelHandler;
   dispatcherOptions?: DispatcherSettings;
   notifySignal?: () => void;
+  /** Workers live in other processes; disables the doorbell. */
+  crossProcess?: boolean;
 }) => {
   const a_load = Atomics.load;
   const a_store = Atomics.store;
@@ -73,11 +74,25 @@ export const hostDispatcherLoop = ({
       if (canNotifySignal) a_notify(opView, 0, 1);
     });
   const notify = () => channelHandler.notify();
+  // `crossProcess` is a capability, not a preference, so it overrides an
+  // explicit `doorbell: true`: V8's Atomics waiter list is per isolate, so a
+  // worker in another process can never ring the host's waiter, and an armed
+  // doorbell would just sleep to the watchdog.
+  const canUseDoorbell = crossProcess !== true &&
+    (dispatcherOptions?.doorbell ?? true) &&
+    (RUNTIME === "bun" || RUNTIME === "node") &&
+    typeof Atomics.waitAsync === "function";
+  let doorbellEnabled = canUseDoorbell;
+  let doorbellArmed = false;
+  let doorbellEpoch = 0 | 0;
+  const DOORBELL_WATCHDOG_MS = 1000;
   let stallCount = 0 | 0;
-  const STALL_FREE_LOOPS = Math.max(
-    0,
-    (dispatcherOptions?.stallFreeLoops ?? 128) | 0,
-  );
+  const requestedStallFreeLoops = dispatcherOptions?.stallFreeLoops;
+  let stallFreeLoops = requestedStallFreeLoops !== undefined
+    ? Math.max(0, requestedStallFreeLoops | 0)
+    : canUseDoorbell
+    ? DOORBELL_STALL_FREE_LOOPS
+    : POLL_STALL_FREE_LOOPS;
   const MAX_BACKOFF_MS = Math.max(
     0,
     (dispatcherOptions?.maxBackoffMs ?? 10) | 0,
@@ -87,6 +102,58 @@ export const hostDispatcherLoop = ({
   // from both send() and the channel callback. Cheaper than try/finally.
   let inFlight = false;
 
+  const cancelDoorbell = () => {
+    if (!doorbellArmed) return;
+    doorbellEpoch = (doorbellEpoch + 1) | 0;
+    doorbellArmed = false;
+    setCompletionWaiterArmed(false);
+  };
+
+  const armDoorbell = () => {
+    if (!doorbellEnabled || doorbellArmed === true) {
+      if (!doorbellEnabled) notify();
+      return;
+    }
+
+    const token = (doorbellEpoch + 1) | 0;
+    doorbellEpoch = token;
+    doorbellArmed = true;
+    let woke = false;
+    const wake = () => {
+      if (!doorbellArmed || doorbellEpoch !== token || woke) return;
+      woke = true;
+      doorbellArmed = false;
+      doorbellEpoch = (doorbellEpoch + 1) | 0;
+      setCompletionWaiterArmed(false);
+      // Keep the existing macrotask boundary. Calling check directly from a
+      // resolved waitAsync promise can chain microtasks under a hot workload
+      // and starve host I/O.
+      notify();
+    };
+
+    let supported = false;
+    try {
+      supported = waitForCompletion(wake, DOORBELL_WATCHDOG_MS);
+    } catch {
+      supported = false;
+    }
+
+    // Some runtimes reject waitAsync on their SharedArrayBuffer variants; fall
+    // back to polling rather than hanging the pool.
+    if (!supported) {
+      doorbellEnabled = false;
+      // The window was narrowed for a doorbell that no longer exists; widen it
+      // back or the ladder fires after a single fruitless drain.
+      if (requestedStallFreeLoops === undefined) {
+        stallFreeLoops = POLL_STALL_FREE_LOOPS;
+      }
+      doorbellArmed = false;
+      doorbellEpoch = (doorbellEpoch + 1) | 0;
+      setCompletionWaiterArmed(false);
+      notify();
+    }
+  };
+
   const check = () => {
     if (inFlight) {
       // Another check() is already mid-drain; mark that a re-run is needed
@@ -95,11 +162,13 @@ export const hostDispatcherLoop = ({
       return;
     }
 
-    // Nothing enqueued and nothing outstanding at the worker: skip the drain.
-    // Without this an idle lane still pays a txStatus write, an rxStatus load
-    // and — worst of all — an Atomics.notify that wakes a parked worker for no
-    // reason. Under the serial-channel dispatcher every lane is checked on
-    // every tick, so that waste is what makes latency grow with thread count.
+    // A waitAsync cannot be cancelled, so bumping its epoch makes the eventual
+    // callback inert instead.
+    cancelDoorbell();
+
+    // Idle lane: skip the drain. Otherwise it pays a txStatus write, an rxStatus
+    // load, and an Atomics.notify that wakes a parked worker for nothing — the
+    // waste that makes serial-channel latency grow with thread count.
     if (txIdle()) {
       check.isRunning = false;
       return;
@@ -123,15 +192,10 @@ export const hostDispatcherLoop = ({
         wakeSignal();
       }
 
-      // Drain loop: local vars so V8 keeps them as unboxed int32.
-      //
-      // `completed` feeds `stallCount`, which asks whether the pump is still
-      // earning its keep. The pump exists to reap completions a worker has no
-      // way to announce, so only a reaped completion counts as progress here.
-      // Handing work *to* a worker must not: `send()` drives `check` directly,
-      // so a host busy submitting keeps the loop hot without the counter's
-      // help, and letting a flush reset the counter would leave the backoff
-      // unreachable for a pool that never runs dry.
+      // Local vars so V8 keeps them as unboxed int32. Only a reaped completion
+      // counts as progress for `stallCount`: the pump exists to notice work a
+      // worker cannot announce, and letting a flush reset the counter would
+      // leave the escalation unreachable for a pool that never runs dry.
       let completed = false;
       let progressed = true;
       while (progressed) {
@@ -171,15 +235,24 @@ export const hostDispatcherLoop = ({
   check.rerun = false;
 
   const scheduleNotify = () => {
-    if (stallCount <= STALL_FREE_LOOPS) {
+    if (stallCount <= stallFreeLoops) {
       notify();
+      return;
+    }
+
+    if (doorbellEnabled) {
+      // Release isRunning during the wait so a fresh send() can restart the
+      // dispatcher immediately. The epoch in cancelDoorbell() invalidates the
+      // old waiter in that case.
+      check.isRunning = false;
+      armDoorbell();
       return;
     }
 
     // One delayed wakeup at a time; fresh send() calls preempt via check directly.
     if (backoffTimer !== undefined) return;
 
-    let delay = (stallCount - STALL_FREE_LOOPS - 1) | 0;
+    let delay = (stallCount - stallFreeLoops - 1) | 0;
     if (delay < 0) delay = 0;
     else if (delay > MAX_BACKOFF_MS) delay = MAX_BACKOFF_MS;
     // Release isRunning during backoff so pool.ts send() can restart the loop.
@@ -218,9 +291,8 @@ export class ChannelHandler {
   constructor(pump: ChannelHandlerPump = "auto") {
     if (pump === "auto" && IMMEDIATE_PUMP !== undefined) {
       const immediate = IMMEDIATE_PUMP;
-      // One closure allocated once: the pump fires hundreds of thousands of
-      // times a second under load. Going through `#handler` also leaves a
-      // callback that outlives `close()` inert.
+      // Allocated once; the pump fires hundreds of thousands of times a second.
+      // Routing via `#handler` also makes a callback outliving `close()` inert.
       const run = () => {
         this.#handler?.();
       };

@@ -24,7 +24,11 @@ export const readProcessSharedBufferMetadata = task<
 });
 
 if (isMain) {
-  const { call, shutdown } = createPool({ threads: 1 })({
+  const doorbellMode = process.env.TYPES_DOORBELL;
+  const { call, shutdown } = createPool({
+    threads: 1,
+    ...(doorbellMode === "off" ? { host: { doorbell: false } } : {}),
+  })({
     echo,
     readProcessSharedBufferMetadata,
   });

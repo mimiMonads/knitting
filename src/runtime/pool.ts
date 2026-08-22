@@ -56,6 +56,7 @@ import {
   createSharedArrayBuffer,
   createWasmSharedArrayBuffer,
   IS_BROWSER,
+  RUNTIME,
 } from "../common/runtime.ts";
 import {
   HAS_NODE_WORKER_THREADS,
@@ -682,6 +683,7 @@ export const spawnWorkerContext = ({
       channelHandler: ownChannel,
       dispatcherOptions: host,
       notifySignal: nativeNotifySignal,
+      crossProcess: useProcessWorkerRuntime,
     });
   if (ownsChannel && dispatcherCheck !== undefined) {
     ownChannel.open(dispatcherCheck);
@@ -726,6 +728,12 @@ export const spawnWorkerContext = ({
     payloadConfig: resolvedPayloadConfig,
     bufferReferenceReturn,
     permission,
+    // Mirrors the dispatcher's `canUseDoorbell`: a cross-process worker cannot
+    // ring the host's waiter, so do not make it pay the atomic op.
+    notifyOnHostPublish: !useProcessWorkerRuntime &&
+      host?.doorbell !== false &&
+      (RUNTIME === "bun" || RUNTIME === "node") &&
+      typeof Atomics.waitAsync === "function",
     steal: stealPool === undefined ? undefined : {
       consumers: stealPool.consumers,
       consumerId: stealPool.consumerId,

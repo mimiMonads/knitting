@@ -53,6 +53,57 @@ test("multi-worker thread pools steal by default", async () => {
   }
 });
 
+test("stealing pool completes with the host doorbell armed immediately", async () => {
+  const pool = createPool({
+    threads: 2,
+    host: { stallFreeLoops: 0 },
+  })({ double });
+  try {
+    const values = await Promise.all(
+      Array.from({ length: 80 }, (_, i) => pool.call.double(i)),
+    );
+    assert.deepEqual(values, Array.from({ length: 80 }, (_, i) => i * 2));
+  } finally {
+    await pool.shutdown();
+  }
+});
+
+test("pool completes with the host doorbell disabled", async () => {
+  const pool = createPool({
+    threads: 1,
+    host: { doorbell: false, stallFreeLoops: 0 },
+  })({ double });
+  try {
+    const values = await Promise.all(
+      Array.from({ length: 80 }, (_, i) => pool.call.double(i)),
+    );
+    assert.deepEqual(values, Array.from({ length: 80 }, (_, i) => i * 2));
+  } finally {
+    await pool.shutdown();
+  }
+});
+
+for (const dispatcher of ["per-thread", "serial-channel"] as const) {
+  test(`private-lane ${dispatcher} completes with immediate parking`, async () => {
+    const pool = createPool({
+      threads: 2,
+      host: {
+        steal: false,
+        dispatcher,
+        stallFreeLoops: 0,
+      },
+    })({ double });
+    try {
+      const values = await Promise.all(
+        Array.from({ length: 40 }, (_, i) => pool.call.double(i)),
+      );
+      assert.deepEqual(values, Array.from({ length: 40 }, (_, i) => i * 2));
+    } finally {
+      await pool.shutdown();
+    }
+  });
+}
+
 test("stealing pool handles a payload large enough to need the arena", async () => {
   const pool = createPool({ threads: 3 })({ concat });
   try {

@@ -55,6 +55,8 @@ type WorkerData = {
   payloadConfig?: PayloadBufferOptions;
   bufferReferenceReturn?: "copy" | "borrow";
   permission?: ResolvedPermissionProtocol;
+  /** Whether this host can arm an async completion waiter on the return lock. */
+  notifyOnHostPublish?: boolean;
   /**
    * Work stealing. When present, `lock` is a submit region shared by every
    * worker and this worker claims from it as consumer `consumerId` of
@@ -520,13 +522,46 @@ type WorkerTimers = {
 
 type DispatcherSettings = {
   /**
-   * How many immediate notify loops before backoff kicks in.
+   * How many immediate notify loops before the dispatcher stops re-arming the
+   * pump for free.
+   *
+   * The default depends on what the dispatcher escalates *to*. Polling
+   * escalates to a `setTimeout` ladder costing ~1.1ms even at delay 0, so it
+   * defaults to 128 — escalating is expensive and the wide window also batches
+   * completions. A doorbell escalates to `Atomics.waitAsync` at roughly the
+   * price of one hop, so pools that have one default to 1. Pools without a
+   * doorbell — Deno, or `doorbell: false` — keep 128.
+   *
+   * Setting this explicitly opts out of that coupling for every pool shape.
    */
   stallFreeLoops?: number;
   /**
    * Max backoff delay (milliseconds).
    */
   maxBackoffMs?: number;
+  /**
+   * Replace idle completion polling with an `Atomics.waitAsync` doorbell when
+   * the host runtime supports it.
+   *
+   * Defaults to enabled on Node and Bun at any worker count, where it costs
+   * 1.6-3.9x less host CPU per completed call. Under HTTP load, where the host
+   * has real work of its own, that converts to +13% to +36% throughput.
+   *
+   * Turn it off for a pool that oversubscribes its machine. The doorbell only
+   * progresses when the host gets scheduled, so once workers occupy every core
+   * a wake must preempt one: measured +5% to +12.6% rps while workers+host fit
+   * within the cores, -22% to -32% once they do not. That is not gated
+   * automatically because the core count cannot be probed portably.
+   *
+   * Forced off, overriding an explicit `true`, where a doorbell cannot work:
+   * on Deno, whose `waitAsync` does not wake an idle event loop, and for
+   * process workers, which live in another process and so cannot ring a host
+   * waiter at all — V8 keeps its Atomics waiter list per isolate, which is why
+   * they wake through a native futex addon instead. Compiled (Porffor) workers
+   * never reach this path: they reject `host` outright and use pipes rather
+   * than shared memory.
+   */
+  doorbell?: boolean;
   /**
    * Host dispatcher topology.
    * - `"per-thread"`: each worker owns its dispatcher and macro channel.

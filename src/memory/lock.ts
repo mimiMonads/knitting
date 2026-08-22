@@ -357,6 +357,8 @@ export const STEAL_PAYLOAD_ACK_SLOT_OFFSET_U32 = STEAL_ACK_SLOT_OFFSET_U32 + 2;
  * clear here. This preserves single-writer ownership of every WANT word.
  */
 export const STEAL_LIVE_SLOT_OFFSET_U32 = STEAL_PAYLOAD_ACK_SLOT_OFFSET_U32 + 1;
+/** Host-owned arm word for the return-lock completion doorbell. */
+export const DOORBELL_ARMED_SLOT_OFFSET_U32 = STEAL_LIVE_SLOT_OFFSET_U32 + 1;
 
 export const HEADER_U32_LENGTH = LockBound.header +
   (HEADER_SLOT_STRIDE_U32 * LockBound.slots);
@@ -437,6 +439,12 @@ const settleTask = (task: Task) => {
 
 export type Lock2 = ReturnType<typeof lock2>;
 
+export type WaitAsyncState = "not-equal" | "ok" | "timed-out";
+export type WaitAsyncResult = {
+  async: boolean;
+  value: WaitAsyncState | PromiseLike<WaitAsyncState>;
+};
+
 export const lock2 = ({
   headers,
   headerSlotStrideU32,
@@ -452,6 +460,7 @@ export const lock2 = ({
   consumers,
   consumerId,
   regionLanes,
+  notifyOnHostPublish,
 }: {
   headers?: SharedBufferSource;
   headerSlotStrideU32?: number;
@@ -474,6 +483,8 @@ export const lock2 = ({
   consumerId?: number;
   /** Lanes claimed per Dekker handshake. Paper rule: `slots / regionLanes >= consumers + 1`. */
   regionLanes?: number;
+  /** Notify a host-side wait after this endpoint publishes a frame. */
+  notifyOnHostPublish?: boolean;
 }) => {
   // Layout within `lockSectorRegion`:
   // - hostBits starts at byte 0
@@ -512,6 +523,15 @@ export const lock2 = ({
     headersRegion.byteLength >>> 2,
   );
   const headersSlotStride = headerSlotStrideU32 ?? HEADER_SLOT_STRIDE_U32;
+  // The first task cache line has four unused control words after the task
+  // header. Keep the doorbell arm bit in one of those words so the host and
+  // worker lock instances can share it without allocating another SAB.
+  const doorbellArmed = new Int32Array(
+    headersRegion.sab,
+    headersRegion.byteOffset +
+      (DOORBELL_ARMED_SLOT_OFFSET_U32 * Uint32Array.BYTES_PER_ELEMENT),
+    1,
+  );
 
   const resolvedPayloadConfig = resolvePayloadBufferOptions({
     sab: payload,
@@ -659,6 +679,11 @@ export const lock2 = ({
   // Atomics aliases (hot path)
   const a_load = Atomics.load;
   const a_store = Atomics.store;
+  const a_notify = Atomics.notify;
+  const shouldNotifyHostPublish = notifyOnHostPublish === true;
+  const a_waitAsync = typeof Atomics.waitAsync === "function"
+    ? Atomics.waitAsync.bind(Atomics)
+    : undefined;
 
   // Sender-side cached shadow of the receiver-owned queue word. Under the XSC
   // false-busy-only sender-side staleness property, this may hide newly freed
@@ -811,8 +836,14 @@ export const lock2 = ({
     return toBeSent.isEmpty;
   };
 
-  const storeHost = (bit: number) =>
+  const storeHost = (bit: number) => {
     a_store(hostBits, 0, LastLocal = (LastLocal ^ bit) | 0);
+    if (
+      shouldNotifyHostPublish && a_load(doorbellArmed, 0) !== 0
+    ) {
+      a_notify(hostBits, 0, 1);
+    }
+  };
   const storeWorker = (bit: number) =>
     a_store(workerBits, 0, LastWorker = (LastWorker ^ bit) | 0);
   const encode = (
@@ -1181,6 +1212,38 @@ export const lock2 = ({
     };
   };
 
+  /**
+   * HOST SIDE: wait until the producer changes hostBits.
+   *
+   * LastWorker is the host's acknowledgement shadow. Passing it as the
+   * expected value makes the arm race-free: a publication between the drain
+   * and this call returns `not-equal` synchronously instead of being lost.
+  */
+  const waitForHostChange = (timeoutMs?: number): WaitAsyncResult | undefined => {
+    if (a_waitAsync === undefined) {
+      a_store(doorbellArmed, 0, 0);
+      return undefined;
+    }
+    a_store(doorbellArmed, 0, 1);
+    try {
+      const wait = a_waitAsync(
+        hostBits,
+        0,
+        LastWorker | 0,
+        timeoutMs,
+      ) as WaitAsyncResult;
+      if (!wait.async) a_store(doorbellArmed, 0, 0);
+      return wait;
+    } catch {
+      a_store(doorbellArmed, 0, 0);
+      // Some runtimes reject particular SharedArrayBuffer implementations
+      // (for example a growable or native-backed buffer). Fall back to the
+      // existing dispatcher rather than turning a capability issue into a
+      // hung pool.
+      return undefined;
+    }
+  };
+
   const decodeAt = (at: number): boolean => {
     const off = (at * headersSlotStride) + slotBaseU32;
     const recycled = recycleShift() as Task | undefined;
@@ -1257,6 +1320,10 @@ export const lock2 = ({
     workerBits,
     recyclecList,
     resolveHost,
+    waitForHostChange,
+    setHostWaiterArmed: (armed: boolean) => {
+      a_store(doorbellArmed, 0, armed ? 1 : 0);
+    },
     hasPendingFrames: () => toBeSent.size !== 0,
     getPendingFrameCount: () => toBeSent.size | 0,
     getPendingPromiseCount: () => pendingPromiseCount | 0,

@@ -10,6 +10,7 @@ import RingQueue from "../src/ipc/tools/ring-queue.ts";
 import {
   HAS_SHARED_WASM_MEMORY,
   isWasmSharedArrayBuffer,
+  RUNTIME,
 } from "../src/common/runtime.ts";
 import { createLockControlCarpet } from "../src/memory/byte-carpet.ts";
 import {
@@ -888,4 +889,68 @@ test("sender uses a cached worker-bit shadow and refreshes only on exhaustion", 
   // the highest freed lane (31), then 30, from that single refresh.
   assertEquals(encodeSlot(102), 31);
   assertEquals(encodeSlot(103), 30);
+});
+
+test("waitForHostChange reports a publication that raced the arm", () => {
+  const lockSector = new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH);
+  const headers = new SharedArrayBuffer(HEADER_BYTE_LENGTH);
+  const payloadSector = new SharedArrayBuffer(PAYLOAD_LOCK_SECTOR_BYTE_LENGTH);
+  const payload = new SharedArrayBuffer(64 * 1024);
+  const producer = lock2({
+    headers,
+    LockBoundSector: lockSector,
+    payload,
+    payloadSector,
+    notifyOnHostPublish: true,
+  });
+  const consumer = lock2({
+    headers,
+    LockBoundSector: lockSector,
+    payload,
+    payloadSector,
+  });
+
+  assert.equal(producer.encode(makeValueTask("already published")), true);
+  const wait = consumer.waitForHostChange();
+  assert.notEqual(wait, undefined);
+  assert.equal(wait!.async, false);
+  assert.equal(wait!.value, "not-equal");
+});
+
+test("worker publication wakes an async host waiter", {
+  skip: RUNTIME === "deno",
+}, async () => {
+  const lockSector = new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH);
+  const headers = new SharedArrayBuffer(HEADER_BYTE_LENGTH);
+  const payloadSector = new SharedArrayBuffer(PAYLOAD_LOCK_SECTOR_BYTE_LENGTH);
+  const payload = new SharedArrayBuffer(64 * 1024);
+  const producer = lock2({
+    headers,
+    LockBoundSector: lockSector,
+    payload,
+    payloadSector,
+    notifyOnHostPublish: true,
+  });
+  const consumer = lock2({
+    headers,
+    LockBoundSector: lockSector,
+    payload,
+    payloadSector,
+  });
+
+  const wait = consumer.waitForHostChange();
+  assert.notEqual(wait, undefined);
+  if (!wait!.async) {
+    assert.fail("expected an async wait before publication");
+  }
+
+  setTimeout(() => {
+    producer.encode(makeValueTask("published"));
+  }, 10);
+
+  const result = await Promise.race([
+    Promise.resolve(wait!.value),
+    new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 500)),
+  ]);
+  assert.equal(result, "ok");
 });

@@ -819,6 +819,7 @@ export const createPool: CreatePoolFactory = ({
       channelHandler: channel,
       dispatcherOptions: host,
       notifySignal: wakeOne,
+      crossProcess: resolvedWorker?.runtime === "process",
     });
 
     channel.open(check);
