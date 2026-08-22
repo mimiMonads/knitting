@@ -181,6 +181,21 @@ export type ProcessWorkerMemoryLayout = {
   cleanup: () => void;
 };
 
+/**
+ * Process-worker memory for a stealing pool.
+ *
+ * The request side is one shared region all child processes may claim from;
+ * each worker keeps its own signals and return region. Every per-worker view
+ * points into the same OS mapping so the existing fd/name boot protocol can
+ * carry all of the slices without adding a second descriptor to WorkerData.
+ */
+export type ProcessStealMemoryLayout = {
+  mapping: SharedMemoryMapping<SharedMemoryBuffer>;
+  descriptor: FileDescriptor;
+  workers: ProcessWorkerMemoryLayout[];
+  abortSignalMax?: number;
+};
+
 export type ProcessWorkerRuntime = "bun" | "deno" | "node";
 export type ProcessWorkerCommandPrefix = NonNullable<
   WorkerSettings["processCommandPrefix"]
@@ -464,6 +479,145 @@ export const createProcessWorkerMemoryLayout = ({
         primitives.unlinkSharedMemory?.(name);
       }
     },
+  };
+};
+
+export const createProcessStealMemoryLayout = ({
+  threads,
+  signalBytes,
+  abortBytes,
+  abortSignalMax,
+  payloadBytes,
+  sharedMemory,
+}: {
+  threads: number;
+  signalBytes: number;
+  abortBytes: number;
+  abortSignalMax?: number;
+  payloadBytes: number;
+  sharedMemory: ResolvedProcessSharedMemorySettings;
+}): ProcessStealMemoryLayout => {
+  if (!Number.isInteger(threads) || threads < 2) {
+    throw new RangeError("process stealing needs at least two workers");
+  }
+
+  const carpet = createByteCarpet();
+  const requestLockSlice = carpet.take(
+    "requestLockSector",
+    LOCK_SECTOR_BYTE_LENGTH,
+  );
+  const requestHeadersSlice = carpet.take(
+    "requestHeaders",
+    getHeaderBlockByteLength({
+      slotCount: LockBound.slots,
+      slotStrideU32: HEADER_SLOT_STRIDE_U32,
+      alignTo: 64,
+    }),
+  );
+  const abortSignalsSlice = carpet.take("abortSignals", abortBytes);
+  const requestPayloadSlice = carpet.take("requestPayload", payloadBytes);
+
+  const workerSlices = Array.from({ length: threads }, (_, thread) => ({
+    signal: carpet.take(`signals-${thread}`, signalBytes),
+    returnLock: carpet.take(
+      `returnLockSector-${thread}`,
+      LOCK_SECTOR_BYTE_LENGTH,
+    ),
+    returnHeaders: carpet.take(
+      `returnHeaders-${thread}`,
+      getHeaderBlockByteLength({
+        slotCount: LockBound.slots,
+        slotStrideU32: HEADER_SLOT_STRIDE_U32,
+        alignTo: 64,
+      }),
+    ),
+    returnPayload: carpet.take(`returnPayload-${thread}`, payloadBytes),
+  }));
+
+  const primitives = getProcessWorkerSharedMemoryPrimitives();
+  const forceNamed = sharedMemory.mode === "named" || isWindowsRuntimeHost();
+  const mapping = primitives.createSharedMemory(
+    forceNamed
+      ? {
+        size: carpet.byteLength(),
+        mode: "create",
+        name: makeProcessWorkerMemoryName(0, sharedMemory.namePrefix),
+      }
+      : { size: carpet.byteLength() },
+  );
+  const descriptor = FileDescriptor.fromMapping(mapping);
+  if (isWindowsRuntimeHost() && descriptor.name === undefined) {
+    throw new Error(
+      "Windows process worker shared memory must use a named mapping",
+    );
+  }
+  if (sharedMemory.mode === "named" && descriptor.name === undefined) {
+    throw new Error(
+      "processSharedMemory mode named needs a named shared-memory backend",
+    );
+  }
+
+  const buffer = mapping.buffer;
+  const bind = (slice: ByteCarpetSlice) =>
+    makeSharedBufferRegion(buffer, slice.byteOffset, slice.byteLength);
+  const abortSignals = bind(abortSignalsSlice);
+  const requestLock: LockControlCarpet["lock"] = {
+    headers: bind(requestHeadersSlice),
+    headerSlotStrideU32: HEADER_SLOT_STRIDE_U32,
+    lockSector: bind(requestLockSlice),
+    payloadSector: bind(requestLockSlice),
+  };
+
+  // Each worker calls cleanup, so named-memory unlink happens only after every
+  // endpoint has released its view. The per-worker mapping wrappers below do
+  // not expose close(); the host views remain attached until host exit because
+  // Bun's external ArrayBuffer finalizer can race an explicit munmap.
+  let remaining = threads;
+  let cleaned = false;
+  const cleanupSharedMapping = () => {
+    if (cleaned) return;
+    remaining--;
+    if (remaining > 0) return;
+    cleaned = true;
+    const name = descriptor.name;
+    if (name !== undefined && sharedMemory.unlinkOnShutdown) {
+      primitives.unlinkSharedMemory?.(name);
+    }
+  };
+
+  const workerMapping = {
+    ...mapping,
+    close: undefined,
+  } as SharedMemoryMapping<SharedMemoryBuffer>;
+  const workers = workerSlices.map((slices) => {
+    const returnLock: LockControlCarpet["returnLock"] = {
+      headers: bind(slices.returnHeaders),
+      headerSlotStrideU32: HEADER_SLOT_STRIDE_U32,
+      lockSector: bind(slices.returnLock),
+      payloadSector: bind(slices.returnLock),
+    };
+    return {
+      mapping: workerMapping,
+      descriptor,
+      controlLayout: {
+        controlSAB: buffer,
+        signals: bind(slices.signal),
+        abortSignals,
+        lock: requestLock,
+        returnLock,
+        slices: carpet.slices,
+      },
+      lockPayload: bind(requestPayloadSlice),
+      returnPayload: bind(slices.returnPayload),
+      cleanup: cleanupSharedMapping,
+    };
+  });
+
+  return {
+    mapping,
+    descriptor,
+    workers,
+    abortSignalMax,
   };
 };
 
@@ -990,10 +1144,23 @@ const spawnNodeHostedProcessWorker = ({
     queueMicrotask(() => child.send?.(bootPayload));
   }
   child.on("error", events.emitError);
-  child.on("exit", (code) => events.emitExit(code ?? -1));
+  let resolveExit: () => void = () => {};
+  const exited = new Promise<void>((resolve) => {
+    resolveExit = resolve;
+  });
+  child.on("exit", (code) => {
+    resolveExit();
+    events.emitExit(code ?? -1);
+  });
 
   return {
-    terminate: () => child.kill(),
+    terminate: () => {
+      try {
+        child.kill();
+      } catch {
+      }
+      return exited;
+    },
     unref: () => child.unref?.(),
     on: events.on,
   };

@@ -5,7 +5,42 @@ import {
   type RuntimeMessageChannelLike,
   type RuntimeMessagePortLike,
 } from "../common/worker-runtime.ts";
+import { RUNTIME, SET_IMMEDIATE } from "../common/runtime.ts";
 import type { DispatcherSettings } from "../types.ts";
+
+/**
+ * The macrotask primitive the host pump hops through.
+ *
+ * `check` re-arms the pump after every drain that leaves work outstanding, so
+ * this is the hottest path on the host thread: profiling a heterogeneous pool
+ * put it at roughly a third of host CPU, at ~70 hops per completion. Which
+ * primitive is cheapest is not the same on every runtime (ns per round trip,
+ * 200k hops, median of three):
+ *
+ *   runtime   MessageChannel   setImmediate
+ *   bun              757            810
+ *   node            1625           1326
+ *   deno            4662           1110
+ *
+ * so pick per runtime rather than making every host pay Deno's 4x. Bun keeps
+ * the channel; runtimes without `setImmediate` (browser, Andromeda) have no
+ * choice to make.
+ *
+ * Cheaper per hop is not the same as better, and what decides it is the
+ * dispatcher topology, not the runtime. Measured on Deno, 8 workers,
+ * heterogeneous fanout, channel pump -> immediate pump:
+ *
+ *   per-thread      9.6k -> 9.8k rps, p99 10.0 -> 10.0ms, host CPU 0.90 -> 0.77
+ *   serial-channel  9.0k -> 7.0k rps, p99 11.5 -> 30.9ms, host CPU 0.96 -> 0.75
+ *
+ * One `serial-channel` hop drives every lane's check in turn and depends on the
+ * channel's delivery to do it; a pump that is only cheaper starves it. So
+ * `serial-channel` asks for the channel explicitly and every other topology
+ * takes the cheap pump.
+ */
+const IMMEDIATE_PUMP = RUNTIME === "deno" || RUNTIME === "node"
+  ? SET_IMMEDIATE
+  : undefined;
 
 export const hostDispatcherLoop = ({
   signalBox: {
@@ -89,25 +124,32 @@ export const hostDispatcherLoop = ({
       }
 
       // Drain loop: local vars so V8 keeps them as unboxed int32.
-      let anyProgressed = false;
+      //
+      // `completed` feeds `stallCount`, which asks whether the pump is still
+      // earning its keep. The pump exists to reap completions a worker has no
+      // way to announce, so only a reaped completion counts as progress here.
+      // Handing work *to* a worker must not: `send()` drives `check` directly,
+      // so a host busy submitting keeps the loop hot without the counter's
+      // help, and letting a flush reset the counter would leave the backoff
+      // unreachable for a pool that never runs dry.
+      let completed = false;
       let progressed = true;
       while (progressed) {
         progressed = false;
         if (completeFrame() > 0) {
           progressed = true;
-          anyProgressed = true;
+          completed = true;
         }
         while (hasPendingFrames()) {
           if (!flushToWorker()) break;
           progressed = true;
-          anyProgressed = true;
         }
       }
 
       txStatus[0] = 0;
 
       if (!txIdle()) {
-        if (anyProgressed || hasPendingFrames()) {
+        if (completed || hasPendingFrames()) {
           stallCount = 0 | 0;
         } else {
           stallCount = (stallCount + 1) | 0;
@@ -161,47 +203,75 @@ type CheckWithState = (() => void) & {
 
 export type DispatcherCheck = CheckWithState;
 
-export class ChannelHandler {
-  public channel: RuntimeMessageChannelLike;
-  public port1: RuntimeMessagePortLike;
-  public port2: RuntimeMessagePortLike;
-  readonly #post2: (message: unknown) => void;
+export type ChannelHandlerPump = "auto" | "channel";
 
-  constructor() {
-    this.channel = createRuntimeMessageChannel();
-    this.port1 = this.channel.port1;
-    this.port2 = this.channel.port2;
-    this.#post2 = (message: unknown) => this.port2.postMessage(message);
+export class ChannelHandler {
+  // Set only when the pump is a MessageChannel. The `setImmediate` pump has no
+  // ports, and nothing outside this class reads them.
+  public channel: RuntimeMessageChannelLike | undefined;
+  public port1: RuntimeMessagePortLike | undefined;
+  public port2: RuntimeMessagePortLike | undefined;
+
+  #handler: (() => void) | undefined;
+  readonly #notify: () => void;
+
+  constructor(pump: ChannelHandlerPump = "auto") {
+    if (pump === "auto" && IMMEDIATE_PUMP !== undefined) {
+      const immediate = IMMEDIATE_PUMP;
+      // One closure allocated once: the pump fires hundreds of thousands of
+      // times a second under load. Going through `#handler` also leaves a
+      // callback that outlives `close()` inert.
+      const run = () => {
+        this.#handler?.();
+      };
+      this.#notify = () => {
+        immediate(run);
+      };
+      return;
+    }
+
+    const channel = createRuntimeMessageChannel();
+    const port2 = channel.port2;
+    this.channel = channel;
+    this.port1 = channel.port1;
+    this.port2 = port2;
+    this.#notify = () => {
+      port2.postMessage(null);
+    };
   }
 
   public notify(): void {
-    this.#post2(null);
+    this.#notify();
   }
 
   /**
-   * Opens the channel (if not already open) and sets the onmessage handler.
-   * This is the setup so `notify` can send a message to the port 1.
+   * Registers the handler the pump calls back into. On the channel pump this is
+   * also where the ports are opened, so `notify` can reach port 1.
    */
   public open(f: () => void): void {
+    this.#handler = f;
     const port1 = this.port1 as unknown as {
       on?: (event: string, handler: () => void) => void;
       onmessage?: ((event: unknown) => void) | null;
       start?: () => void;
-    };
+    } | undefined;
+    if (port1 === undefined) return;
     if (typeof port1.on === "function") {
       port1.on("message", f);
     } else {
       // @ts-ignore
       port1.onmessage = f;
     }
-    this.port1.start?.();
-    this.port2.start?.();
+    this.port1?.start?.();
+    this.port2?.start?.();
   }
 
   /**
-   * Closes the channel if it is open.
+   * Detaches the handler, and closes the channel if this pump has one.
    */
   public close(): void {
+    this.#handler = undefined;
+    if (this.port1 === undefined || this.port2 === undefined) return;
     //@ts-ignore
     this.port1.onmessage = null;
     //@ts-ignore

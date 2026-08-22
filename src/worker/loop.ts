@@ -359,6 +359,10 @@ export const workerMainLoop = async (
         // a peer withdrawing its intent. Measured to hurt the per-lane path,
         // where a claim is a cheap private decode and picking work up promptly
         // matters more, so the classic order is kept below.
+        // Reordering must not make `progressed` sticky: it answers "did this
+        // iteration move anything", so it has to start false every pass or the
+        // park below is unreachable and the worker spins a core forever.
+        progressed = false;
         if (_hasCompleted()) {
           if (_writeBatch(WRITE_MAX) > 0) progressed = true;
         }

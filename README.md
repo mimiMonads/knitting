@@ -345,7 +345,7 @@ Common options you might tweak:
 | `worker.processSharedMemory`      | Process-worker memory discovery: `"inherit"` by default on POSIX, or `"named"` for wrappers/containers that cannot preserve fd 0. |
 | `permission`                      | Runtime permission policy for workers.                                                                                            |
 | `host.dispatcher`                 | Experimental host dispatcher topology: `"per-thread"` or `"serial-channel"`.                                                      |
-| `host.steal`                      | Shared-submit work stealing for multi-worker thread pools; enabled by default. Set `false` to use private submit lanes.            |
+| `host.steal`                      | Shared-submit work stealing for compatible multi-worker thread/process pools; enabled by default. Set `false` to use private submit lanes. |
 | `debug`                           | Enable diagnostics (`host`, `globals`, `signals`, `imports`, `lifecycle`) or use `KNITTING_DEBUG`.                                |
 | `source`                          | Worker source override for advanced runtimes.                                                                                     |
 
@@ -355,14 +355,15 @@ multi-worker Node/Deno pools use `"serial-channel"`. Selecting a dispatcher or
 balancer explicitly preserves that private-lane topology unless
 `host.steal: true` is also explicit.
 
-Ordinary multi-worker thread pools use shared-submit work stealing by default.
-It is not used by one-worker pools, the inliner, process workers, compiled/
-Porffor workers, or pools with an explicit balancer/dispatcher, so those modes
-retain their existing transport. Pools above the current 31-claimant protocol
-limit also fall back. Set `host: { steal: false }` or `KNITTING_STEAL=0` to opt
-out for uniformly cheap, low-concurrency workloads where arbitration has
-nothing to rebalance. `host: { steal: true }` or `KNITTING_STEAL=1` forces it
-for an otherwise compatible thread pool.
+Ordinary multi-worker thread and process pools use shared-submit work stealing
+by default. It is not used by one-worker pools, the inliner, compiled/Porffor
+workers, or pools with an explicit balancer/dispatcher, so those modes retain
+their existing transport. Process workers use one process-shared submit region
+and one private return region per process. Pools above the current 31-claimant
+protocol limit also fall back. Set `host: { steal: false }` or
+`KNITTING_STEAL=0` to opt out for uniformly cheap, low-concurrency workloads
+where arbitration has nothing to rebalance. `host: { steal: true }` or
+`KNITTING_STEAL=1` forces it for an otherwise compatible pool.
 
 ### Worker bootstrap
 

@@ -545,14 +545,12 @@ type DispatcherSettings = {
    * claim from, private return lanes, and a pool-global pending registry. The
    * endpoint that claims a task owns its response.
    *
-   * Enabled by default for multi-worker thread pools unless a balancer or
-   * private-lane dispatcher was explicitly selected. One-worker pools,
-   * inliners, compiled/Porffor workers, process workers, and pools above the
-   * current 31-claimant protocol limit retain their existing transport.
-   * Explicitly requesting `true` with process workers is rejected because
-   * their transport uses separately mapped process-shared memory. Set `false`
-   * (or `KNITTING_STEAL=0`) to opt out; `KNITTING_STEAL=1` explicitly opts in
-   * and overrides a balancer/dispatcher selection.
+   * Enabled by default for compatible multi-worker thread and process pools
+   * unless a balancer or private-lane dispatcher was explicitly selected.
+   * One-worker pools, inliners, compiled/Porffor workers, and pools above the
+   * current 31-claimant protocol limit retain their existing transport. Set
+   * `false` (or `KNITTING_STEAL=0`) to opt out; `KNITTING_STEAL=1` explicitly
+   * opts in and overrides a balancer/dispatcher selection.
    */
   steal?: boolean;
   /**

@@ -16,6 +16,7 @@ const unavailable = (): never => {
 };
 
 export const createProcessWorkerMemoryLayout = unavailable;
+export const createProcessStealMemoryLayout = unavailable;
 export const readProcessSharedMemorySettings = unavailable;
 export const readProcessWorkerCommandPrefix = unavailable;
 export const readProcessWorkerNodeMajor = unavailable;

@@ -2,12 +2,15 @@ import { createHostTxQueue } from "./tx-queue.ts";
 import {
   cleanupProcessWorkerMemoryQuietly,
   createProcessSharedMemoryAllocator,
+  createProcessStealMemoryLayout,
   createProcessWorkerMemoryLayout,
   createProcessWorkerNativeSignalNotifier,
   type ProcessSharedMemoryBacking,
+  type ProcessStealMemoryLayout,
   readProcessSharedMemorySettings,
   readProcessWorkerCommandPrefix,
   readProcessWorkerRuntime,
+  type ResolvedProcessSharedMemorySettings,
   spawnProcessWorker,
   toProcessWorkerBootPayload,
 } from "./process-worker.ts";
@@ -151,14 +154,22 @@ export const createStealPoolBuffers = ({
   regionLanes,
   abortSignalCapacity,
   usesAbortSignal,
+  processWorker,
 }: {
   threads: number;
   payload?: PayloadBufferOptions;
   regionLanes?: number;
   abortSignalCapacity?: number;
   usesAbortSignal?: boolean;
+  processWorker?: {
+    signalBytes: number;
+    sharedMemory: ResolvedProcessSharedMemorySettings;
+  };
 }) => {
-  const payloadConfig = resolvePayloadBufferOptions({ options: payload });
+  const basePayloadConfig = resolvePayloadBufferOptions({ options: payload });
+  const payloadConfig = processWorker === undefined
+    ? basePayloadConfig
+    : withFixedPayloadConfig(basePayloadConfig);
   const makePayload = () =>
     payloadConfig.mode === "growable"
       ? createSharedArrayBuffer(
@@ -195,8 +206,32 @@ export const createStealPoolBuffers = ({
     ? maxLanes
     : Math.min(Math.max(1, regionLanes | 0), maxLanes);
 
-  const submitCarpet = carpet();
-  const submitBuffers = toBuffers(submitCarpet.lock, makePayload());
+  const resolvedAbortSignalCapacity = resolveAbortSignalCapacity(
+    abortSignalCapacity,
+  );
+  const processMemory: ProcessStealMemoryLayout | undefined =
+    processWorker === undefined ? undefined : createProcessStealMemoryLayout({
+      threads,
+      signalBytes: processWorker.signalBytes,
+      abortBytes: usesAbortSignal === true
+        ? abortSignalByteLength(resolvedAbortSignalCapacity)
+        : 0,
+      abortSignalMax: usesAbortSignal === true
+        ? resolvedAbortSignalCapacity
+        : undefined,
+      payloadBytes: payloadConfig.payloadMaxByteLength,
+      sharedMemory: processWorker.sharedMemory,
+    });
+
+  const submitBuffers = processMemory === undefined
+    ? (() => {
+      const submitCarpet = carpet();
+      return toBuffers(submitCarpet.lock, makePayload());
+    })()
+    : toBuffers(
+      processMemory.workers[0]!.controlLayout.lock,
+      processMemory.workers[0]!.lockPayload,
+    );
   const hostSubmitLock = lock2({
     headers: submitBuffers.headers,
     headerSlotStrideU32: submitBuffers.headerSlotStrideU32,
@@ -207,12 +242,18 @@ export const createStealPoolBuffers = ({
     textCompat: submitBuffers.textCompat,
     consumers: threads,
     regionLanes: lanes,
+    processBoundary: processMemory !== undefined,
   });
 
   const returnBuffers: LockBuffers[] = [];
   const hostReturnLocks: ReturnType<typeof lock2>[] = [];
   for (let i = 0; i < threads; i++) {
-    const buffers = toBuffers(carpet().returnLock, makePayload());
+    const buffers = processMemory === undefined
+      ? toBuffers(carpet().returnLock, makePayload())
+      : toBuffers(
+        processMemory.workers[i]!.controlLayout.returnLock,
+        processMemory.workers[i]!.returnPayload,
+      );
     returnBuffers.push(buffers);
     hostReturnLocks.push(lock2({
       headers: buffers.headers,
@@ -222,19 +263,18 @@ export const createStealPoolBuffers = ({
       payloadSector: buffers.payloadSector,
       payloadConfig,
       textCompat: buffers.textCompat,
+      processBoundary: processMemory !== undefined,
     }));
   }
 
   // Abort-aware tasks can execute on any claimant, so all workers and the
   // pool-global queue must observe one bitmap. Per-lane abort buffers would
   // encode an id from one allocator and test it against another lane's bits.
-  const resolvedAbortSignalCapacity = resolveAbortSignalCapacity(
-    abortSignalCapacity,
-  );
   const abortSignalSAB = usesAbortSignal === true
-    ? createSharedArrayBuffer(
-      abortSignalByteLength(resolvedAbortSignalCapacity),
-    )
+    ? processMemory?.workers[0]?.controlLayout.abortSignals ??
+      createSharedArrayBuffer(
+        abortSignalByteLength(resolvedAbortSignalCapacity),
+      )
     : undefined;
   const abortSignals = abortSignalSAB === undefined
     ? undefined
@@ -257,10 +297,10 @@ export const createStealPoolBuffers = ({
     hostReturnLocks,
     sharedQueue,
     regionLanes: lanes,
+    processMemory,
     abortSignalSAB,
-    abortSignalMax: abortSignalSAB === undefined
-      ? undefined
-      : resolvedAbortSignalCapacity,
+    abortSignalMax: processMemory?.abortSignalMax ??
+      (abortSignalSAB === undefined ? undefined : resolvedAbortSignalCapacity),
   };
 };
 
@@ -328,6 +368,7 @@ export const spawnWorkerContext = ({
     regionLanes: number;
     abortSignalSAB?: LockBuffers["headers"];
     abortSignalMax?: number;
+    processMemory?: ProcessStealMemoryLayout;
   };
 }) => {
   if (workerOptions?.runtime === "compiled") {
@@ -396,7 +437,14 @@ export const spawnWorkerContext = ({
   const abortBytes = stealPool === undefined && usesAbortSignal === true
     ? abortSignalByteLength(resolvedAbortSignalCapacity)
     : 0;
-  const processWorkerMemory = useProcessWorkerRuntime
+  // A stealing process pool carves every lane out of one mapping, so lane
+  // `thread` must find its slice there. Falling back to a private layout would
+  // silently give this lane its own submit region — it would boot and then
+  // never see a task the host published to the shared one.
+  const stealProcessMemory = stealPool?.processMemory;
+  const processWorkerMemory = !useProcessWorkerRuntime
+    ? undefined
+    : stealProcessMemory === undefined
     ? createProcessWorkerMemoryLayout({
       signalBytes,
       abortBytes,
@@ -404,7 +452,12 @@ export const spawnWorkerContext = ({
       thread,
       sharedMemory: processSharedMemorySettings!,
     })
-    : undefined;
+    : stealProcessMemory.workers[thread] ??
+      (() => {
+        throw new RangeError(
+          `stealing process pool has no shared-memory slice for worker ${thread}`,
+        );
+      })();
   const processSharedMemory = processWorkerMemory === undefined
     ? createProcessSharedMemoryAllocator(debug)
     : undefined;
@@ -874,7 +927,8 @@ export const spawnWorkerContext = ({
     call,
     kills: async () => {
       markWorkerClosed("Thread closed", true);
-      terminateWorkerQuietly(worker);
+      const termination = terminateWorkerQuietly(worker);
+      if (processWorkerMemory !== undefined) await termination;
       cleanupProcessWorkerMemoryQuietly(processWorkerMemory);
     },
     lock,

@@ -4,7 +4,7 @@ import {
   setModuleUrl,
 } from "./common/task-source.ts";
 import { DEBUG_ENABLED, resolveDebugNamespaces } from "./debug/gate.ts";
-import { genTaskID } from "./common/task-source.ts";
+import { genTaskID, stableTaskID } from "./common/task-source.ts";
 import { toModuleUrl } from "./common/module-url.ts";
 import { endpointSymbol } from "./common/task-symbol.ts";
 import {
@@ -27,9 +27,11 @@ import {
 } from "./permission/index.ts";
 import { getNodeProcess } from "./common/node-compat.ts";
 import {
+  readProcessSharedMemorySettings,
   readProcessWorkerNodeMajor,
   readProcessWorkerRuntime,
 } from "./runtime/process-worker.ts";
+import { TRANSPORT_SIGNAL_BYTES } from "./ipc/transport/shared-memory.ts";
 import { inspectCompiledWorkerArtifact } from "./runtime/compiled-artifact.ts";
 
 import { managerMethod } from "./runtime/balancer.ts";
@@ -605,17 +607,14 @@ export const createPool: CreatePoolFactory = ({
     : stealEnvRaw === "0" || stealEnvRaw === "false"
     ? false
     : undefined;
-  // Shared-submit stealing is the default for compatible multi-worker thread
-  // pools. An explicit option wins over the environment; process/compiled/
-  // inline transports retain their existing topology unless the caller
-  // explicitly requests an unsupported combination.
+  // Shared-submit stealing is the default for compatible multi-worker pools.
+  // An explicit option wins over the environment; compiled and inline
+  // transports retain their existing topology.
   const dispatcherExplicitlySelected = host?.dispatcher !== undefined ||
     dispatcherEnv === "serial-channel" || dispatcherEnv === "per-thread";
   const stealDefaultCompatible = balancer === undefined &&
     !dispatcherExplicitlySelected && (threads ?? 1) <= MAX_STEAL_CONSUMERS;
   const stealRequested = host?.steal ?? stealEnv ?? stealDefaultCompatible;
-  const stealExplicitlyEnabled = host?.steal === true ||
-    (host?.steal === undefined && stealEnv === true);
   const usingCompiledWorker = resolvedWorker?.runtime === "compiled";
   if (resolvedWorker?.compiled !== undefined && !usingCompiledWorker) {
     throw new Error(
@@ -668,11 +667,6 @@ export const createPool: CreatePoolFactory = ({
   if (usingInliner && resolvedWorker?.bootstrap !== undefined) {
     throw new Error("worker.bootstrap cannot be used with the inliner");
   }
-  if (stealExplicitlyEnabled && resolvedWorker?.runtime === "process") {
-    throw new Error(
-      "host.steal does not support process workers; use worker threads or disable stealing",
-    );
-  }
   if (resolvedWorker?.runtime === "process") {
     const processRuntime = readProcessWorkerRuntime(resolvedWorker);
     enforceProcessPermissionCompatibility(
@@ -720,12 +714,11 @@ export const createPool: CreatePoolFactory = ({
   })();
   const dispatcher = explicitDispatcher ?? autoDispatcher;
   // Work stealing: one shared submit region, private return lanes, one
-  // pool-global pending registry. It is the compatible multi-thread default;
+  // pool-global pending registry. It is the compatible multi-worker default;
   // an explicit balancer/dispatcher keeps the private-lane topology unless
   // stealing itself was explicitly requested.
   const useSteal = stealRequested &&
     !usingCompiledWorker &&
-    resolvedWorker?.runtime !== "process" &&
     (threads ?? 1) > 1 &&
     !usingInliner;
   const stealBuffers = useSteal
@@ -735,12 +728,22 @@ export const createPool: CreatePoolFactory = ({
       regionLanes: host?.stealRegionLanes,
       abortSignalCapacity,
       usesAbortSignal,
+      processWorker: resolvedWorker?.runtime === "process"
+        ? {
+          signalBytes: TRANSPORT_SIGNAL_BYTES,
+          sharedMemory: readProcessSharedMemorySettings(resolvedWorker),
+        }
+        : undefined,
     })
     : undefined;
   const serialChannel = !usingCompiledWorker && !useSteal &&
     dispatcher === "serial-channel";
+  // One serial-channel hop drives every lane check in turn, and it depends on
+  // the channel's delivery to do that: swapping in the cheaper `setImmediate`
+  // pump cost 25% throughput and tripled p99 here, where every other topology
+  // gained. See ChannelHandler's note.
   const serialDispatcherChannel = serialChannel
-    ? new ChannelHandler()
+    ? new ChannelHandler("channel")
     : undefined;
 
   let workers = Array.from({
@@ -776,6 +779,7 @@ export const createPool: CreatePoolFactory = ({
         regionLanes: stealBuffers.regionLanes,
         abortSignalSAB: stealBuffers.abortSignalSAB,
         abortSignalMax: stealBuffers.abortSignalMax,
+        processMemory: stealBuffers.processMemory,
       },
     })
   );
@@ -1154,7 +1158,7 @@ const buildTaskDefinitionFromCaller = <
 
   const out = ({
     ...input,
-    id: genTaskID(),
+    id: stableTaskID(importedFrom, at),
     importedFrom,
     at,
     imported,
