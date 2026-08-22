@@ -119,12 +119,15 @@ export const serializeWorkerBootstrapData = (
   };
 };
 
-export const terminateWorkerQuietly = (worker: SpawnedWorker): void => {
+export const terminateWorkerQuietly = (
+  worker: SpawnedWorker,
+): Promise<void> => {
   try {
     // Runaway worker termination can be slow or stuck on some runtimes; once the
     // pool is closing it must not keep the host process alive.
     worker.unref?.();
-    void Promise.resolve(worker.terminate()).catch(() => {});
+    return Promise.resolve(worker.terminate()).then(() => {}, () => {});
   } catch {
+    return Promise.resolve();
   }
 };

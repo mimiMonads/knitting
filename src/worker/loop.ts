@@ -123,6 +123,7 @@ export const workerMainLoop = async (
     payloadConfig,
     bufferReferenceReturn,
     permission,
+    notifyOnHostPublish,
     totalNumberOfThread,
     list,
     ids,
@@ -182,6 +183,9 @@ export const workerMainLoop = async (
     payloadConfig,
     textCompat: returnLock.textCompat,
     processBoundary: RUNTIME_IS_PROCESS_WORKER,
+    // The host parks on this lock's publication word when it has no work to
+    // flush. Request locks are host-produced and must not wake that waiter.
+    notifyOnHostPublish,
   });
 
   const timers = workerOptions?.timers;
@@ -359,6 +363,10 @@ export const workerMainLoop = async (
         // a peer withdrawing its intent. Measured to hurt the per-lane path,
         // where a claim is a cheap private decode and picking work up promptly
         // matters more, so the classic order is kept below.
+        // Reordering must not make `progressed` sticky: it answers "did this
+        // iteration move anything", so it has to start false every pass or the
+        // park below is unreachable and the worker spins a core forever.
+        progressed = false;
         if (_hasCompleted()) {
           if (_writeBatch(WRITE_MAX) > 0) progressed = true;
         }

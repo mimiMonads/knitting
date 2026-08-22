@@ -124,9 +124,14 @@ export const createInlineExecutor = ({
   genTaskID: () => number;
   batchSize?: number;
 }) => {
+  // `createPool` passes an already name-sorted array, which is the order
+  // `fnNumber` indexes into. The object form has to reach the same order on its
+  // own: task ids identify a task, they do not rank it, so sorting by id would
+  // hand callers a different lane than the one they addressed.
   const entries = Array.isArray(tasks)
     ? tasks
-    : (Object.values(tasks) as ComposedWithKey[]).sort((a, b) => a.id - b.id);
+    : (Object.values(tasks) as ComposedWithKey[])
+      .sort((a, b) => a.name.localeCompare(b.name));
   const runners = entries.map((entry) => {
     // Imported tasks must never execute on the host inline lane: their module
     // import is meant to stay inside the worker so worker permission policies

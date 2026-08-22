@@ -137,6 +137,22 @@ export function createHostTxQueue({
       onResolved: onReturnResolved,
     })
   );
+  const returnWaiters = [
+    returnLock,
+    ...(extraReturnLocks ?? []),
+  ].map((each) =>
+    typeof each.waitForHostChange === "function"
+      ? each.waitForHostChange
+      : () => undefined
+  );
+  const returnArmers = [
+    returnLock,
+    ...(extraReturnLocks ?? []),
+  ].map((each) =>
+    typeof each.setHostWaiterArmed === "function"
+      ? each.setHostWaiterArmed
+      : (_armed: boolean) => {}
+  );
   // A stealing queue drains one private return lock per worker. Borrowed
   // BufferReferences must therefore be claimed with the hooks belonging to the
   // worker that produced that particular return. The hooks are bound after the
@@ -176,6 +192,62 @@ export function createHostTxQueue({
       return resolved;
     };
 
+  // A stealing queue has one private return lock per worker. Keep at most one
+  // waitAsync waiter per lane: after lane A rings, lane B's unresolved waiter
+  // must survive the next arm or Atomics.notify(..., 1) could wake an obsolete
+  // waiter and starve the live one until the watchdog timeout.
+  const completionArmed = new Uint8Array(returnWaiters.length);
+  let completionWake: (() => void) | undefined;
+  let completionGeneration = 0 | 0;
+  const setCompletionWaiterArmed = (armed: boolean) => {
+    for (const setArmed of returnArmers) setArmed(armed);
+  };
+  const waitForCompletion = (
+    onWake: () => void,
+    timeoutMs?: number,
+  ): boolean => {
+    completionWake = onWake;
+    // A persistent waiter may still be pending after a send preempted the
+    // dispatcher. Re-arm its shared gate before relying on that waiter again.
+    setCompletionWaiterArmed(true);
+    let supported = true;
+
+    for (let index = 0; index < returnWaiters.length; index++) {
+      if (completionArmed[index] !== 0) continue;
+
+      let wait;
+      try {
+        wait = returnWaiters[index]!(timeoutMs);
+      } catch {
+        wait = undefined;
+      }
+      if (wait === undefined) {
+        supported = false;
+        break;
+      }
+
+      completionArmed[index] = 1;
+      const generation = completionGeneration;
+      const wakeLane = () => {
+        if (completionArmed[index] === 0) return;
+        completionArmed[index] = 0;
+        returnArmers[index]!(false);
+        if (generation !== completionGeneration) return;
+        completionWake?.();
+      };
+
+      if (!wait.async) wakeLane();
+      else Promise.resolve(wait.value).then(wakeLane, wakeLane);
+    }
+
+    if (!supported) {
+      completionWake = undefined;
+      setCompletionWaiterArmed(false);
+      completionGeneration = (completionGeneration + 1) | 0;
+    }
+    return supported;
+  };
+
   const hasActiveTasks = () => {
     const count = (inUsed - getPendingPromiseCount()) | 0;
     return count > 0;
@@ -214,6 +286,8 @@ export function createHostTxQueue({
     hasPendingFrames,
     txIdle,
     completeFrame,
+    waitForCompletion,
+    setCompletionWaiterArmed,
     setReturnHooks: (lane: number, hooks: ReturnHooks | undefined) => {
       if (!Number.isInteger(lane) || lane < 0 || lane >= returnHooks.length) {
         throw new RangeError(`return lane ${lane} out of range`);
