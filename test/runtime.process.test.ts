@@ -10,6 +10,8 @@ import {
   returnSharedArrayBuffer,
 } from "./fixtures/runtime_tasks.ts";
 import { spawnChildProcess } from "./fixtures/permission_tasks.ts";
+import { concat, double } from "./fixtures/steal_tasks.ts";
+import { abortReturnsInput } from "./fixtures/abort_tasks.ts";
 
 const PROMISE_TIMEOUT_MS = 5_000;
 const TEST_TIMEOUT_MS = PROMISE_TIMEOUT_MS * 6;
@@ -235,13 +237,193 @@ test("process worker spawns a Bun child from this runtime", {
   await runProcessWorkerSmoke("bun");
 });
 
-test("default stealing preference falls back for multi-process pools", {
+test("process worker pools use shared-submit stealing by default", {
   concurrency: false,
   skip: processRuntimeTestSkip,
   timeout: TEST_TIMEOUT_MS,
 }, async () => {
   if (!hasProcessRuntime("bun")) return;
   await runProcessWorkerSmoke("bun", undefined, 2);
+});
+
+const runProcessStealSmoke = async (
+  processRuntime: "bun" | "deno" | "node",
+) => {
+  const pool = createPool({
+    threads: 3,
+    host: { steal: true },
+    worker: {
+      runtime: "process",
+      processRuntime,
+    },
+  })({ double, concat });
+
+  let testError: unknown;
+  try {
+    const results = await Promise.all(
+      Array.from(
+        { length: 180 },
+        (_, index) =>
+          index % 2 === 0
+            ? withTimeout(
+              `${processRuntime} process worker double ${index}`,
+              pool.call.double(index),
+            )
+            : withTimeout(
+              `${processRuntime} process worker concat ${index}`,
+              pool.call.concat(`v${index}`),
+            ),
+      ),
+    );
+    for (let index = 0; index < results.length; index++) {
+      assert.equal(
+        results[index],
+        index % 2 === 0 ? index * 2 : `v${index}!`,
+      );
+    }
+  } catch (error) {
+    testError = error;
+    throw error;
+  } finally {
+    await shutdownWithTimeout(
+      `${processRuntime} process stealing shutdown`,
+      pool.shutdown(),
+      testError,
+    );
+  }
+};
+
+test("process workers steal a shared submit queue", {
+  concurrency: false,
+  skip: processRuntimeTestSkip,
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
+  if (!hasProcessRuntime("bun")) return;
+  await runProcessStealSmoke("bun");
+});
+
+test("Deno process workers steal a shared submit queue", {
+  concurrency: false,
+  skip: processRuntimeTestSkip,
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
+  if (!hasProcessRuntime("deno")) return;
+  await runProcessStealSmoke("deno");
+});
+
+test("Node process workers steal a shared submit queue", {
+  concurrency: false,
+  skip: processRuntimeTestSkip,
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
+  if (!hasProcessRuntime("node")) return;
+  await runProcessStealSmoke("node");
+});
+
+/**
+ * Stealing puts every claimant on one abort bitmap carved from the same
+ * process-shared mapping as the submit region, so an abort raised on the host
+ * has to be visible to whichever child process claimed the task. Tasks come
+ * from a single module on purpose: pool ids are assigned per import, so a
+ * multi-module pool is a separate (pre-existing) matter.
+ */
+test("process workers share abort signals across every claimant", {
+  concurrency: false,
+  skip: processRuntimeTestSkip,
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
+  if (!hasProcessRuntime("bun")) return;
+
+  const pool = createPool({
+    threads: 3,
+    host: { steal: true },
+    worker: {
+      runtime: "process",
+      processRuntime: "bun",
+    },
+  })({ abortReturnsInput });
+
+  let testError: unknown;
+  try {
+    for (let round = 0; round < 5; round++) {
+      const pending = pool.call.abortReturnsInput(`round-${round}`);
+      pending.reject();
+      assert.equal(
+        await withTimeout(
+          `Bun process worker abort ${round}`,
+          pending,
+        ),
+        `round-${round}`,
+      );
+    }
+  } catch (error) {
+    testError = error;
+    throw error;
+  } finally {
+    await shutdownWithTimeout(
+      "Bun process abort stealing shutdown",
+      pool.shutdown(),
+      testError,
+    );
+  }
+});
+
+test("Bubblewrap process workers steal a shared submit queue", {
+  concurrency: false,
+  skip: processRuntimeTestSkip,
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
+  if (!hasCommand("bwrap") || !hasProcessRuntime("bun")) return;
+
+  const pool = createPool({
+    threads: 2,
+    host: { steal: true },
+    worker: {
+      runtime: "process",
+      processRuntime: "bun",
+      processCommandPrefix: [
+        "bwrap",
+        "--unshare-all",
+        "--ro-bind",
+        "/",
+        "/",
+        "--dev-bind",
+        "/dev",
+        "/dev",
+        "--proc",
+        "/proc",
+        "--tmpfs",
+        "/tmp",
+        "--die-with-parent",
+      ],
+    },
+  })({ double });
+
+  let testError: unknown;
+  try {
+    const results = await Promise.all(
+      Array.from(
+        { length: 80 },
+        (_, index) =>
+          withTimeout(
+            `Bubblewrap process worker double ${index}`,
+            pool.call.double(index),
+          ),
+      ),
+    );
+    for (let index = 0; index < results.length; index++) {
+      assert.equal(results[index], index * 2);
+    }
+  } catch (error) {
+    testError = error;
+    throw error;
+  } finally {
+    await shutdownWithTimeout(
+      "Bubblewrap process stealing shutdown",
+      pool.shutdown(),
+      testError,
+    );
+  }
 });
 
 test("process worker spawns a Deno child from this runtime", {
@@ -277,7 +459,7 @@ if (bunMacOSNamedSharedMemorySkip) {
           mode: "named",
           namePrefix: `knit_test_${processRuntime}`,
         },
-      });
+      }, 2);
     }
   });
 }

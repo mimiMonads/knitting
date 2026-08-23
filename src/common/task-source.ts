@@ -3,6 +3,22 @@ import type { NodeCallSiteLike } from "./node-compat.ts";
 
 export const genTaskID = ((counter: number) => () => counter++)(0);
 
+/**
+ * Identity of a task, stable across processes.
+ *
+ * `genTaskID` numbers tasks by the order their module happened to be evaluated,
+ * which host and worker do not share: the host imports in its own source order
+ * and the worker imports in task-name order. `(href, at)` is the same pair in
+ * both, because `at` counts `task()` calls within one module.
+ */
+export const stableTaskID = (href: string, at: number): number => {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < href.length; index++) {
+    hash = Math.imul(hash ^ href.charCodeAt(index), 0x01000193);
+  }
+  return (Math.imul(hash ^ at, 0x01000193) >>> 0);
+};
+
 const INTERNAL_CALLER_HINTS = [
   "/src/common/task-source.ts",
   "/src/common/task-source.js",

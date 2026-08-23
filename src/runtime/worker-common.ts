@@ -119,12 +119,29 @@ export const serializeWorkerBootstrapData = (
   };
 };
 
-export const terminateWorkerQuietly = (worker: SpawnedWorker): void => {
+// Bound the wait for process-worker exit.
+const WORKER_EXIT_WAIT_MS = 2_000;
+
+/** Terminate a worker, optionally waiting for it to exit. */
+export const terminateWorkerQuietly = (
+  worker: SpawnedWorker,
+  awaitExit = false,
+): Promise<void> => {
   try {
-    // Runaway worker termination can be slow or stuck on some runtimes; once the
-    // pool is closing it must not keep the host process alive.
-    worker.unref?.();
-    void Promise.resolve(worker.terminate()).catch(() => {});
+    if (!awaitExit) worker.unref?.();
+    const exited = Promise.resolve(worker.terminate()).then(() => {}, () => {});
+    if (!awaitExit) return exited;
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        worker.unref?.();
+        resolve();
+      }, WORKER_EXIT_WAIT_MS);
+      void exited.then(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
   } catch {
+    return Promise.resolve();
   }
 };

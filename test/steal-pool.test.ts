@@ -53,6 +53,57 @@ test("multi-worker thread pools steal by default", async () => {
   }
 });
 
+test("stealing pool completes with the host doorbell armed immediately", async () => {
+  const pool = createPool({
+    threads: 2,
+    host: { stallFreeLoops: 0 },
+  })({ double });
+  try {
+    const values = await Promise.all(
+      Array.from({ length: 80 }, (_, i) => pool.call.double(i)),
+    );
+    assert.deepEqual(values, Array.from({ length: 80 }, (_, i) => i * 2));
+  } finally {
+    await pool.shutdown();
+  }
+});
+
+test("pool completes with the host doorbell disabled", async () => {
+  const pool = createPool({
+    threads: 1,
+    host: { doorbell: false, stallFreeLoops: 0 },
+  })({ double });
+  try {
+    const values = await Promise.all(
+      Array.from({ length: 80 }, (_, i) => pool.call.double(i)),
+    );
+    assert.deepEqual(values, Array.from({ length: 80 }, (_, i) => i * 2));
+  } finally {
+    await pool.shutdown();
+  }
+});
+
+for (const dispatcher of ["per-thread", "serial-channel"] as const) {
+  test(`private-lane ${dispatcher} completes with immediate parking`, async () => {
+    const pool = createPool({
+      threads: 2,
+      host: {
+        steal: false,
+        dispatcher,
+        stallFreeLoops: 0,
+      },
+    })({ double });
+    try {
+      const values = await Promise.all(
+        Array.from({ length: 40 }, (_, i) => pool.call.double(i)),
+      );
+      assert.deepEqual(values, Array.from({ length: 40 }, (_, i) => i * 2));
+    } finally {
+      await pool.shutdown();
+    }
+  });
+}
+
 test("stealing pool handles a payload large enough to need the arena", async () => {
   const pool = createPool({ threads: 3 })({ concat });
   try {
@@ -97,18 +148,6 @@ test("stealing pool enforces one pool-global abort capacity", async () => {
 
   const settled = await Promise.allSettled(pending);
   assert.equal(settled.every((entry) => entry.status === "rejected"), true);
-});
-
-test("stealing rejects process workers before spawning them", () => {
-  assert.throws(
-    () =>
-      createPool({
-        threads: 2,
-        host: { steal: true },
-        worker: { runtime: "process", processRuntime: "bun" },
-      })({ double }),
-    /host\.steal does not support process workers/,
-  );
 });
 
 test("default and explicit scheduling choices select the intended topology", async () => {
@@ -160,5 +199,100 @@ test("default and explicit scheduling choices select the intended topology", asy
   assert.equal(
     messages.some((message) => message.includes("dispatcher=steal")),
     false,
+  );
+});
+
+/**
+ * A stealing worker must still be able to reach its park. The claim/flush
+ * reorder used under stealing once left the loop's "did this iteration move
+ * anything" flag stuck true, so the park was unreachable and every worker spun
+ * a core for the whole life of the pool. Idle CPU is the only thing that
+ * observes it: correctness tests pass either way.
+ */
+test("idle stealing workers park instead of spinning", {
+  timeout: 30_000,
+}, async () => {
+  const cpuUsage = (globalThis as typeof globalThis & {
+    process?: {
+      cpuUsage?: (previous?: unknown) => {
+        user: number;
+        system: number;
+      };
+    };
+  }).process?.cpuUsage;
+  if (typeof cpuUsage !== "function") return;
+
+  const threads = 3;
+  const idleMs = 400;
+  const pool = createPool({ threads, host: { steal: true } })({ double });
+  try {
+    await withTimeout(
+      Promise.all(Array.from({ length: 50 }, (_, i) => pool.call.double(i))),
+    );
+
+    const before = cpuUsage();
+    await new Promise((resolve) => setTimeout(resolve, idleMs));
+    const delta = cpuUsage(before);
+    const busyRatio = (delta.user + delta.system) / 1000 / idleMs;
+
+    // Parked (park-poll only) measures ~0.6 across runtimes; one spinning
+    // worker per thread measures ~`threads`. Anything at or above 1 core of
+    // steady burn while the pool has nothing to do is the regression.
+    assert.ok(
+      busyRatio < 1.5,
+      `idle stealing pool burned ${
+        busyRatio.toFixed(2)
+      } cores over ${idleMs}ms ` +
+        `with ${threads} idle workers; workers are spinning instead of parking`,
+    );
+  } finally {
+    await pool.shutdown();
+  }
+});
+
+/**
+ * A shut-down pool must not leave its workers running.
+ *
+ * `terminate()` cannot be trusted on its own: on Deno it resolves while a
+ * worker sitting in its synchronous dispatch loop keeps running, so every
+ * closed pool used to leak a spinning thread and the process crept up a core at
+ * a time. Shutdown therefore asks workers to leave the loop before killing
+ * them. Only idle CPU observes this — every functional test passes either way,
+ * which is exactly how it went unnoticed.
+ */
+test("shutting a pool down stops its workers", {
+  timeout: 30_000,
+}, async () => {
+  const cpuUsage = (globalThis as typeof globalThis & {
+    process?: {
+      cpuUsage?: (previous?: unknown) => { user: number; system: number };
+    };
+  }).process?.cpuUsage;
+  if (typeof cpuUsage !== "function") return;
+
+  const rounds = 4;
+  const threads = 3;
+  for (let round = 0; round < rounds; round++) {
+    const pool = createPool({ threads, host: { steal: true } })({ double });
+    await withTimeout(
+      Promise.all(Array.from({ length: 20 }, (_, i) => pool.call.double(i))),
+    );
+    await pool.shutdown();
+  }
+
+  // Every pool is gone, so nothing should be burning CPU. Abandoned workers
+  // accumulate across rounds: these twelve measured ~1.4 cores before the fix
+  // and ~0.03 after, so the threshold sits well clear of both.
+  const idleMs = 300;
+  const before = cpuUsage();
+  await new Promise((resolve) => setTimeout(resolve, idleMs));
+  const delta = cpuUsage(before);
+  const busyRatio = (delta.user + delta.system) / 1000 / idleMs;
+
+  assert.ok(
+    busyRatio < 0.4,
+    `${rounds * threads} workers from shut-down pools burned ${
+      busyRatio.toFixed(2)
+    } cores; shutdown left them running`,
   );
 });
