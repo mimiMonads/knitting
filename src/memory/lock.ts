@@ -338,10 +338,9 @@ export const HEADER_STATIC_PAYLOAD_U32 = TaskIndex.TotalBuff -
 export const HEADER_TASK_OFFSET_IN_SLOT_U32 = HEADER_STATIC_PAYLOAD_U32;
 // Work-stealing control words live in the unused tail of each slot's header
 // cache line. Task words occupy 0..7 (`TASK_LOCAL_FLAGS_INDEX = 7`) of the
-// 16-word line, leaving words 8..15 free. Consumer `c` owns slot `c`'s pair, and
-// because the slot stride is exactly 9 cache lines those pairs land on distinct
-// lines. `ACK[c]` and `WANT[c]` share one line on purpose: same single writer,
-// and a peer reading one pulls the other for free.
+// 16-word line, leaving words 8..15 free. Consumer `c` owns slot `c`'s words,
+// and the slot stride keeps those words on separate cache lines.
+// The ACK word was removed; retirement is folded into `workerBits`.
 export const STEAL_ACK_SLOT_OFFSET_U32 = HEADER_TASK_OFFSET_IN_SLOT_U32 +
   TaskIndex.Size;
 export const STEAL_WANT_SLOT_OFFSET_U32 = STEAL_ACK_SLOT_OFFSET_U32 + 1;
@@ -591,12 +590,10 @@ export const lock2 = ({
     headersRegion.byteOffset,
     headersRegion.byteLength >>> 2,
   );
-  const stealAckIndex = new Int32Array(stealConsumers);
   const stealWantIndex = new Int32Array(stealConsumers);
   for (let c = 0; c < stealConsumers; c++) {
-    const slotBase = (c * headersSlotStride) + LockBound.header;
-    stealAckIndex[c] = slotBase + STEAL_ACK_SLOT_OFFSET_U32;
-    stealWantIndex[c] = slotBase + STEAL_WANT_SLOT_OFFSET_U32;
+    stealWantIndex[c] = (c * headersSlotStride) + LockBound.header +
+      STEAL_WANT_SLOT_OFFSET_U32;
   }
   const stealLiveIndex = LockBound.header + STEAL_LIVE_SLOT_OFFSET_U32;
   const stealAllLiveMask = stealConsumers === 32
@@ -608,14 +605,6 @@ export const lock2 = ({
 
   const stealIsLive = (mask: number, consumer: number): boolean =>
     (mask & (1 << consumer)) !== 0;
-
-  const stealAckXorAll = (): number => {
-    let x = 0 | 0;
-    for (let c = 0; c < stealConsumers; c++) {
-      x = (x ^ a_load(stealView, stealAckIndex[c]!)) | 0;
-    }
-    return x;
-  };
 
   let promiseHandler: PromisePayloadHandler | undefined;
 
@@ -690,9 +679,9 @@ export const lock2 = ({
   // lanes but cannot make a genuinely pending lane appear free. Refresh only
   // when the cached free set is exhausted.
   let workerShadow = 0 | 0;
-  const refreshWorkerShadow = stealEnabled
-    ? () => workerShadow = stealAckXorAll()
-    : () => workerShadow = a_load(workerBits, 0) | 0;
+  // Under stealing, workerBits also records retired lanes.
+  const refreshWorkerShadow = () =>
+    workerShadow = a_load(workerBits, 0) | 0;
   refreshWorkerShadow();
   const ensureSenderStateHasFree = (state: number): number =>
     (~state) !== 0 ? state : (LastLocal ^ refreshWorkerShadow()) | 0;
@@ -956,14 +945,6 @@ export const lock2 = ({
       ? -1
       : ((((1 << stealRegionLanes) - 1) << (region * stealRegionLanes)) | 0);
 
-  const stealPeerAcks = (): number => {
-    let x = 0 | 0;
-    for (let c = 0; c < stealConsumers; c++) {
-      if (c !== stealId) x = (x ^ a_load(stealView, stealAckIndex[c]!)) | 0;
-    }
-    return x;
-  };
-
   const stealJuniorWants = (intent: number): boolean => {
     const live = a_load(stealView, stealLiveIndex) | 0;
     for (let c = stealId + 1; c < stealConsumers; c++) {
@@ -973,10 +954,12 @@ export const lock2 = ({
     return false;
   };
 
-  let stealCursor = ((stealRegions * stealId) / stealConsumers) | 0;
+  const stealHome = ((stealRegions * stealId) / stealConsumers) | 0;
+  let stealCursor = stealHome;
 
   const decodeSteal = (): boolean => {
-    const pending = (a_load(hostBits, 0) ^ LastWorker ^ stealPeerAcks()) | 0;
+    // workerBits includes retired lanes under stealing.
+    const pending = (a_load(hostBits, 0) ^ a_load(workerBits, 0)) | 0;
     if (pending === 0) return false;
 
     let pendingRegions = 0 | 0;
@@ -1035,25 +1018,31 @@ export const lock2 = ({
 
     // Last control loads before ownership. After this no control word is read
     // until every slot in `take` has been decoded.
-    const take = ((a_load(hostBits, 0) ^ LastWorker ^ stealPeerAcks()) &
+    const take = ((a_load(hostBits, 0) ^ a_load(workerBits, 0)) &
       stealLaneMask(region)) | 0;
     if (take === 0) {
       a_store(stealView, stealWantIndex[stealId]!, 0);
       return false;
     }
 
+    // Retire decoded lanes and release the region even if decoding throws.
     let lanes = take;
-    while (lanes !== 0) {
-      decodeAt(31 - clz32((lanes & -lanes) >>> 0));
-      lanes = (lanes & (lanes - 1)) | 0;
+    let done = 0 | 0;
+    try {
+      while (lanes !== 0) {
+        const bit = (lanes & -lanes) | 0;
+        decodeAt(31 - clz32(bit >>> 0));
+        lanes = (lanes & (lanes - 1)) | 0;
+        done = (done ^ bit) | 0;
+      }
+    } finally {
+      // ACK before clearing intent.
+      LastWorker = (LastWorker ^ done) | 0;
+      if (done !== 0) Atomics.xor(workerBits, 0, done);
+      a_store(stealView, stealWantIndex[stealId]!, 0);
+      // Restart from this consumer's home region.
+      stealCursor = stealHome;
     }
-
-    // Retire the whole claimed mask with one ACK store, then release the region.
-    // ACK before intent-clear (paper Assumption 2(ii)).
-    LastWorker = (LastWorker ^ take) | 0;
-    a_store(stealView, stealAckIndex[stealId]!, LastWorker);
-    a_store(stealView, stealWantIndex[stealId]!, 0);
-    stealCursor = (region + 1) % stealRegions;
     return true;
   };
 

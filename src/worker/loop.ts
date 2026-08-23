@@ -9,7 +9,10 @@ import {
 import { isSharedBufferSource } from "../common/shared-buffer-region.ts";
 import { isLockBufferTextCompat } from "../common/shared-buffer-text.ts";
 import { createWorkerRxQueue } from "./rx-queue.ts";
-import { createSharedMemoryTransport } from "../ipc/transport/shared-memory.ts";
+import {
+  createSharedMemoryTransport,
+  WORKER_STOP,
+} from "../ipc/transport/shared-memory.ts";
 import { lock2 } from "../memory/lock.ts";
 // Side-effect import: registers the payload codec (cycle break for Andromeda;
 // see lock.ts). Must run before any lock2() call.
@@ -203,7 +206,7 @@ export const workerMainLoop = async (
     return () => fn(); // always a closure wrapper
   })();
 
-  const { opView, rxStatus, txStatus } = signals;
+  const { opView, rxStatus, txStatus, stopView } = signals;
   const a_store = Atomics.store;
   const a_load = Atomics.load;
   const nativeWaitU32 = getProcessWorkerNativeWaitU32();
@@ -352,11 +355,23 @@ export const workerMainLoop = async (
 
   const flushBeforeClaim = steal !== undefined;
 
+  /** Leave the dispatch loop and acknowledge shutdown. */
+  const stopLoop = () => {
+    a_store(stopView, 0, WORKER_STOP.acknowledged);
+    a_store(rxStatus, 0, 0);
+    try {
+      port1.close?.();
+      port2.close?.();
+    } catch {}
+  };
+
   const loop = () => {
     isInMacro = false;
     let progressed = true;
     let awaiting = 0;
     while (true) {
+      if (stopView[0] !== WORKER_STOP.running) return stopLoop();
+
       if (flushBeforeClaim) {
         // Stealing only. Flush finished work before taking more on: a computed
         // response should not wait behind a claim, and that claim can block on

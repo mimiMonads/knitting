@@ -945,7 +945,12 @@ export const createPool: CreatePoolFactory = ({
   const closePoolNow = (): Promise<void> => {
     if (closePromise) return closePromise;
     closing = true;
-    closePromise = Promise.allSettled(workers.map((context) => context.kills()))
+    closePromise = Promise.allSettled(
+      workers.map((context) => context.requestStop?.()),
+    )
+      .then(() =>
+        Promise.allSettled(workers.map((context) => context.kills()))
+      )
       .then(() => {
         sharedDispatcherChannel?.close();
         stealChannel?.close();

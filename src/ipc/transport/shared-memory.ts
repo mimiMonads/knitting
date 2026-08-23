@@ -13,8 +13,17 @@ const SIGNAL_OFFSETS = {
   op: 0,
   rxStatus: CACHE_LINE_BYTES,
   txStatus: CACHE_LINE_BYTES * 2,
+  stop: CACHE_LINE_BYTES * 3,
 } as const;
-export const TRANSPORT_SIGNAL_BYTES = CACHE_LINE_BYTES * 3;
+export const TRANSPORT_SIGNAL_BYTES = CACHE_LINE_BYTES * 4;
+
+/** States of the worker-stop word. */
+export const WORKER_STOP = {
+  running: 0,
+  requested: 1,
+  /** The worker has left its dispatch loop. */
+  acknowledged: 2,
+} as const;
 
 const a_store = Atomics.store;
 
@@ -57,6 +66,14 @@ export const createSharedMemoryTransport = (
   );
 
   a_store(rxStatus, 0, 1);
+
+  const stopView = new Int32Array(
+    sab,
+    baseByteOffset + SIGNAL_OFFSETS.stop,
+    1,
+  );
+  if (isMain) a_store(stopView, 0, WORKER_STOP.running);
+
   return {
     sab: signalRegion,
     op: opView,
@@ -64,9 +81,10 @@ export const createSharedMemoryTransport = (
     opView,
     rxStatus,
     txStatus: new Int32Array(sab, baseByteOffset + SIGNAL_OFFSETS.txStatus, 1),
+    stopView,
   };
 };
 export type MainSignal = Pick<
   SignalArguments,
-  "opView" | "startAt" | "rxStatus" | "txStatus"
+  "opView" | "startAt" | "rxStatus" | "txStatus" | "stopView"
 >;

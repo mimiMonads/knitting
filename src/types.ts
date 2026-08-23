@@ -32,6 +32,8 @@ type WorkerInvoke = (args: Uint8Array) => Promise<unknown>;
 interface WorkerContext {
   txIdle(): boolean;
   call(descriptor: WorkerCall): WorkerInvoke;
+  /** Ask the worker to leave its dispatch loop before termination. */
+  requestStop?(): Promise<void>;
   kills(): Promise<void>;
 }
 

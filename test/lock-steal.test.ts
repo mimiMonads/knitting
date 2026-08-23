@@ -137,3 +137,91 @@ test("single consumer keeps the classic decode path", () => {
   assert.equal(typeof producer.decode, "function");
   assert.equal(consumers.length, 2);
 });
+
+/**
+ * A claim owns its whole region, so a throw partway through decoding it must
+ * still retire the lanes that were decoded and release the region. Leaving the
+ * intent word set would park the region for the life of the pool, and skipping
+ * the acknowledgement would strand every lane the claim had already consumed —
+ * the classic `decode()` path guards this with a `finally`, and the stealing
+ * path has to as well.
+ *
+ * `decodeAt` takes a task off the recycle list before it touches anything else,
+ * which makes that list a clean place to inject the failure.
+ */
+test("a throw mid-region still retires decoded lanes and frees the region", () => {
+  let failAfter = Number.POSITIVE_INFINITY;
+  let shifts = 0;
+  const explodingRecycle = {
+    shiftNoClear: () => {
+      if (++shifts > failAfter) throw new Error("decode blew up");
+      return undefined;
+    },
+  } as unknown as ConstructorParameters<typeof Object>[0];
+
+  const controlLayout = createLockControlCarpet({
+    signalBytes: 0,
+    abortBytes: 0,
+    lockSectorBytes: LOCK_SECTOR_BYTE_LENGTH,
+    headerSlotStrideU32: HEADER_SLOT_STRIDE_U32,
+    slotCount: LockBound.slots,
+    headerLayout: "split",
+  });
+  const shared = {
+    LockBoundSector: controlLayout.lock.lockSector,
+    headers: controlLayout.lock.headers,
+    payload: new SharedArrayBuffer(1 << 16),
+    payloadSector: controlLayout.lock.payloadSector,
+  };
+  const headersRegion = toSharedBufferRegion(shared.headers);
+  const headers = new Int32Array(
+    headersRegion.sab,
+    headersRegion.byteOffset,
+    headersRegion.byteLength >>> 2,
+  );
+
+  const consumers = 2;
+  const producer = lock2({ ...shared, consumers, regionLanes: 8 });
+  const failing = lock2({
+    ...shared,
+    consumers,
+    consumerId: 0,
+    regionLanes: 8,
+    recycleList: explodingRecycle as never,
+  });
+  const survivor = lock2({ ...shared, consumers, consumerId: 1, regionLanes: 8 });
+
+  const TOTAL = 3;
+  for (let i = 0; i < TOTAL; i++) {
+    assert.equal(producer.encode(makeValueTask(i)), true);
+  }
+
+  // Blow up on the second lane of the region, so the claim has already decoded
+  // one and still owes the rest.
+  failAfter = 1;
+  assert.throws(() => failing.decode(), /decode blew up/);
+
+  const failingWant = LockBound.header + STEAL_WANT_SLOT_OFFSET_U32;
+  assert.equal(
+    Atomics.load(headers, failingWant),
+    0,
+    "the region must be released even though decoding threw",
+  );
+
+  // The lane that was decoded before the throw is retired; the rest are still
+  // pending, so the other consumer can pick the region up and finish it.
+  failAfter = Number.POSITIVE_INFINITY;
+  const seen = new Set<number>();
+  for (const task of failing.resolved.toArray()) seen.add(task.value as number);
+  for (let guard = 0; guard < 100 && seen.size < TOTAL; guard++) {
+    if (!survivor.decode()) continue;
+    for (const task of survivor.resolved.toArray()) {
+      const value = task.value as number;
+      assert.equal(seen.has(value), false, `duplicate delivery of ${value}`);
+      seen.add(value);
+    }
+    survivor.resolved.clear();
+  }
+
+  assert.equal(seen.size, TOTAL, "no task was stranded by the failed claim");
+});

@@ -249,3 +249,50 @@ test("idle stealing workers park instead of spinning", {
     await pool.shutdown();
   }
 });
+
+/**
+ * A shut-down pool must not leave its workers running.
+ *
+ * `terminate()` cannot be trusted on its own: on Deno it resolves while a
+ * worker sitting in its synchronous dispatch loop keeps running, so every
+ * closed pool used to leak a spinning thread and the process crept up a core at
+ * a time. Shutdown therefore asks workers to leave the loop before killing
+ * them. Only idle CPU observes this — every functional test passes either way,
+ * which is exactly how it went unnoticed.
+ */
+test("shutting a pool down stops its workers", {
+  timeout: 30_000,
+}, async () => {
+  const cpuUsage = (globalThis as typeof globalThis & {
+    process?: {
+      cpuUsage?: (previous?: unknown) => { user: number; system: number };
+    };
+  }).process?.cpuUsage;
+  if (typeof cpuUsage !== "function") return;
+
+  const rounds = 4;
+  const threads = 3;
+  for (let round = 0; round < rounds; round++) {
+    const pool = createPool({ threads, host: { steal: true } })({ double });
+    await withTimeout(
+      Promise.all(Array.from({ length: 20 }, (_, i) => pool.call.double(i))),
+    );
+    await pool.shutdown();
+  }
+
+  // Every pool is gone, so nothing should be burning CPU. Abandoned workers
+  // accumulate across rounds: these twelve measured ~1.4 cores before the fix
+  // and ~0.03 after, so the threshold sits well clear of both.
+  const idleMs = 300;
+  const before = cpuUsage();
+  await new Promise((resolve) => setTimeout(resolve, idleMs));
+  const delta = cpuUsage(before);
+  const busyRatio = (delta.user + delta.system) / 1000 / idleMs;
+
+  assert.ok(
+    busyRatio < 0.4,
+    `${rounds * threads} workers from shut-down pools burned ${
+      busyRatio.toFixed(2)
+    } cores; shutdown left them running`,
+  );
+});

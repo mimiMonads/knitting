@@ -26,6 +26,7 @@ import {
   createSharedMemoryTransport,
   type Sab,
   TRANSPORT_SIGNAL_BYTES,
+  WORKER_STOP,
 } from "../ipc/transport/shared-memory.ts";
 import {
   ChannelHandler,
@@ -87,6 +88,10 @@ const isWorkerFatalMessage = (
   typeof (value as { [WORKER_FATAL_MESSAGE_KEY]?: unknown })[
       WORKER_FATAL_MESSAGE_KEY
     ] === "string";
+
+// Bound the wait for a worker to acknowledge loop exit.
+const WORKER_STOP_ACK_TIMEOUT_MS = 50;
+const WORKER_STOP_NEEDS_ACK = RUNTIME === "deno";
 
 // Keep idle workers self-healing if an Atomics.notify wake is missed.
 const DEFAULT_WORKER_PARK_MS = 1;
@@ -924,6 +929,25 @@ export const spawnWorkerContext = ({
     };
   };
 
+  // Ask the worker to leave its loop before termination.
+  const requestWorkerStop = async (): Promise<void> => {
+    const stopView = signalBox.stopView;
+    if (stopView === undefined) return;
+    try {
+      Atomics.store(stopView, 0, WORKER_STOP.requested);
+      laneWake();
+      notifySignal?.();
+    } catch {
+      return;
+    }
+    if (!WORKER_STOP_NEEDS_ACK) return;
+    const deadline = Date.now() + WORKER_STOP_ACK_TIMEOUT_MS;
+    while (Atomics.load(stopView, 0) !== WORKER_STOP.acknowledged) {
+      if (Date.now() >= deadline) return;
+      await new Promise((resolve) => setTimeout(resolve, 1));
+    }
+  };
+
   const context: WorkerContext & {
     lock: ReturnType<typeof lock2>;
     processSharedMemoryBackings?: readonly ProcessSharedMemoryBacking[];
@@ -933,10 +957,13 @@ export const spawnWorkerContext = ({
   } = {
     txIdle,
     call,
+    requestStop: requestWorkerStop,
     kills: async () => {
       markWorkerClosed("Thread closed", true);
-      const termination = terminateWorkerQuietly(worker);
-      if (processWorkerMemory !== undefined) await termination;
+      // Process workers must exit before their shared memory is unmapped.
+      const awaitExit = processWorkerMemory !== undefined;
+      const termination = terminateWorkerQuietly(worker, awaitExit);
+      if (awaitExit) await termination;
       cleanupProcessWorkerMemoryQuietly(processWorkerMemory);
     },
     lock,
