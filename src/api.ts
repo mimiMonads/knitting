@@ -758,6 +758,9 @@ export const createPool: CreatePoolFactory = ({
       debug,
       hostDebug: hostDebug?.log,
       totalNumberOfThread,
+      // Worker count without the inline lane. The inliner runs on the host
+      // thread and never spins, so it must not count towards the spin policy.
+      workerCount: threads ?? 1,
       source,
       workerOptions: resolvedWorker,
       workerExecArgv: execArgv,

@@ -193,11 +193,10 @@ export const workerMainLoop = async (
 
   const timers = workerOptions?.timers;
   const spinMicroseconds = timers?.spinMicroseconds ??
-    Math.max(1, totalNumberOfThread) * 50;
+    (totalNumberOfThread <= 1 ? 50 : 0);
   const parkMs = dbg !== undefined
     ? Number.POSITIVE_INFINITY
-    : (timers?.parkMs ??
-      Math.max(1, totalNumberOfThread) * 50);
+    : (timers?.parkMs ?? 1);
 
   const pauseSpin = (() => {
     const fn = typeof timers?.pauseNanoseconds === "number"

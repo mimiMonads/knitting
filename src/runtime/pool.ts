@@ -95,6 +95,7 @@ const WORKER_STOP_NEEDS_ACK = RUNTIME === "deno";
 
 // Keep idle workers self-healing if an Atomics.notify wake is missed.
 const DEFAULT_WORKER_PARK_MS = 1;
+const SINGLE_WORKER_SPIN_US = 50;
 const DEFAULT_ABORT_SIGNAL_CAPACITY = 258;
 
 const sanitizePositiveInteger = (value: number | undefined) => {
@@ -111,15 +112,21 @@ const abortSignalByteLength = (capacity: number): number =>
 
 const withDefaultWorkerTimers = (
   options: WorkerSettings | undefined,
+  workerCount: number,
 ): WorkerSettings => {
   const parkMs = options?.timers?.parkMs ?? DEFAULT_WORKER_PARK_MS;
-  if (options === undefined) return { timers: { parkMs } };
+  // `??` and not `||`: an explicit `spinMicroseconds: 0` is the whole point of
+  // the multi-worker default and must not fall through to it.
+  const spinMicroseconds = options?.timers?.spinMicroseconds ??
+    (workerCount <= 1 ? SINGLE_WORKER_SPIN_US : 0);
+  if (options === undefined) return { timers: { parkMs, spinMicroseconds } };
 
   return {
     ...options,
     timers: {
       ...options.timers,
       parkMs,
+      spinMicroseconds,
     },
   };
 };
@@ -319,6 +326,7 @@ export const spawnWorkerContext = ({
   debug,
   hostDebug,
   totalNumberOfThread,
+  workerCount,
   source,
   at,
   workerOptions,
@@ -341,6 +349,12 @@ export const spawnWorkerContext = ({
   debug?: DebugOptions;
   hostDebug?: (message: string) => void;
   totalNumberOfThread: number;
+  /**
+   * Workers only, excluding any host inline lane. Drives the spin policy:
+   * the inliner runs on the host thread and never spins, so counting it
+   * would strip a one-worker pool of the budget it should keep.
+   */
+  workerCount?: number;
 
   source?: string;
   workerOptions?: WorkerSettings;
@@ -391,7 +405,7 @@ export const spawnWorkerContext = ({
   const tsFileUrl = new URL(import.meta.url);
   const poliWorker = RUNTIME_WORKER;
   const resolvedWorkerOptions = serializeWorkerBootstrapData(
-    withDefaultWorkerTimers(workerOptions),
+    withDefaultWorkerTimers(workerOptions, workerCount ?? totalNumberOfThread),
   );
   const useProcessWorkerRuntime = resolvedWorkerOptions.runtime === "process";
   const processWorkerRuntime = useProcessWorkerRuntime
