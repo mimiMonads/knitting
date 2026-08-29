@@ -153,6 +153,14 @@ export function createHostTxQueue({
       ? each.setHostWaiterArmed
       : (_armed: boolean) => {}
   );
+  const returnNativeArmers = [
+    returnLock,
+    ...(extraReturnLocks ?? []),
+  ].map((each) =>
+    typeof each.armHostNotifier === "function"
+      ? each.armHostNotifier
+      : () => false
+  );
   // A stealing queue drains one private return lock per worker. Borrowed
   // BufferReferences must therefore be claimed with the hooks belonging to the
   // worker that produced that particular return. The hooks are bound after the
@@ -248,6 +256,21 @@ export function createHostTxQueue({
     return supported;
   };
 
+  /**
+   * Native callbacks (Deno's threadSafe UnsafeCallback) cannot use waitAsync,
+   * but they use the same shared arm word. Each lane is armed and checked for
+   * a publication in one operation; a false return means the dispatcher must
+   * drain again rather than sleep waiting for a ring that already happened.
+   */
+  const armCompletionNotifier = (): boolean => {
+    for (const arm of returnNativeArmers) {
+      if (arm()) continue;
+      setCompletionWaiterArmed(false);
+      return false;
+    }
+    return true;
+  };
+
   const hasActiveTasks = () => {
     const count = (inUsed - getPendingPromiseCount()) | 0;
     return count > 0;
@@ -287,6 +310,7 @@ export function createHostTxQueue({
     txIdle,
     completeFrame,
     waitForCompletion,
+    armCompletionNotifier,
     setCompletionWaiterArmed,
     setReturnHooks: (lane: number, hooks: ReturnHooks | undefined) => {
       if (!Number.isInteger(lane) || lane < 0 || lane >= returnHooks.length) {

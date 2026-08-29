@@ -13,6 +13,7 @@ import {
   spawnWorkerContext,
 } from "./runtime/pool.ts";
 import { ChannelHandler, hostDispatcherLoop } from "./runtime/dispatcher.ts";
+import { createDenoCompletionDoorbell } from "./runtime/deno-doorbell.ts";
 import { createSharedArrayBuffer, RUNTIME } from "./common/runtime.ts";
 import {
   RUNTIME_IS_MAIN_THREAD,
@@ -745,6 +746,14 @@ export const createPool: CreatePoolFactory = ({
   const serialDispatcherChannel = serialChannel
     ? new ChannelHandler("channel")
     : undefined;
+  // Deno's waitAsync promise does not wake its idle event loop. The default
+  // thread-pool path requests FFI permission for a threadSafe UnsafeCallback;
+  // a denial retains polling, and `host.doorbell: false` opts out entirely.
+  // Process workers cannot use this process-local pointer.
+  const denoCompletionDoorbell = !usingCompiledWorker &&
+      resolvedWorker?.runtime !== "process" && host?.doorbell !== false
+    ? createDenoCompletionDoorbell()
+    : undefined;
 
   let workers = Array.from({
     length: threads ?? 1,
@@ -771,6 +780,7 @@ export const createPool: CreatePoolFactory = ({
       usesAbortSignal,
       permission: permissionProtocol,
       sharedChannelHandler: serialDispatcherChannel,
+      denoCompletionDoorbell,
       stealPool: stealBuffers === undefined ? undefined : {
         submitBuffers: stealBuffers.submitBuffers,
         returnBuffers: stealBuffers.returnBuffers[thread]!,
@@ -812,7 +822,7 @@ export const createPool: CreatePoolFactory = ({
         3 * Int32Array.BYTES_PER_ELEMENT,
       ) as ArrayBufferLike,
     );
-    const { check } = hostDispatcherLoop({
+    const { check, wakeCompletion } = hostDispatcherLoop({
       signalBox: {
         opView: signalWords.subarray(0, 1),
         txStatus: signalWords.subarray(1, 2),
@@ -823,14 +833,34 @@ export const createPool: CreatePoolFactory = ({
       dispatcherOptions: host,
       notifySignal: wakeOne,
       crossProcess: resolvedWorker?.runtime === "process",
+      nativeCompletionDoorbell: denoCompletionDoorbell !== undefined ||
+        workers.some((context) =>
+          (context as { nodeCompletionDoorbell?: boolean })
+            .nodeCompletionDoorbell === true
+        ),
+      processCompletionDoorbell: workers.some((context) =>
+        (context as {
+          processCompletionDoorbell?: boolean;
+        }).processCompletionDoorbell === true
+      ),
     });
 
     channel.open(check);
+    if (denoCompletionDoorbell !== undefined) {
+      workers.forEach((_, thread) => {
+        denoCompletionDoorbell.listen(thread, wakeCompletion);
+      });
+    }
+    workers.forEach((context) => {
+      (context as {
+        bindCompletionWake?: (wake: () => void) => void;
+      }).bindCompletionWake?.(wakeCompletion);
+    });
     workers.forEach((context) => {
       context.bindSend!(() => {
         if (check.isRunning !== true) {
           check.isRunning = true;
-          Promise.resolve().then(check);
+          queueMicrotask(check);
         }
         wakeOne();
       });
@@ -898,7 +928,7 @@ export const createPool: CreatePoolFactory = ({
       }
       if (serialScheduled) return;
       serialScheduled = true;
-      Promise.resolve().then(runSerialChecks);
+      queueMicrotask(runSerialChecks);
     };
 
     channel.open(runSerialChecks);
@@ -948,15 +978,32 @@ export const createPool: CreatePoolFactory = ({
   const closePoolNow = (): Promise<void> => {
     if (closePromise) return closePromise;
     closing = true;
+    let canCloseNativeDoorbells = denoCompletionDoorbell === undefined;
     closePromise = Promise.allSettled(
       workers.map((context) => context.requestStop?.()),
     )
-      .then(() =>
-        Promise.allSettled(workers.map((context) => context.kills()))
-      )
+      .then((stops) => {
+        if (denoCompletionDoorbell !== undefined) {
+          canCloseNativeDoorbells = stops.every((result, index) => {
+            if (workers[index]!.requestStop === undefined) return true;
+            return result.status === "fulfilled" && result.value === true;
+          });
+        }
+        return Promise.allSettled(workers.map((context) => context.kills()));
+      })
       .then(() => {
         sharedDispatcherChannel?.close();
         stealChannel?.close();
+      })
+      .finally(() => {
+        if (canCloseNativeDoorbells) {
+          denoCompletionDoorbell?.close();
+          return;
+        }
+        // A worker never acknowledged shutdown, so it may still hold the raw
+        // pointer. Unref rather than free: the process can still exit, and the
+        // callback stays valid if that worker does ring after all.
+        denoCompletionDoorbell?.unref();
       });
     return closePromise;
   };

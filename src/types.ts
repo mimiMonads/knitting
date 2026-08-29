@@ -33,7 +33,7 @@ interface WorkerContext {
   txIdle(): boolean;
   call(descriptor: WorkerCall): WorkerInvoke;
   /** Ask the worker to leave its dispatch loop before termination. */
-  requestStop?(): Promise<void>;
+  requestStop?(): Promise<boolean>;
   kills(): Promise<void>;
 }
 
@@ -59,6 +59,12 @@ type WorkerData = {
   permission?: ResolvedPermissionProtocol;
   /** Whether this host can arm an async completion waiter on the return lock. */
   notifyOnHostPublish?: boolean;
+  /** Process-local IPC channel can carry coalesced completion doorbells. */
+  processCompletionDoorbell?: boolean;
+  /** Process-local Deno callback pointer for waking the host completion pump. */
+  denoCompletionDoorbell?: bigint;
+  /** Process-local Node uv_async handle for waking the host completion pump. */
+  nodeCompletionDoorbell?: bigint;
   /**
    * Work stealing. When present, `lock` is a submit region shared by every
    * worker and this worker claims from it as consumer `consumerId` of
@@ -532,7 +538,7 @@ type DispatcherSettings = {
    * defaults to 128 — escalating is expensive and the wide window also batches
    * completions. A doorbell escalates to `Atomics.waitAsync` at roughly the
    * price of one hop, so pools that have one default to 1. Pools without a
-   * doorbell — Deno, or `doorbell: false` — keep 128.
+   * doorbell — Deno with FFI denied, or `doorbell: false` — keep 128.
    *
    * Setting this explicitly opts out of that coupling for every pool shape.
    */
@@ -555,15 +561,29 @@ type DispatcherSettings = {
    * within the cores, -22% to -32% once they do not. That is not gated
    * automatically because the core count cannot be probed portably.
    *
-   * Forced off, overriding an explicit `true`, where a doorbell cannot work:
-   * on Deno, whose `waitAsync` does not wake an idle event loop, and for
-   * process workers, which live in another process and so cannot ring a host
-   * waiter at all — V8 keeps its Atomics waiter list per isolate, which is why
-   * they wake through a native futex addon instead. Compiled (Porffor) workers
-   * never reach this path: they reject `host` outright and use pipes rather
-   * than shared memory.
+   * Deno uses a `threadSafe` FFI callback instead because its `waitAsync` does
+   * not wake an idle event loop. Its default asks for `ffi` permission once;
+   * `--allow-ffi` skips that prompt, while denial or `--no-prompt` retains
+   * polling. Set this to `false` to avoid the request. It is forced off for
+   * process workers, which live in another process and cannot call this
+   * process-local callback or ring a host Atomics waiter. Compiled (Porffor)
+   * workers never reach this path: they reject `host` outright and use pipes
+   * rather than shared memory.
    */
   doorbell?: boolean;
+  /**
+   * Experimental Node native callback bridge for thread workers.
+   *
+   * Node uses a `uv_async_t` addon to wake the host from the worker thread,
+   * removing the JS pump hop. Measured against `Atomics.waitAsync` on a
+   * per-thread pool it is throughput-neutral and costs about 20% less host CPU
+   * per call on long tasks, while short calls are a wash, so it stays opt-in
+   * until it is measured under real host I/O. Bun and Deno ignore this flag:
+   * Bun keeps `Atomics.waitAsync`, and Deno's FFI callback remains its default
+   * because it fixes an otherwise-idle event loop that `waitAsync` cannot
+   * wake.
+   */
+  nativeDoorbell?: boolean;
   /**
    * Host dispatcher topology.
    * - `"per-thread"`: each worker owns its dispatcher and macro channel.

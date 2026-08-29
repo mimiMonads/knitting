@@ -32,6 +32,9 @@ type ArgumentsForCreateWorkerQueue = {
   stealing?: boolean;
 };
 
+/** Tasks run per `serviceBatchImmediate` call before returning to the loop. */
+const SERVICE_BATCH_MAX = 32;
+
 export type CreateWorkerRxQueue = ReturnType<typeof createWorkerRxQueue>;
 export const createWorkerRxQueue = (
   {
@@ -49,7 +52,6 @@ export const createWorkerRxQueue = (
     throw ("UNREACHABLE FROM PLACE HOLDER (thread)");
   };
 
-  let hasAnythingFinished = 0;
   let awaiting = 0;
 
   const jobs = listOfFunctions.reduce((acc, fixed) => (
@@ -75,10 +77,15 @@ export const createWorkerRxQueue = (
   const returnHostBits = returnLock.hostBits;
   const returnWorkerBits = returnLock.workerBits;
   const deferredReleases: Array<() => void> = [];
-  const explicitReturnReleases = new Map<string, () => void>();
+  const explicitReturnReleases = new Map<bigint, () => void>();
   const drainReturnReleases = () => {
     if (deferredReleases.length === 0) return;
-    if ((a_load(returnHostBits, 0) ^ a_load(returnWorkerBits, 0)) !== 0) return;
+    // `returnHostBits` is the publication word of the return lock, and only
+    // this thread ever writes it (encode() toggles hostBits, the host toggles
+    // workerBits). Reading our own word plainly skips an `Atomics.load`, which
+    // is a non-inlined call an order of magnitude dearer than a plain read;
+    // the peer's word still needs the atomic.
+    if ((returnHostBits[0]! ^ a_load(returnWorkerBits, 0)) !== 0) return;
     for (let i = 0; i < deferredReleases.length; i++) {
       try {
         deferredReleases[i]!();
@@ -89,10 +96,12 @@ export const createWorkerRxQueue = (
     deferredReleases.length = 0;
   };
   const releaseReturnedBufferReference = (token: bigint): void => {
-    const key = token.toString();
-    const release = explicitReturnReleases.get(key);
+    // Keyed by the bigint itself: Map compares with SameValueZero, which is
+    // value equality for BigInt, so the `.toString()` on both the set and the
+    // lookup was two throwaway string allocations per borrowed reference.
+    const release = explicitReturnReleases.get(token);
     if (release === undefined) return;
-    explicitReturnReleases.delete(key);
+    explicitReturnReleases.delete(token);
     try {
       release();
     } catch {
@@ -111,9 +120,13 @@ export const createWorkerRxQueue = (
     return acc;
   }, [] as Array<(slot: Task) => unknown>);
 
+  // A settled task is either written into the return lock straight away or
+  // parked in `pendingFrames`, so the queue's own size already answers "is
+  // there anything left to flush" — the separate counter this used to keep was
+  // an increment and a decrement per task tracking a value it could read.
   const hasCompleted = workerOptions?.resolveAfterFinishingAll === true
-    ? () => hasAnythingFinished !== 0 && toWork.size === 0
-    : () => hasAnythingFinished !== 0;
+    ? () => pendingFrames.size !== 0 && toWork.size === 0
+    : () => pendingFrames.size !== 0;
 
   const { decode, resolved } = lock;
   const resolvedShift = () => resolved.shiftNoClear();
@@ -134,15 +147,11 @@ export const createWorkerRxQueue = (
     return true;
   };
 
-  const encodeReturnSafe = (slot: Task) => {
-    if (!returnLock.encode(slot)) return false;
-
-    return true;
-  };
+  const returnEncode = returnLock.encode;
 
   const sendReturn = (slot: Task, shouldReject: boolean) => {
     slot[IDX_FLAGS] = shouldReject ? FLAG_REJECT : 0;
-    if (!encodeReturnSafe(slot)) return false;
+    if (!returnEncode(slot)) return false;
     // Preserve return finalizers past slot recycle; release after drain.
     if (slot.finalize !== undefined) {
       const token = (slot.finalize as (() => void) & {
@@ -151,11 +160,10 @@ export const createWorkerRxQueue = (
       if (token === undefined || borrowReturnedBufferReferences !== true) {
         deferredReleases.push(slot.finalize);
       } else {
-        explicitReturnReleases.set(token.toString(), slot.finalize);
+        explicitReturnReleases.set(token, slot.finalize);
       }
       slot.finalize = undefined;
     }
-    hasAnythingFinished--;
     recyclePush(slot);
     return true;
   };
@@ -168,7 +176,6 @@ export const createWorkerRxQueue = (
   ) => {
     runTaskFinalizers(slot);
     slot.value = value;
-    hasAnythingFinished++;
     if (wasAwaited && awaiting > 0) awaiting--;
     const shouldReject = isError ||
       slot[IDX_FLAGS] === FLAG_REJECT;
@@ -199,15 +206,21 @@ export const createWorkerRxQueue = (
     serviceBatchImmediate: () => {
       let processed = 0;
 
-      while (processed < 5 && toWork.size !== 0) {
+      // Every trip back out to the dispatch loop costs a claim attempt and the
+      // per-pass bookkeeping, so a low cap makes that scaffolding a per-task
+      // tax on cheap tasks. Run a longer run when the return lock is keeping
+      // up, and cut it short the moment a settle lands in `pendingFrames` --
+      // that means the return region is full and the right move is to go
+      // flush it rather than pile up more finished work.
+      while (processed < SERVICE_BATCH_MAX && toWork.size !== 0) {
         const slot = toWorkShift()!;
 
         try {
           const fnIndex = slot[TaskIndex.FunctionID] & FUNCTION_ID_MASK;
           const result = runByIndex[fnIndex]!(slot);
           slot[IDX_FLAGS] = 0;
-          slot.value = null;
           if (result instanceof Promise) {
+            slot.value = null;
             awaiting++;
 
             result.then(
@@ -222,6 +235,7 @@ export const createWorkerRxQueue = (
         }
 
         ++processed;
+        if (pendingFrames.size !== 0) break;
       }
 
       return processed;

@@ -7,6 +7,7 @@ import {
   createProcessWorkerNativeSignalNotifier,
   type ProcessSharedMemoryBacking,
   type ProcessStealMemoryLayout,
+  processWorkerUsesIpc,
   readProcessSharedMemorySettings,
   readProcessWorkerCommandPrefix,
   readProcessWorkerRuntime,
@@ -33,6 +34,8 @@ import {
   type DispatcherCheck,
   hostDispatcherLoop,
 } from "./dispatcher.ts";
+import type { DenoCompletionDoorbell } from "./deno-doorbell.ts";
+import { createNodeCompletionDoorbell } from "./node-doorbell.ts";
 import {
   HEADER_SLOT_STRIDE_U32,
   lock2,
@@ -61,6 +64,7 @@ import {
 } from "../common/runtime.ts";
 import {
   HAS_NODE_WORKER_THREADS,
+  isProcessCompletionDoorbell,
   RUNTIME_WORKER,
   type RuntimeWorkerLike,
 } from "../common/worker-runtime.ts";
@@ -338,6 +342,7 @@ export const spawnWorkerContext = ({
   abortSignalCapacity,
   usesAbortSignal,
   sharedChannelHandler,
+  denoCompletionDoorbell,
   stealPool,
 }: {
   list: string[];
@@ -370,6 +375,8 @@ export const spawnWorkerContext = ({
    * macro channel that runs all lane checks.
    */
   sharedChannelHandler?: ChannelHandler;
+  /** Deno-only native callback shared by every thread worker in this pool. */
+  denoCompletionDoorbell?: DenoCompletionDoorbell;
   /**
    * Work-stealing wiring. When present the submit region, both host-side locks
    * and the pending registry are owned by `createPool` and shared: every worker
@@ -408,12 +415,20 @@ export const spawnWorkerContext = ({
     withDefaultWorkerTimers(workerOptions, workerCount ?? totalNumberOfThread),
   );
   const useProcessWorkerRuntime = resolvedWorkerOptions.runtime === "process";
+  const canUseDenoCompletionDoorbell = !useProcessWorkerRuntime &&
+    denoCompletionDoorbell !== undefined;
   const processWorkerRuntime = useProcessWorkerRuntime
     ? readProcessWorkerRuntime(resolvedWorkerOptions)
     : undefined;
   const processWorkerCommandPrefix = useProcessWorkerRuntime
     ? readProcessWorkerCommandPrefix(resolvedWorkerOptions)
     : undefined;
+  const canUseProcessCompletionDoorbell = useProcessWorkerRuntime &&
+    host?.doorbell !== false &&
+    processWorkerUsesIpc({
+      processRuntime: processWorkerRuntime,
+      commandPrefix: processWorkerCommandPrefix,
+    });
   const processSharedMemorySettings = useProcessWorkerRuntime
     ? readProcessSharedMemorySettings(resolvedWorkerOptions)
     : undefined;
@@ -692,10 +707,22 @@ export const spawnWorkerContext = ({
   const ownsChannel = sharedChannelHandler === undefined &&
     stealPool === undefined;
   const ownChannel = sharedChannelHandler ?? new ChannelHandler();
+  // `uv_async_t` belongs to this lane's host loop. Its callback is created
+  // before the dispatcher so its pointer can be included in worker bootstrap;
+  // the target is bound once this lane (or the stealing pool) owns a drain.
+  let nodeCompletionWake: (() => void) | undefined;
+  const nodeCompletionDoorbell = !useProcessWorkerRuntime &&
+      host?.doorbell !== false && host?.nativeDoorbell === true
+    ? createNodeCompletionDoorbell(() => nodeCompletionWake?.())
+    : undefined;
+  const canUseNodeCompletionDoorbell = nodeCompletionDoorbell !== undefined;
   // Under stealing there is one queue, so one dispatcher drives it from the
   // pool; a per-lane dispatcher would double-drain the shared registry.
-  const { check: dispatcherCheck } = stealPool !== undefined
-    ? { check: undefined }
+  const {
+    check: dispatcherCheck,
+    wakeCompletion: directCompletionWake,
+  } = stealPool !== undefined
+    ? { check: undefined, wakeCompletion: undefined }
     : hostDispatcherLoop({
       signalBox,
       queue,
@@ -703,14 +730,22 @@ export const spawnWorkerContext = ({
       dispatcherOptions: host,
       notifySignal: nativeNotifySignal,
       crossProcess: useProcessWorkerRuntime,
+      nativeCompletionDoorbell: canUseDenoCompletionDoorbell ||
+        canUseNodeCompletionDoorbell,
+      processCompletionDoorbell: canUseProcessCompletionDoorbell,
     });
+  if (canUseDenoCompletionDoorbell && dispatcherCheck !== undefined) {
+    denoCompletionDoorbell.listen(thread, directCompletionWake!);
+  }
+  nodeCompletionWake = directCompletionWake;
+  let processCompletionWake = directCompletionWake;
   if (ownsChannel && dispatcherCheck !== undefined) {
     ownChannel.open(dispatcherCheck);
     channelHandler = ownChannel;
     dispatchSend = () => {
       if (dispatcherCheck.isRunning === true) return;
       dispatcherCheck.isRunning = true;
-      Promise.resolve().then(dispatcherCheck);
+      queueMicrotask(dispatcherCheck);
       laneWake();
     };
   }
@@ -747,12 +782,23 @@ export const spawnWorkerContext = ({
     payloadConfig: resolvedPayloadConfig,
     bufferReferenceReturn,
     permission,
-    // Mirrors the dispatcher's `canUseDoorbell`: a cross-process worker cannot
-    // ring the host's waiter, so do not make it pay the atomic op.
-    notifyOnHostPublish: !useProcessWorkerRuntime &&
-      host?.doorbell !== false &&
-      (RUNTIME === "bun" || RUNTIME === "node") &&
-      typeof Atomics.waitAsync === "function",
+    // Thread workers ring their local Atomics waiter. Process workers can use
+    // the Node-compatible IPC doorbell when their spawn mode exposes it.
+    notifyOnHostPublish: host?.doorbell !== false &&
+      (
+        canUseProcessCompletionDoorbell ||
+        canUseNodeCompletionDoorbell ||
+        (!useProcessWorkerRuntime &&
+          (RUNTIME === "bun" || RUNTIME === "node") &&
+          typeof Atomics.waitAsync === "function")
+      ),
+    processCompletionDoorbell: canUseProcessCompletionDoorbell,
+    denoCompletionDoorbell: canUseDenoCompletionDoorbell
+      ? denoCompletionDoorbell.pointer
+      : undefined,
+    nodeCompletionDoorbell: canUseNodeCompletionDoorbell
+      ? nodeCompletionDoorbell.pointer
+      : undefined,
     steal: stealPool === undefined ? undefined : {
       consumers: stealPool.consumers,
       consumerId: stealPool.consumerId,
@@ -877,6 +923,10 @@ export const spawnWorkerContext = ({
   };
 
   const onWorkerMessage = (message: unknown) => {
+    if (isProcessCompletionDoorbell(message)) {
+      processCompletionWake?.();
+      return;
+    }
     if (!isWorkerFatalMessage(message)) return;
     markWorkerClosed(
       `Worker startup failed: ${message[WORKER_FATAL_MESSAGE_KEY]}`,
@@ -897,6 +947,8 @@ export const spawnWorkerContext = ({
       // Exit is the point at which this endpoint can no longer write WANT, so
       // survivors may safely ignore any intent it left behind.
       deactivateStealConsumer();
+      // Only an exited Node worker is guaranteed not to hold the raw pointer.
+      nodeCompletionDoorbell?.close();
       if (closedReason !== undefined) return;
       const normalized = typeof code === "number" ? code : -1;
       markWorkerClosed(`Worker exited with code ${normalized}`);
@@ -944,22 +996,23 @@ export const spawnWorkerContext = ({
   };
 
   // Ask the worker to leave its loop before termination.
-  const requestWorkerStop = async (): Promise<void> => {
+  const requestWorkerStop = async (): Promise<boolean> => {
     const stopView = signalBox.stopView;
-    if (stopView === undefined) return;
+    if (stopView === undefined) return true;
     try {
       Atomics.store(stopView, 0, WORKER_STOP.requested);
       laneWake();
       notifySignal?.();
     } catch {
-      return;
+      return false;
     }
-    if (!WORKER_STOP_NEEDS_ACK) return;
+    if (!WORKER_STOP_NEEDS_ACK) return true;
     const deadline = Date.now() + WORKER_STOP_ACK_TIMEOUT_MS;
     while (Atomics.load(stopView, 0) !== WORKER_STOP.acknowledged) {
-      if (Date.now() >= deadline) return;
+      if (Date.now() >= deadline) return false;
       await new Promise((resolve) => setTimeout(resolve, 1));
     }
+    return true;
   };
 
   const context: WorkerContext & {
@@ -968,6 +1021,9 @@ export const spawnWorkerContext = ({
     dispatcherCheck?: DispatcherCheck;
     laneWake?: () => void;
     bindSend?: (fn: () => void) => void;
+    bindCompletionWake?: (fn: () => void) => void;
+    processCompletionDoorbell?: boolean;
+    nodeCompletionDoorbell?: boolean;
   } = {
     txIdle,
     call,
@@ -989,6 +1045,16 @@ export const spawnWorkerContext = ({
     bindSend: sharedChannelHandler !== undefined || stealPool !== undefined
       ? ((fn: () => void) => void (dispatchSend = fn))
       : undefined,
+    bindCompletionWake: (canUseProcessCompletionDoorbell ||
+        canUseNodeCompletionDoorbell) &&
+        stealPool !== undefined
+      ? ((fn: () => void) => {
+        processCompletionWake = fn;
+        nodeCompletionWake = fn;
+      })
+      : undefined,
+    processCompletionDoorbell: canUseProcessCompletionDoorbell,
+    nodeCompletionDoorbell: canUseNodeCompletionDoorbell,
   };
 
   return context;

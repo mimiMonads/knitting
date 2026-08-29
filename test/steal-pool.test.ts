@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "./_runner.ts";
 import { createPool } from "../knitting.ts";
 import { AbortSignalPoolExhausted } from "../src/shared/abortSignal.ts";
+import { RUNTIME } from "../src/common/runtime.ts";
 import { abortA, abortB, abortReturnsInput } from "./fixtures/abort_tasks.ts";
 import { concat, double } from "./fixtures/steal_tasks.ts";
+import { delayedEcho } from "./fixtures/loop_tasks.ts";
 
 const withTimeout = async <T>(promise: Promise<T>, ms = 5_000): Promise<T> => {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -19,6 +21,22 @@ const withTimeout = async <T>(promise: Promise<T>, ms = 5_000): Promise<T> => {
     ]);
   } finally {
     if (timeoutId !== undefined) clearTimeout(timeoutId);
+  }
+};
+
+const denoFfiGranted = (): boolean => {
+  if (RUNTIME !== "deno") return false;
+  const deno = (globalThis as typeof globalThis & {
+    Deno?: {
+      permissions?: {
+        querySync?: (descriptor: { name: "ffi" }) => { state?: string };
+      };
+    };
+  }).Deno;
+  try {
+    return deno?.permissions?.querySync?.({ name: "ffi" }).state === "granted";
+  } catch {
+    return false;
   }
 };
 
@@ -63,6 +81,24 @@ test("stealing pool completes with the host doorbell armed immediately", async (
       Array.from({ length: 80 }, (_, i) => pool.call.double(i)),
     );
     assert.deepEqual(values, Array.from({ length: 80 }, (_, i) => i * 2));
+  } finally {
+    await pool.shutdown();
+  }
+});
+
+test("Deno FFI doorbell wakes a host armed before a delayed result", {
+  skip: !denoFfiGranted(),
+}, async () => {
+  const pool = createPool({
+    threads: 1,
+    host: { stallFreeLoops: 0 },
+  })({ delayedEcho });
+  try {
+    const started = performance.now();
+    assert.equal(await withTimeout(pool.call.delayedEcho(50), 750), 50);
+    // Without the native ring, the dispatcher reaches its 1000 ms watchdog;
+    // leave broad scheduling headroom while still proving it did not do that.
+    assert.ok(performance.now() - started < 750);
   } finally {
     await pool.shutdown();
   }

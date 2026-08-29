@@ -988,6 +988,27 @@ export const createProcessWorkerNativeSignalNotifier = ({
   }
 };
 
+/**
+ * Whether this host/child pair has the Node-compatible IPC channel that the
+ * process completion-doorbell prototype uses. Deno process workers currently
+ * boot through environment data and do not have that channel.
+ */
+export const processWorkerUsesIpc = ({
+  processRuntime,
+  commandPrefix,
+}: {
+  processRuntime: ProcessWorkerRuntime | undefined;
+  commandPrefix?: ProcessWorkerCommandPrefix;
+}): boolean => {
+  if (processRuntime === undefined || commandPrefix !== undefined) return false;
+
+  if (RUNTIME === "node") {
+    return processRuntime === "node" || processRuntime === "bun";
+  }
+
+  return RUNTIME === "bun" && processRuntime === "bun";
+};
+
 const createProcessWorkerEventHub = () => {
   const messageHandlers: Array<(message: unknown) => void> = [];
   const errorHandlers: Array<(error: unknown) => void> = [];

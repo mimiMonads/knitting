@@ -720,3 +720,48 @@ test("Node process worker wakes promptly from a parked native wait", {
     );
   }
 });
+
+test("Node process IPC completion doorbell settles a directly armed host", {
+  concurrency: false,
+  skip: processRuntimeTestSkip,
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
+  if (!isPlainNode || !hasProcessRuntime("node")) return;
+
+  const pool = createPool({
+    threads: 1,
+    host: { doorbell: true, stallFreeLoops: 0 },
+    worker: {
+      runtime: "process",
+      processRuntime: "node",
+      timers: { spinMicroseconds: 0, parkMs: 5_000 },
+    },
+  })({ addOnePromise });
+
+  let testError: unknown;
+  try {
+    const values = await Promise.all(
+      Array.from(
+        { length: 64 },
+        (_, value) =>
+          withTimeout(
+            `Node IPC completion doorbell value ${value}`,
+            pool.call.addOnePromise(value),
+          ),
+      ),
+    );
+    assert.deepEqual(
+      values,
+      Array.from({ length: 64 }, (_, value) => value + 1),
+    );
+  } catch (error) {
+    testError = error;
+    throw error;
+  } finally {
+    await shutdownWithTimeout(
+      "Node IPC completion doorbell shutdown",
+      pool.shutdown(),
+      testError,
+    );
+  }
+});

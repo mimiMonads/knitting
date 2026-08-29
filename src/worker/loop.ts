@@ -1,6 +1,7 @@
 import {
   addRuntimeDataListener,
   createRuntimeMessageChannel,
+  PROCESS_COMPLETION_DOORBELL,
   RUNTIME_IS_MAIN_THREAD,
   RUNTIME_IS_PROCESS_WORKER,
   RUNTIME_PARENT_PORT,
@@ -8,6 +9,8 @@ import {
 } from "../common/worker-runtime.ts";
 import { isSharedBufferSource } from "../common/shared-buffer-region.ts";
 import { isLockBufferTextCompat } from "../common/shared-buffer-text.ts";
+import { createDenoCompletionNotifier } from "../runtime/deno-doorbell.ts";
+import { createNodeCompletionNotifier } from "../runtime/node-doorbell.ts";
 import { createWorkerRxQueue } from "./rx-queue.ts";
 import {
   createSharedMemoryTransport,
@@ -127,6 +130,9 @@ export const workerMainLoop = async (
     bufferReferenceReturn,
     permission,
     notifyOnHostPublish,
+    processCompletionDoorbell,
+    denoCompletionDoorbell,
+    nodeCompletionDoorbell,
     totalNumberOfThread,
     list,
     ids,
@@ -177,6 +183,14 @@ export const workerMainLoop = async (
     consumerId: steal?.consumerId,
     regionLanes: steal?.regionLanes,
   });
+  const notifyDenoHost = createDenoCompletionNotifier(denoCompletionDoorbell);
+  const notifyNodeHost = createNodeCompletionNotifier(nodeCompletionDoorbell);
+  const processParentPort = processCompletionDoorbell === true
+    ? RUNTIME_PARENT_PORT
+    : undefined;
+  const notifyProcessHost = processParentPort === undefined
+    ? undefined
+    : () => processParentPort.postMessage(PROCESS_COMPLETION_DOORBELL);
   const returnLockState = lock2({
     headers: returnLock.headers,
     headerSlotStrideU32: returnLock.headerSlotStrideU32,
@@ -188,7 +202,15 @@ export const workerMainLoop = async (
     processBoundary: RUNTIME_IS_PROCESS_WORKER,
     // The host parks on this lock's publication word when it has no work to
     // flush. Request locks are host-produced and must not wake that waiter.
-    notifyOnHostPublish,
+    notifyOnHostPublish: notifyOnHostPublish ||
+      notifyDenoHost !== undefined ||
+      notifyNodeHost !== undefined ||
+      notifyProcessHost !== undefined,
+    notifyHostPublish: notifyDenoHost !== undefined
+      ? () => notifyDenoHost(thread)
+      : notifyNodeHost !== undefined
+      ? notifyNodeHost
+      : notifyProcessHost,
   });
 
   const timers = workerOptions?.timers;
@@ -245,7 +267,6 @@ export const workerMainLoop = async (
     serviceBatchImmediate,
     hasCompleted,
     writeBatch,
-    hasPending,
     getAwaiting,
     drainReturnReleases,
     releaseReturnedBufferReference,
@@ -318,7 +339,6 @@ export const workerMainLoop = async (
 
   const traceSignals = dbg?.enabled("signals") === true;
   const _hasCompleted = hasCompleted;
-  const _hasPending = hasPending;
   const _getAwaiting = getAwaiting;
   const _drainReturnReleases = drainReturnReleases;
   const _pauseSpin = pauseSpin;
@@ -352,7 +372,23 @@ export const workerMainLoop = async (
     }
     : pauseUntil;
 
-  const flushBeforeClaim = steal !== undefined;
+  // Pick the claim/flush ordering once instead of re-testing it on every pass.
+  //
+  // Stealing flushes finished work before taking more on: a computed response
+  // should not wait behind a claim, and that claim can block on a peer
+  // withdrawing its intent. Measured to hurt the per-lane path, where a claim
+  // is a cheap private decode and picking work up promptly matters more, so
+  // that path keeps the classic order.
+  const pump = steal !== undefined
+    ? (): boolean => {
+      let progressed = false;
+      if (_hasCompleted() && _writeBatch(WRITE_MAX) > 0) progressed = true;
+      return _enqueueLock() || progressed;
+    }
+    : (): boolean => {
+      const claimed = _enqueueLock();
+      return (_hasCompleted() && _writeBatch(WRITE_MAX) > 0) || claimed;
+    };
 
   /** Leave the dispatch loop and acknowledge shutdown. */
   const stopLoop = () => {
@@ -366,38 +402,22 @@ export const workerMainLoop = async (
 
   const loop = () => {
     isInMacro = false;
+    // `progressed` answers "did this pass move anything", so it has to be
+    // recomputed every pass or the park below is unreachable and the worker
+    // spins a core forever.
     let progressed = true;
     let awaiting = 0;
     while (true) {
       if (stopView[0] !== WORKER_STOP.running) return stopLoop();
 
-      if (flushBeforeClaim) {
-        // Stealing only. Flush finished work before taking more on: a computed
-        // response should not wait behind a claim, and that claim can block on
-        // a peer withdrawing its intent. Measured to hurt the per-lane path,
-        // where a claim is a cheap private decode and picking work up promptly
-        // matters more, so the classic order is kept below.
-        // Reordering must not make `progressed` sticky: it answers "did this
-        // iteration move anything", so it has to start false every pass or the
-        // park below is unreachable and the worker spins a core forever.
-        progressed = false;
-        if (_hasCompleted()) {
-          if (_writeBatch(WRITE_MAX) > 0) progressed = true;
-        }
-        progressed = _enqueueLock() || progressed;
-      } else {
-        progressed = _enqueueLock();
-
-        if (_hasCompleted()) {
-          if (_writeBatch(WRITE_MAX) > 0) progressed = true;
-        }
-      }
+      progressed = pump();
 
       _drainReturnReleases();
 
-      if (_hasPending()) {
-        if (_serviceBatchImmediate() > 0) progressed = true;
-      }
+      // `serviceBatchImmediate` already guards on an empty queue, so the
+      // separate `hasPending()` probe was a call to learn what the next call
+      // was about to check anyway.
+      if (_serviceBatchImmediate() > 0) progressed = true;
 
       if ((awaiting = _getAwaiting()) > 0) {
         if (awaiting !== lastAwaiting) awaitingSpins = 0;
@@ -411,7 +431,17 @@ export const workerMainLoop = async (
 
       if (!progressed) {
         if (txStatus[Comment.thisIsAHint] === 1) {
-          _pauseSpin();
+          // Hint spin: the host says work is inbound, so busy-wait rather than
+          // park. A synchronous spin cannot run a JS callback, which means
+          // `awaiting`, `toWork` and the settle path cannot change underneath
+          // us — only the host can move anything. So poll just the host-driven
+          // edges here and leave the per-pass bookkeeping (the release drain)
+          // to the full pass we fall back into the moment something moves.
+          do {
+            _pauseSpin();
+            if (stopView[0] !== WORKER_STOP.running) return stopLoop();
+            if (pump()) break;
+          } while (txStatus[Comment.thisIsAHint] === 1);
           continue;
         }
         _pauseUntil(wakeToken, spinMicroseconds, parkMs);

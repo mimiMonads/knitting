@@ -50,20 +50,27 @@ export const hostDispatcherLoop = ({
     flushToWorker,
     txIdle,
     waitForCompletion,
+    armCompletionNotifier,
     setCompletionWaiterArmed,
   },
   channelHandler,
   dispatcherOptions,
   notifySignal,
   crossProcess,
+  nativeCompletionDoorbell,
+  processCompletionDoorbell,
 }: {
   queue: MultiQueue;
   signalBox: MainSignal;
   channelHandler: ChannelHandler;
   dispatcherOptions?: DispatcherSettings;
   notifySignal?: () => void;
-  /** Workers live in other processes; disables the doorbell. */
+  /** Workers live in other processes; disables only the atomic doorbell. */
   crossProcess?: boolean;
+  /** A runtime-native completion ring that wakes the host event loop. */
+  nativeCompletionDoorbell?: boolean;
+  /** A process IPC completion doorbell that wakes the host event loop. */
+  processCompletionDoorbell?: boolean;
 }) => {
   const a_load = Atomics.load;
   const a_store = Atomics.store;
@@ -78,10 +85,14 @@ export const hostDispatcherLoop = ({
   // explicit `doorbell: true`: V8's Atomics waiter list is per isolate, so a
   // worker in another process can never ring the host's waiter, and an armed
   // doorbell would just sleep to the watchdog.
-  const canUseDoorbell = crossProcess !== true &&
-    (dispatcherOptions?.doorbell ?? true) &&
-    (RUNTIME === "bun" || RUNTIME === "node") &&
+  const canUseAtomicDoorbell = (RUNTIME === "bun" || RUNTIME === "node") &&
     typeof Atomics.waitAsync === "function";
+  const canUseDoorbell = (dispatcherOptions?.doorbell ?? true) &&
+    (
+      processCompletionDoorbell === true ||
+      (crossProcess !== true &&
+        (canUseAtomicDoorbell || nativeCompletionDoorbell === true))
+    );
   let doorbellEnabled = canUseDoorbell;
   let doorbellArmed = false;
   let doorbellEpoch = 0 | 0;
@@ -119,12 +130,21 @@ export const hostDispatcherLoop = ({
     doorbellEpoch = token;
     doorbellArmed = true;
     let woke = false;
-    const wake = () => {
+    const wake = (direct = false) => {
       if (!doorbellArmed || doorbellEpoch !== token || woke) return;
       woke = true;
       doorbellArmed = false;
       doorbellEpoch = (doorbellEpoch + 1) | 0;
       setCompletionWaiterArmed(false);
+      if (direct) {
+        // A native arm that observes an already-published completion has no
+        // callback to wait for. Drain it now: routing this known result back
+        // through setImmediate recreates the very millisecond-sized hop that
+        // the native doorbell exists to remove.
+        check.isRunning = true;
+        check();
+        return;
+      }
       // Keep the existing macrotask boundary. Calling check directly from a
       // resolved waitAsync promise can chain microtasks under a hot workload
       // and starve host I/O.
@@ -132,10 +152,31 @@ export const hostDispatcherLoop = ({
     };
 
     let supported = false;
-    try {
-      supported = waitForCompletion(wake, DOORBELL_WATCHDOG_MS);
-    } catch {
-      supported = false;
+    if (
+      nativeCompletionDoorbell === true ||
+      processCompletionDoorbell === true
+    ) {
+      // A native arm reports two different things and they must not be
+      // conflated: `false` means a completion was already published so the arm
+      // deliberately did not ring, which is a normal hot-path outcome. Only a
+      // throw means the transport is unusable. Treating the race as
+      // "unsupported" disabled the doorbell permanently on its second arm.
+      let armed = false;
+      let usable = true;
+      try {
+        armed = armCompletionNotifier();
+      } catch {
+        usable = false;
+      }
+      supported = usable;
+      // The arm itself drains the completion it just observed.
+      if (usable && !armed) wake(true);
+    } else {
+      try {
+        supported = waitForCompletion(wake, DOORBELL_WATCHDOG_MS);
+      } catch {
+        supported = false;
+      }
     }
 
     // Some runtimes reject waitAsync on their SharedArrayBuffer variants; fall
@@ -150,7 +191,10 @@ export const hostDispatcherLoop = ({
       doorbellArmed = false;
       doorbellEpoch = (doorbellEpoch + 1) | 0;
       setCompletionWaiterArmed(false);
-      notify();
+      if (
+        nativeCompletionDoorbell !== true &&
+        processCompletionDoorbell !== true
+      ) notify();
     }
   };
 
@@ -186,8 +230,7 @@ export const hostDispatcherLoop = ({
 
       txStatus[0] = 1;
 
-      // Wake the worker before draining so it can start processing while we flush.
-      if (a_load(rxStatus, 0) === 0) {
+      if (hasPendingFrames() && a_load(rxStatus, 0) === 0) {
         a_store(opView, 0, 1);
         wakeSignal();
       }
@@ -234,6 +277,21 @@ export const hostDispatcherLoop = ({
   check.isRunning = false;
   check.rerun = false;
 
+  /**
+   * Enter the drain directly from a real host event source (IPC, a native
+   * callback, or a future fd watcher). This intentionally bypasses the
+   * MessageChannel/setImmediate pump; `inFlight` retains the old re-entrancy
+   * behaviour when an event lands during a drain.
+   */
+  const wakeCompletion = () => {
+    if (inFlight || check.isRunning) {
+      check.rerun = true;
+      return;
+    }
+    check.isRunning = true;
+    check();
+  };
+
   const scheduleNotify = () => {
     if (stallCount <= stallFreeLoops) {
       notify();
@@ -266,7 +324,7 @@ export const hostDispatcherLoop = ({
     }, delay);
   };
 
-  return { check };
+  return { check, wakeCompletion };
 };
 
 type CheckWithState = (() => void) & {
