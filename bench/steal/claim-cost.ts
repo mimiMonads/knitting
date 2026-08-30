@@ -23,8 +23,11 @@
  * regime — a handful of pending lanes and N claimants racing for them, which is
  * what a per-consumer home region is supposed to keep apart.
  *
+ * CC_CLAIM=cas swaps the region-Dekker handshake for the single-word
+ * compareExchange discipline, holding region width and everything else fixed.
+ *
  * Env: CC_THREADS (comma-separated list)  CC_MS  CC_REPS  CC_G  CC_IDLE
- *      CC_BURST
+ *      CC_BURST  CC_CLAIM
  */
 import { Worker } from "node:worker_threads";
 import { createLockControlCarpet } from "../../src/memory/byte-carpet.ts";
@@ -34,8 +37,12 @@ import {
   LOCK_SECTOR_BYTE_LENGTH,
   LockBound,
   makeTask,
+  type StealClaimDiscipline,
 } from "../../src/memory/lock.ts";
-import { resolveStealRegionLanes } from "../../src/runtime/pool.ts";
+import {
+  resolveMaxStealRegionLanes,
+  resolveStealRegionLanes,
+} from "../../src/runtime/pool.ts";
 import "../../src/memory/payloadCodec.ts";
 
 const THREAD_LIST = (process.env.CC_THREADS ?? "2,4,8,16")
@@ -47,6 +54,11 @@ const REPS = Number(process.env.CC_REPS ?? "5");
 const FORCED_G = Number(process.env.CC_G ?? "0");
 const IDLE = process.env.CC_IDLE === "1";
 const BURST = Number(process.env.CC_BURST ?? "0");
+const CLAIM: StealClaimDiscipline = process.env.CC_CLAIM === "cas"
+  ? "cas"
+  : process.env.CC_CLAIM === "cas-mask"
+  ? "cas-mask"
+  : "dekker";
 
 // Control cells shared with every claimant.
 const CTL_STATE = 0; // 0 = setup, 1 = running, 2 = stop
@@ -105,7 +117,14 @@ const runOnce = async (
     { length: consumers },
     (_, consumerId) =>
       new Worker(workerUrl, {
-        workerData: { shared, ctlSab, consumers, consumerId, regionLanes },
+        workerData: {
+          shared,
+          ctlSab,
+          consumers,
+          consumerId,
+          regionLanes,
+          stealClaim: CLAIM,
+        },
       }),
   );
 
@@ -113,7 +132,7 @@ const runOnce = async (
   // modules would otherwise donate its share of the window to startup.
   while (Atomics.load(ctl, CTL_READY) < consumers) await new Promise((r) => setTimeout(r, 5));
 
-  const producer = lock2({ ...shared, consumers, regionLanes });
+  const producer = lock2({ ...shared, consumers, regionLanes, stealClaim: CLAIM });
   const task = makeTask();
   let published = 0;
   let blocked = 0;
@@ -186,8 +205,13 @@ const main = async () => {
       : "threads    g   R   claims/s     tasks/s   tasks/claim   ns/claim",
   );
   for (const consumers of THREAD_LIST) {
-    const maxLanes = resolveStealRegionLanes(consumers);
-    const regionLanes = FORCED_G > 0 ? Math.min(FORCED_G, maxLanes) : maxLanes;
+    // Default to the Dekker-legal width for *every* discipline, so arms are
+    // comparable at a glance; only an explicit CC_G goes wider, and only where
+    // the discipline allows it.
+    const maxLanes = resolveMaxStealRegionLanes(consumers, CLAIM);
+    const regionLanes = FORCED_G > 0
+      ? Math.min(FORCED_G, maxLanes)
+      : resolveStealRegionLanes(consumers);
     const regions = LockBound.slots / regionLanes;
 
     const claimRates: number[] = [];

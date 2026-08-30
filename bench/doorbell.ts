@@ -61,6 +61,8 @@ const STALL_FREE_LOOPS = Math.max(
   Number(process.env.DB_STALL_FREE_LOOPS ?? "16"),
 );
 const NATIVE_DOORBELL = process.env.DB_NATIVE === "1";
+/** Region width `g`; 0 keeps the pool's default for the worker count. */
+const REGION_LANES = Math.max(0, Number(process.env.DB_G ?? "0"));
 const WORKER_MODE = process.env.DB_WORKER === "process" ? "process" : "thread";
 const PROCESS_RUNTIME: "node" | "bun" | "deno" = process.env.DB_PROCESS_RUNTIME === "bun"
   ? "bun"
@@ -127,6 +129,7 @@ if (isMain) {
     doorbell: MODE === "doorbell",
     nativeDoorbell: WORKER_MODE === "thread" && NATIVE_DOORBELL,
     stallFreeLoops: STALL_FREE_LOOPS,
+    ...(REGION_LANES > 0 ? { stealRegionLanes: REGION_LANES } : {}),
     ...(TOPOLOGY === "steal"
       ? { steal: true }
       : { steal: false, dispatcher: TOPOLOGY as "per-thread" | "serial-channel" }),
@@ -194,6 +197,7 @@ if (isMain) {
       reps: REPS,
       base_rounds: BASE,
       stall_free_loops: STALL_FREE_LOOPS,
+      region_lanes: REGION_LANES > 0 ? REGION_LANES : undefined,
       native_doorbell: WORKER_MODE === "thread" && NATIVE_DOORBELL,
       median_ms: +medianWallMs.toFixed(3),
       p50_latency_ms: +percentile(latencies, 0.50).toFixed(3),

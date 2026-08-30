@@ -7,3 +7,9 @@ export {
   type BufferReferenceRuntime,
   isBufferReferenceMetadata,
 } from "./src/connections/buffer-reference.ts";
+
+export {
+  drainSharedReturnReleases,
+  sharedBytes,
+  sharedReturnPoolStats,
+} from "./src/worker/shared-return.ts";

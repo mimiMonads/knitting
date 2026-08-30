@@ -1028,6 +1028,97 @@ test("envelope uses static header plus dynamic payload when header fits", () => 
   assertEquals(registry.workerBits[0] & 1, 1);
 });
 
+// Dynamic region indices are 6 bits, but the task header's slot field is 5. The
+// 6th bit rides in bit 31 of `TaskIndex.End` (see the warning on that field in
+// lock.ts) — which is also where envelope body lengths live. Nothing reaches a
+// region index >= 32 through a real pool today, so only a direct codec test can
+// hold these two apart.
+const fillRegions = (
+  encode: ReturnType<typeof makeCodec>["encode"],
+  count: number,
+): void => {
+  // Dynamic payloads that are never decoded, so their regions stay live and the
+  // next allocation is pushed past index 31. Binary writes nothing static, so
+  // the header slots stay clean for the task under test.
+  for (let i = 0; i < count; i++) {
+    const filler = makeTask();
+    filler.value = new Uint8Array(STATIC_STRING_MAX_BYTES + 8).fill(i & 0xff);
+    assertEquals(encode(filler, i & 31), true);
+  }
+};
+
+const regionIndexOf = (task: ReturnType<typeof makeTask>): number =>
+  (task[TaskIndex.slotBuffer] & 31) | ((task[TaskIndex.End] >>> 31) << 5);
+
+test("envelope body length survives a region index above 31", () => {
+  const { encode, decode } = makeCodec(undefined, { payloadBytes: 1 << 20 });
+  fillRegions(encode, 32);
+
+  const task = makeTask();
+  const header = { hello: "world" };
+  const body = new Uint8Array(600);
+  for (let i = 0; i < body.length; i++) body[i] = (i * 7) & 0xff;
+  task.value = new Envelope(header, body.buffer);
+
+  assertEquals(encode(task, 0), true);
+  // Guard the setup itself: if allocation stops handing out high regions this
+  // test would silently stop testing anything.
+  assertEquals(
+    regionIndexOf(task) >= 32,
+    true,
+    `expected a region index >= 32, got ${regionIndexOf(task)}`,
+  );
+  assertEquals(
+    task[TaskIndex.End] >>> 31,
+    1,
+    "the high region bit must be set in End for this to prove anything",
+  );
+  assertEquals(
+    task[TaskIndex.End] & 0x7FFFFFFF,
+    body.byteLength,
+    "the body length must survive alongside the region bit",
+  );
+
+  decode(task, 0);
+
+  const out = task.value as Envelope;
+  assertEquals(out.header, header);
+  assertEquals(
+    Array.from(new Uint8Array(out.payload)),
+    Array.from(body),
+    "an unmasked read of End would make this body length nonsense",
+  );
+});
+
+test("a region above 31 is released to the slot it came from", () => {
+  const { encode, decode, registry } = makeCodec(undefined, {
+    payloadBytes: 1 << 20,
+  });
+  fillRegions(encode, 32);
+
+  const task = makeTask();
+  task.value = new Envelope({ k: 1 }, new Uint8Array([9, 8, 7]).buffer);
+  assertEquals(encode(task, 0), true);
+
+  const region = regionIndexOf(task);
+  assertEquals(region >= 32, true, `expected region >= 32, got ${region}`);
+
+  // Regions 32..63 live in the second state word; freeing must land there and
+  // not on `region & 31` in the first word.
+  const before = registry.workerBits[1];
+  decode(task, 0);
+  assertEquals(
+    registry.workerBits[1] !== before,
+    true,
+    "freeing a high region must toggle the second worker-bits word",
+  );
+  assertEquals(
+    (registry.workerBits[1] ^ before) >>> 0,
+    (1 << (region - 32)) >>> 0,
+    "exactly the region's own bit should toggle",
+  );
+});
+
 test("envelope switches to dynamic header when static header limit is exceeded", () => {
   const { encode, decode, registry } = makeCodec();
   const task = makeTask();

@@ -1,6 +1,6 @@
 /** Claimant side of `claim-cost.ts`: spin the real `decode()` and count. */
 import { workerData } from "node:worker_threads";
-import { lock2 } from "../../src/memory/lock.ts";
+import { lock2, type StealClaimDiscipline } from "../../src/memory/lock.ts";
 import "../../src/memory/payloadCodec.ts";
 
 const CTL_STATE = 0;
@@ -8,16 +8,24 @@ const CTL_READY = 1;
 const CTL_STRIDE = 16;
 const CTL_COUNTERS = CTL_STRIDE;
 
-const { shared, ctlSab, consumers, consumerId, regionLanes } = workerData as {
-  shared: Parameters<typeof lock2>[0];
-  ctlSab: SharedArrayBuffer;
-  consumers: number;
-  consumerId: number;
-  regionLanes: number;
-};
+const { shared, ctlSab, consumers, consumerId, regionLanes, stealClaim } =
+  workerData as {
+    shared: Parameters<typeof lock2>[0];
+    ctlSab: SharedArrayBuffer;
+    consumers: number;
+    consumerId: number;
+    regionLanes: number;
+    stealClaim?: StealClaimDiscipline;
+  };
 
 const ctl = new Int32Array(ctlSab);
-const endpoint = lock2({ ...shared, consumers, consumerId, regionLanes });
+const endpoint = lock2({
+  ...shared,
+  consumers,
+  consumerId,
+  regionLanes,
+  stealClaim,
+});
 const resolved = endpoint.resolved;
 
 let claims = 0;

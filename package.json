@@ -86,7 +86,7 @@
     "test:deno": "deno test -A --ignore=test/runtime.node.test.ts --ignore=test/runtime.process.test.ts",
     "test:node": "node --no-warnings --experimental-transform-types --test \"./test/*.test.ts\"",
     "test:node:26": "node --no-warnings --experimental-ffi test/node26-ffi.integration.mjs",
-    "test:bun": "bun test ./test/*.test.ts --path-ignore-patterns=**/tx-queue.test.ts",
+    "test:bun": "bun test ./test/*.test.ts",
     "test:browser": "bun run scripts/test-browser.ts",
     "test:runtimes": "npm run test:node && npm run test:bun",
     "test:all": "npm run test:deno && npm run test:runtimes && npm run test:browser",

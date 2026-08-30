@@ -3,12 +3,9 @@ import test from "./_runner.ts";
 import { createPool } from "../knitting.ts";
 import { abortContextProbe } from "./fixtures/abort_context_tasks.ts";
 
-const isBun = typeof process !== "undefined" && !!process.versions?.bun;
-const runtimeTest = isBun ? test.skip : test;
-
-// Bun may segfault here for reasons that are still unclear.
-// Skipping it in Bun for now and revisiting this later.
-runtimeTest(
+// Bun used to segfault here at random; re-enabled on bun 1.4.0 after 40+
+// clean runs (isolated and in the full suite). Re-gate on bun if it returns.
+test(
   "task API provides abort toolkit context for object abortSignal config",
   async () => {
     const { call, shutdown } = createPool({ threads: 1 })({

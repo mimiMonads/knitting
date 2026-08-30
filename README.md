@@ -1203,6 +1203,169 @@ process workers. Reach for `BufferReference` only when the copy cost of a large
 buffer to a thread worker actually matters: below roughly 256 KiB the per-call
 pointer setup tends to cost more than just copying, so the plain transport wins.
 
+### Experimental zero-copy returns with `sharedBytes`
+
+`BufferReference` moves a buffer *into* a worker. `sharedBytes` solves the
+mirror problem: getting a large result *out* of one without the host paying to
+copy it.
+
+Normally a worker's byte return is written into the shared payload region and
+the host copies it out — an allocation plus a memcpy on the single host thread,
+which is usually the thread you can least afford to spend. `sharedBytes(n)`
+hands the worker a buffer that already lives in shared memory, so returning it
+ships a pointer instead of the bytes and the host reads them in place.
+
+```ts
+import { createPool, isMain, task } from "knitting";
+import { sharedBytes } from "knitting/unsafe";
+
+export const render = task<number, Uint8Array>({
+  f: (size) => {
+    const out = sharedBytes(size); // pooled, shared with the host
+    for (let i = 0; i < out.length; i++) out[i] = i & 0xff;
+    return out; // returned by reference, not copied
+  },
+});
+
+if (isMain) {
+  using pool = createPool({ threads: 4 })({ render });
+  const pixels = await pool.call.render(1024 * 1024);
+  console.log(pixels.byteLength);
+}
+```
+
+It is an ordinary `Uint8Array` on both sides — no wrapper type, and nothing
+changes about how the task is declared or called.
+
+#### One rule
+
+**Neither side may keep it.** The buffer is borrowed from a pool that refills
+it. The worker must not hold it past the return, and the host must copy
+anything it needs beyond the next ~64 results on that lane:
+
+```ts
+const view = await pool.call.render(size);
+const keep = view.slice(); // copy if it outlives the next batch of calls
+```
+
+That rule is what makes this fast; see the reclamation modes below if you need
+it lifted.
+
+The buffer is zero-filled, so a partial write returns zeros rather than the
+previous result's bytes — you do not have to fill every byte to stay safe.
+
+#### Large returns are upgraded automatically
+
+You do not have to call `sharedBytes` to benefit. A plain `Uint8Array` return at
+or above **256 KiB** is copied into a pooled buffer and shipped by pointer
+anyway, so the host stops copying it out:
+
+```ts
+export const render = task<number, Uint8Array>({
+  f: (size) => {
+    const out = new Uint8Array(size); // ordinary allocation
+    out.fill(7);
+    return out; // >= 256 KiB: shipped by pointer, not copied out on the host
+  },
+});
+```
+
+That copy into the pool is also what makes the upgrade safe: the region the host
+sees is overwritten in full, so it can never carry a previous return's bytes.
+
+`sharedBytes` is still the faster path, and by a wide margin — it skips both the
+allocation and that copy. The upgrade only moves work off the host thread; it
+does not remove it.
+
+The two thresholds differ on purpose. `sharedBytes` starts at 16 KiB because it
+copies nothing. The upgrade starts at 256 KiB because it *adds* a worker-side
+memcpy to save the host's, and that only pays once the host's copy dominates —
+measured at 16 KiB the upgrade was a ~25% regression on Node at 4 threads.
+`unsafe.SharedBytesUpgradeMinBytes` moves the threshold; `unsafe.SharedBytes:
+false` turns the whole pointer path off.
+
+#### When it pays
+
+Below the 16 KiB threshold `sharedBytes` returns a plain `Uint8Array` and the
+call takes the ordinary copy path, so it is never worse than not using it.
+Speedup over the copy path, across Node and Bun at 1 and 4 threads with 16 calls
+in flight, on a 4-core laptop:
+
+| Return size | Speedup |
+| ----------- | ------- |
+| under 16 KiB | ~1x — falls back to the copy path |
+| 64 KiB | 2x – 17x |
+| 256 KiB | 7x – 50x |
+| 1 MiB | 45x – 105x |
+
+Treat these as local guidance, like the rest of the benchmarks: the win scales
+with how much the host was copying, so payload size and how busy the host thread
+already is both matter.
+
+#### Reclamation modes
+
+A buffer goes back to the pool either when the pool has cycled past it or when
+the host is provably done with it:
+
+| `unsafe.SharedBytesReclaim` | Reuse happens | Cost |
+| --------------------------- | ------------- | ---- |
+| `"ring"` (default) | after `SharedBytesRingSlabs` further results on the lane | the view is borrowed — the second rule above |
+| `"gc"` | once the host's view is unreachable | exact, but paced by garbage collection rather than by load |
+
+`"gc"` lifts the borrow rule, at a price worth knowing before you reach for it:
+reclamation is tied to GC, which has nothing to do with your call rate, so under
+a load that produces little host garbage the pool runs dry and returns quietly
+fall back to copying. Measured at one worker returning 1 MiB, `"ring"` is 45x
+while `"gc"` lands between 0.7x and 1.4x — that is, no better than copying, and
+on Node slightly worse.
+
+```ts
+using pool = createPool({
+  threads: 4,
+  unsafe: {
+    SharedBytesReclaim: "gc", // retained views stay valid
+  },
+})({ render });
+```
+
+`SharedBytesRingSlabs` (default `64`) sets the ring depth in `"ring"` mode. It
+must exceed the number of results a consumer holds at once.
+
+#### Turning it off
+
+`unsafe.SharedBytes: false` takes the pointer path out of the picture entirely —
+no buffers are pooled, `sharedBytes` degrades to a plain `Uint8Array`, ordinary
+returns are not upgraded, and the host never aliases worker memory:
+
+```ts
+using pool = createPool({
+  threads: 4,
+  unsafe: { SharedBytes: false },
+})({ render });
+```
+
+Reach for it when results must stay valid for unbounded time, or to rule the
+path out while chasing a bug. `KNITTING_SAB_RECLAIM=off` does the same for a
+whole process without touching code, which is usually the quicker first check.
+
+#### Constraints
+
+- **Thread workers only.** The handle is a process-local pointer, so process
+  workers fall back to the copy path, as does a browser page.
+- **Needs the native backend.** The same requirement as `BufferReference`: the
+  addon on Node 22/24, `node:ffi` on Node 26, FFI on Deno and Bun. Without it,
+  `sharedBytes` degrades to a plain `Uint8Array`.
+- **Bounded pool.** A worker holds at most 32 MiB per size class and 64 MiB
+  overall. Past that, returns take the copy path rather than growing without
+  limit.
+- **Not a security boundary.** Like everything in `knitting/unsafe`, this hands
+  the host a window into worker memory. Do not use it as an isolation mechanism.
+- **A view does not survive its worker.** When a worker shuts down or crashes,
+  the buffers it shared are detached, so a view read afterwards reports zero
+  length instead of returning a dead worker's memory. That is deliberate: a
+  stale read that silently returns plausible bytes is far worse than one that
+  fails. Copy anything that must outlive the pool.
+
 ### Current support
 
 Knitting supports Node.js 22+, Deno 2+, and Bun 1+ on Linux, macOS, and Windows.

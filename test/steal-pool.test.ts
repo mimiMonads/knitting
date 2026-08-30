@@ -71,6 +71,22 @@ test("multi-worker thread pools steal by default", async () => {
   }
 });
 
+test("explicit balancers do not change shared-submit stealing", async () => {
+  const pool = createPool({
+    threads: 3,
+    balancer: "firstIdle",
+    host: { steal: true },
+  })({ double });
+  try {
+    const values = await Promise.all(
+      Array.from({ length: 120 }, (_, i) => pool.call.double(i)),
+    );
+    assert.deepEqual(values, Array.from({ length: 120 }, (_, i) => i * 2));
+  } finally {
+    await pool.shutdown();
+  }
+});
+
 test("stealing pool completes with the host doorbell armed immediately", async () => {
   const pool = createPool({
     threads: 2,

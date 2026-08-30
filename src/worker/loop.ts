@@ -12,6 +12,7 @@ import { isLockBufferTextCompat } from "../common/shared-buffer-text.ts";
 import { createDenoCompletionNotifier } from "../runtime/deno-doorbell.ts";
 import { createNodeCompletionNotifier } from "../runtime/node-doorbell.ts";
 import { createWorkerRxQueue } from "./rx-queue.ts";
+import { installSharedReturnPool } from "./shared-return.ts";
 import {
   createSharedMemoryTransport,
   WORKER_STOP,
@@ -128,6 +129,7 @@ export const workerMainLoop = async (
     abortSignalMax,
     payloadConfig,
     bufferReferenceReturn,
+    sabReturn,
     permission,
     notifyOnHostPublish,
     processCompletionDoorbell,
@@ -182,6 +184,7 @@ export const workerMainLoop = async (
     consumers: steal?.consumers,
     consumerId: steal?.consumerId,
     regionLanes: steal?.regionLanes,
+    stealClaim: steal?.claim,
   });
   const notifyDenoHost = createDenoCompletionNotifier(denoCompletionDoorbell);
   const notifyNodeHost = createNodeCompletionNotifier(nodeCompletionDoorbell);
@@ -280,6 +283,7 @@ export const workerMainLoop = async (
     stealing: steal !== undefined,
   });
   installBufferReferenceReleaseListener(releaseReturnedBufferReference);
+  if (sabReturn !== undefined) installSharedReturnPool(sabReturn);
 
   a_store(rxStatus, 0, 1);
 

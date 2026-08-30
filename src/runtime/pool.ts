@@ -41,6 +41,7 @@ import {
   lock2,
   LOCK_SECTOR_BYTE_LENGTH,
   LockBound,
+  type StealClaimDiscipline,
   type Task,
 } from "../memory/lock.ts";
 // Side-effect import: registers the payload codec (cycle break for Andromeda;
@@ -72,6 +73,22 @@ import { probeLockBufferTextCompat } from "../common/shared-buffer-text.ts";
 import { signalAbortFactory } from "../shared/abortSignal.ts";
 import { createLockControlCarpet } from "../memory/byte-carpet.ts";
 import {
+  createSabReleasePublisher,
+  createSabReleaseRingBuffer,
+} from "../memory/sab-release-ring.ts";
+import {
+  SAB_CLASS_BUDGET_BYTES,
+  SAB_POOL_BUDGET_BYTES,
+  SAB_RING_SLABS,
+  SAB_UPGRADE_MIN_BYTES,
+  SAB_SLAB_MIN_BYTES,
+  type SabReclaimMode,
+} from "../memory/sab-return-pool.ts";
+import {
+  SAB_ENABLED_BY_DEFAULT,
+  SAB_RECLAIM_MODE,
+} from "../memory/sab-reclaim-mode.ts";
+import {
   type PayloadBufferOptions,
   resolvePayloadBufferOptions,
 } from "../memory/payload-config.ts";
@@ -81,6 +98,7 @@ import {
   createBufferReferenceReturnReleaseMessage,
   detachArrayBufferBestEffort,
 } from "../connections/buffer-reference.ts";
+import { revokeSharedSlices } from "../connections/shared-array-buffer-payload.ts";
 import { spawnCompiledWorkerContext } from "./compiled-worker.ts";
 
 const WORKER_FATAL_MESSAGE_KEY = "__knittingWorkerFatal";
@@ -162,20 +180,43 @@ export const resolveStealRegionLanes = (consumers: number): number => {
   );
 };
 
+/**
+ * Widest region a claim discipline permits.
+ *
+ * `slots / g >= consumers + 1` exists so a Dekker claimant can always find a
+ * region no live peer is aiming at. A `cas` claimant that finds every region
+ * owned bails and retries instead, and holds a region only for the decode, so
+ * it is bounded by the slot count alone -- letting region width be chosen for
+ * how much a claim retires rather than for the consumer count.
+ */
+export const resolveMaxStealRegionLanes = (
+  consumers: number,
+  stealClaim?: StealClaimDiscipline,
+): number =>
+  stealClaim !== undefined && stealClaim !== "dekker"
+    ? LockBound.slots
+    : resolveStealRegionLanes(consumers);
+
 /** Maximum claimants that leave the protocol's required spare region. */
 export const MAX_STEAL_CONSUMERS = LockBound.slots - 1;
 
 export const createStealPoolBuffers = ({
   threads,
+  sharedBytesReclaim,
+  sharedBytesEnabled,
   payload,
   regionLanes,
+  stealClaim,
   abortSignalCapacity,
   usesAbortSignal,
   processWorker,
 }: {
   threads: number;
+  sharedBytesReclaim?: SabReclaimMode;
+  sharedBytesEnabled?: boolean;
   payload?: PayloadBufferOptions;
   regionLanes?: number;
+  stealClaim?: StealClaimDiscipline;
   abortSignalCapacity?: number;
   usesAbortSignal?: boolean;
   processWorker?: {
@@ -218,9 +259,11 @@ export const createStealPoolBuffers = ({
       }),
     }) as LockBuffers;
 
-  const maxLanes = resolveStealRegionLanes(threads);
+  // The default stays the Dekker-legal width for every discipline: `cas` only
+  // relaxes the *cap*, so a wider region is something a caller asks for.
+  const maxLanes = resolveMaxStealRegionLanes(threads, stealClaim);
   const lanes = regionLanes === undefined
-    ? maxLanes
+    ? resolveStealRegionLanes(threads)
     : Math.min(Math.max(1, regionLanes | 0), maxLanes);
 
   const resolvedAbortSignalCapacity = resolveAbortSignalCapacity(
@@ -259,11 +302,15 @@ export const createStealPoolBuffers = ({
     textCompat: submitBuffers.textCompat,
     consumers: threads,
     regionLanes: lanes,
+    stealClaim,
     processBoundary: processMemory !== undefined,
   });
 
   const returnBuffers: LockBuffers[] = [];
   const hostReturnLocks: ReturnType<typeof lock2>[] = [];
+  // One slab release ring per lane: slab tokens are minted per worker isolate,
+  // so they only mean anything to the worker that produced them.
+  const sabReturnRings: SharedArrayBuffer[] = [];
   for (let i = 0; i < threads; i++) {
     const buffers = processMemory === undefined
       ? toBuffers(carpet().returnLock, makePayload())
@@ -272,6 +319,13 @@ export const createStealPoolBuffers = ({
         processMemory.workers[i]!.returnPayload,
       );
     returnBuffers.push(buffers);
+    const releaseRing = createSabReleaseRingBuffer();
+    sabReturnRings.push(releaseRing);
+    const publisher = sharedBytesEnabled !== false &&
+        processMemory === undefined &&
+        (sharedBytesReclaim ?? SAB_RECLAIM_MODE) === "gc"
+      ? createSabReleasePublisher(releaseRing)
+      : undefined;
     hostReturnLocks.push(lock2({
       headers: buffers.headers,
       headerSlotStrideU32: buffers.headerSlotStrideU32,
@@ -281,6 +335,9 @@ export const createStealPoolBuffers = ({
       payloadConfig,
       textCompat: buffers.textCompat,
       processBoundary: processMemory !== undefined,
+      sliceRelease: publisher === undefined
+        ? undefined
+        : (token) => publisher.publish(token),
     }));
   }
 
@@ -312,8 +369,10 @@ export const createStealPoolBuffers = ({
     returnBuffers,
     hostSubmitLock,
     hostReturnLocks,
+    sabReturnRings,
     sharedQueue,
     regionLanes: lanes,
+    stealClaim,
     processMemory,
     abortSignalSAB,
     abortSignalMax: processMemory?.abortSignalMax ??
@@ -339,6 +398,10 @@ export const spawnWorkerContext = ({
   host,
   payload,
   bufferReferenceReturn,
+  sharedBytesReclaim,
+  sharedBytesRingSlabs,
+  sharedBytesEnabled,
+  sharedBytesUpgradeMinBytes,
   abortSignalCapacity,
   usesAbortSignal,
   sharedChannelHandler,
@@ -368,6 +431,10 @@ export const spawnWorkerContext = ({
   host?: DispatcherSettings;
   payload?: PayloadBufferOptions;
   bufferReferenceReturn?: "copy" | "borrow";
+  sharedBytesReclaim?: SabReclaimMode;
+  sharedBytesRingSlabs?: number;
+  sharedBytesEnabled?: boolean;
+  sharedBytesUpgradeMinBytes?: number;
   abortSignalCapacity?: number;
   usesAbortSignal?: boolean;
   /**
@@ -393,9 +460,11 @@ export const spawnWorkerContext = ({
     consumers: number;
     consumerId: number;
     regionLanes: number;
+    stealClaim?: StealClaimDiscipline;
     abortSignalSAB?: LockBuffers["headers"];
     abortSignalMax?: number;
     processMemory?: ProcessStealMemoryLayout;
+    sabReturnRing?: SharedArrayBuffer;
   };
 }) => {
   if (workerOptions?.runtime === "compiled") {
@@ -560,6 +629,22 @@ export const spawnWorkerContext = ({
     textCompat: lockBuffers.textCompat,
     processBoundary: useProcessWorkerRuntime,
   });
+  // Pointer payloads are process-local, so slab returns are thread-workers only,
+  // and `unsafe.SharedBytes: false` opts out entirely. Leaving this undefined is
+  // the whole switch: the worker gets no `sabReturn`, so it installs no pool,
+  // allocates no slabs, upgrades no returns, and never emits a slice frame --
+  // which in turn means the host never adopts a slab alias.
+  const sabReturnRing =
+    useProcessWorkerRuntime || sharedBytesEnabled === false ||
+      !SAB_ENABLED_BY_DEFAULT
+      ? undefined
+      : stealPool?.sabReturnRing ?? createSabReleaseRingBuffer();
+  const reclaimMode: SabReclaimMode = sharedBytesReclaim ?? SAB_RECLAIM_MODE;
+  const sabReturnPublisher =
+    sabReturnRing === undefined || stealPool !== undefined ||
+      reclaimMode !== "gc"
+      ? undefined
+      : createSabReleasePublisher(sabReturnRing);
   const returnLock = stealPool?.hostReturnLock ?? lock2({
     headers: returnLockBuffers.headers,
     headerSlotStrideU32: returnLockBuffers.headerSlotStrideU32,
@@ -569,6 +654,9 @@ export const spawnWorkerContext = ({
     payloadConfig: resolvedPayloadConfig,
     textCompat: returnLockBuffers.textCompat,
     processBoundary: useProcessWorkerRuntime,
+    sliceRelease: sabReturnPublisher === undefined
+      ? undefined
+      : (token) => sabReturnPublisher.publish(token),
   });
   const abortSignalSAB = stealPool?.abortSignalSAB ??
     (usesAbortSignal === true ? controlLayout.abortSignals : undefined);
@@ -781,6 +869,16 @@ export const spawnWorkerContext = ({
     returnLock: returnLockBuffers,
     payloadConfig: resolvedPayloadConfig,
     bufferReferenceReturn,
+    sabReturn: sabReturnRing === undefined ? undefined : {
+      releaseRing: sabReturnRing,
+      reclaim: reclaimMode,
+      ringSlabs: sharedBytesRingSlabs ?? SAB_RING_SLABS,
+      upgradeMinBytes: sharedBytesUpgradeMinBytes ?? SAB_UPGRADE_MIN_BYTES,
+      minBytes: SAB_SLAB_MIN_BYTES,
+      maxBytes: resolvedPayloadConfig.maxPayloadBytes,
+      classBudgetBytes: SAB_CLASS_BUDGET_BYTES,
+      poolBudgetBytes: SAB_POOL_BUDGET_BYTES,
+    },
     permission,
     // Thread workers ring their local Atomics waiter. Process workers can use
     // the Node-compatible IPC doorbell when their spawn mode exposes it.
@@ -803,6 +901,7 @@ export const spawnWorkerContext = ({
       consumers: stealPool.consumers,
       consumerId: stealPool.consumerId,
       regionLanes: stealPool.regionLanes,
+      claim: stealPool.stealClaim,
     },
   } as WorkerData;
   const baseWorkerOptions = {
@@ -918,8 +1017,28 @@ export const spawnWorkerContext = ({
     if (closedReason) return;
     closedReason = reason;
     revokeOutstandingBorrowedReturns(workerBytesReadable);
+    revokeSlabReturns();
     rejectAll(reason);
     channelHandler?.close();
+  };
+
+  /**
+   * Detach this lane's slab aliases once its worker is gone.
+   *
+   * A slab lives in the worker's isolate and the host only holds a non-owning
+   * alias, so every `sharedBytes` view outstanding at teardown points at memory
+   * that is about to be freed. There is no copy-out equivalent here the way
+   * there is for `BufferReference`: the view has already been handed to user
+   * code and cannot be rebound, so the alias is detached and later reads throw
+   * instead of returning a dead worker's bytes -- or, worse, plausible ones.
+   */
+  const revokeSlabReturns = (): void => {
+    if (sabReturnRing === undefined) return;
+    try {
+      revokeSharedSlices(returnLock.sliceTransportKey, RUNTIME as BufferReferenceRuntime);
+    } catch {
+      // best effort: teardown must not fail on an un-detachable alias
+    }
   };
 
   const onWorkerMessage = (message: unknown) => {

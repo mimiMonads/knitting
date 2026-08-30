@@ -56,6 +56,27 @@ type WorkerData = {
   returnLock: LockBuffers;
   payloadConfig?: PayloadBufferOptions;
   bufferReferenceReturn?: "copy" | "borrow";
+  /**
+   * Slab pool for returns written straight into shared memory. The worker fills
+   * a pinned slab and the host aliases it; `releaseRing` is how the host hands
+   * a slab back once its view is unreachable.
+   */
+  sabReturn?: {
+    releaseRing: SharedBufferSource;
+    /**
+     * `"gc"` recycles a slab once the host's view is collected. `"ring"` cycles
+     * a fixed ring per size class, which ties reclamation to the call rate but
+     * makes the returned view borrowed: valid only until `ringSlabs` further
+     * results arrive on the lane.
+     */
+    reclaim: "gc" | "ring";
+    ringSlabs: number;
+    minBytes: number;
+    upgradeMinBytes: number;
+    maxBytes: number;
+    classBudgetBytes: number;
+    poolBudgetBytes: number;
+  };
   permission?: ResolvedPermissionProtocol;
   /** Whether this host can arm an async completion waiter on the return lock. */
   notifyOnHostPublish?: boolean;
@@ -75,6 +96,8 @@ type WorkerData = {
     consumers: number;
     consumerId: number;
     regionLanes: number;
+    /** Region mutual-exclusion discipline; see `DispatcherSettings.stealClaim`. */
+    claim?: "dekker" | "cas" | "cas-mask";
   };
 };
 
@@ -86,6 +109,43 @@ type UnsafeOptions = {
    * but must be released before producer shutdown and must not outlive its ref.
    */
   BufferReferenceReturn?: "copy" | "borrow";
+  /**
+   * How `sharedBytes()` returns get their slab back.
+   *
+   * `"ring"` (default) cycles a fixed ring per size class, so reclamation runs
+   * at the call rate. The returned view is **borrowed**: it stays valid only
+   * until `SharedBytesRingSlabs` further results arrive on that lane, so copy
+   * anything you keep. `"gc"` instead waits for the host to collect its view,
+   * which is exact but paced by GC rather than by load — measured, it starves
+   * and falls back to copying under exactly the sizes the feature exists for.
+   */
+  SharedBytesReclaim?: "gc" | "ring";
+  /** Slabs cycled per size class in `"ring"` mode. Defaults to 64. */
+  SharedBytesRingSlabs?: number;
+  /**
+   * Smallest ordinary `Uint8Array` return copied into a slab and shipped by
+   * pointer. Defaults to 256 KiB.
+   *
+   * Higher than the `sharedBytes` threshold on purpose: upgrading an ordinary
+   * array adds a worker-side memcpy to save the host's copy-out, which only
+   * pays once the host copy dominates. Measured at 16 KiB it is a ~25%
+   * regression on node at 4 threads.
+   */
+  SharedBytesUpgradeMinBytes?: number;
+  /**
+   * Whether returns at or above the slab threshold travel as a pointer into
+   * shared memory instead of being copied through the payload arena.
+   *
+   * Defaults to `true`. Set `false` to take the feature out of the picture
+   * entirely: workers allocate no slabs, `sharedBytes()` degrades to a plain
+   * `Uint8Array`, ordinary returns are not upgraded, and the host never adopts a
+   * slab alias. Worth reaching for if you need results to stay valid for
+   * unbounded time, or to rule the path out while debugging.
+   *
+   * Already off for process workers, whose returns cannot carry a process-local
+   * pointer.
+   */
+  SharedBytes?: boolean;
 };
 
 type LockBuffers = {
@@ -615,11 +675,29 @@ type DispatcherSettings = {
    * workers + 1`). Defaults to the widest region the lane budget allows, which
    * amortises arbitration best for cheap tasks.
    *
+   * That bound is a `dekker` liveness requirement, so `stealClaim: "cas"`
+   * accepts wider regions — but measured, going more than one notch past it
+   * costs 31-49%: with fewer regions than workers, the losers spin on owned
+   * sentinels. Keep `slots / g >= workers`.
+   *
    * **A region is a batch.** For expensive tasks, a wide region lets one worker
    * claim work the others could have run in parallel; set this to `1` (or a
    * small value) when per-task cost dominates arbitration cost.
    */
   stealRegionLanes?: number;
+  /**
+   * Region mutual-exclusion discipline for stealing consumers. Experimental.
+   *
+   * - `"dekker"` (default): the paper protocol. Every consumer owns an intent
+   *   word, no word has two writers, and a claim surveys live peers -- O(N)
+   *   atomic loads per claim.
+   * - `"cas"`: one shared owner mask claimed with `compareExchange`. The claim
+   *   cost stops growing with worker count, at the price of one contended
+   *   cache line.
+   *
+   * Can also be forced with the `KNITTING_STEAL_CLAIM` env var.
+   */
+  stealClaim?: "dekker" | "cas" | "cas-mask";
 };
 
 type CreatePool = {

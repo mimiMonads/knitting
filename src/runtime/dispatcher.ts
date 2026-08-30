@@ -230,7 +230,17 @@ export const hostDispatcherLoop = ({
 
       txStatus[0] = 1;
 
-      if (hasPendingFrames() && a_load(rxStatus, 0) === 0) {
+      // Ring on every pass where the worker is parked, not only when the host
+      // is back-pressured. `hasPendingFrames()` is true only when the region is
+      // full: when it has room `enqueue()` writes straight through and the
+      // pending queue stays empty, so gating on it suppressed *every* ring on
+      // short tasks and left the worker to find its work by park timeout — up
+      // to 17x throughput in both topologies. `send()` cannot cover that: its
+      // `laneWake()` sits behind an `isRunning` early return that is always
+      // taken under load. The `rxStatus` load is the real gate and costs 8.3ns;
+      // a ring that finds no waiter costs 28ns and never cost throughput in any
+      // cell measured. See `docs/ring-gate-fails-open.md`.
+      if (a_load(rxStatus, 0) === 0) {
         a_store(opView, 0, 1);
         wakeSignal();
       }
@@ -256,7 +266,15 @@ export const hostDispatcherLoop = ({
       txStatus[0] = 0;
 
       if (!txIdle()) {
-        if (completed || hasPendingFrames()) {
+        // Back-pressure is not progress. Frames still queued here mean the
+        // request region is full, and only a completion frees a slot — which
+        // is exactly the event the doorbell is armed on, so escalating to it
+        // loses nothing. Counting them as progress instead pinned `stallCount`
+        // at zero for as long as a caller kept more than `LockBound.slots`
+        // calls in flight, so the pump never escalated and spun its macrotask
+        // hop for every completion. See `docs/poll-mode-backpressure.md` for
+        // what this costs the pump that has no doorbell to escalate to.
+        if (completed) {
           stallCount = 0 | 0;
         } else {
           stallCount = (stallCount + 1) | 0;

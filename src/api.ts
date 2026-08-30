@@ -435,6 +435,10 @@ export const createPool: CreatePoolFactory = ({
 }: CreatePool) =>
 <T extends tasks>(tasks: T): Pool<T> => {
   const bufferReferenceReturn = unsafe?.BufferReferenceReturn;
+  const sharedBytesReclaim = unsafe?.SharedBytesReclaim;
+  const sharedBytesRingSlabs = unsafe?.SharedBytesRingSlabs;
+  const sharedBytesEnabled = unsafe?.SharedBytes;
+  const sharedBytesUpgradeMinBytes = unsafe?.SharedBytesUpgradeMinBytes;
   const debugRequested = DEBUG_ENABLED ||
     (debug !== undefined && debug !== false);
   let debugNamespaces: Set<string> | undefined;
@@ -616,6 +620,15 @@ export const createPool: CreatePoolFactory = ({
   const stealDefaultCompatible = balancer === undefined &&
     !dispatcherExplicitlySelected && (threads ?? 1) <= MAX_STEAL_CONSUMERS;
   const stealRequested = host?.steal ?? stealEnv ?? stealDefaultCompatible;
+  const stealClaimEnvRaw = nodeProcess?.env?.KNITTING_STEAL_CLAIM?.trim()
+    .toLowerCase();
+  const stealClaimEnv = stealClaimEnvRaw === "cas" ||
+      stealClaimEnvRaw === "cas-mask" || stealClaimEnvRaw === "dekker"
+    ? stealClaimEnvRaw
+    : undefined;
+  // Experimental: `cas` swaps the paper's per-consumer intent words for one
+  // shared owner mask. Explicit option wins over the environment.
+  const stealClaim = host?.stealClaim ?? stealClaimEnv ?? "dekker";
   const usingCompiledWorker = resolvedWorker?.runtime === "compiled";
   if (resolvedWorker?.compiled !== undefined && !usingCompiledWorker) {
     throw new Error(
@@ -724,9 +737,12 @@ export const createPool: CreatePoolFactory = ({
     !usingInliner;
   const stealBuffers = useSteal
     ? createStealPoolBuffers({
+      sharedBytesReclaim,
+      sharedBytesEnabled,
       threads: threads ?? 1,
       payload,
       regionLanes: host?.stealRegionLanes,
+      stealClaim,
       abortSignalCapacity,
       usesAbortSignal,
       processWorker: resolvedWorker?.runtime === "process"
@@ -776,6 +792,10 @@ export const createPool: CreatePoolFactory = ({
       host,
       payload,
       bufferReferenceReturn,
+      sharedBytesReclaim,
+      sharedBytesRingSlabs,
+      sharedBytesEnabled,
+      sharedBytesUpgradeMinBytes,
       abortSignalCapacity,
       usesAbortSignal,
       permission: permissionProtocol,
@@ -790,9 +810,11 @@ export const createPool: CreatePoolFactory = ({
         consumers: threads ?? 1,
         consumerId: thread,
         regionLanes: stealBuffers.regionLanes,
+        stealClaim: stealBuffers.stealClaim,
         abortSignalSAB: stealBuffers.abortSignalSAB,
         abortSignalMax: stealBuffers.abortSignalMax,
         processMemory: stealBuffers.processMemory,
+        sabReturnRing: stealBuffers.sabReturnRings[thread],
       },
     })
   );
@@ -866,7 +888,9 @@ export const createPool: CreatePoolFactory = ({
       });
     });
     hostDebug?.log(
-      `dispatcher=steal lanes=${workers.length} g=${stealBuffers!.regionLanes}`,
+      `dispatcher=steal lanes=${workers.length} g=${
+        stealBuffers!.regionLanes
+      } claim=${stealClaim}`,
     );
   }
 
@@ -1087,18 +1111,38 @@ export const createPool: CreatePoolFactory = ({
     callHandlers.set(name, []);
   }
 
-  for (const worker of workers) {
+  if (useSteal) {
+    // Every worker context points at the same pool-global submit queue in the
+    // stealing topology. There is therefore no worker to assign here: the
+    // claimant is selected later by decodeSteal(). Keep one call closure per
+    // task and avoid paying N equivalent wrapper allocations at pool setup.
+    const sharedWorker = workers[0]!;
     for (const { name, index, timeout, abortSignal } of indexedFunctions) {
-      callHandlers.get(name)!.push(
+      callHandlers.set(name, [
         wrapGuardedInvoke({
           taskName: name,
-          invoke: worker.call({
+          invoke: sharedWorker.call({
             fnNumber: index,
             timeout,
             abortSignal,
           }),
         }),
-      );
+      ]);
+    }
+  } else {
+    for (const worker of workers) {
+      for (const { name, index, timeout, abortSignal } of indexedFunctions) {
+        callHandlers.get(name)!.push(
+          wrapGuardedInvoke({
+            taskName: name,
+            invoke: worker.call({
+              fnNumber: index,
+              timeout,
+              abortSignal,
+            }),
+          }),
+        );
+      }
     }
   }
 
@@ -1139,6 +1183,11 @@ export const createPool: CreatePoolFactory = ({
     handlers: WorkerInvoke[],
     imported: boolean,
   ): WorkerInvoke => {
+    // Stealing owns one shared submit queue. The worker that runs a call is
+    // deliberately chosen by the worker-side claim protocol, not by the host
+    // balancer, so round-robin/first-idle selection would only add overhead.
+    if (useSteal) return handlers[0]!;
+
     if (imported && usingInliner) {
       return buildImportedInvoker(handlers);
     }
