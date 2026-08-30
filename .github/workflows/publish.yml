@@ -47,6 +47,8 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
       - uses: ilammy/msvc-dev-cmd@v1
         if: runner.os == 'Windows'
       - name: Build native prebuild

@@ -10,14 +10,12 @@ import {
 import type { WorkerComposedWithKey } from "./task-loader.ts";
 import { composeWorkerRunner } from "./composable-runners.ts";
 import type { WorkerSettings } from "../types.ts";
-import { BUFFER_REFERENCE_RETURN_RELEASE_TOKEN } from "../connections/buffer-reference.ts";
 
 type ArgumentsForCreateWorkerQueue = {
   listOfFunctions: WorkerComposedWithKey[];
   workerOptions?: WorkerSettings;
   lock: Lock2;
   returnLock: Lock2;
-  borrowReturnedBufferReferences?: boolean;
   hasAborted?: (signal: number) => boolean;
   now?: () => number;
   /**
@@ -42,7 +40,6 @@ export const createWorkerRxQueue = (
     workerOptions,
     lock,
     returnLock,
-    borrowReturnedBufferReferences,
     hasAborted,
     now,
     stealing,
@@ -77,7 +74,6 @@ export const createWorkerRxQueue = (
   const returnHostBits = returnLock.hostBits;
   const returnWorkerBits = returnLock.workerBits;
   const deferredReleases: Array<() => void> = [];
-  const explicitReturnReleases = new Map<bigint, () => void>();
   const drainReturnReleases = () => {
     if (deferredReleases.length === 0) return;
     // `returnHostBits` is the publication word of the return lock, and only
@@ -95,20 +91,6 @@ export const createWorkerRxQueue = (
     }
     deferredReleases.length = 0;
   };
-  const releaseReturnedBufferReference = (token: bigint): void => {
-    // Keyed by the bigint itself: Map compares with SameValueZero, which is
-    // value equality for BigInt, so the `.toString()` on both the set and the
-    // lookup was two throwaway string allocations per borrowed reference.
-    const release = explicitReturnReleases.get(token);
-    if (release === undefined) return;
-    explicitReturnReleases.delete(token);
-    try {
-      release();
-    } catch {
-      // best effort
-    }
-  };
-
   const runByIndex = listOfFunctions.reduce((acc, fixed, idx) => {
     const job = jobs[idx]!;
     acc.push(composeWorkerRunner({
@@ -154,14 +136,7 @@ export const createWorkerRxQueue = (
     if (!returnEncode(slot)) return false;
     // Preserve return finalizers past slot recycle; release after drain.
     if (slot.finalize !== undefined) {
-      const token = (slot.finalize as (() => void) & {
-        [BUFFER_REFERENCE_RETURN_RELEASE_TOKEN]?: bigint;
-      })[BUFFER_REFERENCE_RETURN_RELEASE_TOKEN];
-      if (token === undefined || borrowReturnedBufferReferences !== true) {
-        deferredReleases.push(slot.finalize);
-      } else {
-        explicitReturnReleases.set(token, slot.finalize);
-      }
+      deferredReleases.push(slot.finalize);
       slot.finalize = undefined;
     }
     recyclePush(slot);
@@ -242,7 +217,6 @@ export const createWorkerRxQueue = (
     },
     enqueueLock,
     drainReturnReleases,
-    releaseReturnedBufferReference,
     hasAwaiting: () => awaiting > 0,
     getAwaiting: () => awaiting,
   };

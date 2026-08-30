@@ -1,5 +1,4 @@
 import RingQueue from "../ipc/tools/ring-queue.ts";
-import { setSharedSliceReleaser } from "../connections/shared-array-buffer-payload.ts";
 // payloadCodec is intentionally NOT statically imported: lock.ts and
 // payloadCodec.ts form a cycle, and Andromeda's Nova engine stack-overflows on
 // circular ES imports. Instead payloadCodec self registers its factories on
@@ -98,6 +97,8 @@ export const PayloadBuffer = {
   EnvelopeDynamicHeaderStringExternal: 52,
   NumericArray: 53,
   StaticNumericArray: 54,
+  /** EXPERIMENT: payload already lives in the arena; the frame is offset+len. */
+  ArenaBinary: 55,
 } as const;
 export type PayloadBuffer = typeof PayloadBuffer[keyof typeof PayloadBuffer];
 
@@ -523,13 +524,13 @@ export const lock2 = ({
   toSentList,
   recycleList,
   processBoundary,
+  sharedReturn,
   consumers,
   consumerId,
   regionLanes,
   stealClaim,
   notifyOnHostPublish,
   notifyHostPublish,
-  sliceRelease,
 }: {
   headers?: SharedBufferSource;
   headerSlotStrideU32?: number;
@@ -543,11 +544,15 @@ export const lock2 = ({
    * once the host's view over it is unreachable, so the producing worker may
    * refill it. Slab tokens are per-isolate, so this is per-lane by construction.
    */
-  sliceRelease?: (token: bigint) => void;
   toSentList?: RingQueue<Task>;
   resultList?: RingQueue<Task>;
   recycleList?: RingQueue<Task>;
   processBoundary?: boolean;
+  /**
+   * Hand large returns to the consumer as a borrowed region instead of copying
+   * them out. Set only on a worker's return lane.
+   */
+  sharedReturn?: boolean;
   /**
    * Number of consumer endpoints sharing this lock. `1` (default) keeps the
    * classic single-consumer path. `> 1` enables region-Dekker work stealing and
@@ -747,6 +752,7 @@ export const lock2 = ({
     lockSector: payloadLockRegion,
     textCompat: resolvedTextCompat,
     processBoundary,
+    sharedReturn,
     onPromise: (task, isRejected, value) => {
       if (
         (task[TASK_LOCAL_FLAGS_INDEX] & TASK_LOCAL_PROMISE_TRACKED_FLAG) !==
@@ -761,9 +767,6 @@ export const lock2 = ({
       promiseHandler!(task, isRejected, value);
     },
   });
-  if (sliceRelease !== undefined) {
-    setSharedSliceReleaser(payloadLockRegion as object, sliceRelease);
-  }
   const decodeTask = registeredDecodePayload({
     payload: {
       sab: payloadSAB,
@@ -1680,6 +1683,5 @@ export const lock2 = ({
      * Identity this lane's slab aliases are cached under. The host needs it to
      * revoke outstanding slab views when the worker behind this lane dies.
      */
-    sliceTransportKey: payloadLockRegion as object,
   };
 };

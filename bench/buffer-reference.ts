@@ -70,9 +70,6 @@ const timeAvgMs = async (
 if (isMain) {
   using pool = createPool({
     threads: 1,
-    unsafe: {
-      BufferReferenceReturn: "borrow",
-    },
     payload: {
       payloadMaxByteLength: 64 * 1024 * 1024,
       maxPayloadBytes: 8 * 1024 * 1024,

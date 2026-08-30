@@ -53,6 +53,10 @@ export const register = (
 
   const startAndIndex = new Uint32Array(DYNAMIC_PAYLOAD_SLOTS);
   const size64bit = new Uint32Array(DYNAMIC_PAYLOAD_SLOTS);
+  // Byte offset each live slot was placed at. `startAndIndex` already carries it
+  // packed with the slot id, but only in table order; callers that hold a slot
+  // want it in O(1).
+  const startBySlot = new Uint32Array(DYNAMIC_PAYLOAD_SLOTS);
 
   const a_load = Atomics.load;
   const a_store = Atomics.store;
@@ -117,8 +121,7 @@ export const register = (
     ) >>> 0;
   };
 
-  const reserveSlot = (slot: number, task: Task) => {
-    tagTaskSlot(task, slot);
+  const reserveSlot = (slot: number) => {
     const bit = slotBit(slot);
     if (slot < 32) {
       usedBits0 = (usedBits0 | bit) | 0;
@@ -161,7 +164,7 @@ export const register = (
   // bounded at 64 entries: beyond that payload identity cannot be represented
   // in the six-bit task field, so the caller leaves the frame pending until a
   // receiver releases a region.
-  const findAndInsert = (task: Task, size: number): number => {
+  const findAndInsert = (size: number): number => {
     updateTable();
 
     if (tableLength >= DYNAMIC_PAYLOAD_SLOTS) return -1;
@@ -185,20 +188,34 @@ export const register = (
     }
     startAndIndex[insertAt] = (previousEnd | slot) >>> 0;
     size64bit[slot] = size >>> 0;
-    task[TaskIndex.Start] = previousEnd;
+    startBySlot[slot] = previousEnd >>> 0;
+    tableLength++;
+    reserveSlot(slot);
+    return slot;
+  };
+
+  /**
+   * Reserve a region for `payloadLen` bytes without a task to stamp it into.
+   * Returns the region index, or -1 when every identity is taken. Its offset is
+   * `regionStart(slot)`.
+   */
+  const allocRegion = (payloadLen: number): number =>
+    findAndInsert(((payloadLen | 0) + 63) & ~63);
+
+  /** Byte offset of a region reserved by `allocRegion` or `allocTask`. */
+  const regionStart = (slot: number): number =>
+    startBySlot[slot & SLOT_MASK]!;
+
+  const allocTask = (task: Task) => {
+    const slot = findAndInsert(((task[TaskIndex.PayloadLen] | 0) + 63) & ~63);
+    if (slot === -1) return -1;
+    task[TaskIndex.Start] = startBySlot[slot]!;
     task[TaskIndex.slotBuffer] = (
       (task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) |
       (slot & TASK_SLOT_INDEX_MASK)
     ) >>> 0;
-    tableLength++;
-    reserveSlot(slot, task);
+    tagTaskSlot(task, slot);
     return slot;
-  };
-
-  const allocTask = (task: Task) => {
-    const payloadLen = task[TaskIndex.PayloadLen] | 0;
-    const size = (payloadLen + 63) & ~63;
-    return findAndInsert(task, size);
   };
 
   const setSlotLength = (slotIndex: number, payloadLen: number) => {
@@ -216,6 +233,8 @@ export const register = (
 
   return {
     allocTask,
+    allocRegion,
+    regionStart,
     setSlotLength,
     tagTaskSlot,
     lockSAB,

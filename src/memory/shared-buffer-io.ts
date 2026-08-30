@@ -205,22 +205,7 @@ export const createSharedDynamicBufferIO = ({
 
   const capacityBytes = () => backingByteLength - DYNAMIC_HEADER_BYTES;
 
-  const ensureCapacity = (neededBytes: number) => {
-    if (capacityBytes() >= neededBytes) return true;
-    if (!canGrow) return false;
-
-    try {
-      if (!(lockSAB instanceof SharedArrayBuffer)) return false;
-      lockSAB = growSharedArrayBuffer(
-        lockSAB,
-        alignUpto64(
-          DYNAMIC_HEADER_BYTES + neededBytes + DYNAMIC_SAFE_PADDING_BYTES,
-        ),
-      );
-    } catch {
-      return false;
-    }
-
+  const adoptBuffer = () => {
     baseByteOffset = 0;
     backingByteLength = lockSAB.byteLength;
     u8 = new Uint8Array(
@@ -234,6 +219,43 @@ export const createSharedDynamicBufferIO = ({
       baseByteOffset + DYNAMIC_HEADER_BYTES,
       (backingByteLength - DYNAMIC_HEADER_BYTES) >>> 3,
     );
+  };
+
+  /**
+   * Re-adopt the arena after the *other* endpoint grew it.
+   *
+   * Growth is in place and one-sided: the writer calls `grow` and its own views
+   * are rebuilt, but every other endpoint on that buffer is still looking at the
+   * length it started with, so a region placed past that length reads short.
+   * Copied payloads mostly hide this -- their regions are released as they are
+   * decoded, so the watermark stays low -- but a borrowed region is held for a
+   * whole window and pushes straight past it.
+   */
+  const syncGrowth = () => {
+    if (!canGrow) return;
+    if (lockSAB.byteLength === backingByteLength) return;
+    adoptBuffer();
+  };
+
+  const ensureCapacity = (neededBytes: number) => {
+    if (capacityBytes() >= neededBytes) return true;
+    if (!canGrow) return false;
+    syncGrowth();
+    if (capacityBytes() >= neededBytes) return true;
+
+    try {
+      if (!(lockSAB instanceof SharedArrayBuffer)) return false;
+      lockSAB = growSharedArrayBuffer(
+        lockSAB,
+        alignUpto64(
+          DYNAMIC_HEADER_BYTES + neededBytes + DYNAMIC_SAFE_PADDING_BYTES,
+        ),
+      );
+    } catch {
+      return false;
+    }
+
+    adoptBuffer();
     return true;
   };
 
@@ -330,6 +352,13 @@ export const createSharedDynamicBufferIO = ({
   };
 
   return {
+    ensureCapacity,
+    syncGrowth,
+    capacityBytes,
+    /** The buffer the dynamic views currently sit on; growth can replace it. */
+    currentBuffer: () => lockSAB,
+    /** Byte offset of region 0 inside that buffer; growth can move it. */
+    regionBase: () => u8.byteOffset,
     readUtf8,
     writeBinary,
     writeBuffer,

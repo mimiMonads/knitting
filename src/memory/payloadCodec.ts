@@ -28,16 +28,15 @@ import {
   type PayloadBufferOptions,
   resolvePayloadBufferOptions,
 } from "./payload-config.ts";
-import type { SharedBufferSource } from "../common/shared-buffer-region.ts";
+import {
+  type SharedBufferSource,
+  toSharedBufferRegion,
+} from "../common/shared-buffer-region.ts";
 import {
   getSharedArrayBufferPayload,
-  isSharedSliceView,
-  upgradeToSharedSlice,
   SHARED_ARRAY_BUFFER_CODEC_ID,
   SHARED_ARRAY_BUFFER_NUMERIC_TRANSFER,
   SHARED_ARRAY_BUFFER_NUMERIC_WORDS,
-  SHARED_ARRAY_BUFFER_SLICE_WORDS,
-  sharedSliceNumericWords,
 } from "../connections/shared-array-buffer-payload.ts";
 import {
   BUFFER_REFERENCE_NUMERIC_TRANSFER,
@@ -242,6 +241,47 @@ const decodeExternalPayload = (
 const PROCESS_SHARED_BUFFER_NUMERIC_WORDS = 8;
 const BUFFER_REFERENCE_NUMERIC_WORDS = 8;
 const NUMERIC_SENTINEL = 0xffffffff;
+
+/**
+ * Smallest ordinary `Uint8Array` return that is placed in a borrowed arena
+ * region instead of being copied out on the host.
+ *
+ * Matches the threshold the slab pool shipped with, because the hazard is the
+ * same: above it, a returned buffer is a view into shared memory rather than a
+ * private copy. Measured wins start from 4 KiB (bench/arena-borrow.ts), so this
+ * is a safety choice, not a performance one.
+ */
+export const SHARED_RETURN_MIN_BYTES = 256 * 1024;
+
+/**
+ * How many further large returns a borrowed region survives on its lane.
+ *
+ * The producer releases regions in FIFO order once more than this many are
+ * outstanding, so a consumer that keeps a returned view past this many results
+ * reads another call's bytes.
+ *
+ * It has to cover a full lane of in-flight results -- `LockBound.slots` of them
+ * -- or a region could be recycled while its own call is still unread, which no
+ * amount of care on the consumer's part would survive. That floor is also what
+ * makes it a performance lever in the wrong direction: every outstanding region
+ * is live arena, so a wide window is a working set that no longer fits in cache.
+ * Measured on node at 1 MiB, dropping it from 16 to 4 moved an ordinary borrowed
+ * return from 0.62x to 1.21x against copying -- but 4 is not a legal width.
+ */
+export const SHARED_RETURN_BORROW_WINDOW = 32;
+
+// One allocator per payload buffer, so a worker can find the one belonging to
+// its own return lane without the lock threading it through.
+const sharedReturnAllocators = new WeakMap<
+  object,
+  (byteLength: number, zeroFill?: boolean) => Uint8Array | undefined
+>();
+
+/** The borrowed-region allocator for `payload`, if an encoder built one. */
+export const getSharedReturnAllocator = (
+  payload: object,
+): ((byteLength: number, zeroFill?: boolean) => Uint8Array | undefined) |
+  undefined => sharedReturnAllocators.get(payload);
 
 const decodeNumericExternalPayload = (
   codecId: string,
@@ -484,6 +524,7 @@ export const encodePayload = ({
   textCompat,
   onPromise,
   processBoundary = false,
+  sharedReturn = false,
 }: {
   lockSector?: SharedBufferSource;
   payload?: {
@@ -507,6 +548,12 @@ export const encodePayload = ({
    * Process transports must set this on both encoders and decoders.
    */
   processBoundary?: boolean;
+  /**
+   * Hand large payloads over as a borrowed region instead of copying them out
+   * on the consumer. Only the worker's return lane sets this: on the request
+   * lane it would make a task's arguments expire under it while it runs.
+   */
+  sharedReturn?: boolean;
 }) => {
   const payloadSab = payload?.sab ?? sab;
   const resolvedPayloadConfig = resolvePayloadBufferOptions({
@@ -515,15 +562,19 @@ export const encodePayload = ({
   });
   const maxPayloadBytes = resolvedPayloadConfig.maxPayloadBytes;
 
-  const { allocTask, setSlotLength, tagTaskSlot, free } = register({
-    lockSector,
-  });
+  const registryHandle = register({ lockSector });
+  const { allocTask, setSlotLength, tagTaskSlot, free } = registryHandle;
+  const { allocRegion, regionStart } = registryHandle;
   const {
     writeBinary: writeDynamicBinary,
     writeBuffer: writeDynamicBuffer,
     writeArrayBuffer: writeDynamicArrayBuffer,
     write8Binary: writeDynamic8Binary,
     writeUtf8: writeDynamicUtf8,
+    readBytesView: dynamicRegionView,
+    ensureCapacity: ensureDynamicCapacity,
+    currentBuffer: currentDynamicBuffer,
+    regionBase: dynamicRegionBase,
   } = createSharedDynamicBufferIO({
     sab: payloadSab,
     payloadConfig: resolvedPayloadConfig,
@@ -593,6 +644,101 @@ export const encodePayload = ({
     text: string,
     label: string,
   ): number => dynamicUtf8ReserveBytesWithExtra(task, text, 0, label);
+
+  // Regions handed to the consumer by reference rather than copied out. The
+  // producer owns their lifetime: it releases them in FIFO order once more than
+  // SHARED_RETURN_BORROW_WINDOW are outstanding, which is what bounds how long a
+  // returned view stays readable. Nothing here is pinned, tokenised or freed by
+  // the consumer -- the frame is an offset and a length in the task header.
+  // Flat [slot, start, end] triples, oldest first.
+  const borrowed: number[] = [];
+  const BORROW_STRIDE = 3;
+
+  /**
+   * Largest return this lane will lend rather than copy.
+   *
+   * A loan is only released once `SHARED_RETURN_BORROW_WINDOW` further loans
+   * push it out, so a lane can have that many outstanding at any moment. Sizing
+   * the limit as `budget / window` means a full window of the largest loan still
+   * leaves half the arena for ordinary payloads -- which matters because there
+   * is no graceful degradation underneath: an arena packed with loans makes the
+   * *copy* path fail too, and that surfaces as KNT_ERROR_3 rather than as a
+   * slower call.
+   */
+  const maxBorrowBytes =
+    ((resolvedPayloadConfig.payloadMaxByteLength >> 1) /
+      SHARED_RETURN_BORROW_WINDOW) | 0;
+
+  /** Reserve a region to hand over by reference, or -1 when none is free. */
+  const reserveBorrowedRegion = (bytes: number): number => {
+    if (bytes > maxBorrowBytes) return -1;
+    const slot = allocRegion(bytes);
+    if (slot === -1) return -1;
+    const start = regionStart(slot);
+    if (!ensureDynamicCapacity(start + bytes)) {
+      free(slot);
+      return -1;
+    }
+    borrowed.push(slot, start, start + bytes);
+    if (borrowed.length > SHARED_RETURN_BORROW_WINDOW * BORROW_STRIDE) {
+      free(borrowed[0]!);
+      borrowed.splice(0, BORROW_STRIDE);
+    }
+    return slot;
+  };
+
+  const dropBorrowedRegion = (slot: number): void => {
+    for (let at = 0; at < borrowed.length; at += BORROW_STRIDE) {
+      if (borrowed[at] === slot) {
+        borrowed.splice(at, BORROW_STRIDE);
+        break;
+      }
+    }
+    free(slot);
+  };
+
+  /**
+   * Where `view` starts inside the arena, if it lies within a region this lane
+   * still has on loan, or -1.
+   *
+   * Containment rather than identity, so returning `out.subarray(0, written)`
+   * of a `sharedBytes` buffer stays on the borrow path instead of falling back
+   * to a copy -- which is the whole reason a caller can hand back less than it
+   * asked for. Scanned newest-first: a task almost always returns the region it
+   * just took.
+   */
+  const borrowedStartOf = (view: Uint8Array): number => {
+    if (borrowed.length === 0) return -1;
+    if (view.buffer !== currentDynamicBuffer()) return -1;
+    const start = view.byteOffset - dynamicRegionBase();
+    const end = start + view.byteLength;
+    for (let at = borrowed.length - BORROW_STRIDE; at >= 0; at -= BORROW_STRIDE) {
+      if (start >= borrowed[at + 1]! && end <= borrowed[at + 2]!) return start;
+    }
+    return -1;
+  };
+
+  /**
+   * A `byteLength` view inside this lane's payload arena for the caller to build
+   * a return in. Returning it ships the offset, so nothing is ever copied.
+   * `undefined` when no region is free, and the caller allocates normally.
+   */
+  const allocateSharedReturn = (
+    byteLength: number,
+    zeroFill = false,
+  ): Uint8Array | undefined => {
+    const slot = reserveBorrowedRegion(byteLength);
+    if (slot === -1) return undefined;
+    const start = regionStart(slot);
+    const view = dynamicRegionView(start, start + byteLength);
+    // Regions are recycled and never cleared on release, so this holds the
+    // previous return's bytes until the caller overwrites them.
+    if (zeroFill) view.fill(0);
+    return view;
+  };
+  if (sharedReturn && payloadSab !== undefined) {
+    sharedReturnAllocators.set(payloadSab as object, allocateSharedReturn);
+  }
 
   const reserveDynamic = (task: Task, bytes: number) => {
     task[TaskIndex.PayloadLen] = bytes;
@@ -719,12 +865,42 @@ export const encodePayload = ({
     bytesView: Uint8Array,
   ) => {
     const bytes = bytesView.byteLength;
+    // Already built in one of this lane's borrowed regions: the frame is just
+    // where it is. Nothing to reserve, nothing to copy.
+    const borrowedStart = borrowedStartOf(bytesView);
+    if (borrowedStart !== -1) {
+      task[TaskIndex.Type] = PayloadBuffer.ArenaBinary;
+      task[TaskIndex.Start] = borrowedStart;
+      task[TaskIndex.PayloadLen] = bytes;
+      task.value = null;
+      return true;
+    }
     if (bytes <= staticMaxBytes) {
       writeStaticExactUint8Array(bytesView, slotIndex);
       task[TaskIndex.Type] = PayloadBuffer.StaticBinary;
       task[TaskIndex.PayloadLen] = bytes;
       task.value = null;
       return true;
+    }
+
+    // Big enough to be worth handing over by reference: copy it into a borrowed
+    // region once here instead of copying it out again on the consumer.
+    if (
+      sharedReturn && bytes >= SHARED_RETURN_MIN_BYTES &&
+      bytes <= maxPayloadBytes
+    ) {
+      const slot = reserveBorrowedRegion(bytes);
+      if (slot !== -1) {
+        const start = regionStart(slot);
+        if (writeDynamicBinary(bytesView, start) >= 0) {
+          task[TaskIndex.Type] = PayloadBuffer.ArenaBinary;
+          task[TaskIndex.Start] = start;
+          task[TaskIndex.PayloadLen] = bytes;
+          task.value = null;
+          return true;
+        }
+        dropBorrowedRegion(slot);
+      }
     }
 
     task[TaskIndex.Type] = PayloadBuffer.Binary;
@@ -858,7 +1034,7 @@ export const encodePayload = ({
     PROCESS_SHARED_BUFFER_NUMERIC_WORDS,
   );
   const sharedArrayBufferWords = new Uint32Array(
-    SHARED_ARRAY_BUFFER_SLICE_WORDS,
+    SHARED_ARRAY_BUFFER_NUMERIC_WORDS,
   );
   const tryEncodeProcessSharedBufferNumeric = (
     task: Task,
@@ -930,38 +1106,6 @@ export const encodePayload = ({
     task.value = null;
     return true;
   };
-  const sharedSliceWords = new Uint32Array(SHARED_ARRAY_BUFFER_SLICE_WORDS);
-
-  /**
-   * Ship a pooled slab view by reference. The host aliases the slab instead of
-   * copying the bytes out, and hands the token back once the view is dropped.
-   */
-  const tryEncodeSharedSlice = (
-    task: Task,
-    slotIndex: number,
-    view: Uint8Array,
-  ): boolean => {
-    const words = sharedSliceNumericWords(
-      view.buffer as object,
-      view.byteOffset,
-      view.byteLength,
-      lockSector as object | undefined,
-    );
-    if (words === undefined) return false;
-
-    const count = words.length;
-    for (let i = 0; i < count; i++) sharedSliceWords[i] = words[i]!;
-
-    task[TaskIndex.Type] = PayloadBuffer.SharedArrayBuffer;
-    task[TaskIndex.PayloadLen] = writeStaticU32Words(
-      sharedSliceWords,
-      count,
-      slotIndex,
-    );
-    task.value = null;
-    return true;
-  };
-
   const tryEncodeSharedArrayBufferNumeric = (
     task: Task,
     slotIndex: number,
@@ -1537,25 +1681,11 @@ export const encodePayload = ({
 
           const objectProto = objectGetPrototypeOf(objectValue);
           if (isRuntimeUint8Array(objectValue)) {
-            const bytes = objectValue as Uint8Array;
-            if (isSharedSliceView(bytes)) {
-              // Already built in a slab: ship the pointer, copy nothing.
-              if (tryEncodeSharedSlice(task, slotIndex, bytes)) return true;
-            } else {
-              // Ordinary array: copy it into a slab and ship that instead. The
-              // copy is not a cost we avoid but the reason the slab is safe to
-              // alias -- the host's region is overwritten in full, so it can
-              // never carry a previous return's leftovers. `upgradeToSharedSlice`
-              // is unset on the host, so arguments are never rewritten.
-              const upgraded = upgradeToSharedSlice(bytes);
-              if (
-                upgraded !== undefined &&
-                tryEncodeSharedSlice(task, slotIndex, upgraded)
-              ) {
-                return true;
-              }
-            }
-            return encodeObjectUint8Array(task, slotIndex, bytes);
+            return encodeObjectUint8Array(
+              task,
+              slotIndex,
+              objectValue as Uint8Array,
+            );
           }
 
           if (arrayIsArray(objectValue) && isNumericArray(objectValue)) {
@@ -1885,6 +2015,8 @@ export const decodePayload = ({
     readArrayBufferCopy: readDynamicArrayBuffer,
     read8BytesFloatCopy: readDynamic8BytesFloatCopy,
     read8BytesFloatView: readDynamic8BytesFloatView,
+    readBytesView: readDynamicBytesView,
+    syncGrowth: syncDynamicGrowth,
   } = createSharedDynamicBufferIO({
     sab: payloadSab,
     payloadConfig: resolvedPayloadConfig,
@@ -1911,12 +2043,12 @@ export const decodePayload = ({
     PROCESS_SHARED_BUFFER_NUMERIC_WORDS,
   );
   const sharedArrayBufferWords = new Uint32Array(
-    SHARED_ARRAY_BUFFER_SLICE_WORDS,
+    SHARED_ARRAY_BUFFER_NUMERIC_WORDS,
   );
   // `readStaticU32Words` returns the whole scratch, and the SAB codec dispatches
   // on word count, so hand it a view cut to the frame's own length.
   const sharedArrayBufferWordViews: Uint32Array[] = [];
-  for (let count = 0; count <= SHARED_ARRAY_BUFFER_SLICE_WORDS; count++) {
+  for (let count = 0; count <= SHARED_ARRAY_BUFFER_NUMERIC_WORDS; count++) {
     sharedArrayBufferWordViews.push(sharedArrayBufferWords.subarray(0, count));
   }
   const bufferReferenceWords = new Uint32Array(BUFFER_REFERENCE_NUMERIC_WORDS);
@@ -2294,6 +2426,16 @@ export const decodePayload = ({
           ),
         );
         freeTaskSlot(task);
+        return;
+      // Borrowed region: the producer owns it and releases it once its borrow
+      // window closes, so the consumer only takes a view.
+      case PayloadBuffer.ArenaBinary:
+        // A borrowed region can sit past the length this endpoint last saw.
+        syncDynamicGrowth();
+        task.value = readDynamicBytesView(
+          task[TaskIndex.Start],
+          task[TaskIndex.Start] + task[TaskIndex.PayloadLen],
+        );
         return;
       case PayloadBuffer.Binary:
         {

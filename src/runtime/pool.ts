@@ -73,35 +73,13 @@ import { probeLockBufferTextCompat } from "../common/shared-buffer-text.ts";
 import { signalAbortFactory } from "../shared/abortSignal.ts";
 import { createLockControlCarpet } from "../memory/byte-carpet.ts";
 import {
-  createSabReleasePublisher,
-  createSabReleaseRingBuffer,
-} from "../memory/sab-release-ring.ts";
-import {
-  SAB_CLASS_BUDGET_BYTES,
-  SAB_POOL_BUDGET_BYTES,
-  SAB_RING_SLABS,
-  SAB_UPGRADE_MIN_BYTES,
-  SAB_SLAB_MIN_BYTES,
-  type SabReclaimMode,
-} from "../memory/sab-return-pool.ts";
-import {
-  SAB_ENABLED_BY_DEFAULT,
-  SAB_RECLAIM_MODE,
-} from "../memory/sab-reclaim-mode.ts";
-import {
   type PayloadBufferOptions,
   resolvePayloadBufferOptions,
 } from "../memory/payload-config.ts";
-import {
-  type BufferReference,
-  type BufferReferenceRuntime,
-  createBufferReferenceReturnReleaseMessage,
-  detachArrayBufferBestEffort,
-} from "../connections/buffer-reference.ts";
-import { revokeSharedSlices } from "../connections/shared-array-buffer-payload.ts";
 import { spawnCompiledWorkerContext } from "./compiled-worker.ts";
 
 const WORKER_FATAL_MESSAGE_KEY = "__knittingWorkerFatal";
+
 const isWorkerFatalMessage = (
   value: unknown,
 ): value is { [WORKER_FATAL_MESSAGE_KEY]: string } =>
@@ -202,9 +180,8 @@ export const MAX_STEAL_CONSUMERS = LockBound.slots - 1;
 
 export const createStealPoolBuffers = ({
   threads,
-  sharedBytesReclaim,
-  sharedBytesEnabled,
   payload,
+  sharedArgs,
   regionLanes,
   stealClaim,
   abortSignalCapacity,
@@ -212,9 +189,9 @@ export const createStealPoolBuffers = ({
   processWorker,
 }: {
   threads: number;
-  sharedBytesReclaim?: SabReclaimMode;
-  sharedBytesEnabled?: boolean;
   payload?: PayloadBufferOptions;
+  /** Hand large arguments to workers as borrowed regions. See `unsafe.SharedArgs`. */
+  sharedArgs?: boolean;
   regionLanes?: number;
   stealClaim?: StealClaimDiscipline;
   abortSignalCapacity?: number;
@@ -304,13 +281,15 @@ export const createStealPoolBuffers = ({
     regionLanes: lanes,
     stealClaim,
     processBoundary: processMemory !== undefined,
+    // Opt-in (`unsafe.SharedArgs`): let arguments travel as borrowed regions
+    // too, so the worker reads them in place. Off by default because a borrowed
+    // argument can be recycled while the task that received it is still
+    // running, which a return never risks.
+    sharedReturn: sharedArgs === true,
   });
 
   const returnBuffers: LockBuffers[] = [];
   const hostReturnLocks: ReturnType<typeof lock2>[] = [];
-  // One slab release ring per lane: slab tokens are minted per worker isolate,
-  // so they only mean anything to the worker that produced them.
-  const sabReturnRings: SharedArrayBuffer[] = [];
   for (let i = 0; i < threads; i++) {
     const buffers = processMemory === undefined
       ? toBuffers(carpet().returnLock, makePayload())
@@ -319,13 +298,6 @@ export const createStealPoolBuffers = ({
         processMemory.workers[i]!.returnPayload,
       );
     returnBuffers.push(buffers);
-    const releaseRing = createSabReleaseRingBuffer();
-    sabReturnRings.push(releaseRing);
-    const publisher = sharedBytesEnabled !== false &&
-        processMemory === undefined &&
-        (sharedBytesReclaim ?? SAB_RECLAIM_MODE) === "gc"
-      ? createSabReleasePublisher(releaseRing)
-      : undefined;
     hostReturnLocks.push(lock2({
       headers: buffers.headers,
       headerSlotStrideU32: buffers.headerSlotStrideU32,
@@ -335,9 +307,6 @@ export const createStealPoolBuffers = ({
       payloadConfig,
       textCompat: buffers.textCompat,
       processBoundary: processMemory !== undefined,
-      sliceRelease: publisher === undefined
-        ? undefined
-        : (token) => publisher.publish(token),
     }));
   }
 
@@ -369,7 +338,6 @@ export const createStealPoolBuffers = ({
     returnBuffers,
     hostSubmitLock,
     hostReturnLocks,
-    sabReturnRings,
     sharedQueue,
     regionLanes: lanes,
     stealClaim,
@@ -397,11 +365,7 @@ export const spawnWorkerContext = ({
   permission,
   host,
   payload,
-  bufferReferenceReturn,
-  sharedBytesReclaim,
-  sharedBytesRingSlabs,
   sharedBytesEnabled,
-  sharedBytesUpgradeMinBytes,
   abortSignalCapacity,
   usesAbortSignal,
   sharedChannelHandler,
@@ -430,11 +394,7 @@ export const spawnWorkerContext = ({
   permission?: WorkerData["permission"];
   host?: DispatcherSettings;
   payload?: PayloadBufferOptions;
-  bufferReferenceReturn?: "copy" | "borrow";
-  sharedBytesReclaim?: SabReclaimMode;
-  sharedBytesRingSlabs?: number;
   sharedBytesEnabled?: boolean;
-  sharedBytesUpgradeMinBytes?: number;
   abortSignalCapacity?: number;
   usesAbortSignal?: boolean;
   /**
@@ -464,7 +424,6 @@ export const spawnWorkerContext = ({
     abortSignalSAB?: LockBuffers["headers"];
     abortSignalMax?: number;
     processMemory?: ProcessStealMemoryLayout;
-    sabReturnRing?: SharedArrayBuffer;
   };
 }) => {
   if (workerOptions?.runtime === "compiled") {
@@ -629,22 +588,6 @@ export const spawnWorkerContext = ({
     textCompat: lockBuffers.textCompat,
     processBoundary: useProcessWorkerRuntime,
   });
-  // Pointer payloads are process-local, so slab returns are thread-workers only,
-  // and `unsafe.SharedBytes: false` opts out entirely. Leaving this undefined is
-  // the whole switch: the worker gets no `sabReturn`, so it installs no pool,
-  // allocates no slabs, upgrades no returns, and never emits a slice frame --
-  // which in turn means the host never adopts a slab alias.
-  const sabReturnRing =
-    useProcessWorkerRuntime || sharedBytesEnabled === false ||
-      !SAB_ENABLED_BY_DEFAULT
-      ? undefined
-      : stealPool?.sabReturnRing ?? createSabReleaseRingBuffer();
-  const reclaimMode: SabReclaimMode = sharedBytesReclaim ?? SAB_RECLAIM_MODE;
-  const sabReturnPublisher =
-    sabReturnRing === undefined || stealPool !== undefined ||
-      reclaimMode !== "gc"
-      ? undefined
-      : createSabReleasePublisher(sabReturnRing);
   const returnLock = stealPool?.hostReturnLock ?? lock2({
     headers: returnLockBuffers.headers,
     headerSlotStrideU32: returnLockBuffers.headerSlotStrideU32,
@@ -654,9 +597,6 @@ export const spawnWorkerContext = ({
     payloadConfig: resolvedPayloadConfig,
     textCompat: returnLockBuffers.textCompat,
     processBoundary: useProcessWorkerRuntime,
-    sliceRelease: sabReturnPublisher === undefined
-      ? undefined
-      : (token) => sabReturnPublisher.publish(token),
   });
   const abortSignalSAB = stealPool?.abortSignalSAB ??
     (usesAbortSignal === true ? controlLayout.abortSignals : undefined);
@@ -683,88 +623,11 @@ export const spawnWorkerContext = ({
     signal: signalBox.opView,
   });
 
-  // Outstanding borrowed returns, revoked before this lane's worker dies so
-  // no borrowed alias can outlive the isolate that pins its bytes.
-  type BorrowedReturnRecord = {
-    ref: WeakRef<BufferReference>;
-    /** Set on first materialize; absent while the borrow was never read. */
-    aliasBuffer?: WeakRef<ArrayBuffer>;
-    runtime: BufferReferenceRuntime;
-  };
-
-  const outstandingBorrowedReturns =
-    bufferReferenceReturn === "borrow" && typeof WeakRef === "function"
-      ? new Map<bigint, BorrowedReturnRecord>()
-      : undefined;
-
-  const releaseBorrowedReturnToken = (token: bigint): void => {
-    outstandingBorrowedReturns?.delete(token);
-    worker?.postMessage?.(
-      createBufferReferenceReturnReleaseMessage(token),
-    );
-  };
-
-  const revokeOutstandingBorrowedReturns = (copyBytes: boolean): void => {
-    if (outstandingBorrowedReturns === undefined) return;
-    for (const [token, record] of outstandingBorrowedReturns) {
-      try {
-        const ref = record.ref.deref();
-        if (ref !== undefined) {
-          ref.revokeBorrow(copyBytes);
-          continue;
-        }
-
-        const aliasBuffer = record.aliasBuffer?.deref();
-        if (
-          aliasBuffer !== undefined &&
-          detachArrayBufferBestEffort(record.runtime, aliasBuffer) &&
-          copyBytes
-        ) {
-          releaseBorrowedReturnToken(token);
-        }
-      } catch {
-        // best effort
-      }
-    }
-    outstandingBorrowedReturns.clear();
-  };
-
-  const returnHooks = bufferReferenceReturn === "borrow"
-    ? {
-      release: releaseBorrowedReturnToken,
-      track: (
-        ref: BufferReference,
-        token: bigint,
-        aliasBuffer?: ArrayBuffer,
-      ) => {
-        if (outstandingBorrowedReturns === undefined) return;
-        const record = outstandingBorrowedReturns.get(token);
-        if (record !== undefined) {
-          if (aliasBuffer !== undefined) {
-            record.aliasBuffer = new WeakRef(aliasBuffer);
-          }
-          return;
-        }
-        outstandingBorrowedReturns.set(token, {
-          ref: new WeakRef(ref),
-          aliasBuffer: aliasBuffer === undefined
-            ? undefined
-            : new WeakRef(aliasBuffer),
-          runtime: ref.runtime,
-        });
-      },
-    }
-    : undefined;
-
   const queue = stealPool?.sharedQueue ?? createHostTxQueue({
     lock,
     returnLock,
     abortSignals,
-    releaseBufferReferenceReturn: returnHooks,
   });
-  if (stealPool !== undefined) {
-    stealPool.sharedQueue.setReturnHooks(stealPool.consumerId, returnHooks);
-  }
 
   const {
     enqueue,
@@ -868,17 +731,9 @@ export const spawnWorkerContext = ({
     lock: lockBuffers,
     returnLock: returnLockBuffers,
     payloadConfig: resolvedPayloadConfig,
-    bufferReferenceReturn,
-    sabReturn: sabReturnRing === undefined ? undefined : {
-      releaseRing: sabReturnRing,
-      reclaim: reclaimMode,
-      ringSlabs: sharedBytesRingSlabs ?? SAB_RING_SLABS,
-      upgradeMinBytes: sharedBytesUpgradeMinBytes ?? SAB_UPGRADE_MIN_BYTES,
-      minBytes: SAB_SLAB_MIN_BYTES,
-      maxBytes: resolvedPayloadConfig.maxPayloadBytes,
-      classBudgetBytes: SAB_CLASS_BUDGET_BYTES,
-      poolBudgetBytes: SAB_POOL_BUDGET_BYTES,
-    },
+    // Pointer-free by construction, so the only thing that turns borrowing off
+    // is the caller asking for it.
+    sharedReturn: sharedBytesEnabled !== false,
     permission,
     // Thread workers ring their local Atomics waiter. Process workers can use
     // the Node-compatible IPC doorbell when their spawn mode exposes it.
@@ -1007,38 +862,11 @@ export const spawnWorkerContext = ({
       deactivateStealConsumer();
     }
   };
-  // `workerBytesReadable`: while the worker is still alive its pinned bytes
-  // can be copied out; after a crash/exit they are gone and borrows are
-  // detached so stale reads fail loud instead of aliasing freed memory.
-  const markWorkerClosed = (
-    reason: string,
-    workerBytesReadable = false,
-  ): void => {
+  const markWorkerClosed = (reason: string): void => {
     if (closedReason) return;
     closedReason = reason;
-    revokeOutstandingBorrowedReturns(workerBytesReadable);
-    revokeSlabReturns();
     rejectAll(reason);
     channelHandler?.close();
-  };
-
-  /**
-   * Detach this lane's slab aliases once its worker is gone.
-   *
-   * A slab lives in the worker's isolate and the host only holds a non-owning
-   * alias, so every `sharedBytes` view outstanding at teardown points at memory
-   * that is about to be freed. There is no copy-out equivalent here the way
-   * there is for `BufferReference`: the view has already been handed to user
-   * code and cannot be rebound, so the alias is detached and later reads throw
-   * instead of returning a dead worker's bytes -- or, worse, plausible ones.
-   */
-  const revokeSlabReturns = (): void => {
-    if (sabReturnRing === undefined) return;
-    try {
-      revokeSharedSlices(returnLock.sliceTransportKey, RUNTIME as BufferReferenceRuntime);
-    } catch {
-      // best effort: teardown must not fail on an un-detachable alias
-    }
   };
 
   const onWorkerMessage = (message: unknown) => {
@@ -1049,7 +877,6 @@ export const spawnWorkerContext = ({
     if (!isWorkerFatalMessage(message)) return;
     markWorkerClosed(
       `Worker startup failed: ${message[WORKER_FATAL_MESSAGE_KEY]}`,
-      true,
     );
     terminateFailedWorker();
   };
@@ -1148,7 +975,7 @@ export const spawnWorkerContext = ({
     call,
     requestStop: requestWorkerStop,
     kills: async () => {
-      markWorkerClosed("Thread closed", true);
+      markWorkerClosed("Thread closed");
       // Process workers must exit before their shared memory is unmapped.
       const awaitExit = processWorkerMemory !== undefined;
       const termination = terminateWorkerQuietly(worker, awaitExit);

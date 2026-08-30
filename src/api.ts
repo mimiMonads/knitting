@@ -37,6 +37,7 @@ import { inspectCompiledWorkerArtifact } from "./runtime/compiled-artifact.ts";
 
 import { managerMethod } from "./runtime/balancer.ts";
 import { createInlineExecutor } from "./runtime/inline-executor.ts";
+import { createHostArgAllocator } from "./runtime/host-arg-arena.ts";
 import type {
   AbortSignalConfig,
   AbortSignalOption,
@@ -434,11 +435,8 @@ export const createPool: CreatePoolFactory = ({
   host,
 }: CreatePool) =>
 <T extends tasks>(tasks: T): Pool<T> => {
-  const bufferReferenceReturn = unsafe?.BufferReferenceReturn;
-  const sharedBytesReclaim = unsafe?.SharedBytesReclaim;
-  const sharedBytesRingSlabs = unsafe?.SharedBytesRingSlabs;
   const sharedBytesEnabled = unsafe?.SharedBytes;
-  const sharedBytesUpgradeMinBytes = unsafe?.SharedBytesUpgradeMinBytes;
+  const sharedArgsEnabled = unsafe?.SharedArgs === true;
   const debugRequested = DEBUG_ENABLED ||
     (debug !== undefined && debug !== false);
   let debugNamespaces: Set<string> | undefined;
@@ -737,10 +735,9 @@ export const createPool: CreatePoolFactory = ({
     !usingInliner;
   const stealBuffers = useSteal
     ? createStealPoolBuffers({
-      sharedBytesReclaim,
-      sharedBytesEnabled,
       threads: threads ?? 1,
       payload,
+      sharedArgs: sharedArgsEnabled,
       regionLanes: host?.stealRegionLanes,
       stealClaim,
       abortSignalCapacity,
@@ -791,11 +788,7 @@ export const createPool: CreatePoolFactory = ({
       workerExecArgv: execArgv,
       host,
       payload,
-      bufferReferenceReturn,
-      sharedBytesReclaim,
-      sharedBytesRingSlabs,
       sharedBytesEnabled,
-      sharedBytesUpgradeMinBytes,
       abortSignalCapacity,
       usesAbortSignal,
       permission: permissionProtocol,
@@ -814,7 +807,6 @@ export const createPool: CreatePoolFactory = ({
         abortSignalSAB: stealBuffers.abortSignalSAB,
         abortSignalMax: stealBuffers.abortSignalMax,
         processMemory: stealBuffers.processMemory,
-        sabReturnRing: stealBuffers.sabReturnRings[thread],
       },
     })
   );
@@ -1225,6 +1217,10 @@ export const createPool: CreatePoolFactory = ({
     shutdown: shutdownWithDelay,
     [Symbol.dispose]: disposePool,
     call: Object.fromEntries(callEntries) as unknown as FunctionMapType<T>,
+    // Only the shared submit queue has a single arena to build arguments in.
+    sharedArgBytes: createHostArgAllocator(
+      sharedArgsEnabled ? stealBuffers?.submitBuffers.payload : undefined,
+    ),
   } as Pool<T>;
 };
 

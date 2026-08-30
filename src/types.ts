@@ -55,28 +55,11 @@ type WorkerData = {
   lock: LockBuffers;
   returnLock: LockBuffers;
   payloadConfig?: PayloadBufferOptions;
-  bufferReferenceReturn?: "copy" | "borrow";
   /**
-   * Slab pool for returns written straight into shared memory. The worker fills
-   * a pinned slab and the host aliases it; `releaseRing` is how the host hands
-   * a slab back once its view is unreachable.
+   * Hand large returns to the host as a borrowed region in this lane's payload
+   * arena instead of copying them out. See `unsafe.SharedBytes`.
    */
-  sabReturn?: {
-    releaseRing: SharedBufferSource;
-    /**
-     * `"gc"` recycles a slab once the host's view is collected. `"ring"` cycles
-     * a fixed ring per size class, which ties reclamation to the call rate but
-     * makes the returned view borrowed: valid only until `ringSlabs` further
-     * results arrive on the lane.
-     */
-    reclaim: "gc" | "ring";
-    ringSlabs: number;
-    minBytes: number;
-    upgradeMinBytes: number;
-    maxBytes: number;
-    classBudgetBytes: number;
-    poolBudgetBytes: number;
-  };
+  sharedReturn?: boolean;
   permission?: ResolvedPermissionProtocol;
   /** Whether this host can arm an async completion waiter on the return lock. */
   notifyOnHostPublish?: boolean;
@@ -103,49 +86,29 @@ type WorkerData = {
 
 type UnsafeOptions = {
   /**
-   * Experimental `BufferReference` return lifetime.
+   * Whether large returns are handed over as a view into shared memory instead
+   * of being copied out on the consumer.
    *
-   * `"copy"` is safe after worker release. `"borrow"` skips the Deno/Bun copy,
-   * but must be released before producer shutdown and must not outlive its ref.
-   */
-  BufferReferenceReturn?: "copy" | "borrow";
-  /**
-   * How `sharedBytes()` returns get their slab back.
-   *
-   * `"ring"` (default) cycles a fixed ring per size class, so reclamation runs
-   * at the call rate. The returned view is **borrowed**: it stays valid only
-   * until `SharedBytesRingSlabs` further results arrive on that lane, so copy
-   * anything you keep. `"gc"` instead waits for the host to collect its view,
-   * which is exact but paced by GC rather than by load — measured, it starves
-   * and falls back to copying under exactly the sizes the feature exists for.
-   */
-  SharedBytesReclaim?: "gc" | "ring";
-  /** Slabs cycled per size class in `"ring"` mode. Defaults to 64. */
-  SharedBytesRingSlabs?: number;
-  /**
-   * Smallest ordinary `Uint8Array` return copied into a slab and shipped by
-   * pointer. Defaults to 256 KiB.
-   *
-   * Higher than the `sharedBytes` threshold on purpose: upgrading an ordinary
-   * array adds a worker-side memcpy to save the host's copy-out, which only
-   * pays once the host copy dominates. Measured at 16 KiB it is a ~25%
-   * regression on node at 4 threads.
-   */
-  SharedBytesUpgradeMinBytes?: number;
-  /**
-   * Whether returns at or above the slab threshold travel as a pointer into
-   * shared memory instead of being copied through the payload arena.
-   *
-   * Defaults to `true`. Set `false` to take the feature out of the picture
-   * entirely: workers allocate no slabs, `sharedBytes()` degrades to a plain
-   * `Uint8Array`, ordinary returns are not upgraded, and the host never adopts a
-   * slab alias. Worth reaching for if you need results to stay valid for
-   * unbounded time, or to rule the path out while debugging.
-   *
-   * Already off for process workers, whose returns cannot carry a process-local
-   * pointer.
+   * Defaults to `true`. Set `false` to take the path out of the picture
+   * entirely: `sharedBytes()` degrades to a plain `Uint8Array` and every return
+   * is copied, so results stay valid for unbounded time.
    */
   SharedBytes?: boolean;
+  /**
+   * Whether large *arguments* also travel as a borrowed region, and whether
+   * `pool.sharedArgBytes` can hand you one to build them in.
+   *
+   * Defaults to `false`, and the asymmetry with `SharedBytes` is deliberate. A
+   * borrowed return is read by the host as soon as it arrives; a borrowed
+   * argument is read by task code, which may hold it across an `await` while
+   * later calls recycle the region under it. Turn this on only if your tasks
+   * consume their byte arguments before their first suspension point.
+   *
+   * Needs the shared submit queue (the stealing dispatcher). With a per-worker
+   * dispatcher there is no single arena to build into, and `sharedArgBytes`
+   * falls back to a plain allocation.
+   */
+  SharedArgs?: boolean;
 };
 
 type LockBuffers = {
@@ -393,6 +356,18 @@ type Pool<T extends Record<string, TaskLike<any> | TaskFunctionLike>> = {
    * Thrown errors/rejections reject here as Error objects with cause chains.
    */
   call: FunctionMapType<T>;
+  /**
+   * A `byteLength` buffer to build a byte argument in, taken from the submit
+   * arena so the worker reads it in place instead of copying it out.
+   *
+   * Uninitialized, like `sharedBytes`: write every byte or pass a subarray of
+   * what you wrote. The region is recycled after 32 further large arguments, so
+   * the receiving task must finish with it before its first `await`.
+   *
+   * Returns a plain `Uint8Array` unless `unsafe.SharedArgs` is on and the pool
+   * uses the shared submit queue, so it is always safe to call.
+   */
+  sharedArgBytes: (byteLength: number) => Uint8Array;
 };
 
 type ReturnFixed<

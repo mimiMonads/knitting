@@ -16,10 +16,6 @@ import {
   OneShotDeferred,
   type SignalAbortStore,
 } from "../shared/abortSignal.ts";
-import {
-  type BufferReferenceReturnHooks,
-  withBufferReferenceReturnReleaser,
-} from "../connections/buffer-reference.ts";
 
 type RawArguments = unknown;
 type WorkerResponse = unknown;
@@ -52,19 +48,12 @@ type CreateHostTxQueueArgs = {
    * When omitted, only `returnLock` is drained (the classic one-lane shape).
    */
   extraReturnLocks?: readonly Lock2[];
-  releaseBufferReferenceReturn?:
-    | ((token: bigint) => void)
-    | BufferReferenceReturnHooks;
   abortSignals?: Pick<
     SignalAbortStore,
     "getSignal" | "setSignal" | "resetSignal" | "closeNow"
   >;
   now?: () => number;
 };
-
-type ReturnHooks =
-  | ((token: bigint) => void)
-  | BufferReferenceReturnHooks;
 
 const p_now = performance.now.bind(performance);
 
@@ -73,7 +62,6 @@ export function createHostTxQueue({
   lock,
   returnLock,
   extraReturnLocks,
-  releaseBufferReferenceReturn,
   abortSignals,
   now,
 }: CreateHostTxQueueArgs) {
@@ -161,41 +149,14 @@ export function createHostTxQueue({
       ? each.armHostNotifier
       : () => false
   );
-  // A stealing queue drains one private return lock per worker. Borrowed
-  // BufferReferences must therefore be claimed with the hooks belonging to the
-  // worker that produced that particular return. The hooks are bound after the
-  // worker context exists, while the pool-global queue is built before workers
-  // spawn, so keep one mutable hook slot per return lane.
-  const returnHooks = new Array<ReturnHooks | undefined>(
-    returnResolvers.length,
-  );
-  if (releaseBufferReferenceReturn !== undefined) {
-    returnHooks[0] = releaseBufferReferenceReturn;
-  }
-
-  const resolveReturnAt = (index: number): number => {
-    const resolve = returnResolvers[index]!;
-    const hooks = returnHooks[index];
-    return hooks === undefined
-      ? resolve()
-      : withBufferReferenceReturnReleaser(hooks, resolve);
-  };
-
-  // Preserve the original one-lane fast path exactly: no wrapper, array lookup,
-  // or hook branch is paid by the default one-worker transport. Mutable
-  // per-return-lane hooks are needed only by a multi-worker stealing queue.
+  // Preserve the original one-lane fast path exactly: no array lookup or loop
+  // is paid by the default one-worker transport.
   const completeFrame = returnResolvers.length === 1
-    ? releaseBufferReferenceReturn === undefined
-      ? returnResolvers[0]!
-      : () =>
-        withBufferReferenceReturnReleaser(
-          releaseBufferReferenceReturn,
-          returnResolvers[0]!,
-        )
+    ? returnResolvers[0]!
     : () => {
       let resolved = 0 | 0;
       for (let i = 0; i < returnResolvers.length; i++) {
-        resolved = (resolved + resolveReturnAt(i)) | 0;
+        resolved = (resolved + returnResolvers[i]!()) | 0;
       }
       return resolved;
     };
@@ -312,12 +273,6 @@ export function createHostTxQueue({
     waitForCompletion,
     armCompletionNotifier,
     setCompletionWaiterArmed,
-    setReturnHooks: (lane: number, hooks: ReturnHooks | undefined) => {
-      if (!Number.isInteger(lane) || lane < 0 || lane >= returnHooks.length) {
-        throw new RangeError(`return lane ${lane} out of range`);
-      }
-      returnHooks[lane] = hooks;
-    },
     enqueue: (
       functionID: FunctionID,
       timeout?: TaskTimeout,

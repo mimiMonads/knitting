@@ -1099,23 +1099,21 @@ worker. It is the same-process counterpart to `ProcessSharedBuffer`: reach for
 it when you hold a large `ArrayBuffer` or typed array and the copy cost to a
 thread worker actually matters.
 
-The ownership and revocation paths are hardened against ordinary
-use-after-free: sources are detached on move, aliases are detached before a
-borrow is released, and outstanding borrowed returns are revoked during pool
-shutdown. This is still an **unsafe capability**, not a memory-safety or
-security boundary. Do not accept `BufferReferenceMetadata` or raw pointer data
-from untrusted code, and do not mutate the same bytes concurrently without
-your own synchronization.
+The ownership paths are hardened against ordinary use-after-free: sources are
+detached on move, forward aliases are detached once the task settles, and a
+returned reference becomes owned or safely copied before the worker releases its
+hold. This is still an **unsafe capability**, not a memory-safety or security
+boundary. Do not accept `BufferReferenceMetadata` or raw pointer data from
+untrusted code, and do not mutate the same bytes concurrently without your own
+synchronization.
 
 | Path | Node 22/24 owning addon | Node 26 FFI | Deno/Bun FFI |
 | --- | --- | --- | --- |
 | Forward input | Moved, zero-copy | Moved, zero-copy alias | Moved, zero-copy alias |
-| Default returned reference | Co-owned, zero-copy | One safe copy | One safe copy |
-| `BufferReferenceReturn: "borrow"` | Revocable borrow | Revocable borrow | Revocable borrow |
-| Worker shutdown | Outstanding borrows revoked | Copy while readable, then revoke | Copy while readable, then revoke |
+| Returned reference | Co-owned, zero-copy | One safe copy | One safe copy |
 
 Older Node addons without the owning primitives use the non-owning fallback and
-therefore follow the copy/borrow rules rather than the owning-addon row.
+therefore follow the safe-copy behavior rather than the owning-addon row.
 
 ```ts
 import { createPool, isMain, task } from "knitting";
@@ -1160,48 +1158,32 @@ Read these constraints before reaching for it:
   copies. Node 22 and 24 with the owning addon also return the buffer without
   copying because the addon co-owns the V8 backing store. Node 26, Deno, and Bun
   take one safe copy on return because their FFI aliases cannot own the worker's
-  backing store.
-- **Borrowed FFI returns are opt-in.** The default on Node 26, Deno, and Bun is
-  `unsafe: { BufferReferenceReturn: "copy" }` — the safe single copy described
-  above. Set it to `"borrow"` to skip that copy by borrowing the worker's
-  backing store until the returned `BufferReference` is released. Call
-  `ref.release()` or use `using`. Releasing **revokes** the borrow: the
-  reference and every view taken from it are detached first, so later reads see
-  empty views or throw instead of touching freed memory. A reference that is
-  never released drops its borrow only once it and all of its views are
-  unreachable. Pool shutdown revokes outstanding borrows too — references you
-  still hold survive on a private copy, while stale views read as empty. If the
-  bytes escape into HTTP responses, streams, timers, callbacks, or caches, copy
-  them before the borrowed reference is released, or they will read as empty
-  afterward.
+  backing store. Returned references remain readable after their worker shuts
+  down.
 - **Unsafe escape hatch.** This is not a security boundary. Forged metadata or
   unsynchronized host/worker mutation can still be unsafe.
 - **Node backend depends on the Node line.** Node 22 and 24 use the
   `knitting_buffer_pointer` addon. Node 26 uses `node:ffi` and therefore needs
   `--experimental-ffi`.
 
-Borrowed returns, end to end (this opts Node 26, Deno, and Bun in):
-
-```ts
-using pool = createPool({
-  threads: 1,
-  unsafe: {
-    BufferReferenceReturn: "borrow",
-  },
-})({ invert });
-
-{
-  using result = await pool.call.invert(new BufferReference(pixels));
-  const out = result.toUint8Array(); // borrowed — valid only while `result` lives
-  console.log([...out]);
-} // `using` releases the borrow here; `out` is detached and reads as empty now
-```
-
 When in doubt, a plain `ArrayBuffer` or typed-array payload — which knitting
 copies through the shared transport — is simpler and works for both thread and
-process workers. Reach for `BufferReference` only when the copy cost of a large
-buffer to a thread worker actually matters: below roughly 256 KiB the per-call
-pointer setup tends to cost more than just copying, so the plain transport wins.
+process workers.
+
+Between `BufferReference` and the borrowed arena regions below, pick by what you
+are doing rather than by a single size threshold — the crossover moves by a
+factor of sixteen depending on the engine and on whether your bytes arrive in a
+buffer you already own:
+
+- producing bytes anyway, 4 KiB – 1 MiB → `sharedBytes` / `sharedArgBytes`
+- above the arena's loan ceiling (`payloadMaxByteLength / 64`), or a result that
+  must stay valid for unbounded time → `BufferReference`
+- handing over a buffer that already exists → `BufferReference`, since the arena
+  would have to copy it in first
+- an element-wise producer on Node → `BufferReference`, and measure
+
+`docs/arena-vs-buffer-reference.md` has the measurements behind that, and the
+argument for why neither one replaces the other.
 
 ### Experimental zero-copy returns with `sharedBytes`
 
@@ -1209,11 +1191,12 @@ pointer setup tends to cost more than just copying, so the plain transport wins.
 mirror problem: getting a large result *out* of one without the host paying to
 copy it.
 
-Normally a worker's byte return is written into the shared payload region and
-the host copies it out — an allocation plus a memcpy on the single host thread,
+Normally a worker's byte return is written into the shared payload arena and the
+host copies it out — an allocation plus a memcpy on the single host thread,
 which is usually the thread you can least afford to spend. `sharedBytes(n)`
-hands the worker a buffer that already lives in shared memory, so returning it
-ships a pointer instead of the bytes and the host reads them in place.
+hands the worker a region of that same arena, so returning it ships an offset
+and a length and the host reads the bytes where they were written. Nothing is
+pinned, nothing is copied, and no native backend is involved.
 
 ```ts
 import { createPool, isMain, task } from "knitting";
@@ -1221,7 +1204,7 @@ import { sharedBytes } from "knitting/unsafe";
 
 export const render = task<number, Uint8Array>({
   f: (size) => {
-    const out = sharedBytes(size); // pooled, shared with the host
+    const out = sharedBytes(size); // a region of the return arena
     for (let i = 0; i < out.length; i++) out[i] = i & 0xff;
     return out; // returned by reference, not copied
   },
@@ -1239,103 +1222,130 @@ changes about how the task is declared or called.
 
 #### One rule
 
-**Neither side may keep it.** The buffer is borrowed from a pool that refills
-it. The worker must not hold it past the return, and the host must copy
-anything it needs beyond the next ~64 results on that lane:
+**Neither side may keep it.** The region is recycled by the worker that lent it.
+The worker must not hold it past the return, and the host must copy anything it
+needs beyond the next 32 large results on that lane:
 
 ```ts
 const view = await pool.call.render(size);
 const keep = view.slice(); // copy if it outlives the next batch of calls
 ```
 
-That rule is what makes this fast; see the reclamation modes below if you need
-it lifted.
+That rule is what makes this fast, and 32 is not an arbitrary number: it is one
+full lane of in-flight results, the narrowest window that cannot recycle a
+region while its own call is still unread.
 
-The buffer is zero-filled, so a partial write returns zeros rather than the
-previous result's bytes — you do not have to fill every byte to stay safe.
+#### The region is uninitialized
 
-#### Large returns are upgraded automatically
+Like `Buffer.allocUnsafe`, `sharedBytes(n)` hands back memory that still holds
+whichever of this worker's earlier returns last used it. You own all `n` bytes:
+
+```ts
+const out = sharedBytes(size);
+const written = encodeInto(out);   // may be less than `size`
+return out.subarray(0, written);   // the tail is never sent
+```
+
+Returning a prefix is the cheap way to be safe — a `subarray` of a borrowed
+region is still borrowed, so it costs nothing. `sharedBytes(n, true)` zeroes the
+region first if you would rather not think about it, but that is a second full
+pass over shared memory, and on V8 that pass alone is most of what the feature
+saves: at 1 MiB on node it is the difference between 0.9x and 3.2x.
+
+Only `sharedBytes` has this rule. A return that is handed over borrowed
+automatically is copied in whole, so it can never carry a previous return's
+remainder.
+
+#### Large returns are handed over automatically
 
 You do not have to call `sharedBytes` to benefit. A plain `Uint8Array` return at
-or above **256 KiB** is copied into a pooled buffer and shipped by pointer
-anyway, so the host stops copying it out:
+or above **256 KiB** is placed in a borrowed region instead, so the host stops
+copying it out:
 
 ```ts
 export const render = task<number, Uint8Array>({
   f: (size) => {
     const out = new Uint8Array(size); // ordinary allocation
     out.fill(7);
-    return out; // >= 256 KiB: shipped by pointer, not copied out on the host
+    return out; // >= 256 KiB: handed over borrowed, not copied out on the host
   },
 });
 ```
 
-That copy into the pool is also what makes the upgrade safe: the region the host
-sees is overwritten in full, so it can never carry a previous return's bytes.
+That copy into the region is also what makes it safe: the bytes the host sees
+are overwritten in full, so they can never carry a previous return's remainder.
 
 `sharedBytes` is still the faster path, and by a wide margin — it skips both the
-allocation and that copy. The upgrade only moves work off the host thread; it
-does not remove it.
-
-The two thresholds differ on purpose. `sharedBytes` starts at 16 KiB because it
-copies nothing. The upgrade starts at 256 KiB because it *adds* a worker-side
-memcpy to save the host's, and that only pays once the host's copy dominates —
-measured at 16 KiB the upgrade was a ~25% regression on Node at 4 threads.
-`unsafe.SharedBytesUpgradeMinBytes` moves the threshold; `unsafe.SharedBytes:
-false` turns the whole pointer path off.
+allocation and that copy. Handing an ordinary return over borrowed only moves
+work off the host thread; it does not remove it.
 
 #### When it pays
 
-Below the 16 KiB threshold `sharedBytes` returns a plain `Uint8Array` and the
-call takes the ordinary copy path, so it is never worse than not using it.
-Speedup over the copy path, across Node and Bun at 1 and 4 threads with 16 calls
-in flight, on a 4-core laptop:
+Speedup over the copy path, `set`-style production, 16 calls in flight on a
+4-core laptop. `sharedBytes` is the explicit path; `borrow` is what an ordinary
+`Uint8Array` return gets for free.
 
-| Return size | Speedup |
-| ----------- | ------- |
-| under 16 KiB | ~1x — falls back to the copy path |
-| 64 KiB | 2x – 17x |
-| 256 KiB | 7x – 50x |
-| 1 MiB | 45x – 105x |
+| Return size | `sharedBytes` (bun) | `sharedBytes` (node) | `borrow` (bun) | `borrow` (node) |
+| ----------- | ------------------- | -------------------- | -------------- | --------------- |
+| 4 KiB   | 2.1x – 2.5x | 1.7x – 1.8x | 1x — under the threshold | 1x |
+| 64 KiB  | 3.1x – 4.6x | 1.3x – 1.4x | 1x | 1x |
+| 256 KiB | 5.2x – 5.3x | 0.7x – 1.4x | 1.8x – 2.3x | 0.7x – 0.9x |
+| 1 MiB   | 2.4x – 3.8x | 0.8x – 2.1x | 1.3x         | 0.9x – 1.5x |
 
-Treat these as local guidance, like the rest of the benchmarks: the win scales
-with how much the host was copying, so payload size and how busy the host thread
-already is both matter.
+Two things that table is telling you, and both are worth reading before turning
+this on:
 
-#### Reclamation modes
+- **The engine matters as much as the size.** V8 has no fast path for byte
+  stores into shared memory — measured at 1 MiB it is 2.4x slower than a heap
+  buffer with `set` and 20x slower with `fill`, while JSC shows no difference at
+  all. Building a result in shared memory means paying that, so the same code is
+  a 6x win on bun and a 3x win on node. An element-wise producer is the worst
+  case; asking for `zeroFill` doubles the exposure.
+- **Borrowing trades a copy for a working set.** Every outstanding region is live
+  arena, and one lane of 1 MiB returns is 32 MiB of it. Past the point where
+  that stops fitting in cache, the host copy you saved costs less than the cache
+  misses you bought.
 
-A buffer goes back to the pool either when the pool has cycled past it or when
-the host is provably done with it:
+Run `bench/shared-return.ts` on your own workload rather than trusting the
+table; it interleaves all the arms in one process for exactly that reason.
 
-| `unsafe.SharedBytesReclaim` | Reuse happens | Cost |
-| --------------------------- | ------------- | ---- |
-| `"ring"` (default) | after `SharedBytesRingSlabs` further results on the lane | the view is borrowed — the second rule above |
-| `"gc"` | once the host's view is unreachable | exact, but paced by garbage collection rather than by load |
+#### Arguments, going the other way
 
-`"gc"` lifts the borrow rule, at a price worth knowing before you reach for it:
-reclamation is tied to GC, which has nothing to do with your call rate, so under
-a load that produces little host garbage the pool runs dry and returns quietly
-fall back to copying. Measured at one worker returning 1 MiB, `"ring"` is 45x
-while `"gc"` lands between 0.7x and 1.4x — that is, no better than copying, and
-on Node slightly worse.
+`unsafe.SharedArgs` points the same machinery at the request lane:
+`pool.sharedArgBytes(n)` gives the host a region of the submit arena to build a
+byte argument in, and the worker reads it in place.
 
 ```ts
-using pool = createPool({
-  threads: 4,
-  unsafe: {
-    SharedBytesReclaim: "gc", // retained views stay valid
-  },
-})({ render });
+using pool = createPool({ threads: 4, unsafe: { SharedArgs: true } })({ render });
+
+const frame = pool.sharedArgBytes(size);
+frame.set(await readChunk());
+await pool.call.render(frame);
 ```
 
-`SharedBytesRingSlabs` (default `64`) sets the ring depth in `"ring"` mode. It
-must exceed the number of results a consumer holds at once.
+It is opt-in where borrowed returns are not, and the asymmetry is the point: a
+return is read by the host the moment it arrives, while an argument is read by
+task code that may hold it across an `await` — and the region is recycled after
+32 further large arguments. **Only turn this on if your tasks finish with their
+byte arguments before their first suspension point.**
+
+It also needs the shared submit queue, which is the stealing dispatcher. With a
+per-worker dispatcher there is no single arena for the host to build into, so
+`sharedArgBytes` returns a plain `Uint8Array` and the call takes the copy path.
+That makes it always safe to call, and worth checking `buffer instanceof
+SharedArrayBuffer` if you want to know which you got.
+
+Measured at 2 threads with 16 calls in flight, against allocating a fresh buffer
+per call: 2.0x at 8 KiB, 13x–27x at 64–256 KiB, and ~100x at 1 MiB, because the
+host stops allocating entirely. With a producer that writes every byte
+element-wise the win narrows to 2.5x–3.5x on bun and disappears on Node, for the
+shared-memory-write reason above.
 
 #### Turning it off
 
-`unsafe.SharedBytes: false` takes the pointer path out of the picture entirely —
-no buffers are pooled, `sharedBytes` degrades to a plain `Uint8Array`, ordinary
-returns are not upgraded, and the host never aliases worker memory:
+`unsafe.SharedBytes: false` takes borrowed returns out of the picture entirely —
+`sharedBytes` degrades to a plain `Uint8Array`, ordinary returns are copied out
+as before, and every result is privately owned by whoever received it:
 
 ```ts
 using pool = createPool({
@@ -1345,26 +1355,23 @@ using pool = createPool({
 ```
 
 Reach for it when results must stay valid for unbounded time, or to rule the
-path out while chasing a bug. `KNITTING_SAB_RECLAIM=off` does the same for a
-whole process without touching code, which is usually the quicker first check.
+path out while chasing a bug.
 
 #### Constraints
 
-- **Thread workers only.** The handle is a process-local pointer, so process
-  workers fall back to the copy path, as does a browser page.
-- **Needs the native backend.** The same requirement as `BufferReference`: the
-  addon on Node 22/24, `node:ffi` on Node 26, FFI on Deno and Bun. Without it,
-  `sharedBytes` degrades to a plain `Uint8Array`.
-- **Bounded pool.** A worker holds at most 32 MiB per size class and 64 MiB
-  overall. Past that, returns take the copy path rather than growing without
-  limit.
+- **Needs a `SharedArrayBuffer`.** That is the only requirement: no native
+  addon, no FFI, and — unlike the pointer payloads — process workers are fine,
+  because the arena is mapped in both processes.
+- **Bounded by the arena.** A lane has 64 region identities and grows to
+  `payload.payloadMaxByteLength` (64 MiB by default). When either runs out,
+  returns quietly take the copy path rather than growing without limit.
 - **Not a security boundary.** Like everything in `knitting/unsafe`, this hands
-  the host a window into worker memory. Do not use it as an isolation mechanism.
-- **A view does not survive its worker.** When a worker shuts down or crashes,
-  the buffers it shared are detached, so a view read afterwards reports zero
-  length instead of returning a dead worker's memory. That is deliberate: a
-  stale read that silently returns plausible bytes is far worse than one that
-  fails. Copy anything that must outlive the pool.
+  the host a window into a buffer the worker writes. Do not use it as an
+  isolation mechanism.
+- **A view outlives its worker.** The region lives in the payload arena, which
+  the host holds a reference to, so a view read after the worker dies still
+  returns the bytes that were there — it does not throw and does not read freed
+  memory. It is a snapshot, not a live channel.
 
 ### Current support
 

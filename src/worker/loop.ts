@@ -1,5 +1,4 @@
 import {
-  addRuntimeDataListener,
   createRuntimeMessageChannel,
   PROCESS_COMPLETION_DOORBELL,
   RUNTIME_IS_MAIN_THREAD,
@@ -12,7 +11,7 @@ import { isLockBufferTextCompat } from "../common/shared-buffer-text.ts";
 import { createDenoCompletionNotifier } from "../runtime/deno-doorbell.ts";
 import { createNodeCompletionNotifier } from "../runtime/node-doorbell.ts";
 import { createWorkerRxQueue } from "./rx-queue.ts";
-import { installSharedReturnPool } from "./shared-return.ts";
+import { installSharedReturn } from "./shared-return.ts";
 import {
   createSharedMemoryTransport,
   WORKER_STOP,
@@ -40,9 +39,6 @@ import {
   getProcessWorkerNativeWaitU32,
   installProcessWorkerBootstrap,
 } from "./process-worker-bootstrap.ts";
-import {
-  readBufferReferenceReturnReleaseMessage,
-} from "../connections/buffer-reference.ts";
 import { resolveDebugNamespaces } from "../debug/gate.ts";
 
 const WORKER_FATAL_MESSAGE_KEY = "__knittingWorkerFatal";
@@ -85,30 +81,6 @@ const reportWorkerStartupFatal = (error: unknown): void => {
   }
 };
 
-const installBufferReferenceReleaseListener = (
-  releaseReturnedBufferReference: (token: bigint) => void,
-): void => {
-  const handleMessage = (message: unknown): void => {
-    const token = readBufferReferenceReturnReleaseMessage(message);
-    if (token !== undefined) releaseReturnedBufferReference(token);
-  };
-
-  if (RUNTIME_PARENT_PORT !== undefined) {
-    addRuntimeDataListener(RUNTIME_PARENT_PORT, handleMessage);
-    return;
-  }
-
-  const scope = globalThis as typeof globalThis & {
-    addEventListener?: (
-      type: string,
-      listener: (event: { data?: unknown }) => void,
-    ) => void;
-  };
-  scope.addEventListener?.("message", (event) => {
-    handleMessage((event as { data?: unknown })?.data);
-  });
-};
-
 export const workerMainLoop = async (
   startupData: WorkerData,
 ): Promise<void> => {
@@ -128,8 +100,7 @@ export const workerMainLoop = async (
     abortSignalSAB,
     abortSignalMax,
     payloadConfig,
-    bufferReferenceReturn,
-    sabReturn,
+    sharedReturn,
     permission,
     notifyOnHostPublish,
     processCompletionDoorbell,
@@ -203,6 +174,8 @@ export const workerMainLoop = async (
     payloadConfig,
     textCompat: returnLock.textCompat,
     processBoundary: RUNTIME_IS_PROCESS_WORKER,
+    // Only this lane borrows: a task's arguments must not expire while it runs.
+    sharedReturn: sharedReturn !== false,
     // The host parks on this lock's publication word when it has no work to
     // flush. Request locks are host-produced and must not wake that waiter.
     notifyOnHostPublish: notifyOnHostPublish ||
@@ -272,18 +245,16 @@ export const workerMainLoop = async (
     writeBatch,
     getAwaiting,
     drainReturnReleases,
-    releaseReturnedBufferReference,
   } = createWorkerRxQueue({
     listOfFunctions,
     workerOptions,
     lock: lockState,
     returnLock: returnLockState,
-    borrowReturnedBufferReferences: bufferReferenceReturn === "borrow",
     hasAborted: abortSignals?.hasAborted,
     stealing: steal !== undefined,
   });
-  installBufferReferenceReleaseListener(releaseReturnedBufferReference);
-  if (sabReturn !== undefined) installSharedReturnPool(sabReturn);
+  // `sharedBytes` builds returns straight into this lane's payload arena.
+  if (sharedReturn !== false) installSharedReturn(returnLock.payload);
 
   a_store(rxStatus, 0, 1);
 
