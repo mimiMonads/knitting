@@ -525,10 +525,10 @@ type WorkerSettings = {
   /**
    * How process workers discover their shared-memory control channel.
    *
-   * "inherit" keeps the POSIX fd-inheritance path and is the default outside
-   * Windows. "named" creates an OS-named shared-memory object that wrappers
-   * such as containers can reopen by name when they share the same IPC
-   * namespace.
+   * "inherit" keeps the POSIX fd-inheritance path. "named" creates an
+   * OS-named shared-memory object that wrappers such as containers can reopen
+   * by name when they share the same IPC namespace. Deno-hosted pools and
+   * Windows use a named mapping automatically.
    */
   processSharedMemory?: ProcessSharedMemoryMode | ProcessSharedMemorySettings;
   timers?: WorkerTimers;

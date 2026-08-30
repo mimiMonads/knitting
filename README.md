@@ -342,7 +342,7 @@ Common options you might tweak:
 | `worker.hardTimeoutMs`            | Force pool shutdown when a task exceeds this many milliseconds.                                                                   |
 | `worker.runtime`                  | Choose `"thread"`, `"process"`, or experimental `"compiled"` workers.                                                             |
 | `worker.processRuntime`           | Choose `"node"`, `"deno"`, or `"bun"`; standalone `"porffor"` selects compilation and rebuilds once per pool.                    |
-| `worker.processSharedMemory`      | Process-worker memory discovery: `"inherit"` by default on POSIX, or `"named"` for wrappers/containers that cannot preserve fd 0. |
+| `worker.processSharedMemory`      | Process-worker memory discovery: `"inherit"` by default on Node/Bun POSIX hosts, or `"named"` for wrappers/containers. Deno and Windows hosts use named mappings automatically. |
 | `permission`                      | Runtime permission policy for workers.                                                                                            |
 | `host.dispatcher`                 | Experimental host dispatcher topology: `"per-thread"` or `"serial-channel"`.                                                      |
 | `host.steal`                      | Shared-submit work stealing for compatible multi-worker thread/process pools; enabled by default. Set `false` to use private submit lanes. |
@@ -437,11 +437,12 @@ using pool = createPool({
 You can also provide a `processCommandPrefix` when workers need to be launched
 through a wrapper such as a package manager, container command, or runtime shim.
 
-That prefix is also useful for sandbox and resource-control tools. The one
-important detail is that process workers receive their shared-memory handle on
-stdin, which is file descriptor 0. Wrappers that leave stdin alone usually work;
+That prefix is also useful for sandbox and resource-control tools. On Node and
+Bun POSIX hosts, process workers receive their shared-memory handle on stdin,
+which is file descriptor 0. Wrappers that leave stdin alone usually work;
 wrappers that replace, close, or proxy stdin without passing the fd through will
-stop the worker from booting.
+stop the worker from booting. Deno-hosted and Windows pools use named mappings
+instead.
 
 For wrappers that cannot preserve fd 0, use named process-worker memory instead.
 The worker process must share the same OS IPC namespace as the host so it can
@@ -588,12 +589,11 @@ hooks, permission policies, and host inlining still fail during pool creation or
 invocation; `worker.hardTimeoutMs` remains available because the host enforces
 it.
 
-### Windows process workers
+### Deno and Windows process workers
 
-On Windows, Knitting automatically uses named shared memory for the
-process-worker control channel. You do not need to set
-`processSharedMemory: "named"` yourself — the runtime detects Windows and forces
-it.
+On Windows and when the host is Deno, Knitting automatically uses named shared
+memory for the process-worker control channel. You do not need to set
+`processSharedMemory: "named"` yourself — the runtime selects it automatically.
 
 ```ts
 // Works on Windows without extra options.
