@@ -88,6 +88,7 @@
     "test:node:26": "node --no-warnings --experimental-ffi test/node26-ffi.integration.mjs",
     "test:bun": "bun test",
     "test:browser": "bun run scripts/test-browser.ts",
+    "check:windows-park": "bun run scripts/check-windows-park.ts",
     "test:runtimes": "npm run test:node && npm run test:bun",
     "test:all": "npm run test:deno && npm run test:runtimes && npm run test:browser",
     "coverage:node": "node --no-warnings --experimental-transform-types --experimental-test-coverage --test \"./test/*.test.ts\"",

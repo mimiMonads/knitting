@@ -22,7 +22,12 @@ import { lock2 } from "../memory/lock.ts";
 import "../memory/payloadCodec.ts";
 import type { LockBuffers, WorkerData } from "../types.ts";
 import { getFunctions } from "./task-loader.ts";
-import { pauseGeneric, sleepUntilChanged, whilePausing } from "./timers.ts";
+import {
+  IS_BUN_WINDOWS,
+  pauseGeneric,
+  sleepUntilChanged,
+  whilePausing,
+} from "./timers.ts";
 import { IS_ANDROMEDA, RUNTIME, SET_IMMEDIATE } from "../common/runtime.ts";
 import { getNodeProcess } from "../common/node-compat.ts";
 import {
@@ -162,8 +167,22 @@ export const workerMainLoop = async (
   const processParentPort = processCompletionDoorbell === true
     ? RUNTIME_PARENT_PORT
     : undefined;
+  // Bun on Windows does not flush a child's `process.send` until the child
+  // yields to its event loop, so a ring issued from inside the synchronous
+  // dispatch loop sits unwritten while the host waits on it — the host is
+  // parked on that ring with no watchdog, so the call never settles. Record
+  // the ring and let the loop take one macrotask hop so libuv writes the pipe.
+  // Every other runtime/platform writes it inline, and the hop costs latency
+  // on a path built to avoid exactly that, so only Bun on Windows pays it.
+  let processRingPending = false;
+  const flushProcessRing = IS_BUN_WINDOWS;
   const notifyProcessHost = processParentPort === undefined
     ? undefined
+    : flushProcessRing
+    ? () => {
+      processParentPort.postMessage(PROCESS_COMPLETION_DOORBELL);
+      processRingPending = true;
+    }
     : () => processParentPort.postMessage(PROCESS_COMPLETION_DOORBELL);
   const returnLockState = lock2({
     headers: returnLock.headers,
@@ -403,6 +422,12 @@ export const workerMainLoop = async (
         return;
       }
       awaitingSpins = lastAwaiting = 0;
+
+      if (processRingPending) {
+        processRingPending = false;
+        scheduleTimer(0);
+        return;
+      }
 
       if (!progressed) {
         if (txStatus[Comment.thisIsAHint] === 1) {
