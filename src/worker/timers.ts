@@ -73,6 +73,20 @@ const isPlainNodeWindows = runtimeGlobals.process?.platform === "win32" &&
   runtimeGlobals.process?.versions?.bun === undefined &&
   runtimeGlobals.Deno === undefined;
 
+// Bun on Windows needs two workarounds that have nothing to do with each
+// other: the wait floor just below, and the doorbell flush in the worker loop.
+export const IS_BUN_WINDOWS = runtimeGlobals.process?.platform === "win32" &&
+  typeof runtimeGlobals.process?.versions?.bun === "string";
+
+// Bun on Windows serves an `Atomics.wait` timeout of 1ms or less by spinning:
+// it honours the deadline to the microsecond but burns a full core doing it
+// (busyRatio ~1.01 at 0.5ms and 1ms, ~0.01 from 2ms up, where it switches to a
+// real OS wait). `parkMs` defaults to exactly 1, so every idle worker pinned a
+// core. Floor the wait so an idle park costs a sleep instead of a spin.
+const BUN_WINDOWS_MIN_WAIT_MS = 2;
+const floorBunWindowsWait = (ms: number): number =>
+  IS_BUN_WINDOWS && ms < BUN_WINDOWS_MIN_WAIT_MS ? BUN_WINDOWS_MIN_WAIT_MS : ms;
+
 // Windows has no working cross-process wake. The native wake (WakeByAddress)
 // is keyed to a virtual address, so a host cannot wake a process worker parked
 // on the same physical page mapped at a different address in the child — the
@@ -86,7 +100,9 @@ const nativeWaitTimeoutMs = (parkMs?: number): number =>
   isPlainNodeWindows ? 1 : Number.isFinite(parkMs) ? parkMs! : Infinity;
 
 const pollingWaitTimeoutMs = (parkMs?: number): number =>
-  Number.isFinite(parkMs) ? Math.min(Math.max(parkMs!, 0), 1) : 1;
+  floorBunWindowsWait(
+    Number.isFinite(parkMs) ? Math.min(Math.max(parkMs!, 0), 1) : 1,
+  );
 
 export const whilePausing = ({ pauseInNanoseconds }: PauseOptions) => {
   const forNanoseconds = pauseInNanoseconds ?? DEFAULT_PAUSE_TIME;
@@ -193,7 +209,7 @@ export const sleepUntilChanged = (
         opView,
         at,
         value,
-        parkMs ?? Infinity,
+        floorBunWindowsWait(parkMs ?? Infinity),
       );
     } else if (a_wait && waitFallbackView) {
       // waitFallbackView is never notified — this wait only ever times out and
