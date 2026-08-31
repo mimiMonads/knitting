@@ -1,12 +1,4 @@
-/**
- * Host event-loop fairness probe.
- *
- * Saturates the pool from the host while a timer and a loopback TCP socket
- * measure how long the host loop takes to get scheduled. This is the in-repo
- * analogue of the Hono bed's pool-free `/ping` route: throughput benches drive
- * the pool from a tight await loop with nothing else on the loop, so they
- * cannot see host-loop starvation at all.
- */
+/** Measure host timer and socket latency while the pool is saturated. */
 import { createServer, Socket } from "node:net";
 import { createPool, isMain, task } from "../knitting.ts";
 
@@ -71,7 +63,7 @@ const summarise = (values: number[]) => {
 };
 
 if (isMain) {
-  // Loopback socket pair: exercises the poll phase, not just the timer phase.
+  // Use both timer and poll phases.
   const server = createServer((socket) => {
     socket.setNoDelay(true);
     socket.on("data", (chunk) => socket.write(chunk));

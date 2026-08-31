@@ -44,8 +44,7 @@ import {
   type StealClaimDiscipline,
   type Task,
 } from "../memory/lock.ts";
-// Side-effect import: registers the payload codec (cycle break for Andromeda;
-// see lock.ts). Must run before any lock2() call.
+// Registers the payload codec before any lock is built.
 import "../memory/payloadCodec.ts";
 import type {
   DebugOptions,
@@ -139,16 +138,7 @@ const withFixedPayloadConfig = (
   payloadInitialBytes: config.payloadMaxByteLength,
 });
 
-/**
- * Build the buffers, host-side locks and pending registry that a stealing pool
- * shares. One submit region for every worker to claim from, one private return
- * region per worker, and a single pool-global queue so a response arriving on
- * any lane settles the right promise.
- *
- * Region width follows paper §6.1: the largest power-of-two `g` leaving a spare
- * region for a delayed claimant (`slots / g >= consumers + 1`). At 32 slots that
- * caps how wide a region can be well before it caps the worker count.
- */
+/** Build the shared submit and private return buffers for a stealing pool. */
 export const resolveStealRegionLanes = (consumers: number): number => {
   for (let lanes = LockBound.slots; lanes >= 1; lanes >>= 1) {
     if (LockBound.slots / lanes >= consumers + 1) return lanes;
@@ -158,15 +148,7 @@ export const resolveStealRegionLanes = (consumers: number): number => {
   );
 };
 
-/**
- * Widest region a claim discipline permits.
- *
- * `slots / g >= consumers + 1` exists so a Dekker claimant can always find a
- * region no live peer is aiming at. A `cas` claimant that finds every region
- * owned bails and retries instead, and holds a region only for the decode, so
- * it is bounded by the slot count alone -- letting region width be chosen for
- * how much a claim retires rather than for the consumer count.
- */
+/** Return the widest region allowed by the selected claim discipline. */
 export const resolveMaxStealRegionLanes = (
   consumers: number,
   stealClaim?: StealClaimDiscipline,
@@ -236,8 +218,7 @@ export const createStealPoolBuffers = ({
       }),
     }) as LockBuffers;
 
-  // The default stays the Dekker-legal width for every discipline: `cas` only
-  // relaxes the *cap*, so a wider region is something a caller asks for.
+  // Keep the default width valid for Dekker; wider CAS-mask regions are explicit.
   const maxLanes = resolveMaxStealRegionLanes(threads, stealClaim);
   const lanes = regionLanes === undefined
     ? resolveStealRegionLanes(threads)
@@ -281,10 +262,8 @@ export const createStealPoolBuffers = ({
     regionLanes: lanes,
     stealClaim,
     processBoundary: processMemory !== undefined,
-    // Opt-in (`unsafe.SharedArgs`): let arguments travel as borrowed regions
-    // too, so the worker reads them in place. Off by default because a borrowed
-    // argument can be recycled while the task that received it is still
-    // running, which a return never risks.
+    // Shared arguments are opt-in because the receiving task may outlive the
+    // borrowed region.
     sharedReturn: sharedArgs === true,
   });
 
@@ -500,10 +479,7 @@ export const spawnWorkerContext = ({
   const abortBytes = stealPool === undefined && usesAbortSignal === true
     ? abortSignalByteLength(resolvedAbortSignalCapacity)
     : 0;
-  // A stealing process pool carves every lane out of one mapping, so lane
-  // `thread` must find its slice there. Falling back to a private layout would
-  // silently give this lane its own submit region — it would boot and then
-  // never see a task the host published to the shared one.
+  // Stealing process workers use their slice of the pool-wide mapping.
   const stealProcessMemory = stealPool?.processMemory;
   const processWorkerMemory = !useProcessWorkerRuntime
     ? undefined
@@ -529,8 +505,7 @@ export const spawnWorkerContext = ({
   const createPayloadBuffer = processSharedMemory?.createBuffer;
   const makePayloadBuffer = () =>
     createPayloadBuffer
-      // ProcessSharedBuffer is fixed-size today, so reserve the configured
-      // payload ceiling instead of relying on SAB growth.
+      // Process-shared buffers are fixed-size.
       ? createPayloadBuffer(resolvedPayloadConfig.payloadMaxByteLength)
       : resolvedPayloadConfig.mode === "growable"
       ? createSharedArrayBuffer(
@@ -540,11 +515,8 @@ export const spawnWorkerContext = ({
       : createSharedArrayBuffer(resolvedPayloadConfig.payloadInitialBytes);
 
   const makeLockControlLayout = () => {
-    // Keep the hottest control words in one compact front strip:
-    // transport signals -> request lock -> return lock.
-    // Request/return headers stay in separate contiguous slabs to preserve
-    // sequential batching locality.
-    // Abort bitmap stays at the tail.
+    // Place hot control words first; keep headers contiguous and the abort bitmap
+    // at the tail.
     return createLockControlCarpet({
       signalBytes,
       abortBytes,
@@ -642,8 +614,7 @@ export const spawnWorkerContext = ({
   const notifySignal = nativeNotifySignal ??
     (canNotifySignal ? (() => a_notify(thisSignal, 0, 1)) : undefined);
 
-  // Wakes this lane's worker when it is parked (rxStatus 0). Used by send()
-  // (new work just arrived) — the dispatcher drain wakes it the same way.
+  // Wake this lane when its worker is parked.
   const laneWake = () => {
     if (a_load(signalBox.rxStatus, 0) === 0) {
       a_add(thisSignal, 0, 1);
@@ -658,17 +629,14 @@ export const spawnWorkerContext = ({
   const ownsChannel = sharedChannelHandler === undefined &&
     stealPool === undefined;
   const ownChannel = sharedChannelHandler ?? new ChannelHandler();
-  // `uv_async_t` belongs to this lane's host loop. Its callback is created
-  // before the dispatcher so its pointer can be included in worker bootstrap;
-  // the target is bound once this lane (or the stealing pool) owns a drain.
+  // Create the Node doorbell before bootstrapping the worker.
   let nodeCompletionWake: (() => void) | undefined;
   const nodeCompletionDoorbell = !useProcessWorkerRuntime &&
       host?.doorbell !== false && host?.nativeDoorbell === true
     ? createNodeCompletionDoorbell(() => nodeCompletionWake?.())
     : undefined;
   const canUseNodeCompletionDoorbell = nodeCompletionDoorbell !== undefined;
-  // Under stealing there is one queue, so one dispatcher drives it from the
-  // pool; a per-lane dispatcher would double-drain the shared registry.
+  // A stealing pool has one dispatcher for its shared queue.
   const {
     check: dispatcherCheck,
     wakeCompletion: directCompletionWake,
@@ -731,12 +699,9 @@ export const spawnWorkerContext = ({
     lock: lockBuffers,
     returnLock: returnLockBuffers,
     payloadConfig: resolvedPayloadConfig,
-    // Pointer-free by construction, so the only thing that turns borrowing off
-    // is the caller asking for it.
-    sharedReturn: sharedBytesEnabled !== false,
+    sharedReturn: sharedBytesEnabled === true,
     permission,
-    // Thread workers ring their local Atomics waiter. Process workers can use
-    // the Node-compatible IPC doorbell when their spawn mode exposes it.
+    // Select the completion doorbell supported by the worker runtime.
     notifyOnHostPublish: host?.doorbell !== false &&
       (
         canUseProcessCompletionDoorbell ||
@@ -890,10 +855,7 @@ export const spawnWorkerContext = ({
     nodeWorker.on("message", onWorkerMessage);
     nodeWorker.on("error", onWorkerError);
     nodeWorker.on("exit", (code: unknown) => {
-      // Exit is the point at which this endpoint can no longer write WANT, so
-      // survivors may safely ignore any intent it left behind.
       deactivateStealConsumer();
-      // Only an exited Node worker is guaranteed not to hold the raw pointer.
       nodeCompletionDoorbell?.close();
       if (closedReason !== undefined) return;
       const normalized = typeof code === "number" ? code : -1;
@@ -941,7 +903,6 @@ export const spawnWorkerContext = ({
     };
   };
 
-  // Ask the worker to leave its loop before termination.
   const requestWorkerStop = async (): Promise<boolean> => {
     const stopView = signalBox.stopView;
     if (stopView === undefined) return true;

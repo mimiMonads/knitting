@@ -221,16 +221,7 @@ export const createSharedDynamicBufferIO = ({
     );
   };
 
-  /**
-   * Re-adopt the arena after the *other* endpoint grew it.
-   *
-   * Growth is in place and one-sided: the writer calls `grow` and its own views
-   * are rebuilt, but every other endpoint on that buffer is still looking at the
-   * length it started with, so a region placed past that length reads short.
-   * Copied payloads mostly hide this -- their regions are released as they are
-   * decoded, so the watermark stays low -- but a borrowed region is held for a
-   * whole window and pushes straight past it.
-   */
+  /** Refresh views after the other endpoint grows the shared arena. */
   const syncGrowth = () => {
     if (!canGrow) return;
     if (lockSAB.byteLength === backingByteLength) return;
@@ -376,7 +367,7 @@ export const createSharedDynamicBufferIO = ({
   };
 };
 
-// it has to be convert it to 8
+// Static payload words are stored in eight-byte units.
 export const createSharedStaticBufferIO = ({
   headersBuffer,
   slotStrideU32,

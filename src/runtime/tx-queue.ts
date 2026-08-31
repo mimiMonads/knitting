@@ -149,8 +149,6 @@ export function createHostTxQueue({
       ? each.armHostNotifier
       : () => false
   );
-  // Preserve the original one-lane fast path exactly: no array lookup or loop
-  // is paid by the default one-worker transport.
   const completeFrame = returnResolvers.length === 1
     ? returnResolvers[0]!
     : () => {

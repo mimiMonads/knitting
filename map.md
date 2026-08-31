@@ -237,12 +237,8 @@ The core flow is:
 
 - `bench/latency.ts`: Compares basic task-call latency against a direct worker
   postMessage baseline.
-- `bench/types.ts`: Compares payload-type behavior between knitting and worker
-  messaging.
 - `bench/types_knitting.ts`: Knitting-only payload-type benchmark with broader
   type coverage.
-- `bench/ipc.ts`: Larger IPC comparison benchmark covering local calls,
-  postMessage, HTTP, WebSocket, and knitting.
 - `bench/withload.ts`: Measures behavior under main-thread load.
 - `bench/call-growth.ts`: Measures call cost as payload size grows.
 - `bench/call-growth-batch.ts`: Batch-focused version of call-growth tests.
@@ -254,8 +250,6 @@ The core flow is:
 - `bench/payload-sweep.ts`: Uint8Array payload-size sweep promoted from the old
   scratch file. Supports table output and `--json`.
 - `bench/postmessage/single.ts`: Worker-thread postMessage baseline helper.
-- `bench/postmessage/test.go`: Go comparison/experiment for postMessage-style
-  IPC.
 - `bench/util/json-parse.ts`: Mitata JSON output reducer used by benchmark
   scripts.
 - `bench/util/type-payloads.ts`: Shared payload cases and size estimation for

@@ -1,31 +1,8 @@
 import { createPool, isMain, task } from "../knitting.ts";
 import { BufferReference, sharedBytes } from "../unsafe.ts";
 
-/**
- * Head-to-head: borrowed arena returns versus moved BufferReference returns.
- *
- *   SAB_THREADS=1,4 INFLIGHT=1,16 WORKLOAD=set|fill \
- *     bun run bench/shared-return-vs-buffer-reference.ts
- *
- *   arena   `sharedBytes(n)` -- a region of the return payload arena. The task
- *           builds the result in shared memory; the frame is offset+length.
- *   ref     `BufferReference` -- the task builds on the heap, the buffer is
- *           pinned, and the host adopts or safely copies it before the worker
- *           releases its hold.
- *   sab     a fresh `SharedArrayBuffer` per call, copied into and returned. The
- *           existing SAB payload codec pins it and the host adopts it, so this
- *           is the "just make a SAB and pass it" baseline -- and the one that
- *           has no reuse at all: every call mints, pins and adopts, and the
- *           host's adopted-token map grows for the life of the pool.
- *
- * `copy` is the plain transport, included only as the shared baseline both are
- * trying to beat.
- *
- * Two axes matter for this comparison and neither shows up in a single number:
- * `INFLIGHT`, because BufferReference pays its FFI pin per call while the arena
- * amortises nothing but reuses everything, and `WORKLOAD`, because the arena
- * writes shared memory (which V8 does 2.4x-20x slower than heap) and
- * BufferReference does not.
+/** Compare copied, arena-backed, SharedArrayBuffer, and BufferReference returns.
+ * Vary `SAB_THREADS`, `INFLIGHT`, `SIZES`, and `WORKLOAD` to change the load.
  */
 
 const DEFAULT_SIZES = [4096, 16384, 65536, 262144, 1048576, 4194304];
@@ -63,8 +40,7 @@ const runtimeName = (): string =>
 const WORKLOAD = env("WORKLOAD") ?? "set";
 const SIZES = (env("SIZES") ?? DEFAULT_SIZES.join(","))
   .split(",").map((e) => Number(e.trim())).filter((e) => e > 0);
-// `sab` retains every buffer it mints, so a long run at a large size is a real
-// memory cost rather than just a slow one. Both are tunable for that reason.
+// Fresh SAB returns retain one buffer per call; keep the run size bounded.
 const WARMUP_ROUNDS = Number(env("WARMUP") ?? 8);
 const ROUNDS = Number(env("ROUNDS") ?? 25);
 
@@ -86,7 +62,7 @@ const produce = (out: Uint8Array, bytes: number, stamp: number): Uint8Array => {
   return out;
 };
 
-/** Baseline: an ordinary allocation, copied through the transport. */
+/** Ordinary heap allocation through the copy transport. */
 export const copyReturn = task<number, Uint8Array>({
   f: (packed) =>
     produce(
@@ -96,7 +72,7 @@ export const copyReturn = task<number, Uint8Array>({
     ),
 });
 
-/** Built in a borrowed arena region: neither side copies. */
+/** Return bytes built in the shared arena. */
 export const arenaReturn = task<number, Uint8Array>({
   f: (packed) =>
     produce(
@@ -106,7 +82,7 @@ export const arenaReturn = task<number, Uint8Array>({
     ),
 });
 
-/** A fresh SAB per call: mint, copy in, hand the whole buffer back. */
+/** Return a fresh SharedArrayBuffer on every call. */
 export const sabReturn = task<number, SharedArrayBuffer>({
   f: (packed) => {
     const bytes = packed & BYTES_MASK;
@@ -116,7 +92,7 @@ export const sabReturn = task<number, SharedArrayBuffer>({
   },
 });
 
-/** Built on the heap, then pinned and shipped as a pointer. */
+/** Return a heap buffer through BufferReference. */
 export const refReturn = task<number, BufferReference>({
   f: (packed) => {
     const bytes = packed & BYTES_MASK;
@@ -148,6 +124,7 @@ if (isMain) {
     const pool = createPool({
       threads,
       payload: { payloadMaxByteLength: 128 * 1024 * 1024 },
+      unsafe: { SharedBytes: true },
     })(tasks);
     const mismatches = new Map<string, number>();
 

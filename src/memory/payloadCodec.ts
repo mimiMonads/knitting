@@ -242,36 +242,13 @@ const PROCESS_SHARED_BUFFER_NUMERIC_WORDS = 8;
 const BUFFER_REFERENCE_NUMERIC_WORDS = 8;
 const NUMERIC_SENTINEL = 0xffffffff;
 
-/**
- * Smallest ordinary `Uint8Array` return that is placed in a borrowed arena
- * region instead of being copied out on the host.
- *
- * Matches the threshold the slab pool shipped with, because the hazard is the
- * same: above it, a returned buffer is a view into shared memory rather than a
- * private copy. Measured wins start from 4 KiB (bench/arena-borrow.ts), so this
- * is a safety choice, not a performance one.
- */
+/** Minimum size for automatically borrowed byte returns. */
 export const SHARED_RETURN_MIN_BYTES = 256 * 1024;
 
-/**
- * How many further large returns a borrowed region survives on its lane.
- *
- * The producer releases regions in FIFO order once more than this many are
- * outstanding, so a consumer that keeps a returned view past this many results
- * reads another call's bytes.
- *
- * It has to cover a full lane of in-flight results -- `LockBound.slots` of them
- * -- or a region could be recycled while its own call is still unread, which no
- * amount of care on the consumer's part would survive. That floor is also what
- * makes it a performance lever in the wrong direction: every outstanding region
- * is live arena, so a wide window is a working set that no longer fits in cache.
- * Measured on node at 1 MiB, dropping it from 16 to 4 moved an ordinary borrowed
- * return from 0.62x to 1.21x against copying -- but 4 is not a legal width.
- */
+/** Number of later borrowed returns kept before a region is recycled. */
 export const SHARED_RETURN_BORROW_WINDOW = 32;
 
-// One allocator per payload buffer, so a worker can find the one belonging to
-// its own return lane without the lock threading it through.
+// Each payload buffer has one allocator for the worker return lane.
 const sharedReturnAllocators = new WeakMap<
   object,
   (byteLength: number, zeroFill?: boolean) => Uint8Array | undefined
@@ -645,26 +622,11 @@ export const encodePayload = ({
     label: string,
   ): number => dynamicUtf8ReserveBytesWithExtra(task, text, 0, label);
 
-  // Regions handed to the consumer by reference rather than copied out. The
-  // producer owns their lifetime: it releases them in FIFO order once more than
-  // SHARED_RETURN_BORROW_WINDOW are outstanding, which is what bounds how long a
-  // returned view stays readable. Nothing here is pinned, tokenised or freed by
-  // the consumer -- the frame is an offset and a length in the task header.
-  // Flat [slot, start, end] triples, oldest first.
+  // Borrowed regions are tracked as [slot, start, end] triples, oldest first.
   const borrowed: number[] = [];
   const BORROW_STRIDE = 3;
 
-  /**
-   * Largest return this lane will lend rather than copy.
-   *
-   * A loan is only released once `SHARED_RETURN_BORROW_WINDOW` further loans
-   * push it out, so a lane can have that many outstanding at any moment. Sizing
-   * the limit as `budget / window` means a full window of the largest loan still
-   * leaves half the arena for ordinary payloads -- which matters because there
-   * is no graceful degradation underneath: an arena packed with loans makes the
-   * *copy* path fail too, and that surfaces as KNT_ERROR_3 rather than as a
-   * slower call.
-   */
+  /** Limit borrowed regions to half the payload arena. */
   const maxBorrowBytes =
     ((resolvedPayloadConfig.payloadMaxByteLength >> 1) /
       SHARED_RETURN_BORROW_WINDOW) | 0;
@@ -697,16 +659,7 @@ export const encodePayload = ({
     free(slot);
   };
 
-  /**
-   * Where `view` starts inside the arena, if it lies within a region this lane
-   * still has on loan, or -1.
-   *
-   * Containment rather than identity, so returning `out.subarray(0, written)`
-   * of a `sharedBytes` buffer stays on the borrow path instead of falling back
-   * to a copy -- which is the whole reason a caller can hand back less than it
-   * asked for. Scanned newest-first: a task almost always returns the region it
-   * just took.
-   */
+  /** Return the arena offset when `view` is inside a live borrowed region. */
   const borrowedStartOf = (view: Uint8Array): number => {
     if (borrowed.length === 0) return -1;
     if (view.buffer !== currentDynamicBuffer()) return -1;
@@ -718,11 +671,7 @@ export const encodePayload = ({
     return -1;
   };
 
-  /**
-   * A `byteLength` view inside this lane's payload arena for the caller to build
-   * a return in. Returning it ships the offset, so nothing is ever copied.
-   * `undefined` when no region is free, and the caller allocates normally.
-   */
+  /** Allocate a borrowed return region, or fall back when none is available. */
   const allocateSharedReturn = (
     byteLength: number,
     zeroFill = false,
@@ -731,8 +680,6 @@ export const encodePayload = ({
     if (slot === -1) return undefined;
     const start = regionStart(slot);
     const view = dynamicRegionView(start, start + byteLength);
-    // Regions are recycled and never cleared on release, so this holds the
-    // previous return's bytes until the caller overwrites them.
     if (zeroFill) view.fill(0);
     return view;
   };
@@ -865,8 +812,7 @@ export const encodePayload = ({
     bytesView: Uint8Array,
   ) => {
     const bytes = bytesView.byteLength;
-    // Already built in one of this lane's borrowed regions: the frame is just
-    // where it is. Nothing to reserve, nothing to copy.
+    // Preserve an arena-backed subarray as an offset/length frame.
     const borrowedStart = borrowedStartOf(bytesView);
     if (borrowedStart !== -1) {
       task[TaskIndex.Type] = PayloadBuffer.ArenaBinary;
@@ -883,8 +829,7 @@ export const encodePayload = ({
       return true;
     }
 
-    // Big enough to be worth handing over by reference: copy it into a borrowed
-    // region once here instead of copying it out again on the consumer.
+    // Copy qualifying ordinary returns into the borrowed arena once.
     if (
       sharedReturn && bytes >= SHARED_RETURN_MIN_BYTES &&
       bytes <= maxPayloadBytes
@@ -2053,9 +1998,6 @@ export const decodePayload = ({
   }
   const bufferReferenceWords = new Uint32Array(BUFFER_REFERENCE_NUMERIC_WORDS);
 
-  // TODO: remove slotIndex and make that all their callers
-  // store the slot in their Task, to just get it when it comes
-  // to the static versions of decoding
   return (task: Task, slotIndex: number, specialFlags?: number) => {
     const payloadType = task[TaskIndex.Type];
     if (
@@ -2427,8 +2369,7 @@ export const decodePayload = ({
         );
         freeTaskSlot(task);
         return;
-      // Borrowed region: the producer owns it and releases it once its borrow
-      // window closes, so the consumer only takes a view.
+      // Borrowed region: decode a view into the shared arena.
       case PayloadBuffer.ArenaBinary:
         // A borrowed region can sit past the length this endpoint last saw.
         syncDynamicGrowth();

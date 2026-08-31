@@ -10,7 +10,7 @@ import { plainStamped, sharedStamped } from "./fixtures/shared_return_tasks.ts";
 const BIG = 256 * 1024;
 const pack = (stamp: number, bytes: number): number => (stamp << 21) | bytes;
 
-test("borrowed returns cross a process worker", async () => {
+test("borrowed returns cross a process worker when enabled", async () => {
   if (typeof SharedArrayBuffer !== "function") return;
   if (RUNTIME !== "node" && RUNTIME !== "deno" && RUNTIME !== "bun") return;
 
@@ -18,6 +18,7 @@ test("borrowed returns cross a process worker", async () => {
     threads: 1,
     worker: { runtime: "process", processRuntime: RUNTIME },
     payload: { payloadMaxByteLength: 16 * 1024 * 1024 },
+    unsafe: { SharedBytes: true },
   })({ plainStamped, sharedStamped });
   try {
     for (let stamp = 1; stamp <= 4; stamp++) {

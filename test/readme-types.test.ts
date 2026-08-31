@@ -338,7 +338,10 @@ const assertReadmeTypes = () => {
     },
   });
 
-  const renderPool = createPool({ threads: 4 })({ render });
+  const renderPool = createPool({
+    threads: 4,
+    unsafe: { SharedBytes: true },
+  })({ render });
 
   type RenderReturn = Awaited<ReturnType<typeof renderPool.call.render>>;
   type _RenderIsBytes = Assert<Equal<RenderReturn, Uint8Array>>;

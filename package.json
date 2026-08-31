@@ -108,7 +108,6 @@
     "@types/bun": "latest",
     "@types/deno": "latest",
     "@types/node": "latest",
-    "dts-bundle-generator": "^9.5.1",
     "mitata": "^1.0.34",
     "typescript": "^5.2.0"
   }

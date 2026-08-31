@@ -17,8 +17,7 @@ import {
   WORKER_STOP,
 } from "../ipc/transport/shared-memory.ts";
 import { lock2 } from "../memory/lock.ts";
-// Side-effect import: registers the payload codec (cycle break for Andromeda;
-// see lock.ts). Must run before any lock2() call.
+// Registers the payload codec before any lock is built.
 import "../memory/payloadCodec.ts";
 import type { LockBuffers, WorkerData } from "../types.ts";
 import { getFunctions } from "./task-loader.ts";
@@ -133,7 +132,7 @@ export const workerMainLoop = async (
     )
     : undefined;
 
-  // const object, not `enum`: Andromeda's Nova engine can't parse `enum`.
+  // Andromeda cannot parse enums.
   const Comment = {
     thisIsAHint: 0,
   } as const;
@@ -167,13 +166,7 @@ export const workerMainLoop = async (
   const processParentPort = processCompletionDoorbell === true
     ? RUNTIME_PARENT_PORT
     : undefined;
-  // Bun on Windows does not flush a child's `process.send` until the child
-  // yields to its event loop, so a ring issued from inside the synchronous
-  // dispatch loop sits unwritten while the host waits on it — the host is
-  // parked on that ring with no watchdog, so the call never settles. Record
-  // the ring and let the loop take one macrotask hop so libuv writes the pipe.
-  // Every other runtime/platform writes it inline, and the hop costs latency
-  // on a path built to avoid exactly that, so only Bun on Windows pays it.
+  // Bun on Windows flushes process messages only after an event-loop turn.
   let processRingPending = false;
   const flushProcessRing = IS_BUN_WINDOWS;
   const notifyProcessHost = processParentPort === undefined
@@ -193,8 +186,7 @@ export const workerMainLoop = async (
     payloadConfig,
     textCompat: returnLock.textCompat,
     processBoundary: RUNTIME_IS_PROCESS_WORKER,
-    // Only this lane borrows: a task's arguments must not expire while it runs.
-    sharedReturn: sharedReturn !== false,
+    sharedReturn: sharedReturn === true,
     // The host parks on this lock's publication word when it has no work to
     // flush. Request locks are host-produced and must not wake that waiter.
     notifyOnHostPublish: notifyOnHostPublish ||
@@ -272,8 +264,7 @@ export const workerMainLoop = async (
     hasAborted: abortSignals?.hasAborted,
     stealing: steal !== undefined,
   });
-  // `sharedBytes` builds returns straight into this lane's payload arena.
-  if (sharedReturn !== false) installSharedReturn(returnLock.payload);
+  if (sharedReturn === true) installSharedReturn(returnLock.payload);
 
   a_store(rxStatus, 0, 1);
 
@@ -366,13 +357,8 @@ export const workerMainLoop = async (
     }
     : pauseUntil;
 
-  // Pick the claim/flush ordering once instead of re-testing it on every pass.
-  //
-  // Stealing flushes finished work before taking more on: a computed response
-  // should not wait behind a claim, and that claim can block on a peer
-  // withdrawing its intent. Measured to hurt the per-lane path, where a claim
-  // is a cheap private decode and picking work up promptly matters more, so
-  // that path keeps the classic order.
+  // Stealing flushes completed work before claiming more; private lanes claim
+  // first to keep their single-consumer path short.
   const pump = steal !== undefined
     ? (): boolean => {
       let progressed = false;
@@ -396,9 +382,7 @@ export const workerMainLoop = async (
 
   const loop = () => {
     isInMacro = false;
-    // `progressed` answers "did this pass move anything", so it has to be
-    // recomputed every pass or the park below is unreachable and the worker
-    // spins a core forever.
+    // Recompute progress on every pass so idle workers can park.
     let progressed = true;
     let awaiting = 0;
     while (true) {
@@ -408,9 +392,6 @@ export const workerMainLoop = async (
 
       _drainReturnReleases();
 
-      // `serviceBatchImmediate` already guards on an empty queue, so the
-      // separate `hasPending()` probe was a call to learn what the next call
-      // was about to check anyway.
       if (_serviceBatchImmediate() > 0) progressed = true;
 
       if ((awaiting = _getAwaiting()) > 0) {
@@ -431,12 +412,7 @@ export const workerMainLoop = async (
 
       if (!progressed) {
         if (txStatus[Comment.thisIsAHint] === 1) {
-          // Hint spin: the host says work is inbound, so busy-wait rather than
-          // park. A synchronous spin cannot run a JS callback, which means
-          // `awaiting`, `toWork` and the settle path cannot change underneath
-          // us — only the host can move anything. So poll just the host-driven
-          // edges here and leave the per-pass bookkeeping (the release drain)
-          // to the full pass we fall back into the moment something moves.
+          // During a hint spin only host-driven state can change.
           do {
             _pauseSpin();
             if (stopView[0] !== WORKER_STOP.running) return stopLoop();

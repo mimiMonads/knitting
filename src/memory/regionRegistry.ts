@@ -18,8 +18,7 @@ export const DYNAMIC_PAYLOAD_SLOT_MASK = DYNAMIC_PAYLOAD_SLOTS - 1;
 
 const PAYLOAD_LOCK_STATE_WORDS = DYNAMIC_PAYLOAD_SLOTS / 32;
 
-// Low 6 bits = dynamic-region index, high 26 bits = byte offset.
-// Reserved empty-table marker: 111...10111111.
+// Low 6 bits store the region index; the remaining bits store its byte offset.
 const EMPTY = 0xFFFFFFBF >>> 0; // 111...10111111
 const SLOT_META_PACKED_MASK = (~TASK_SLOT_INDEX_MASK) >>> 0;
 
@@ -37,9 +36,7 @@ export const register = (
   );
   const lockSAB = lockRegion.sab;
 
-  // Queue locking remains one 32-bit word per endpoint. Dynamic payloads can
-  // outlive those queue slots, so their two state words occupy the first eight
-  // bytes of their existing cache lines.
+  // Dynamic-region state shares the queue lock's cache-line padding.
   const hostBits = new Int32Array(
     lockSAB,
     lockRegion.byteOffset + PAYLOAD_LOCK_HOST_BITS_OFFSET_BYTES,
@@ -53,9 +50,7 @@ export const register = (
 
   const startAndIndex = new Uint32Array(DYNAMIC_PAYLOAD_SLOTS);
   const size64bit = new Uint32Array(DYNAMIC_PAYLOAD_SLOTS);
-  // Byte offset each live slot was placed at. `startAndIndex` already carries it
-  // packed with the slot id, but only in table order; callers that hold a slot
-  // want it in O(1).
+  // Keep region offsets indexed by slot for O(1) lookup.
   const startBySlot = new Uint32Array(DYNAMIC_PAYLOAD_SLOTS);
 
   const a_load = Atomics.load;
@@ -68,8 +63,7 @@ export const register = (
   startAndIndex.fill(EMPTY);
 
   let tableLength = 0;
-  // Scalar shadows keep the <=32-region path as lean as the original
-  // allocator. The upper word is not read at all until it is used.
+  // Keep the common <=32-region path in scalar words.
   let usedBits0 = 0 | 0;
   let usedBits1 = 0 | 0;
   let hostLast0 = 0 | 0;
@@ -109,12 +103,7 @@ export const register = (
       : 32 + 31 - Math.clz32((available & -available) >>> 0);
   };
 
-  /**
-   * Park the 6th region-index bit in bit 31 of `End`, which also carries payload
-   * lengths. Order matters: callers must write the length first and tag after,
-   * or the length write wipes the tag. See the warning on `TaskIndex.End` in
-   * `lock.ts` before touching either side of this. — @mimiMonads
-   */
+  /** Store the sixth region-index bit in bit 31 of the task length word. */
   const tagTaskSlot = (task: Task, slot: number) => {
     task[TaskIndex.End] = (
       (task[TaskIndex.End] & 0x7FFFFFFF) | ((slot & 32) << 26)
@@ -134,9 +123,7 @@ export const register = (
     }
   };
 
-  // Reconcile completed payload reads. A worker only toggles a bit after it
-  // copied the corresponding region, so a free observed here can safely be
-  // removed from the ordered extent table.
+  // Reconcile completed reads and remove freed regions from the table.
   const updateTable = () => {
     if (tableLength === 0) return;
 
@@ -160,10 +147,7 @@ export const register = (
     compactFreed(freeBits0, freeBits1);
   };
 
-  // The extent table stays sorted by start offset. Allocation is deliberately
-  // bounded at 64 entries: beyond that payload identity cannot be represented
-  // in the six-bit task field, so the caller leaves the frame pending until a
-  // receiver releases a region.
+  // The extent table stays sorted by offset and is limited to 64 regions.
   const findAndInsert = (size: number): number => {
     updateTable();
 
@@ -224,8 +208,7 @@ export const register = (
     return true;
   };
 
-  // Both encode rollback and decode release can free payload regions. XORing
-  // only the region's word is commutative, preserving each independent toggle.
+  // XOR preserves independent release toggles from encode and decode paths.
   const free = (index: number) => {
     const slot = index & SLOT_MASK;
     a_xor(workerBits, slotWord(slot), slotBit(slot));

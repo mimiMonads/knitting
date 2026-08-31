@@ -65,7 +65,7 @@ import type {
   WorkerSettings,
 } from "./types.ts";
 
-// NOTE: Explicit API typings keep JSR from widening curried signatures.
+// Keep the explicit factory type so JSR preserves the curried signatures.
 type ToListAndIds = {
   list: string[];
   ids: number[];
@@ -435,7 +435,7 @@ export const createPool: CreatePoolFactory = ({
   host,
 }: CreatePool) =>
 <T extends tasks>(tasks: T): Pool<T> => {
-  const sharedBytesEnabled = unsafe?.SharedBytes;
+  const sharedBytesEnabled = unsafe?.SharedBytes === true;
   const sharedArgsEnabled = unsafe?.SharedArgs === true;
   const debugRequested = DEBUG_ENABLED ||
     (debug !== undefined && debug !== false);
@@ -610,9 +610,8 @@ export const createPool: CreatePoolFactory = ({
     : stealEnvRaw === "0" || stealEnvRaw === "false"
     ? false
     : undefined;
-  // Shared-submit stealing is the default for compatible multi-worker pools.
-  // An explicit option wins over the environment; compiled and inline
-  // transports retain their existing topology.
+  // Shared-submit stealing is the default for compatible multi-worker pools;
+  // explicit options take precedence over the environment.
   const dispatcherExplicitlySelected = host?.dispatcher !== undefined ||
     dispatcherEnv === "serial-channel" || dispatcherEnv === "per-thread";
   const stealDefaultCompatible = balancer === undefined &&
@@ -620,12 +619,11 @@ export const createPool: CreatePoolFactory = ({
   const stealRequested = host?.steal ?? stealEnv ?? stealDefaultCompatible;
   const stealClaimEnvRaw = nodeProcess?.env?.KNITTING_STEAL_CLAIM?.trim()
     .toLowerCase();
-  const stealClaimEnv = stealClaimEnvRaw === "cas" ||
-      stealClaimEnvRaw === "cas-mask" || stealClaimEnvRaw === "dekker"
+  const stealClaimEnv = stealClaimEnvRaw === "cas-mask" ||
+      stealClaimEnvRaw === "dekker"
     ? stealClaimEnvRaw
     : undefined;
-  // Experimental: `cas` swaps the paper's per-consumer intent words for one
-  // shared owner mask. Explicit option wins over the environment.
+  // Select the stealing claim discipline, preferring the explicit option.
   const stealClaim = host?.stealClaim ?? stealClaimEnv ?? "dekker";
   const usingCompiledWorker = resolvedWorker?.runtime === "compiled";
   if (resolvedWorker?.compiled !== undefined && !usingCompiledWorker) {
@@ -717,18 +715,15 @@ export const createPool: CreatePoolFactory = ({
         : undefined
     );
   const autoDispatcher = (() => {
-    // Experimental default for HTTP-style bursts: Bun still favors direct
-    // per-thread channels, while Node/Deno multi-worker pools favor one shared
-    // macro channel over the per-lane dispatcher checks.
+    // Bun and single-worker pools use per-thread dispatch; other pools share a
+    // channel across their private lanes.
     if (RUNTIME === "bun") return "per-thread";
     if ((threads ?? 1) <= 1) return "per-thread";
     return "serial-channel";
   })();
   const dispatcher = explicitDispatcher ?? autoDispatcher;
-  // Work stealing: one shared submit region, private return lanes, one
-  // pool-global pending registry. It is the compatible multi-worker default;
-  // an explicit balancer/dispatcher keeps the private-lane topology unless
-  // stealing itself was explicitly requested.
+  // Stealing uses one submit region and private return lanes. Explicit balancer
+  // or dispatcher settings retain private lanes unless stealing is requested.
   const useSteal = stealRequested &&
     !usingCompiledWorker &&
     (threads ?? 1) > 1 &&
@@ -752,17 +747,12 @@ export const createPool: CreatePoolFactory = ({
     : undefined;
   const serialChannel = !usingCompiledWorker && !useSteal &&
     dispatcher === "serial-channel";
-  // One serial-channel hop drives every lane check in turn, and it depends on
-  // the channel's delivery to do that: swapping in the cheaper `setImmediate`
-  // pump cost 25% throughput and tripled p99 here, where every other topology
-  // gained. See ChannelHandler's note.
+  // The serial topology relies on channel delivery to run each lane check.
   const serialDispatcherChannel = serialChannel
     ? new ChannelHandler("channel")
     : undefined;
-  // Deno's waitAsync promise does not wake its idle event loop. The default
-  // thread-pool path requests FFI permission for a threadSafe UnsafeCallback;
-  // a denial retains polling, and `host.doorbell: false` opts out entirely.
-  // Process workers cannot use this process-local pointer.
+  // Deno uses a threadSafe FFI callback because waitAsync does not wake an idle
+  // event loop; process workers cannot use the process-local pointer.
   const denoCompletionDoorbell = !usingCompiledWorker &&
       resolvedWorker?.runtime !== "process" && host?.doorbell !== false
     ? createDenoCompletionDoorbell()
@@ -816,10 +806,8 @@ export const createPool: CreatePoolFactory = ({
     const channel = stealChannel!;
     const queue = stealBuffers!.sharedQueue;
 
-    // Wake exactly one worker per drain, round-robin. Stealing decouples the
-    // wake target from the assignment: if the woken worker is busy, any other
-    // idle endpoint claims the region instead. So this costs one notify per
-    // publish regardless of pool size, rather than one per lane.
+    // Round-robin wake keeps stealing at one notify per publish; any idle worker
+    // can claim the region.
     let wakeCursor = 0;
     const wakeOne = () => {
       const lanes = workers.length;
@@ -895,11 +883,7 @@ export const createPool: CreatePoolFactory = ({
     let serialInFlight = false;
     let serialRerun = false;
 
-    // Busy-lane set: a tick walks only the lanes that have work, not all of
-    // them. `active` is a dense list of lane indices; `isActive` keeps the
-    // membership test O(1). A lane joins on send() and leaves once its queue
-    // reports idle, so an N-worker pool with one busy lane costs one check per
-    // tick instead of N.
+    // Visit only active private lanes; inactive lanes stay out of the tick.
     const active: number[] = [];
     const isActive = new Uint8Array(checks.length);
 
@@ -1016,9 +1000,7 @@ export const createPool: CreatePoolFactory = ({
           denoCompletionDoorbell?.close();
           return;
         }
-        // A worker never acknowledged shutdown, so it may still hold the raw
-        // pointer. Unref rather than free: the process can still exit, and the
-        // callback stays valid if that worker does ring after all.
+        // Keep the callback alive if a worker failed to acknowledge shutdown.
         denoCompletionDoorbell?.unref();
       });
     return closePromise;
@@ -1140,10 +1122,7 @@ export const createPool: CreatePoolFactory = ({
 
   const useDirectHandler = (threads ?? 1) === 1 && !usingInliner;
 
-  // Imported tasks must never execute on the host inliner lane: their module
-  // import is meant to happen inside the worker so worker permission policies
-  // apply. When the inliner is active we strip the inline lane from their
-  // handler set so they only ever reach real worker lanes.
+  // Imported tasks must run on a worker so worker-side permission policies apply.
   const buildImportedInvoker = (handlers: WorkerInvoke[]): WorkerInvoke => {
     const workerHandlers: WorkerInvoke[] = [];
     const workerContexts: CreateContext[] = [];

@@ -1,28 +1,8 @@
 import { createPool, isMain, task } from "../knitting.ts";
 import { BufferReference, sharedBytes } from "../unsafe.ts";
 
-/**
- * What does handing a large return over as a borrowed arena region save?
- *
- *   SAB_THREADS=1,4 WORKLOAD=fill|set bun run bench/shared-return.ts
- *
- * Four ways to get the same bytes back, interleaved round-robin so a frequency
- * step or a GC pause lands on all of them rather than on whichever ran last:
- *
- *   copy     borrowing off: the worker copies into the arena, the host copies
- *            out again (`unsafe.SharedBytes: false`)
- *   borrow   the shipped default: an ordinary `Uint8Array` return at or above
- *            SHARED_RETURN_MIN_BYTES is placed in a borrowed region, so the host
- *            only takes a view
- *   shared   `sharedBytes(n)`: the task builds its result in the region, so
- *            neither side copies at all
- *   bufref   the other zero-copy return we ship: build on the heap, pin it, let
- *            the host adopt the pointer, release explicitly
- *
- * `WORKLOAD` decides how the bytes are produced, and it is not cosmetic: V8
- * writes shared memory ~20x slower than a heap buffer with `fill` and ~2.4x
- * slower with `set`, so `fill` overstates the cost of every in-place arm on
- * node. JSC shows no difference either way.
+/** Compare copied, automatically borrowed, `sharedBytes`, and BufferReference returns.
+ * Run with `SAB_THREADS`, `WORKLOAD`, and the size constants to vary the load.
  */
 
 const SIZES = [4096, 16384, 65536, 262144, 1048576] as const;
@@ -74,14 +54,14 @@ const sourceFor = (bytes: number, stamp: number): Uint8Array => {
   return src;
 };
 
-/** Write `bytes` of `stamp` into `out` by whichever discipline is selected. */
+/** Fill `out` according to the selected workload. */
 const produce = (out: Uint8Array, bytes: number, stamp: number): Uint8Array => {
   if (WORKLOAD === "set") out.set(sourceFor(bytes, stamp));
   else out.fill(stamp);
   return out;
 };
 
-/** An ordinary return: the task has no idea any of this exists. */
+/** Return an ordinary heap allocation. */
 export const plainReturn = task<number, Uint8Array>({
   f: (packed) =>
     produce(
@@ -91,7 +71,7 @@ export const plainReturn = task<number, Uint8Array>({
     ),
 });
 
-/** Built in the region, so the bytes are never copied by either side. */
+/** Build the return directly in the shared arena. */
 export const sharedReturn = task<number, Uint8Array>({
   f: (packed) =>
     produce(
@@ -101,7 +81,7 @@ export const sharedReturn = task<number, Uint8Array>({
     ),
 });
 
-/** Same, without the zero-fill the task does not need: it writes every byte. */
+/** Build the return in the shared arena without zero-filling. */
 export const sharedNoFillReturn = task<number, Uint8Array>({
   f: (packed) =>
     produce(
@@ -111,7 +91,7 @@ export const sharedNoFillReturn = task<number, Uint8Array>({
     ),
 });
 
-/** Heap-produced, pinned, adopted by the host, released explicitly. */
+/** Return a heap buffer through BufferReference. */
 export const refReturn = task<number, BufferReference>({
   f: (packed) => {
     const bytes = packed & BYTES_MASK;
@@ -145,7 +125,10 @@ if (isMain) {
       threads,
       unsafe: { SharedBytes: false },
     })(tasks);
-    const borrowPool = createPool({ threads })(tasks);
+    const borrowPool = createPool({
+      threads,
+      unsafe: { SharedBytes: true },
+    })(tasks);
     const mismatches = new Map<string, number>();
 
     console.log(`\n=== threads: ${threads} ===`);
@@ -219,7 +202,6 @@ if (isMain) {
             `${`${(copy / med("nofill")).toFixed(2)}x`.padStart(8)}` +
             `${`${(copy / med("bufref")).toFixed(2)}x`.padStart(9)}`,
         );
-        // Spread, so a single median is never read as the whole story.
         const spread = (n: string) => {
           const l = sorted.get(n)!;
           return `${fmtNs(pct(l, 0.1))}..${fmtNs(pct(l, 0.9))}`;

@@ -1,9 +1,6 @@
 import RingQueue from "../ipc/tools/ring-queue.ts";
-// payloadCodec is intentionally NOT statically imported: lock.ts and
-// payloadCodec.ts form a cycle, and Andromeda's Nova engine stack-overflows on
-// circular ES imports. Instead payloadCodec self registers its factories on
-// load (see `registerLockPayloadCodec`); lock-building modules import it so it
-// runs before `lock2()`. Node/Deno/Bun are unaffected.
+// Avoid a static lock <-> codec import cycle; Andromeda cannot handle it.
+// The codec registers its factories before any lock is built.
 type EncodePayloadFactory = typeof import("./payloadCodec.ts").encodePayload;
 type DecodePayloadFactory = typeof import("./payloadCodec.ts").decodePayload;
 
@@ -34,13 +31,7 @@ import {
   resolvePayloadBufferOptions,
 } from "./payload-config.ts";
 
-/**
- * TODO: Compose all the instance where the array is passed as argument
- */
-
-// const objects replace `enum`s throughout this module: Andromeda's Nova engine
-// panics on `enum`. Value access, duplicate-value members, and type preserved;
-// identical emit on Node/Deno/Bun.
+// Use const objects instead of enums; Andromeda's Nova engine cannot parse enums.
 export const PayloadSignal = {
   UNREACHABLE: 0,
   BigInt: 2,
@@ -97,7 +88,7 @@ export const PayloadBuffer = {
   EnvelopeDynamicHeaderStringExternal: 52,
   NumericArray: 53,
   StaticNumericArray: 54,
-  /** EXPERIMENT: payload already lives in the arena; the frame is offset+len. */
+  /** Binary payload already stored in the dynamic arena. */
   ArenaBinary: 55,
 } as const;
 export type PayloadBuffer = typeof PayloadBuffer[keyof typeof PayloadBuffer];
@@ -229,55 +220,19 @@ export const TaskIndex = {
   /**
    * Host -> worker request function id (low 16 bits).
    * High 16 bits are reserved for caller metadata on request path.
-   * NOTE: shares the same storage word as `FlagsToHost`.
+   * Shares storage with `FlagsToHost`.
    */
   FunctionID: 0,
   ID: 1,
   Type: 2,
   Start: 3,
   /**
-   * ┌──────────────────────────────────────────────────────────────────────┐
-   * │  ⚠  STOP. BIT 31 OF THIS WORD IS NOT YOURS.  ⚠                       │
-   * └──────────────────────────────────────────────────────────────────────┘
-   *
-   * Hey — @mimiMonads here. If you are about to use `End` for something, read
-   * this first. It cost us a genuinely nasty bug and I would rather you get the
-   * two minutes than the three days.
-   *
-   * `End` wears two hats:
-   *
-   *   bits 0..30  a payload length (an envelope body length, mostly)
-   *   bit  31     the HIGH BIT OF THE DYNAMIC REGION INDEX
-   *
-   * Why the second one is squatting here: dynamic payload regions have 64
-   * identities (`DYNAMIC_PAYLOAD_SLOTS`), so their index needs 6 bits — but
-   * `slotBuffer` below only has 5, and widening it would have meant touching
-   * the whole header layout. So the 6th bit lives here, tucked into a bit no
-   * length was ever going to reach. `tagTaskSlot()` puts it there,
-   * `freeTaskSlot()` reads it back out.
-   *
-   * Two rules keep this standing up. Break either one and dynamic payloads
-   * start silently swapping bytes between callers — no error, no crash, just
-   * one caller quietly getting another caller's data. It only shows up once
-   * more than 32 calls are in flight, so your tests will most likely pass and
-   * your users will be the ones who find it. That is exactly how we shipped it
-   * the first time.
-   *
-   *   1. READING `End` as a length?    mask it:  `task[TaskIndex.End] & 0x7FFFFFFF`
-   *   2. WRITING `End` as a length?    write the length FIRST, then call
-   *                                    `tagTaskSlot()`. Never the other way
-   *                                    round — the write clobbers the tag.
-   *
-   * And if you need another spare bit somewhere: please do not take it from
-   * here. Widen `slotBuffer`, or add a word. I know it is tempting. Don't. 🙏
+   * Payload length; bit 31 stores the high bit of a dynamic-region index.
+   * Write the length before `tagTaskSlot()` and mask bit 31 when reading it.
    */
   End: 4,
   PayloadLen: 5,
-  /**
-   * Low 5 bits: dynamic region index, bits 0..4 (the 6th bit is in `End`; see
-   * the warning above).
-   * High 27 bits: reserved for caller metadata (e.g. enqueue timing).
-   */
+  /** Low 5 bits hold the dynamic-region index; the remaining bits hold metadata. */
   slotBuffer: 6,
   Size: 8,
   /**
@@ -397,17 +352,9 @@ export const STEAL_PAYLOAD_ACK_SLOT_OFFSET_U32 = STEAL_ACK_SLOT_OFFSET_U32 + 2;
 export const STEAL_LIVE_SLOT_OFFSET_U32 = STEAL_PAYLOAD_ACK_SLOT_OFFSET_U32 + 1;
 /** Host-owned arm word for the return-lock completion doorbell. */
 export const DOORBELL_ARMED_SLOT_OFFSET_U32 = STEAL_LIVE_SLOT_OFFSET_U32 + 1;
-/**
- * Per-region ownership sentinel for the `cas` claim discipline: region `r` uses
- * slot `r`'s copy of this word, so every region gets its own cache line and two
- * consumers claiming *different* regions never touch the same line. `0` is
- * free, otherwise it holds `consumerId + 1`, which makes ownership intrinsic --
- * no separate intent word, and a dead claimant's regions are found by scanning
- * for its tag.
- *
- * Unused by `dekker`, which deliberately has no shared writable word at all.
- */
-export const STEAL_CLAIMED_SLOT_OFFSET_U32 = DOORBELL_ARMED_SLOT_OFFSET_U32 + 1;
+/** Shared region-owner mask for the `cas-mask` claim discipline. */
+export const STEAL_CLAIM_MASK_SLOT_OFFSET_U32 =
+  DOORBELL_ARMED_SLOT_OFFSET_U32 + 1;
 
 // A producer claims ARMED before ringing the host. Keeping SIGNALLED until the
 // host drains coalesces a burst of published frames into one native/IPC wake.
@@ -472,39 +419,25 @@ const makeTaskFrom = (array: Uint32Array, at: number) => {
   return task;
 };
 
-// could be inlined
 const settleTask = (task: Task) => {
   if (task[TaskIndex["FlagsToHost"]] === 0) {
     task.resolve(task.value);
   } else {
     task.reject(task.value);
-    // restarting the flag
+    // Clear the rejection marker before the task slot is reused.
     task[TaskIndex["FlagsToHost"]] = 0;
   }
 };
-
-/**
- * Complexity: 7 / 10
- *
- * SAFETY:
- *  - Single producer/consumer; do not call encode/decode concurrently.
- *  - Shared buffers must be the same between host/worker.
- *  - encode/decode are not re-entrant; payload codec uses a shared scratch buffer.
- */
 
 export type Lock2 = ReturnType<typeof lock2>;
 
 /**
  * Region mutual-exclusion discipline for stealing consumers.
  *
- * - `dekker`: the paper protocol, per-consumer intent words, O(N) peer survey.
- * - `cas`: one test-and-test-and-set sentinel per region, each on its own
- *   cache line.
- * - `cas-mask`: one shared bitmask for every region. Kept as the measured
- *   comparison point for `cas` -- claiming any region contends for the same
- *   line, so peers aiming at unrelated regions still collide.
+ * - `dekker`: per-consumer intent words and an O(N) peer survey.
+ * - `cas-mask`: one shared owner mask for all regions.
  */
-export type StealClaimDiscipline = "dekker" | "cas" | "cas-mask";
+export type StealClaimDiscipline = "dekker" | "cas-mask";
 
 export type WaitAsyncState = "not-equal" | "ok" | "timed-out";
 export type WaitAsyncResult = {
@@ -539,11 +472,6 @@ export const lock2 = ({
   payloadConfig?: PayloadBufferOptions;
   payloadSector?: SharedBufferSource;
   textCompat?: LockBufferTextCompat;
-  /**
-   * Host end of the slab release channel for this lane. Called with a slab token
-   * once the host's view over it is unreachable, so the producing worker may
-   * refill it. Slab tokens are per-isolate, so this is per-lane by construction.
-   */
   toSentList?: RingQueue<Task>;
   resultList?: RingQueue<Task>;
   recycleList?: RingQueue<Task>;
@@ -563,14 +491,7 @@ export const lock2 = ({
   consumerId?: number;
   /** Lanes claimed per Dekker handshake. Paper rule: `slots / regionLanes >= consumers + 1`. */
   regionLanes?: number;
-  /**
-   * Mutual-exclusion discipline for region claiming.
-   *
-   * `dekker` (default) is the paper protocol: intent word per consumer, no
-   * shared writable word, O(N) peer survey per claim. `cas` replaces the
-   * survey with one shared owner mask and a compareExchange, making the claim
-   * cost constant in consumer count at the price of a contended line.
-   */
+  /** Mutual-exclusion discipline for region claiming. */
   stealClaim?: StealClaimDiscipline;
   /** Notify a host-side wait after this endpoint publishes a frame. */
   notifyOnHostPublish?: boolean;
@@ -584,9 +505,8 @@ export const lock2 = ({
   // The remaining two cache lines in the 256-byte sector are reserved for the
   // payload allocator lock (`PAYLOAD_LOCK_*` at bytes 128 and 192).
   //
-  // Important: encode() always toggles `hostBits` and decode/resolveHost always
-  // toggles `workerBits`, regardless of which thread calls them. This is why
-  // the "return lock" (worker->host responses) still publishes into `hostBits`.
+  // encode toggles hostBits; decode/resolveHost toggles workerBits. The return
+  // lock therefore publishes responses through hostBits as well.
   const lockSectorRegion = toSharedBufferRegion(
     LockBoundSector ??
       createWasmSharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH),
@@ -645,21 +565,15 @@ export const lock2 = ({
     payload: payloadSAB,
   });
 
-  // ---- work stealing (multi-consumer) state ----
-  // With N consumers the pending set is A ^ ACK[0] ^ ... ^ ACK[N-1]; every word
-  // still has exactly one writer, so no shared writable word is introduced.
+  // Work-stealing state. Pending lanes are A ^ ACK[0] ^ ... ^ ACK[N-1].
   const stealConsumers = Math.max(1, (consumers ?? 1) | 0);
   const stealEnabled = stealConsumers > 1;
-  // A lock2 built without `consumerId` is the producer endpoint: it encodes but
-  // never claims. It still frees payload slots, so it needs an acknowledgement
-  // word of its own rather than sharing consumer 0's.
+  // The producer encodes and frees payload slots but never claims a region.
   const stealIsProducer = consumerId === undefined;
   const stealId = (consumerId ?? 0) | 0;
   const stealRegionLanes = (regionLanes ?? 8) | 0;
   const stealRegions = (LockBound.slots / stealRegionLanes) | 0;
-  const stealClaimSentinel = stealClaim === "cas";
   const stealClaimMask = stealClaim === "cas-mask";
-  const stealClaimCas = stealClaimSentinel || stealClaimMask;
 
   if (stealEnabled) {
     if (
@@ -667,12 +581,9 @@ export const lock2 = ({
     ) {
       throw new RangeError("regionLanes must be a power of two");
     }
-    // `R >= N` is a Dekker requirement: a junior withdraws for a senior, so a
-    // claimant needs a region no live peer is aiming at. A CAS claimant that
-    // finds every region owned simply bails and retries, so region width is
-    // free to exceed what that rule allows -- which is the point, since a
-    // region is the batch a claim retires.
-    if (!stealClaimCas && stealRegions < stealConsumers) {
+    // Dekker requires at least one region per live consumer plus a spare.
+    // CAS-mask claimants can retry when all regions are owned.
+    if (!stealClaimMask && stealRegions < stealConsumers) {
       throw new RangeError(
         `regionLanes=${stealRegionLanes} yields ${stealRegions} regions, ` +
           `too few for ${stealConsumers} consumers`,
@@ -697,17 +608,7 @@ export const lock2 = ({
   }
   const stealLiveIndex = LockBound.header + STEAL_LIVE_SLOT_OFFSET_U32;
   /** Single shared owner bitmask, used by `cas-mask` only. */
-  const stealMaskIndex = LockBound.header + STEAL_CLAIMED_SLOT_OFFSET_U32;
-  // Region r's sentinel lives on slot r's control line, one cache line apart.
-  const stealClaimedIndex = new Int32Array(
-    stealClaimSentinel ? stealRegions : 0,
-  );
-  for (let r = 0; r < stealClaimedIndex.length; r++) {
-    stealClaimedIndex[r] = (r * headersSlotStride) + LockBound.header +
-      STEAL_CLAIMED_SLOT_OFFSET_U32;
-  }
-  /** Sentinel value that marks this endpoint as a region's owner. */
-  const stealOwnerTag = (stealId + 1) | 0;
+  const stealMaskIndex = LockBound.header + STEAL_CLAIM_MASK_SLOT_OFFSET_U32;
   const stealAllLiveMask = stealConsumers === 32
     ? -1
     : ((1 << stealConsumers) - 1) | 0;
@@ -715,16 +616,6 @@ export const lock2 = ({
     Atomics.store(stealView, stealLiveIndex, stealAllLiveMask);
     // A carpet can outlive one pool on a reused buffer; never inherit owners.
     if (stealClaimMask) Atomics.store(stealView, stealMaskIndex, 0);
-    if (stealClaimSentinel) {
-      for (let r = 0; r < stealRegions; r++) {
-        Atomics.store(
-          stealView,
-          (r * headersSlotStride) + LockBound.header +
-            STEAL_CLAIMED_SLOT_OFFSET_U32,
-          0,
-        );
-      }
-    }
   }
 
   const stealIsLive = (mask: number, consumer: number): boolean =>
@@ -790,7 +681,6 @@ export const lock2 = ({
   let deferredCount = 0 | 0;
   let pendingPromiseCount = 0 | 0;
 
-  // Atomics aliases (hot path)
   const a_load = Atomics.load;
   const a_store = Atomics.store;
   const a_compareExchange = Atomics.compareExchange;
@@ -802,7 +692,7 @@ export const lock2 = ({
 
   // Sender-side cached shadow of the receiver-owned queue word. Under the XSC
   // false-busy-only sender-side staleness property, this may hide newly freed
-  // lanes but cannot make a genuinely pending lane appear free. Refresh only
+  // lanes but cannot make a pending lane appear free. Refresh only
   // when the cached free set is exhausted.
   let workerShadow = 0 | 0;
   // Under stealing, workerBits also records retired lanes.
@@ -811,7 +701,6 @@ export const lock2 = ({
   const ensureSenderStateHasFree = (state: number): number =>
     (~state) !== 0 ? state : (LastLocal ^ refreshWorkerShadow()) | 0;
 
-  // RingQueue method aliases (hot path)
   const toBeSentPush = (task: Task) => toBeSent.push(task);
   const toBeSentShift = () => toBeSent.shiftNoClear();
   const toBeSentUnshift = (task: Task) => toBeSent.unshift(task);
@@ -1040,9 +929,6 @@ export const lock2 = ({
 
   const hasSpace = () => (hostBits[0] ^ LastWorker) !== 0;
 
-  /**
-   * WORKER SIDE: decode
-   */
   const decode = (): boolean => {
     let diff = (a_load(hostBits, 0) ^ LastWorker) | 0;
     if (diff === 0) return false;
@@ -1075,18 +961,6 @@ export const lock2 = ({
     return true;
   };
 
-  /**
-   * WORKER SIDE: decode, region-Dekker stealing variant.
-   *
-   * Claims one whole region of `stealRegionLanes` lanes per handshake, so the
-   * StoreLoad barrier is amortised over the region rather than paid per task.
-   * Priority is fixed by endpoint id: a junior withdraws for a senior, so at
-   * most one consumer ever acknowledges a published generation.
-   *
-   * The C reference needs an explicit mfence between the intent store and the
-   * peer loads. `Atomics.store` is sequentially consistent in JS, so that
-   * barrier is implicit here and holds on x86 and ARM alike.
-   */
   const stealLaneMask = (region: number): number =>
     stealRegionLanes === 32
       ? -1
@@ -1104,6 +978,7 @@ export const lock2 = ({
   const stealHome = ((stealRegions * stealId) / stealConsumers) | 0;
   let stealCursor = stealHome;
 
+  /** Decode one region using the Dekker claim protocol. */
   const decodeSteal = (): boolean => {
     // workerBits includes retired lanes under stealing.
     const pending = (a_load(hostBits, 0) ^ a_load(workerBits, 0)) | 0;
@@ -1119,17 +994,8 @@ export const lock2 = ({
 
     const liveBeforeClaim = a_load(stealView, stealLiveIndex) | 0;
 
-    // Survey every live peer's intent before picking a region, so the one we
-    // aim at is a region nobody else wants. This looks like pure overhead --
-    // it is an O(N) fold that only chooses a target, while the Dekker
-    // handshake below is what actually makes the claim safe -- but dropping it
-    // is a regression: measured with `bench/steal/claim-cost.ts` under
-    // saturation it costs ~11% throughput at 6 consumers (3/3 alternating
-    // pairs, tasks/claim 3.87 -> 3.80) and gains only ~5% at 15. The loads it
-    // saves are cheaper than the collisions it prevents, until the pool is
-    // wide enough that the fold itself dominates. It is also off the idle
-    // path: `decodeSteal` returns on `pending === 0` above, so an idle
-    // claimant pays two loads, not N.
+    // Prefer regions no live peer currently wants; the handshake below provides
+    // the actual mutual exclusion.
     let peerIntent = 0 | 0;
     let seniorIntent = 0 | 0;
     for (let c = 0; c < stealConsumers; c++) {
@@ -1156,11 +1022,10 @@ export const lock2 = ({
     const intent = (1 << region) | 0;
 
     a_store(stealView, stealWantIndex[stealId]!, intent);
-    // Dekker StoreLoad: implicit, `Atomics.store` above is seq-cst.
+    // Atomics.store is sequentially consistent, so it supplies the StoreLoad
+    // barrier required by Dekker.
 
-    // Seniors decide whether we withdraw, so read them first and stop at the
-    // first conflict: once one senior wants this region the junior half of the
-    // scan cannot change the outcome.
+    // A senior claimant has priority.
     let seniorConflict = false;
     for (let c = 0; c < stealId; c++) {
       if (!stealIsLive(liveBeforeClaim, c)) continue;
@@ -1188,8 +1053,7 @@ export const lock2 = ({
       while (stealJuniorWants(intent)) { /* junior withdraws */ }
     }
 
-    // Last control loads before ownership. After this no control word is read
-    // until every slot in `take` has been decoded.
+    // No control word is read again until all selected slots are decoded.
     const take = ((a_load(hostBits, 0) ^ a_load(workerBits, 0)) &
       stealLaneMask(region)) | 0;
     if (take === 0) {
@@ -1197,7 +1061,7 @@ export const lock2 = ({
       return false;
     }
 
-    // Retire decoded lanes and release the region even if decoding throws.
+    // Retire lanes and release the claim even if decoding throws.
     let lanes = take;
     let done = 0 | 0;
     try {
@@ -1208,100 +1072,16 @@ export const lock2 = ({
         done = (done ^ bit) | 0;
       }
     } finally {
-      // ACK before clearing intent.
+      // Publish the ACK before clearing intent.
       LastWorker = (LastWorker ^ done) | 0;
       if (done !== 0) Atomics.xor(workerBits, 0, done);
       a_store(stealView, stealWantIndex[stealId]!, 0);
-      // Restart from this consumer's home region.
       stealCursor = stealHome;
     }
     return true;
   };
 
-  /**
-   * WORKER SIDE: decode, per-region test-and-test-and-set stealing variant.
-   *
-   * Every region owns a sentinel word on its own cache line, holding `0` or its
-   * owner's `consumerId + 1`. A claim is: read the sentinel (a shared load, no
-   * bus traffic while it stays free), and only then try to win it with one
-   * `compareExchange`. Two consumers aiming at different regions never touch
-   * the same line, so the cost of a claim is constant in consumer count and
-   * does not grow with the number of *other* claimants either -- which the
-   * single-word mask variant could not promise, because a CAS there collided
-   * with peers claiming unrelated regions.
-   *
-   * The claim/ack split is unchanged: lanes are retired into `workerBits` after
-   * decoding and the sentinel is released only then, so no lane is re-offered
-   * before it is read. A region is held for the decode alone, not for
-   * execution, so more consumers than regions is a legal configuration -- the
-   * losers bail and retry rather than deadlocking, which is what lets region
-   * width be chosen for batching instead of for `R >= N`.
-   *
-   * Ownership is intrinsic to the sentinel, so unlike `dekker` there is no
-   * intent word to keep and no live-mask filter: `deactivateStealConsumer()`
-   * hands a dead claimant's regions back by scanning for its tag.
-   */
-  const decodeStealCas = (): boolean => {
-    const pending = (a_load(hostBits, 0) ^ a_load(workerBits, 0)) | 0;
-    if (pending === 0) return false;
-
-    let region = -1;
-    let sentinel = 0 | 0;
-
-    for (let step = 0; step < stealRegions; step++) {
-      const candidate = stealCursor + step < stealRegions
-        ? stealCursor + step
-        : stealCursor + step - stealRegions;
-      if ((pending & stealLaneMask(candidate)) === 0) continue;
-
-      const index = stealClaimedIndex[candidate]!;
-      // Test first: a contended region is skipped without an RMW, so a busy
-      // region costs one shared load rather than an invalidation.
-      if (a_load(stealView, index) !== 0) continue;
-      if (a_compareExchange(stealView, index, 0, stealOwnerTag) !== 0) continue;
-
-      region = candidate;
-      sentinel = index;
-      break;
-    }
-
-    if (region < 0) return false;
-
-    const take = ((a_load(hostBits, 0) ^ a_load(workerBits, 0)) &
-      stealLaneMask(region)) | 0;
-    if (take === 0) {
-      a_store(stealView, sentinel, 0);
-      return false;
-    }
-
-    let lanes = take;
-    let done = 0 | 0;
-    try {
-      while (lanes !== 0) {
-        const bit = (lanes & -lanes) | 0;
-        decodeAt(31 - clz32(bit >>> 0));
-        lanes = (lanes & (lanes - 1)) | 0;
-        done = (done ^ bit) | 0;
-      }
-    } finally {
-      // ACK before releasing the region.
-      LastWorker = (LastWorker ^ done) | 0;
-      if (done !== 0) Atomics.xor(workerBits, 0, done);
-      a_store(stealView, sentinel, 0);
-      // Restart from this consumer's home region.
-      stealCursor = stealHome;
-    }
-    return true;
-  };
-
-  /**
-   * WORKER SIDE: decode, single shared owner-mask CAS variant.
-   *
-   * Kept as the measured comparison point for `decodeStealCas`: it removes the
-   * same O(N) peer survey, but every region lives in one word, so a claimant
-   * taking region 3 contends with a peer taking region 7. The WANT word is
-   * demoted to an ownership record for `deactivateStealConsumer()`.
-   */
+  /** Claim one region in the shared owner mask. */
   const decodeStealCasMask = (): boolean => {
     const pending = (a_load(hostBits, 0) ^ a_load(workerBits, 0)) | 0;
     if (pending === 0) return false;
@@ -1317,8 +1097,7 @@ export const lock2 = ({
       if ((pending & stealLaneMask(candidate)) === 0) continue;
       const bit = (1 << candidate) | 0;
 
-      // Two attempts, then move on: a lost race means the word moved under us,
-      // and the next candidate is more useful than contending for this one.
+      // Retry a changed mask once before trying another region.
       for (let attempt = 0; attempt < 2; attempt++) {
         if ((owners & bit) !== 0) break;
         const previous = a_compareExchange(
@@ -1367,9 +1146,6 @@ export const lock2 = ({
     return true;
   };
 
-  /**
-   * HOST SIDE: decode version
-   */
   const resolveHost = ({
     queue,
     onResolved,
@@ -1522,13 +1298,7 @@ export const lock2 = ({
     };
   };
 
-  /**
-   * HOST SIDE: wait until the producer changes hostBits.
-   *
-   * LastWorker is the host's acknowledgement shadow. Passing it as the
-   * expected value makes the arm race-free: a publication between the drain
-   * and this call returns `not-equal` synchronously instead of being lost.
-   */
+  /** Wait for a producer publication without losing an intervening wakeup. */
   const waitForHostChange = (
     timeoutMs?: number,
   ): WaitAsyncResult | undefined => {
@@ -1627,14 +1397,7 @@ export const lock2 = ({
     }
     const bit = 1 << id;
     const previous = Atomics.and(stealView, stealLiveIndex, ~bit);
-    if (stealClaimSentinel) {
-      // Claimants never consult the live mask, so a dead consumer's regions
-      // have to be handed back explicitly. Its tag identifies them exactly.
-      const tag = (id + 1) | 0;
-      for (let r = 0; r < stealRegions; r++) {
-        a_compareExchange(stealView, stealClaimedIndex[r]!, tag, 0);
-      }
-    } else if (stealClaimMask) {
+    if (stealClaimMask) {
       const stranded = a_load(stealView, stealWantIndex[id]!) | 0;
       if (stranded !== 0) Atomics.and(stealView, stealMaskIndex, ~stranded);
     }
@@ -1649,11 +1412,7 @@ export const lock2 = ({
     publish,
     flushPending,
     decode: stealEnabled
-      ? (stealClaimSentinel
-        ? decodeStealCas
-        : stealClaimMask
-        ? decodeStealCasMask
-        : decodeSteal)
+      ? (stealClaimMask ? decodeStealCasMask : decodeSteal)
       : decode,
     hasSpace,
     resolved,
@@ -1679,9 +1438,5 @@ export const lock2 = ({
     setPromiseHandler: (handler?: PromisePayloadHandler) => {
       promiseHandler = handler;
     },
-    /**
-     * Identity this lane's slab aliases are cached under. The host needs it to
-     * revoke outstanding slab views when the worker behind this lane dies.
-     */
   };
 };

@@ -1185,7 +1185,7 @@ buffer you already own:
 `docs/arena-vs-buffer-reference.md` has the measurements behind that, and the
 argument for why neither one replaces the other.
 
-### Experimental zero-copy returns with `sharedBytes`
+### Experimental zero-copy returns with `sharedBytes` (opt-in)
 
 `BufferReference` moves a buffer *into* a worker. `sharedBytes` solves the
 mirror problem: getting a large result *out* of one without the host paying to
@@ -1197,6 +1197,9 @@ which is usually the thread you can least afford to spend. `sharedBytes(n)`
 hands the worker a region of that same arena, so returning it ships an offset
 and a length and the host reads the bytes where they were written. Nothing is
 pinned, nothing is copied, and no native backend is involved.
+
+The borrowed-return path is disabled by default. Enable it explicitly with
+`unsafe: { SharedBytes: true }` when creating the pool:
 
 ```ts
 import { createPool, isMain, task } from "knitting";
@@ -1211,7 +1214,10 @@ export const render = task<number, Uint8Array>({
 });
 
 if (isMain) {
-  using pool = createPool({ threads: 4 })({ render });
+  using pool = createPool({
+    threads: 4,
+    unsafe: { SharedBytes: true },
+  })({ render });
   const pixels = await pool.call.render(1024 * 1024);
   console.log(pixels.byteLength);
 }
@@ -1323,8 +1329,8 @@ frame.set(await readChunk());
 await pool.call.render(frame);
 ```
 
-It is opt-in where borrowed returns are not, and the asymmetry is the point: a
-return is read by the host the moment it arrives, while an argument is read by
+Both borrowed arguments and borrowed returns are opt-in. The asymmetry is the
+point: a return is read by the host the moment it arrives, while an argument is read by
 task code that may hold it across an `await` — and the region is recycled after
 32 further large arguments. **Only turn this on if your tasks finish with their
 byte arguments before their first suspension point.**
@@ -1341,11 +1347,12 @@ host stops allocating entirely. With a producer that writes every byte
 element-wise the win narrows to 2.5x–3.5x on bun and disappears on Node, for the
 shared-memory-write reason above.
 
-#### Turning it off
+#### Keeping it off
 
-`unsafe.SharedBytes: false` takes borrowed returns out of the picture entirely —
-`sharedBytes` degrades to a plain `Uint8Array`, ordinary returns are copied out
-as before, and every result is privately owned by whoever received it:
+This is the default. `unsafe.SharedBytes: false` can be used to state the choice
+explicitly; borrowed returns stay out of the picture, `sharedBytes` degrades to
+a plain `Uint8Array`, ordinary returns are copied out as before, and every result
+is privately owned by whoever received it:
 
 ```ts
 using pool = createPool({

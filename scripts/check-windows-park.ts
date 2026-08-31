@@ -1,14 +1,4 @@
-/**
- * Platform check for the two Windows park/wake quirks the worker loop works
- * around. Run it on a machine you suspect, not in the normal test path:
- *
- *   bun run scripts/check-windows-park.ts
- *   node --experimental-transform-types scripts/check-windows-park.ts
- *
- * Probes report what the runtime does; checks assert that a pool built on top
- * of it behaves. A probe may say the quirk is present while every check still
- * passes -- that is the workaround doing its job.
- */
+/** Probe Windows park and process-doorbell behavior outside the test suite. */
 import { createPool } from "../knitting.ts";
 import { RUNTIME } from "../src/common/runtime.ts";
 import { double } from "../test/fixtures/steal_tasks.ts";
@@ -152,7 +142,7 @@ const probeBlockedChildIpc = async (): Promise<void> => {
   }
 };
 
-/** Idle workers must park, not spin. This is what pins a core when it breaks. */
+/** Verify that idle workers park instead of spinning. */
 const checkIdlePoolDoesNotSpin = async (): Promise<void> => {
   if (typeof cpuUsage !== "function") {
     note("check: idle stealing pool parks", "runtime has no process.cpuUsage");

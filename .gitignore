@@ -68,7 +68,8 @@ bower_components
 
 build/Release
 
-# Browser bundles from scripts/build-browser.ts
+# Bundles from build.ts / scripts/build-browser.ts
+/build/knitting.js
 /build/knitting.browser.js
 /build/knitting.browser.min.js
 

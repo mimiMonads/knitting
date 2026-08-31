@@ -1,48 +1,8 @@
 import { createPool, isMain, task } from "../knitting.ts";
 import { BufferReference } from "../unsafe.ts";
 
-/**
- * How fast is `BufferReference` at moving a buffer *into* a worker?
- *
- *   SAB_THREADS=1,4 INFLIGHT=1,16 SIZES=8192,... \
- *     bun run bench/buffer-reference-send.ts
- *
- * This is the direction `sharedBytes` deliberately does not cover -- borrowing a
- * task's arguments would let them expire while it runs -- so the alternatives
- * here are the plain copy and hand-managed SharedArrayBuffers.
- *
- *   copy      an ordinary `Uint8Array` argument, sent from a staging buffer the
- *             host reuses: the host writes it into the payload arena, the worker
- *             copies it back out
- *   copy/f    the same, from a buffer freshly allocated for each call. This is
- *             the like-for-like baseline: `BufferReference` *cannot* reuse a
- *             source, so comparing it against a reusing sender charges it an
- *             allocation its rival never pays. Which of the two baselines is
- *             yours depends on whether your bytes arrive in a buffer you already
- *             own or in a fresh one off a socket or a file read
- *   ref       `BufferReference`: the host pins the buffer and the worker adopts
- *             the pointer and materialises a view over it. Construction
- *             *detaches* the source, so the host cannot reuse a staging buffer
- *             and pays a fresh allocation per call -- that is counted here
- *   ref/raw   the same, except the worker never materialises: it only reads
- *             `byteLength`. Not a usable workload, but it separates transport
- *             cost from the adopt-and-view cost
- *   sab       a fresh `SharedArrayBuffer` per call. Zero-copy like `ref`, minus
- *             the move semantics, plus an adopt the host never gets back: the
- *             consumer's token cache grows for the life of the pool
- *   sab/warm  one `SharedArrayBuffer` reused for every call. The ceiling: the
- *             token is warm after the first send, so the frame is four words and
- *             the only per-call work is the host writing the bytes
- *   arena     `unsafe.SharedArgs` plus `pool.sharedArgBytes(n)`: the same
- *             borrowed-region path `sharedBytes` uses on returns, pointed at the
- *             request lane. The host builds the argument in the submit arena and
- *             the worker reads it in place
- *   arena/b   `SharedArgs` on, but the host hands over an ordinary fresh
- *             `Uint8Array`: only the worker's copy-out is skipped
- *
- * Every arm produces the same bytes and the worker checks them, so the numbers
- * include payload production on the host and a real read on the worker. The
- * return value is a single number, to keep the return lane out of the way.
+/** Compare copy, BufferReference, SharedArrayBuffer, and shared-argument sends.
+ * Vary `SAB_THREADS`, `INFLIGHT`, `SIZES`, and `WORKLOAD` to change the load.
  */
 
 const DEFAULT_SIZES = [8192, 65536, 262144, 1048576, 4194304, 8388608];
@@ -81,14 +41,10 @@ const WARMUP_ROUNDS = Number(env("WARMUP") ?? 8);
 const ROUNDS = Number(env("ROUNDS") ?? 25);
 const WORKLOAD = env("WORKLOAD") ?? "set";
 
-// ---------------------------------------------------------------------------
-// Worker side: every arm reads the stamp back out, so no arm can win by not
-// touching the bytes it was sent.
-// ---------------------------------------------------------------------------
+// Worker side: every arm reads the stamp back out.
 
 const stampOf = (bytes: Uint8Array): number => {
   const first = bytes[0]!;
-  // Reading the last byte too means an arm cannot win by faulting in one page.
   return first === bytes[bytes.byteLength - 1] ? first : -1;
 };
 
@@ -100,7 +56,7 @@ export const takeRef = task<BufferReference, number>({
   f: (ref) => stampOf(ref.toUint8Array()),
 });
 
-/** Transport only: never materialises, so it is a ceiling and not a workload. */
+/** Transport-only upper bound; the worker reads only the length. */
 export const takeRefRaw = task<BufferReference, number>({
   f: (ref) => (ref.byteLength > 0 ? 1 : -1),
 });
@@ -109,9 +65,7 @@ export const takeSab = task<SharedArrayBuffer, number>({
   f: (sab) => stampOf(new Uint8Array(sab)),
 });
 
-// ---------------------------------------------------------------------------
-// Host side
-// ---------------------------------------------------------------------------
+// Host side.
 
 const fmtNs = (ns: number): string =>
   Number.isNaN(ns)
@@ -124,7 +78,7 @@ const fmtBytes = (b: number): string =>
 const pct = (sorted: number[], p: number): number =>
   sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))]!;
 
-/** Stamp `bytes` of `out`, by whichever discipline is selected. */
+/** Fill `out` according to the selected workload. */
 const produce = (out: Uint8Array, stamp: number): Uint8Array => {
   if (WORKLOAD === "set") {
     out[0] = stamp;
@@ -136,8 +90,7 @@ const produce = (out: Uint8Array, stamp: number): Uint8Array => {
 };
 
 if (isMain) {
-  // Default to >=2 threads: `sharedArgBytes` needs the shared submit queue, and
-  // a single-worker pool does not use it.
+  // The arena variant requires the shared submit queue.
   const threadList = (env("SAB_THREADS") ?? "2,4").split(",")
     .map((e) => Number(e.trim())).filter((e) => Number.isInteger(e) && e > 0);
   const inflightList = (env("INFLIGHT") ?? "1,16").split(",")
@@ -153,8 +106,6 @@ if (isMain) {
       unsafe: { SharedArgs: true },
       payload: { payloadMaxByteLength: 128 * 1024 * 1024 },
     })({ takeCopy, takeRef, takeRefRaw, takeSab });
-    // Without `SharedArgs` this is a plain allocation and the `arena` arm
-    // collapses onto `copy/f`, which is exactly what the comparison needs.
     const argBytes = pool.sharedArgBytes;
     const mismatches = new Map<string, number>();
 
@@ -170,9 +121,6 @@ if (isMain) {
       console.log("-".repeat(117));
 
       for (const bytes of SIZES) {
-        // One buffer the reusing arm keeps; the others must allocate per call,
-        // either because the transport moves the source or because a fresh
-        // identity is the thing being measured.
         const warmSab = new SharedArrayBuffer(bytes);
         const warmView = new Uint8Array(warmSab);
         const copySource = new Uint8Array(bytes);
@@ -215,12 +163,8 @@ if (isMain) {
             (stamp) =>
               pool.call.takeCopy(produce(new Uint8Array(bytes), stamp)),
           ],
-          // Reusing one SAB across a *stealing* pool crashes the second worker
-          // that receives it -- the host marks the token warm after the first
-          // send, but each worker keeps its own adopted-token cache, so the peer
-          // gets a four-word frame for a token it has never seen. Pre-existing,
-          // reproducible at HEAD, unrelated to borrowed regions; the arm is
-          // skipped rather than worked around so the bench does not hide it.
+          // The warm-SAB case is valid only for a single worker because token
+          // caches are local to each worker.
           ...(threads === 1
             ? [[
               "sab/warm",
@@ -247,8 +191,6 @@ if (isMain) {
             const seen = await Promise.all(jobs);
             const elapsed = nowNs() - start;
             for (let j = 0; j < inflight; j++) {
-              // `sab/warm` reuses one buffer, so concurrent calls legitimately
-              // see each other's stamp; only check that they saw a stamp.
               const ok = name === "sab/warm" || name === "ref/raw"
                 ? seen[j]! > 0
                 : seen[j] === stamps[j];

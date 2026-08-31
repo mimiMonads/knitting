@@ -18,9 +18,12 @@ const SMALL = 1024;
 
 const pack = (stamp: number, bytes: number): number => (stamp << 21) | bytes;
 
-test("sharedBytes returns arrive intact", async () => {
+test("sharedBytes returns arrive intact when enabled", async () => {
   if (!supported) return;
-  const pool = createPool({ threads: 1 })({ sharedStamped });
+  const pool = createPool({
+    threads: 1,
+    unsafe: { SharedBytes: true },
+  })({ sharedStamped });
   try {
     for (let stamp = 1; stamp <= 8; stamp++) {
       const out = await pool.call.sharedStamped(pack(stamp, BIG));
@@ -35,7 +38,10 @@ test("sharedBytes returns arrive intact", async () => {
 
 test("sharedBytes(n, true) zeroes the region it hands out", async () => {
   if (!supported) return;
-  const pool = createPool({ threads: 1 })({
+  const pool = createPool({
+    threads: 1,
+    unsafe: { SharedBytes: true },
+  })({
     sharedStamped,
     sharedPartialWrite,
   });
@@ -57,7 +63,10 @@ test("sharedBytes(n, true) zeroes the region it hands out", async () => {
 
 test("an ordinary large return survives its borrow window", async () => {
   if (!supported) return;
-  const pool = createPool({ threads: 1 })({ plainStamped });
+  const pool = createPool({
+    threads: 1,
+    unsafe: { SharedBytes: true },
+  })({ plainStamped });
   try {
     const held = await pool.call.plainStamped(pack(3, BIG));
     assert.equal(held[0], 3);
@@ -76,7 +85,10 @@ test("an ordinary large return survives its borrow window", async () => {
 
 test("a prefix of a borrowed region is returned without a copy", async () => {
   if (!supported) return;
-  const pool = createPool({ threads: 1 })({ sharedPrefix });
+  const pool = createPool({
+    threads: 1,
+    unsafe: { SharedBytes: true },
+  })({ sharedPrefix });
   try {
     for (let stamp = 1; stamp <= 6; stamp++) {
       // Deliberately under SHARED_RETURN_MIN_BYTES: if the encoder did not
@@ -106,6 +118,21 @@ test("small returns are copies and outlive any window", async () => {
     }
     assert.equal(held[0], 5, "a copied return is owned by its receiver");
     assert.equal(held[SMALL - 1], 5);
+  } finally {
+    await pool.shutdown();
+  }
+});
+
+test("shared-byte returns are disabled by default", async () => {
+  if (!supported) return;
+  const pool = createPool({ threads: 1 })({ plainStamped, sharedStamped });
+  try {
+    const plain = await pool.call.plainStamped(pack(4, BIG));
+    const shared = await pool.call.sharedStamped(pack(6, BIG));
+    assert.ok(!(plain.buffer instanceof SharedArrayBuffer));
+    assert.ok(!(shared.buffer instanceof SharedArrayBuffer));
+    assert.equal(plain[BIG - 1], 4);
+    assert.equal(shared[BIG - 1], 6);
   } finally {
     await pool.shutdown();
   }

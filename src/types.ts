@@ -55,10 +55,7 @@ type WorkerData = {
   lock: LockBuffers;
   returnLock: LockBuffers;
   payloadConfig?: PayloadBufferOptions;
-  /**
-   * Hand large returns to the host as a borrowed region in this lane's payload
-   * arena instead of copying them out. See `unsafe.SharedBytes`.
-   */
+  /** Enable borrowed returns for this worker's return lane. */
   sharedReturn?: boolean;
   permission?: ResolvedPermissionProtocol;
   /** Whether this host can arm an async completion waiter on the return lock. */
@@ -69,45 +66,20 @@ type WorkerData = {
   denoCompletionDoorbell?: bigint;
   /** Process-local Node uv_async handle for waking the host completion pump. */
   nodeCompletionDoorbell?: bigint;
-  /**
-   * Work stealing. When present, `lock` is a submit region shared by every
-   * worker and this worker claims from it as consumer `consumerId` of
-   * `consumers`, rather than owning a private request lane. `returnLock` stays
-   * private — the endpoint that claims a task owns its response.
-   */
+  /** Shared submit lock and private return lock for a stealing worker. */
   steal?: {
     consumers: number;
     consumerId: number;
     regionLanes: number;
     /** Region mutual-exclusion discipline; see `DispatcherSettings.stealClaim`. */
-    claim?: "dekker" | "cas" | "cas-mask";
+    claim?: "dekker" | "cas-mask";
   };
 };
 
 type UnsafeOptions = {
-  /**
-   * Whether large returns are handed over as a view into shared memory instead
-   * of being copied out on the consumer.
-   *
-   * Defaults to `true`. Set `false` to take the path out of the picture
-   * entirely: `sharedBytes()` degrades to a plain `Uint8Array` and every return
-   * is copied, so results stay valid for unbounded time.
-   */
+  /** Enable borrowed large returns and the zero-copy `sharedBytes()` path. */
   SharedBytes?: boolean;
-  /**
-   * Whether large *arguments* also travel as a borrowed region, and whether
-   * `pool.sharedArgBytes` can hand you one to build them in.
-   *
-   * Defaults to `false`, and the asymmetry with `SharedBytes` is deliberate. A
-   * borrowed return is read by the host as soon as it arrives; a borrowed
-   * argument is read by task code, which may hold it across an `await` while
-   * later calls recycle the region under it. Turn this on only if your tasks
-   * consume their byte arguments before their first suspension point.
-   *
-   * Needs the shared submit queue (the stealing dispatcher). With a per-worker
-   * dispatcher there is no single arena to build into, and `sharedArgBytes`
-   * falls back to a plain allocation.
-   */
+  /** Enable borrowed large arguments and `pool.sharedArgBytes()`. */
   SharedArgs?: boolean;
 };
 
@@ -357,15 +329,8 @@ type Pool<T extends Record<string, TaskLike<any> | TaskFunctionLike>> = {
    */
   call: FunctionMapType<T>;
   /**
-   * A `byteLength` buffer to build a byte argument in, taken from the submit
-   * arena so the worker reads it in place instead of copying it out.
-   *
-   * Uninitialized, like `sharedBytes`: write every byte or pass a subarray of
-   * what you wrote. The region is recycled after 32 further large arguments, so
-   * the receiving task must finish with it before its first `await`.
-   *
-   * Returns a plain `Uint8Array` unless `unsafe.SharedArgs` is on and the pool
-   * uses the shared submit queue, so it is always safe to call.
+   * Allocate an argument buffer. Borrowed buffers are recycled after 32 later
+   * large arguments, so the receiving task must consume them before awaiting.
    */
   sharedArgBytes: (byteLength: number) => Uint8Array;
 };
@@ -564,60 +529,18 @@ type WorkerTimers = {
 };
 
 type DispatcherSettings = {
-  /**
-   * How many immediate notify loops before the dispatcher stops re-arming the
-   * pump for free.
-   *
-   * The default depends on what the dispatcher escalates *to*. Polling
-   * escalates to a `setTimeout` ladder costing ~1.1ms even at delay 0, so it
-   * defaults to 128 — escalating is expensive and the wide window also batches
-   * completions. A doorbell escalates to `Atomics.waitAsync` at roughly the
-   * price of one hop, so pools that have one default to 1. Pools without a
-   * doorbell — Deno with FFI denied, or `doorbell: false` — keep 128.
-   *
-   * Setting this explicitly opts out of that coupling for every pool shape.
-   */
+  /** Number of immediate notify loops before backoff starts. */
   stallFreeLoops?: number;
   /**
    * Max backoff delay (milliseconds).
    */
   maxBackoffMs?: number;
   /**
-   * Replace idle completion polling with an `Atomics.waitAsync` doorbell when
-   * the host runtime supports it.
-   *
-   * Defaults to enabled on Node and Bun at any worker count, where it costs
-   * 1.6-3.9x less host CPU per completed call. Under HTTP load, where the host
-   * has real work of its own, that converts to +13% to +36% throughput.
-   *
-   * Turn it off for a pool that oversubscribes its machine. The doorbell only
-   * progresses when the host gets scheduled, so once workers occupy every core
-   * a wake must preempt one: measured +5% to +12.6% rps while workers+host fit
-   * within the cores, -22% to -32% once they do not. That is not gated
-   * automatically because the core count cannot be probed portably.
-   *
-   * Deno uses a `threadSafe` FFI callback instead because its `waitAsync` does
-   * not wake an idle event loop. Its default asks for `ffi` permission once;
-   * `--allow-ffi` skips that prompt, while denial or `--no-prompt` retains
-   * polling. Set this to `false` to avoid the request. It is forced off for
-   * process workers, which live in another process and cannot call this
-   * process-local callback or ring a host Atomics waiter. Compiled (Porffor)
-   * workers never reach this path: they reject `host` outright and use pipes
-   * rather than shared memory.
+   * Use a completion doorbell when supported. Deno uses a thread-safe FFI
+   * callback; process and compiled workers use their own completion transport.
    */
   doorbell?: boolean;
-  /**
-   * Experimental Node native callback bridge for thread workers.
-   *
-   * Node uses a `uv_async_t` addon to wake the host from the worker thread,
-   * removing the JS pump hop. Measured against `Atomics.waitAsync` on a
-   * per-thread pool it is throughput-neutral and costs about 20% less host CPU
-   * per call on long tasks, while short calls are a wash, so it stays opt-in
-   * until it is measured under real host I/O. Bun and Deno ignore this flag:
-   * Bun keeps `Atomics.waitAsync`, and Deno's FFI callback remains its default
-   * because it fixes an otherwise-idle event loop that `waitAsync` cannot
-   * wake.
-   */
+  /** Use Node's native `uv_async_t` completion bridge when available. */
   nativeDoorbell?: boolean;
   /**
    * Host dispatcher topology.
@@ -632,47 +555,15 @@ type DispatcherSettings = {
    * `KNITTING_DISPATCHER` env var (`serial-channel` or `per-thread`).
    */
   dispatcher?: "per-thread" | "serial-channel";
-  /**
-   * Work stealing: one shared submit region that any worker may
-   * claim from, private return lanes, and a pool-global pending registry. The
-   * endpoint that claims a task owns its response.
-   *
-   * Enabled by default for compatible multi-worker thread and process pools
-   * unless a balancer or private-lane dispatcher was explicitly selected.
-   * One-worker pools, inliners, compiled/Porffor workers, and pools above the
-   * current 31-claimant protocol limit retain their existing transport. Set
-   * `false` (or `KNITTING_STEAL=0`) to opt out; `KNITTING_STEAL=1` explicitly
-   * opts in and overrides a balancer/dispatcher selection.
-   */
+  /** Use a shared submit region with private return lanes. */
   steal?: boolean;
   /**
-   * Lanes claimed per stealing handshake (a power of two, `slots / g >=
-   * workers + 1`). Defaults to the widest region the lane budget allows, which
-   * amortises arbitration best for cheap tasks.
-   *
-   * That bound is a `dekker` liveness requirement, so `stealClaim: "cas"`
-   * accepts wider regions — but measured, going more than one notch past it
-   * costs 31-49%: with fewer regions than workers, the losers spin on owned
-   * sentinels. Keep `slots / g >= workers`.
-   *
-   * **A region is a batch.** For expensive tasks, a wide region lets one worker
-   * claim work the others could have run in parallel; set this to `1` (or a
-   * small value) when per-task cost dominates arbitration cost.
+   * Number of lanes claimed per handshake. Use smaller regions for expensive
+   * tasks; Dekker requires at least one spare region per live consumer.
    */
   stealRegionLanes?: number;
-  /**
-   * Region mutual-exclusion discipline for stealing consumers. Experimental.
-   *
-   * - `"dekker"` (default): the paper protocol. Every consumer owns an intent
-   *   word, no word has two writers, and a claim surveys live peers -- O(N)
-   *   atomic loads per claim.
-   * - `"cas"`: one shared owner mask claimed with `compareExchange`. The claim
-   *   cost stops growing with worker count, at the price of one contended
-   *   cache line.
-   *
-   * Can also be forced with the `KNITTING_STEAL_CLAIM` env var.
-   */
-  stealClaim?: "dekker" | "cas" | "cas-mask";
+  /** Region-claim discipline: per-consumer Dekker intents or a shared CAS mask. */
+  stealClaim?: "dekker" | "cas-mask";
 };
 
 type CreatePool = {
@@ -719,8 +610,7 @@ type CreatePool = {
   source?: string;
 };
 
-// NOTE: Explicit export list with `as` keeps JSR type resolution stable,
-// especially for curried APIs like `createPool`.
+// Keep explicit aliases here so JSR preserves the public type names.
 export type {
   AbortSignalConfig as AbortSignalConfig,
   AbortSignalMethods as AbortSignalMethods,

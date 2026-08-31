@@ -1,18 +1,5 @@
-/**
- * Host completion-pump A/B benchmark.
- *
- * Run one variant at a time so the worker pools do not compete for cores:
- *
- *   DB_MODE=poll     DB_TOPOLOGY=steal DB_THREADS=4 bun bench/doorbell.ts
- *   DB_MODE=doorbell DB_TOPOLOGY=steal DB_THREADS=4 bun bench/doorbell.ts
- *   DB_MODE=doorbell DB_NATIVE=1 DB_TOPOLOGY=per-thread DB_THREADS=1 bun bench/doorbell.ts
- *   DB_MODE=doorbell DB_WORKER=process DB_PROCESS_RUNTIME=node DB_THREADS=1 bun bench/doorbell.ts
- *
- * DB_TOPOLOGY is steal, per-thread, or serial-channel. The workload and seed
- * are identical between modes. DB_NATIVE opts into the experimental Node/Bun
- * native callback bridge for thread workers. DB_WORKER=process measures the
- * process IPC completion doorbell instead. Results include throughput,
- * completion latency, and host CPU (`process.cpuUsage`, with a /proc fallback).
+/** Compare polling, native doorbells, and process completion doorbells.
+ * Configure the mode with `DB_MODE`, `DB_TOPOLOGY`, and `DB_WORKER`.
  */
 import { readFileSync } from "node:fs";
 import { createPool, isMain, task } from "../knitting.ts";
@@ -61,7 +48,7 @@ const STALL_FREE_LOOPS = Math.max(
   Number(process.env.DB_STALL_FREE_LOOPS ?? "16"),
 );
 const NATIVE_DOORBELL = process.env.DB_NATIVE === "1";
-/** Region width `g`; 0 keeps the pool's default for the worker count. */
+/** Region width; zero uses the pool default. */
 const REGION_LANES = Math.max(0, Number(process.env.DB_G ?? "0"));
 const WORKER_MODE = process.env.DB_WORKER === "process" ? "process" : "thread";
 const PROCESS_RUNTIME: "node" | "bun" | "deno" = process.env.DB_PROCESS_RUNTIME === "bun"

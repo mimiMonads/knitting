@@ -8,33 +8,12 @@ import {
 import { RUNTIME, SET_IMMEDIATE } from "../common/runtime.ts";
 import type { DispatcherSettings } from "../types.ts";
 
-/**
- * Macrotask primitive for the host pump, picked per runtime: a round trip costs
- * 757ns on Bun via MessageChannel but 4662ns on Deno, where `setImmediate` is
- * 1110ns. Bun keeps the channel; browser and Andromeda have no choice.
- *
- * `serial-channel` opts back into the channel explicitly (see `src/api.ts`): one
- * hop drives every lane's check in turn and relies on the channel's delivery to
- * do it, so a merely cheaper pump starves it -- it cost 25% throughput there.
- */
+/** Runtime-specific macrotask primitive used by the host dispatcher. */
 const IMMEDIATE_PUMP = RUNTIME === "deno" || RUNTIME === "node"
   ? SET_IMMEDIATE
   : undefined;
 
-/**
- * Free drain hops before `scheduleNotify` stops re-arming the pump for free.
- *
- * The window has to match what the dispatcher escalates *to*, so these are
- * chosen together and `canUseDoorbell` picks between them. Polling escalates to
- * the `setTimeout` ladder, whose finest rung is ~1.1ms on every runtime, so it
- * wants a wide window; that sleep is also load-bearing, since it batches
- * completions. A doorbell escalates to `Atomics.waitAsync` at about the price of
- * one hop, so it wants a narrow one.
- *
- * Mixing them is the trap: a doorbell behind the wide window keeps every poll
- * hop *and* adds the arm, and loses to plain polling at every thread count.
- * Measurements behind both values: `docs/host-doorbell-proposal.md`.
- */
+// Polling tolerates a wider free window; a doorbell should arm promptly.
 const POLL_STALL_FREE_LOOPS = 128;
 const DOORBELL_STALL_FREE_LOOPS = 1;
 
@@ -81,10 +60,8 @@ export const hostDispatcherLoop = ({
       if (canNotifySignal) a_notify(opView, 0, 1);
     });
   const notify = () => channelHandler.notify();
-  // `crossProcess` is a capability, not a preference, so it overrides an
-  // explicit `doorbell: true`: V8's Atomics waiter list is per isolate, so a
-  // worker in another process can never ring the host's waiter, and an armed
-  // doorbell would just sleep to the watchdog.
+  // Atomics waiters are process-local, so cross-process workers cannot use this
+  // doorbell.
   const canUseAtomicDoorbell = (RUNTIME === "bun" || RUNTIME === "node") &&
     typeof Atomics.waitAsync === "function";
   const canUseDoorbell = (dispatcherOptions?.doorbell ?? true) &&
@@ -210,9 +187,7 @@ export const hostDispatcherLoop = ({
     // callback inert instead.
     cancelDoorbell();
 
-    // Idle lane: skip the drain. Otherwise it pays a txStatus write, an rxStatus
-    // load, and an Atomics.notify that wakes a parked worker for nothing — the
-    // waste that makes serial-channel latency grow with thread count.
+    // Avoid waking an idle lane.
     if (txIdle()) {
       check.isRunning = false;
       return;
@@ -230,25 +205,14 @@ export const hostDispatcherLoop = ({
 
       txStatus[0] = 1;
 
-      // Ring on every pass where the worker is parked, not only when the host
-      // is back-pressured. `hasPendingFrames()` is true only when the region is
-      // full: when it has room `enqueue()` writes straight through and the
-      // pending queue stays empty, so gating on it suppressed *every* ring on
-      // short tasks and left the worker to find its work by park timeout — up
-      // to 17x throughput in both topologies. `send()` cannot cover that: its
-      // `laneWake()` sits behind an `isRunning` early return that is always
-      // taken under load. The `rxStatus` load is the real gate and costs 8.3ns;
-      // a ring that finds no waiter costs 28ns and never cost throughput in any
-      // cell measured. See `docs/ring-gate-fails-open.md`.
+      // Wake a parked worker whenever its receive status is clear. Pending
+      // frames are not a reliable gate because the queue may have room.
       if (a_load(rxStatus, 0) === 0) {
         a_store(opView, 0, 1);
         wakeSignal();
       }
 
-      // Local vars so V8 keeps them as unboxed int32. Only a reaped completion
-      // counts as progress for `stallCount`: the pump exists to notice work a
-      // worker cannot announce, and letting a flush reset the counter would
-      // leave the escalation unreachable for a pool that never runs dry.
+      // Only completed frames count as progress for backoff purposes.
       let completed = false;
       let progressed = true;
       while (progressed) {
@@ -266,14 +230,8 @@ export const hostDispatcherLoop = ({
       txStatus[0] = 0;
 
       if (!txIdle()) {
-        // Back-pressure is not progress. Frames still queued here mean the
-        // request region is full, and only a completion frees a slot — which
-        // is exactly the event the doorbell is armed on, so escalating to it
-        // loses nothing. Counting them as progress instead pinned `stallCount`
-        // at zero for as long as a caller kept more than `LockBound.slots`
-        // calls in flight, so the pump never escalated and spun its macrotask
-        // hop for every completion. See `docs/poll-mode-backpressure.md` for
-        // what this costs the pump that has no doorbell to escalate to.
+        // Queued frames indicate back-pressure, not progress; only a completion
+        // frees a request slot.
         if (completed) {
           stallCount = 0 | 0;
         } else {
@@ -295,12 +253,7 @@ export const hostDispatcherLoop = ({
   check.isRunning = false;
   check.rerun = false;
 
-  /**
-   * Enter the drain directly from a real host event source (IPC, a native
-   * callback, or a future fd watcher). This intentionally bypasses the
-   * MessageChannel/setImmediate pump; `inFlight` retains the old re-entrancy
-   * behaviour when an event lands during a drain.
-   */
+  /** Enter the drain from a native or IPC completion event. */
   const wakeCompletion = () => {
     if (inFlight || check.isRunning) {
       check.rerun = true;
@@ -367,8 +320,7 @@ export class ChannelHandler {
   constructor(pump: ChannelHandlerPump = "auto") {
     if (pump === "auto" && IMMEDIATE_PUMP !== undefined) {
       const immediate = IMMEDIATE_PUMP;
-      // Allocated once; the pump fires hundreds of thousands of times a second.
-      // Routing via `#handler` also makes a callback outliving `close()` inert.
+      // Keep one callback allocation and make callbacks after close harmless.
       const run = () => {
         this.#handler?.();
       };
@@ -392,10 +344,7 @@ export class ChannelHandler {
     this.#notify();
   }
 
-  /**
-   * Registers the handler the pump calls back into. On the channel pump this is
-   * also where the ports are opened, so `notify` can reach port 1.
-   */
+  /** Register the pump handler and start channel ports when present. */
   public open(f: () => void): void {
     this.#handler = f;
     const port1 = this.port1 as unknown as {

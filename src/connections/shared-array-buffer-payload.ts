@@ -6,8 +6,8 @@ import {
   detachArrayBufferBestEffort,
 } from "./buffer-reference.ts";
 
-// Thread-worker SharedArrayBuffer transport by process-local pointer.
-// SABs are shared, not moved or detached; process workers reject them.
+// SharedArrayBuffer transport uses a process-local pointer and is limited to
+// thread workers; SABs are not moved or detached.
 
 export const SHARED_ARRAY_BUFFER_CODEC_ID =
   "knitting.sharedArrayBuffer" as const;
@@ -17,9 +17,7 @@ export const SHARED_ARRAY_BUFFER_NUMERIC_TRANSFER = Symbol.for(
 export const SHARED_ARRAY_BUFFER_NUMERIC_WORDS = 8;
 const SHARED_ARRAY_BUFFER_TOKEN_NUMERIC_WORDS = 2;
 
-// A slice frame names a region *inside* a pinned slab, so the payload length is
-// carried explicitly instead of being the whole buffer's byteLength. Warm frames
-// drop the pointer words the lane has already adopted.
+// Slice frames carry an explicit length; warm frames carry only the token.
 
 const EXTERNAL_PAYLOAD_BRAND = Symbol.for("knitting.payloadCodec");
 
@@ -77,17 +75,14 @@ export const isSharedArrayBufferValue = (
 ): value is SharedArrayBuffer =>
   hasSharedArrayBuffer && value instanceof SharedArrayBuffer;
 
-// Pin each SAB once; the finalizer releases the pin when the producer SAB dies.
+// Pin each SAB once and release the pin when the producer SAB is collected.
 type SharedPin = { token: bigint; pointer: bigint; byteLength: number };
 
 const pinnedBySab = new WeakMap<SharedArrayBuffer, SharedPin>();
 const payloadBySharedBuffer = new WeakMap<object, SharedArrayBufferPayload>();
 const warmedTokensByTransport = new WeakMap<object, Set<bigint>>();
 
-// Adopted aliases are cached per transport lane, never globally. Producer tokens
-// come from a per-isolate counter that restarts at 1 in every worker, so two
-// workers mint the same token for different buffers; a single process-wide cache
-// hands the first worker's bytes to every later worker's payload.
+// Tokens are isolate-local, so adopted aliases are cached per transport lane.
 const adoptedByTransport = new WeakMap<
   object,
   Map<bigint, ArrayBuffer | SharedArrayBuffer>

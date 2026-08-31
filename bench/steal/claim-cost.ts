@@ -1,33 +1,6 @@
-/**
- * How expensive is one region-Dekker claim?
- *
- * `random-load.ts` measures whether stealing schedules well. This measures what
- * the claim protocol itself costs, with the task body removed: N real threads
- * spin `decode()` against one shared submit region while the host publishes as
- * fast as lanes free up. Nothing here computes anything, so throughput is the
- * coordination cost and nothing else.
- *
- * The number to watch is tasks-per-claim. Region width is not free to choose:
- * `resolveStealRegionLanes` picks the largest `g` with `slots / g >= N + 1`, so
- * `g` falls to 1 at 16 threads and every handshake retires a single lane. The
- * scan cost per claim, meanwhile, grows with N.
- *
- * CC_IDLE=1 publishes nothing instead, so every `decode()` returns on the
- * pending check alone. That isolates the discovery cost — one load of the
- * publication word plus one load of every peer ACK — which is what an idle
- * claimant pays on every pass of the worker loop.
- *
- * CC_BURST=k publishes only k tasks at a time and waits for them to drain
- * before publishing again. Saturating all 32 lanes leaves every region hot, so
- * where a claimant starts looking cannot matter; a small burst is the opposite
- * regime — a handful of pending lanes and N claimants racing for them, which is
- * what a per-consumer home region is supposed to keep apart.
- *
- * CC_CLAIM=cas swaps the region-Dekker handshake for the single-word
- * compareExchange discipline, holding region width and everything else fixed.
- *
- * Env: CC_THREADS (comma-separated list)  CC_MS  CC_REPS  CC_G  CC_IDLE
- *      CC_BURST  CC_CLAIM
+/** Measure stealing claim throughput with no task-body work.
+ * Configure with `CC_THREADS`, `CC_MS`, `CC_REPS`, `CC_G`, `CC_IDLE`,
+ * `CC_BURST`, and `CC_CLAIM`.
  */
 import { Worker } from "node:worker_threads";
 import { createLockControlCarpet } from "../../src/memory/byte-carpet.ts";
@@ -54,18 +27,14 @@ const REPS = Number(process.env.CC_REPS ?? "5");
 const FORCED_G = Number(process.env.CC_G ?? "0");
 const IDLE = process.env.CC_IDLE === "1";
 const BURST = Number(process.env.CC_BURST ?? "0");
-const CLAIM: StealClaimDiscipline = process.env.CC_CLAIM === "cas"
-  ? "cas"
-  : process.env.CC_CLAIM === "cas-mask"
+const CLAIM: StealClaimDiscipline = process.env.CC_CLAIM === "cas-mask"
   ? "cas-mask"
   : "dekker";
 
 // Control cells shared with every claimant.
 const CTL_STATE = 0; // 0 = setup, 1 = running, 2 = stop
 const CTL_READY = 1;
-// Counters start on their own cache line and get one line each: they are
-// written while the run is in flight, and false sharing here would show up as
-// claim cost.
+// Keep counters on separate cache lines to avoid false sharing.
 const CTL_STRIDE = 16;
 const CTL_COUNTERS = CTL_STRIDE; // then [claims, drained] per consumer
 
@@ -128,8 +97,7 @@ const runOnce = async (
       }),
   );
 
-  // Spin until every claimant has built its endpoint; a worker still importing
-  // modules would otherwise donate its share of the window to startup.
+  // Wait for all claimant endpoints before starting the timed run.
   while (Atomics.load(ctl, CTL_READY) < consumers) await new Promise((r) => setTimeout(r, 5));
 
   const producer = lock2({ ...shared, consumers, regionLanes, stealClaim: CLAIM });
@@ -141,9 +109,7 @@ const runOnce = async (
   Atomics.store(ctl, CTL_STATE, 1);
   const startedAt = performance.now();
   let now = startedAt;
-  // Claimants publish their drain counts as they go, so the host can wait on
-  // those rather than on any lock internal. That keeps burst mode meaningful
-  // across protocol variants.
+  // Use claimant counters so burst mode is independent of lock internals.
   const drainedSoFar = () => {
     let total = 0;
     for (let c = 0; c < consumers; c++) {
@@ -166,9 +132,6 @@ const runOnce = async (
     } else if (!IDLE) {
       for (let i = 0; i < 64; i++) {
         task.value = value++;
-        // A failed encode means all 32 lanes are still busy: the claimants are
-        // behind. If this stays near zero the host is the bottleneck and no
-        // consumer-side number in this run means anything.
         if (producer.encode(task)) published++;
         else blocked++;
       }
@@ -178,9 +141,7 @@ const runOnce = async (
   Atomics.store(ctl, CTL_STATE, 2);
   const ms = now - startedAt;
 
-  // Claimants publish their counters as they go, but an oversubscribed thread
-  // can be mid-batch here. Give them a moment to land the final store before
-  // tearing the pool down.
+  // Allow an in-flight counter update to land before teardown.
   await new Promise((resolve) => setTimeout(resolve, 20));
   await Promise.all(workers.map((worker) => worker.terminate()));
 
@@ -205,9 +166,7 @@ const main = async () => {
       : "threads    g   R   claims/s     tasks/s   tasks/claim   ns/claim",
   );
   for (const consumers of THREAD_LIST) {
-    // Default to the Dekker-legal width for *every* discipline, so arms are
-    // comparable at a glance; only an explicit CC_G goes wider, and only where
-    // the discipline allows it.
+    // Keep the default width comparable across claim disciplines.
     const maxLanes = resolveMaxStealRegionLanes(consumers, CLAIM);
     const regionLanes = FORCED_G > 0
       ? Math.min(FORCED_G, maxLanes)
@@ -243,8 +202,7 @@ const main = async () => {
       continue;
     }
     const claimsPerSecond = median(claimRates);
-    // Wall time is shared by every claimant, so the per-claim cost is the
-    // aggregate rate divided across the threads that produced it.
+    // Divide aggregate claims by the number of claimants.
     const nsPerClaim = claimsPerSecond === 0
       ? 0
       : (1e9 * consumers) / claimsPerSecond;
