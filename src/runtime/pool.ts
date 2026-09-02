@@ -90,7 +90,10 @@ const isWorkerFatalMessage = (
 
 // Bound the wait for a worker to acknowledge loop exit.
 const WORKER_STOP_ACK_TIMEOUT_MS = 50;
-const WORKER_STOP_NEEDS_ACK = RUNTIME === "deno";
+// Node owns returned BufferReference backing stores in a process-global native
+// registry. Give its worker loop a chance to drain deferred producer pins
+// before the host falls back to terminate().
+const WORKER_STOP_NEEDS_ACK = RUNTIME === "deno" || RUNTIME === "node";
 
 // Keep idle workers self-healing if an Atomics.notify wake is missed.
 const DEFAULT_WORKER_PARK_MS = 1;

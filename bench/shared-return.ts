@@ -1,7 +1,7 @@
 import { createPool, isMain, task } from "../knitting.ts";
 import { BufferReference, sharedBytes } from "../unsafe.ts";
 
-/** Compare copied, automatically borrowed, `sharedBytes`, and BufferReference returns.
+/** Compare ordinary raw, `sharedBytes`, and BufferReference returns.
  * Run with `SAB_THREADS`, `WORKLOAD`, and the size constants to vary the load.
  */
 
@@ -61,7 +61,7 @@ const produce = (out: Uint8Array, bytes: number, stamp: number): Uint8Array => {
   return out;
 };
 
-/** Return an ordinary heap allocation. */
+/** Return an ordinary heap allocation (owned move on Node; safe copy on Deno/Bun). */
 export const plainReturn = task<number, Uint8Array>({
   f: (packed) =>
     produce(
@@ -121,11 +121,11 @@ if (isMain) {
   for (const threads of threadList) {
     const tasks = { plainReturn, sharedReturn, sharedNoFillReturn, refReturn };
     // Both pools stay alive and alternate every round, so drift lands on both.
-    const copyPool = createPool({
+    const rawPool = createPool({
       threads,
       unsafe: { SharedBytes: false },
     })(tasks);
-    const borrowPool = createPool({
+    const sharedPool = createPool({
       threads,
       unsafe: { SharedBytes: true },
     })(tasks);
@@ -133,23 +133,22 @@ if (isMain) {
 
     console.log(`\n=== threads: ${threads} ===`);
     console.log(
-      `${"size".padEnd(8)}${"copy".padStart(11)}${"borrow".padStart(11)}` +
-        `${"shared".padStart(11)}${"nofill".padStart(11)}${
+      `${"size".padEnd(8)}${"raw".padStart(11)}${"shared".padStart(11)}` +
+        `${"nofill".padStart(11)}${
           "bufref".padStart(11)
         }` +
-        `${"bor/cp".padStart(9)}${"sh/cp".padStart(8)}${"nf/cp".padStart(8)}` +
-        `${"ref/cp".padStart(9)}`,
+        `${"sh/raw".padStart(9)}${"nf/raw".padStart(8)}` +
+        `${"ref/raw".padStart(9)}`,
     );
-    console.log("-".repeat(90));
+    console.log("-".repeat(78));
 
     try {
       for (const bytes of SIZES) {
         const variants: Array<[string, (p: number) => Promise<unknown>]> = [
-          ["copy", (p) => copyPool.call.plainReturn(p)],
-          ["borrow", (p) => borrowPool.call.plainReturn(p)],
-          ["shared", (p) => borrowPool.call.sharedReturn(p)],
-          ["nofill", (p) => borrowPool.call.sharedNoFillReturn(p)],
-          ["bufref", (p) => borrowPool.call.refReturn(p)],
+          ["raw", (p) => rawPool.call.plainReturn(p)],
+          ["shared", (p) => sharedPool.call.sharedReturn(p)],
+          ["nofill", (p) => sharedPool.call.sharedNoFillReturn(p)],
+          ["bufref", (p) => sharedPool.call.refReturn(p)],
         ];
         const samples = new Map(variants.map(([n]) => [n, [] as number[]]));
 
@@ -190,33 +189,31 @@ if (isMain) {
           [...samples].map(([n, l]) => [n, [...l].sort((a, b) => a - b)]),
         );
         const med = (n: string) => pct(sorted.get(n)!, 0.5);
-        const copy = med("copy");
+        const raw = med("raw");
         console.log(
-          `${fmtBytes(bytes).padEnd(8)}${fmtNs(copy).padStart(11)}` +
-            `${fmtNs(med("borrow")).padStart(11)}` +
+          `${fmtBytes(bytes).padEnd(8)}${fmtNs(raw).padStart(11)}` +
             `${fmtNs(med("shared")).padStart(11)}` +
             `${fmtNs(med("nofill")).padStart(11)}` +
             `${fmtNs(med("bufref")).padStart(11)}` +
-            `${`${(copy / med("borrow")).toFixed(2)}x`.padStart(9)}` +
-            `${`${(copy / med("shared")).toFixed(2)}x`.padStart(8)}` +
-            `${`${(copy / med("nofill")).toFixed(2)}x`.padStart(8)}` +
-            `${`${(copy / med("bufref")).toFixed(2)}x`.padStart(9)}`,
+            `${`${(raw / med("shared")).toFixed(2)}x`.padStart(9)}` +
+            `${`${(raw / med("nofill")).toFixed(2)}x`.padStart(8)}` +
+            `${`${(raw / med("bufref")).toFixed(2)}x`.padStart(9)}`,
         );
         const spread = (n: string) => {
           const l = sorted.get(n)!;
           return `${fmtNs(pct(l, 0.1))}..${fmtNs(pct(l, 0.9))}`;
         };
         console.log(
-          `        p10..p90  copy [${spread("copy")}]  borrow [${
-            spread("borrow")
-          }]  shared [${spread("shared")}]  nofill [${
+          `        p10..p90  raw [${spread("raw")}]  shared [${
+            spread("shared")
+          }]  nofill [${
             spread("nofill")
           }]  bufref [${spread("bufref")}]`,
         );
       }
     } finally {
-      await copyPool.shutdown();
-      await borrowPool.shutdown();
+      await rawPool.shutdown();
+      await sharedPool.shutdown();
     }
     if (mismatches.size > 0) {
       console.log(

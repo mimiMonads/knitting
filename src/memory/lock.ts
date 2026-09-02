@@ -90,6 +90,10 @@ export const PayloadBuffer = {
   StaticNumericArray: 54,
   /** Binary payload already stored in the dynamic arena. */
   ArenaBinary: 55,
+  /** A returned Uint8Array whose ArrayBuffer ownership was moved to the host. */
+  MovedBinary: 56,
+  /** A returned ArrayBuffer whose ownership was moved to the host. */
+  MovedArrayBuffer: 57,
 } as const;
 export type PayloadBuffer = typeof PayloadBuffer[keyof typeof PayloadBuffer];
 
@@ -458,6 +462,7 @@ export const lock2 = ({
   recycleList,
   processBoundary,
   sharedReturn,
+  moveReturn,
   consumers,
   consumerId,
   regionLanes,
@@ -481,6 +486,12 @@ export const lock2 = ({
    * them out. Set only on a worker's return lane.
    */
   sharedReturn?: boolean;
+  /**
+   * Move large top-level ArrayBuffer and Uint8Array returns to the host.
+   * Unlike `sharedReturn`, the host owns the result and it never expires.
+   * Set only on a thread worker's return lane.
+   */
+  moveReturn?: boolean;
   /**
    * Number of consumer endpoints sharing this lock. `1` (default) keeps the
    * classic single-consumer path. `> 1` enables region-Dekker work stealing and
@@ -644,6 +655,7 @@ export const lock2 = ({
     textCompat: resolvedTextCompat,
     processBoundary,
     sharedReturn,
+    moveReturn,
     onPromise: (task, isRejected, value) => {
       if (
         (task[TASK_LOCAL_FLAGS_INDEX] & TASK_LOCAL_PROMISE_TRACKED_FLAG) !==

@@ -196,6 +196,17 @@ const isDetached = (buffer: ArrayBuffer): boolean =>
   (buffer as TransferableArrayBuffer).detached === true ||
   buffer.byteLength === 0;
 
+/**
+ * Whether a buffer has given up its bytes.
+ *
+ * Exported so a caller that *moved* a source can confirm the move actually
+ * happened. A runtime that cannot detach a buffer -- WASM memory, anything an
+ * external API has pinned -- otherwise leaves the producer still able to write
+ * memory the consumer has been told it owns.
+ */
+export const isArrayBufferDetached = (buffer: ArrayBuffer): boolean =>
+  isDetached(buffer);
+
 /** Revocation primitive: detach `buffer` so every view over it is neutralized. */
 export const detachArrayBufferBestEffort = (
   runtime: BufferReferenceRuntime,
@@ -476,6 +487,11 @@ export class BufferReference {
   release(): void {
     if (this.#released) return;
     this.#released = true;
+
+    // A claimed Node return is an owning ArrayBuffer, not a borrow. Drop this
+    // wrapper's ownership immediately; any ArrayBuffer or typed-array the
+    // caller kept still co-owns the backing store and stays valid.
+    this.#owned = undefined;
 
     // Revoke every alias this reference handed out before any pin can drop.
     // Leak-not-UAF: if a detach fails, the pin must stay held — the GC

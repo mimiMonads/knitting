@@ -41,8 +41,12 @@ import {
 import {
   BUFFER_REFERENCE_NUMERIC_TRANSFER,
   BufferReference,
+  isArrayBufferDetached,
   isBufferReferenceValue,
 } from "../connections/buffer-reference.ts";
+import {
+  getBufferReferenceCapabilities,
+} from "../connections/buffer-reference-native.ts";
 import {
   isProcessSharedBufferValue,
   ProcessSharedBuffer,
@@ -502,6 +506,7 @@ export const encodePayload = ({
   onPromise,
   processBoundary = false,
   sharedReturn = false,
+  moveReturn = false,
 }: {
   lockSector?: SharedBufferSource;
   payload?: {
@@ -526,11 +531,15 @@ export const encodePayload = ({
    */
   processBoundary?: boolean;
   /**
-   * Hand large payloads over as a borrowed region instead of copying them out
-   * on the consumer. Only the worker's return lane sets this: on the request
-   * lane it would make a task's arguments expire under it while it runs.
+   * Enable explicit `sharedBytes()` allocations on a worker return lane.
+   * Ordinary byte returns never become borrowed implicitly.
    */
   sharedReturn?: boolean;
+  /**
+   * Move large top-level byte returns into an owned host ArrayBuffer. Unlike a
+   * borrowed return, the result stays valid until the host drops it.
+   */
+  moveReturn?: boolean;
 }) => {
   const payloadSab = payload?.sab ?? sab;
   const resolvedPayloadConfig = resolvePayloadBufferOptions({
@@ -538,6 +547,16 @@ export const encodePayload = ({
     options: payload?.config ?? payloadConfig,
   });
   const maxPayloadBytes = resolvedPayloadConfig.maxPayloadBytes;
+  // Automatic moves are an optimization. Keep ordinary byte returns working
+  // when this runtime has no usable ownership/FFI backend.
+  const canMoveReturn = moveReturn && (() => {
+    try {
+      getBufferReferenceCapabilities();
+      return true;
+    } catch {
+      return false;
+    }
+  })();
 
   const registryHandle = register({ lockSector });
   const { allocTask, setSlotLength, tagTaskSlot, free } = registryHandle;
@@ -829,23 +848,16 @@ export const encodePayload = ({
       return true;
     }
 
-    // Copy qualifying ordinary returns into the borrowed arena once.
     if (
-      sharedReturn && bytes >= SHARED_RETURN_MIN_BYTES &&
-      bytes <= maxPayloadBytes
+      canMoveReturn && bytes >= SHARED_RETURN_MIN_BYTES &&
+      tryEncodeMovedReturn(
+        task,
+        slotIndex,
+        bytesView,
+        PayloadBuffer.MovedBinary,
+      )
     ) {
-      const slot = reserveBorrowedRegion(bytes);
-      if (slot !== -1) {
-        const start = regionStart(slot);
-        if (writeDynamicBinary(bytesView, start) >= 0) {
-          task[TaskIndex.Type] = PayloadBuffer.ArenaBinary;
-          task[TaskIndex.Start] = start;
-          task[TaskIndex.PayloadLen] = bytes;
-          task.value = null;
-          return true;
-        }
-        dropBorrowedRegion(slot);
-      }
+      return true;
     }
 
     task[TaskIndex.Type] = PayloadBuffer.Binary;
@@ -964,6 +976,18 @@ export const encodePayload = ({
       }
     }
 
+    if (
+      canMoveReturn && bytes >= SHARED_RETURN_MIN_BYTES &&
+      tryEncodeMovedReturn(
+        task,
+        slotIndex,
+        arrayBuffer,
+        PayloadBuffer.MovedArrayBuffer,
+      )
+    ) {
+      return true;
+    }
+
     task[TaskIndex.Type] = PayloadBuffer.ArrayBuffer;
     if (!ensureWithinDynamicLimit(task, bytes, "ArrayBuffer")) return false;
     const reservedSlot = reserveDynamicObject(task, bytes);
@@ -1048,6 +1072,86 @@ export const encodePayload = ({
       slotIndex,
     );
     attachPayloadTransportFinalizer(task, value);
+    task.value = null;
+    return true;
+  };
+  /**
+   * The safe counterpart to an arena borrow. The producer's source is detached
+   * only after its task has settled; the host adopts the backing store before
+   * its acknowledgement lets the producer release the registry pin.
+   *
+   * This needs its own frame type because public task results remain ordinary
+   * Uint8Array / ArrayBuffer values rather than exposing BufferReference.
+   */
+  const tryEncodeMovedReturn = (
+    task: Task,
+    slotIndex: number,
+    source: Uint8Array | ArrayBuffer,
+    type:
+      | typeof PayloadBuffer.MovedBinary
+      | typeof PayloadBuffer.MovedArrayBuffer,
+  ): boolean => {
+    if (source.byteLength > 0xffffffff) return false;
+    const backing = ArrayBuffer.isView(source) ? source.buffer : source;
+    if (
+      typeof SharedArrayBuffer === "function" &&
+      backing instanceof SharedArrayBuffer
+    ) {
+      return false;
+    }
+    // Narrowed by the check above: what is left is a detachable ArrayBuffer.
+    const store = backing as ArrayBuffer;
+
+    // A move takes the whole backing store, not the slice that was returned.
+    // `return scratch.subarray(0, n)` would detach the producer's entire
+    // scratch buffer and break its next call, so a partial view is copied
+    // like any other return. Only a view that *is* its buffer can move.
+    if (
+      ArrayBuffer.isView(source) &&
+      (source.byteOffset !== 0 || source.byteLength !== store.byteLength)
+    ) {
+      return false;
+    }
+
+    // Moving is an optimization, so a source this runtime cannot detach --
+    // WASM memory, a buffer an external API pinned -- copies rather than
+    // failing the task. Construction is what detaches: a throw before it
+    // leaves the bytes intact and the copy path still works, while a throw
+    // after it has already consumed them has to be reported.
+    let reference: BufferReference;
+    try {
+      reference = new BufferReference(source);
+    } catch (error) {
+      if (isArrayBufferDetached(store)) throw error;
+      return false;
+    }
+
+    // Belt and braces for a runtime that reports success without detaching.
+    // The host would be handed a store still aliasing memory the producer can
+    // write; the source is intact in that case, so dropping the reference and
+    // copying is both safe and the honest answer.
+    if (!isArrayBufferDetached(store)) {
+      reference.release();
+      return false;
+    }
+
+    const words = BufferReference.prototype[BUFFER_REFERENCE_NUMERIC_TRANSFER]
+      .call(reference);
+
+    // The size check above guarantees the numeric form for a local reference.
+    // Do not fall back after construction: the source has intentionally moved.
+    if (words === undefined) {
+      reference.release();
+      throw new Error("Moved BufferReference has no numeric transport form");
+    }
+
+    task[TaskIndex.Type] = type;
+    task[TaskIndex.PayloadLen] = writeStaticU32Words(
+      words,
+      BUFFER_REFERENCE_NUMERIC_WORDS,
+      slotIndex,
+    );
+    attachPayloadTransportFinalizer(task, reference);
     task.value = null;
     return true;
   };
@@ -2355,6 +2459,34 @@ export const decodePayload = ({
           ),
         );
         return;
+      case PayloadBuffer.MovedBinary: {
+        const reference = decodeBufferReferenceNumericWords(
+          readStaticU32Words(
+            bufferReferenceWords,
+            BUFFER_REFERENCE_NUMERIC_WORDS,
+            slotIndex,
+          ),
+        );
+        if (!isBufferReferenceValue(reference)) {
+          throw new TypeError("Invalid moved Uint8Array payload");
+        }
+        task.value = reference.toUint8Array();
+        return;
+      }
+      case PayloadBuffer.MovedArrayBuffer: {
+        const reference = decodeBufferReferenceNumericWords(
+          readStaticU32Words(
+            bufferReferenceWords,
+            BUFFER_REFERENCE_NUMERIC_WORDS,
+            slotIndex,
+          ),
+        );
+        if (!isBufferReferenceValue(reference)) {
+          throw new TypeError("Invalid moved ArrayBuffer payload");
+        }
+        task.value = reference.toArrayBuffer();
+        return;
+      }
       case PayloadBuffer.Date:
         Uint32View[0] = task[TaskIndex.Start];
         Uint32View[1] = task[TaskIndex.End];

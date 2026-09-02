@@ -1,7 +1,7 @@
 import { createPool, isMain, task } from "../knitting.ts";
 import { BufferReference, sharedBytes } from "../unsafe.ts";
 
-/** Compare copied, arena-backed, SharedArrayBuffer, and BufferReference returns.
+/** Compare ordinary raw, arena-backed, SharedArrayBuffer, and BufferReference returns.
  * Vary `SAB_THREADS`, `INFLIGHT`, `SIZES`, and `WORKLOAD` to change the load.
  */
 
@@ -62,8 +62,8 @@ const produce = (out: Uint8Array, bytes: number, stamp: number): Uint8Array => {
   return out;
 };
 
-/** Ordinary heap allocation through the copy transport. */
-export const copyReturn = task<number, Uint8Array>({
+/** Ordinary heap allocation (owned move on Node; safe copy on Deno/Bun). */
+export const rawReturn = task<number, Uint8Array>({
   f: (packed) =>
     produce(
       new Uint8Array(packed & BYTES_MASK),
@@ -120,7 +120,7 @@ if (isMain) {
   );
 
   for (const threads of threadList) {
-    const tasks = { copyReturn, arenaReturn, refReturn, sabReturn };
+    const tasks = { rawReturn, arenaReturn, refReturn, sabReturn };
     const pool = createPool({
       threads,
       payload: { payloadMaxByteLength: 128 * 1024 * 1024 },
@@ -131,17 +131,17 @@ if (isMain) {
     for (const inflight of inflightList) {
       console.log(`\n=== threads: ${threads}, in flight: ${inflight} ===`);
       console.log(
-        `${"size".padEnd(8)}${"copy".padStart(11)}${"arena".padStart(11)}` +
+        `${"size".padEnd(8)}${"raw".padStart(11)}${"arena".padStart(11)}` +
           `${"ref".padStart(11)}${"sab".padStart(11)}` +
-          `${"arena/cp".padStart(10)}${"ref/cp".padStart(9)}` +
-          `${"sab/cp".padStart(9)}${"arena:ref".padStart(12)}` +
+          `${"arena/raw".padStart(10)}${"ref/raw".padStart(9)}` +
+          `${"sab/raw".padStart(9)}${"arena:ref".padStart(12)}` +
           `${"arena:sab".padStart(11)}`,
       );
       console.log("-".repeat(95));
 
       for (const bytes of SIZES) {
         const variants: Array<[string, (p: number) => Promise<unknown>]> = [
-          ["copy", (p) => pool.call.copyReturn(p)],
+          ["raw", (p) => pool.call.rawReturn(p)],
           ["arena", (p) => pool.call.arenaReturn(p)],
           ["ref", (p) => pool.call.refReturn(p)],
           ["sab", (p) => pool.call.sabReturn(p)],
@@ -187,16 +187,16 @@ if (isMain) {
           [...samples].map(([n, l]) => [n, [...l].sort((a, b) => a - b)]),
         );
         const med = (n: string) => pct(sorted.get(n)!, 0.5);
-        const copy = med("copy");
+        const raw = med("raw");
         const arena = med("arena");
         const ref = med("ref");
         console.log(
-          `${fmtBytes(bytes).padEnd(8)}${fmtNs(copy).padStart(11)}` +
+          `${fmtBytes(bytes).padEnd(8)}${fmtNs(raw).padStart(11)}` +
             `${fmtNs(arena).padStart(11)}${fmtNs(ref).padStart(11)}` +
             `${fmtNs(med("sab")).padStart(11)}` +
-            `${`${(copy / arena).toFixed(2)}x`.padStart(10)}` +
-            `${`${(copy / ref).toFixed(2)}x`.padStart(9)}` +
-            `${`${(copy / med("sab")).toFixed(2)}x`.padStart(9)}` +
+            `${`${(raw / arena).toFixed(2)}x`.padStart(10)}` +
+            `${`${(raw / ref).toFixed(2)}x`.padStart(9)}` +
+            `${`${(raw / med("sab")).toFixed(2)}x`.padStart(9)}` +
             `${`${(ref / arena).toFixed(2)}x`.padStart(12)}` +
             `${`${(med("sab") / arena).toFixed(2)}x`.padStart(11)}`,
         );

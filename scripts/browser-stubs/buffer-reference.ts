@@ -21,3 +21,9 @@ export class BufferReference {
 export const isBufferReferenceValue = (_value: unknown): boolean => false;
 
 export const detachArrayBufferBestEffort = unavailable;
+
+// A page has no way to move a buffer, so the codec never reaches its move path
+// and never asks. `byteLength === 0` is the same heuristic the real
+// implementation falls back to when a runtime has no `detached` getter.
+export const isArrayBufferDetached = (buffer: ArrayBuffer): boolean =>
+  buffer.byteLength === 0;

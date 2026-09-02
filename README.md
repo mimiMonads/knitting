@@ -918,6 +918,104 @@ binary/shared-memory shapes over deeply nested objects.
 
 ## Shared Memory Channels
 
+### Choosing a region or a moved request body
+
+For thread-worker request handlers, `createKnittingAllocator()` can choose the
+cheaper representation for each body. Bodies below the HTTP default of 2 MiB
+are written into the allocator arena; larger bodies are moved into a
+`BufferReference`. The threshold is configurable because the best crossover
+depends on request concurrency and the runtime.
+
+`readBody()` makes that choice without making you handle it. It returns one
+disposable handle: send `body.wire` to a task, and the host owns the bytes
+until the handle is disposed.
+
+```ts
+import { createKnittingAllocator } from "knitting/shared-memory";
+
+const allocator = createKnittingAllocator({
+  // Size this for the number of small bodies that may be live at once.
+  arenaByteLength: 8 * 1024 * 1024,
+});
+
+using body = await allocator.readBody(request, {
+  referenceAboveBytes: 2 * 1024 * 1024,
+  maxByteLength: 8 * 1024 * 1024,
+});
+
+await pool.call.processBody(body.wire);
+```
+
+The worker attaches to the arena once, in a bootstrap module, and then reads
+every body the same way whatever transport it took:
+
+```ts
+// bootstrap.ts — runs once per worker, before any task module loads.
+import {
+  createBodyReader,
+  type KnittingBodyWire,
+  type KnittingTransport,
+} from "knitting/shared-memory";
+
+let reader: ((wire: KnittingBodyWire) => Uint8Array) | undefined;
+
+export const setup = (transport: KnittingTransport) => {
+  reader = createBodyReader(transport);
+};
+
+export const openBody = (wire: KnittingBodyWire): Uint8Array => {
+  if (reader === undefined) throw new Error("body reader not attached");
+  return reader(wire);
+};
+
+// tasks.ts — one signature, whichever way the body arrived.
+import { openBody } from "./bootstrap.ts";
+
+export const processBody = task<KnittingBodyWire, number>({
+  f: (wire) => digest(openBody(wire)),
+});
+```
+
+Pass the transport when the pool is built:
+
+```ts
+const pool = createPool({
+  threads: 4,
+  worker: {
+    bootstrap: {
+      href: "./bootstrap.ts",
+      name: "setup",
+      data: allocator.transport(),
+    },
+  },
+})({ processBody });
+```
+
+The host owns the body for the whole call and the worker only borrows it, so
+there is exactly one release and it is the `using` scope. Nothing needs to call
+`reconcile()`: the registry reclaims identities when the next allocation wants
+them. The bytes a worker reads are valid only for the duration of the call — to
+keep them, copy.
+
+`maxByteLength` is required because a declared `Content-Length` is a claim by
+the client, and the memory is committed on the strength of that claim before a
+byte arrives. A body with no declared length is read against the same cap
+rather than buffered whole and measured afterwards.
+
+`readBody()` also handles chunked requests without `Content-Length`: it
+materializes the body only long enough to choose the representation by its
+actual size. `BufferReference` is for same-process thread workers; use
+`ProcessSharedBuffer` for process workers.
+
+If you would rather make the choice yourself, `allocOrRefer()` returns the
+underlying `KnittingSharedBuffer` or `BufferReference` directly. Sending a
+region by hand means picking an ownership rule: `moveTo()` hands the identity
+to the consumer, which then releases it, while `describe()` keeps it here and
+the consumer must adopt with `{ borrow: true }`. Doing both — describing a
+region and releasing it here while the consumer also releases — gives one
+identity two releasers, which is the one way to hand a live region's bytes out
+twice.
+
 `ProcessSharedBuffer` is the lower-level building block for process-safe shared
 memory. Use it when two workers or processes need to see the same bytes without
 copying the whole payload for every call.
@@ -1088,115 +1186,46 @@ bytes, but it is not a network transport and it deliberately shares IPC with the
 container. Use names like capabilities: generate them, keep them private, and
 unlink them when the shared memory is no longer needed.
 
-### Experimental zero-copy buffers for thread workers
+### Large binary values in thread workers
 
-`BufferReference` lives in `knitting/unsafe`. It is experimental and may be
-changed or removed if its safety tradeoffs are not acceptable. It **moves** a
-buffer's ownership to a **thread** worker: constructing one detaches the source,
-so the bytes travel to the worker without being serialized through the
-transport. Send a result back the same way — return a `BufferReference` from the
-worker. It is the same-process counterpart to `ProcessSharedBuffer`: reach for
-it when you hold a large `ArrayBuffer` or typed array and the copy cost to a
-thread worker actually matters.
+Return an ordinary top-level `Uint8Array` or `ArrayBuffer`; there is no wrapper,
+manual release, or borrow window. At **256 KiB** and above knitting uses an
+ownership move on thread workers:
 
-The ownership paths are hardened against ordinary use-after-free: sources are
-detached on move, forward aliases are detached once the task settles, and a
-returned reference becomes owned or safely copied before the worker releases its
-hold. This is still an **unsafe capability**, not a memory-safety or security
-boundary. Do not accept `BufferReferenceMetadata` or raw pointer data from
-untrusted code, and do not mutate the same bytes concurrently without your own
-synchronization.
+| Runtime | Result ownership |
+| --- | --- |
+| Node 22/24 with the addon | The host co-owns the V8 backing store: zero byte copies. |
+| Deno and Bun | The host makes one private copy before the worker releases its pin. |
+| Older Node backend | The same one-private-copy fallback. |
 
-| Path | Node 22/24 owning addon | Node 26 FFI | Deno/Bun FFI |
-| --- | --- | --- | --- |
-| Forward input | Moved, zero-copy | Moved, zero-copy alias | Moved, zero-copy alias |
-| Returned reference | Co-owned, zero-copy | One safe copy | One safe copy |
-
-Older Node addons without the owning primitives use the non-owning fallback and
-therefore follow the safe-copy behavior rather than the owning-addon row.
+The worker-side source is detached as it is returned. The host result is private
+and stays valid across later calls and pool shutdown. Process workers and small
+or non-movable values use the normal payload-copy path.
 
 ```ts
-import { createPool, isMain, task } from "knitting";
-import { BufferReference } from "knitting/unsafe";
-
-export const invert = task<BufferReference, BufferReference>({
-  f: (ref) => {
-    const pixels = ref.toUint8Array(); // the moved bytes, no copy
-    const out = new Uint8Array(pixels.length);
-    for (let i = 0; i < pixels.length; i++) out[i] = 255 - pixels[i];
-    return new BufferReference(out); // move the result back to the host
+export const render = task<number, Uint8Array>({
+  f: (size) => {
+    const out = new Uint8Array(size);
+    out.fill(7);
+    return out; // >= 256 KiB: ownership moves automatically
   },
 });
-
-if (isMain) {
-  const pixels = new Uint8Array([0, 64, 128, 192, 255]);
-  using pool = createPool({ threads: 1 })({ invert });
-
-  // `pixels` is detached by the move; the result comes back as a BufferReference.
-  const result = await pool.call.invert(new BufferReference(pixels));
-  console.log([...result.toUint8Array()]); // [255, 191, 127, 63, 0]
-}
 ```
 
-Read these constraints before reaching for it:
-
-- **Thread workers only.** The handle is a process-local pointer. Process
-  workers do not share it, so a `BufferReference` sent to a process worker
-  throws. For cross-process sharing use `ProcessSharedBuffer`.
-- **ArrayBuffer only.** `SharedArrayBuffer` is already shareable and cannot be
-  detached, so `BufferReference` rejects SAB sources and SAB-backed typed-array
-  views.
-- **Move semantics.** Constructing a `BufferReference` detaches its source — the
-  original buffer is empty afterward, and reads/writes through it are gone. The
-  bytes now belong to the reference; to get a result back, the worker returns
-  its own `BufferReference`. Each source ownership transfer is one-shot, but an
-  active reference may be read more than once. Forward inputs the worker
-  materializes with `.toArrayBuffer()`/`.toUint8Array()` are borrowed for the
-  duration of the call and detached once it settles; do not keep using them from
-  fire-and-forget work after the task returns.
-- **Forward is zero-copy everywhere.** Sending a buffer to the worker never
-  copies. Node 22 and 24 with the owning addon also return the buffer without
-  copying because the addon co-owns the V8 backing store. Node 26, Deno, and Bun
-  take one safe copy on return because their FFI aliases cannot own the worker's
-  backing store. Returned references remain readable after their worker shuts
-  down.
-- **Unsafe escape hatch.** This is not a security boundary. Forged metadata or
-  unsynchronized host/worker mutation can still be unsafe.
-- **Node backend depends on the Node line.** Node 22 and 24 use the
-  `knitting_buffer_pointer` addon. Node 26 uses `node:ffi` and therefore needs
-  `--experimental-ffi`.
-
-When in doubt, a plain `ArrayBuffer` or typed-array payload — which knitting
-copies through the shared transport — is simpler and works for both thread and
-process workers.
-
-Between `BufferReference` and the borrowed arena regions below, pick by what you
-are doing rather than by a single size threshold — the crossover moves by a
-factor of sixteen depending on the engine and on whether your bytes arrive in a
-buffer you already own:
-
-- producing bytes anyway, 4 KiB – 1 MiB → `sharedBytes` / `sharedArgBytes`
-- above the arena's loan ceiling (`payloadMaxByteLength / 64`), or a result that
-  must stay valid for unbounded time → `BufferReference`
-- handing over a buffer that already exists → `BufferReference`, since the arena
-  would have to copy it in first
-- an element-wise producer on Node → `BufferReference`, and measure
-
-`docs/arena-vs-buffer-reference.md` has the measurements behind that, and the
-argument for why neither one replaces the other.
+`BufferReference` remains an advanced, thread-only move handle in
+`knitting/unsafe`. Its most useful case is moving an already-owned large
+`ArrayBuffer`/typed array into a worker without the host-to-worker copy. Its
+source is detached immediately; worker views are valid only for the task call.
+Do not accept its metadata from untrusted code. You do **not** need it for
+ordinary large return values. See
+`docs/buffer-reference-ownership-move.md` for the low-level protocol.
 
 ### Experimental zero-copy returns with `sharedBytes` (opt-in)
 
-`BufferReference` moves a buffer *into* a worker. `sharedBytes` solves the
-mirror problem: getting a large result *out* of one without the host paying to
-copy it.
-
-Normally a worker's byte return is written into the shared payload arena and the
-host copies it out — an allocation plus a memcpy on the single host thread,
-which is usually the thread you can least afford to spend. `sharedBytes(n)`
-hands the worker a region of that same arena, so returning it ships an offset
-and a length and the host reads the bytes where they were written. Nothing is
-pinned, nothing is copied, and no native backend is involved.
+For an ordinary large return, use the ownership move above. `sharedBytes(n)` is
+the explicit alternative when a worker can write directly into the shared arena:
+returning it sends only an offset and length, with no copy. In exchange, the
+host receives a short-lived borrowed view rather than an owned result.
 
 The borrowed-return path is disabled by default. Enable it explicitly with
 `unsafe: { SharedBytes: true }` when creating the pool:
@@ -1258,62 +1287,27 @@ region first if you would rather not think about it, but that is a second full
 pass over shared memory, and on V8 that pass alone is most of what the feature
 saves: at 1 MiB on node it is the difference between 0.9x and 3.2x.
 
-Only `sharedBytes` has this rule. A return that is handed over borrowed
-automatically is copied in whole, so it can never carry a previous return's
-remainder.
-
-#### Large returns are handed over automatically
-
-You do not have to call `sharedBytes` to benefit. A plain `Uint8Array` return at
-or above **256 KiB** is placed in a borrowed region instead, so the host stops
-copying it out:
-
-```ts
-export const render = task<number, Uint8Array>({
-  f: (size) => {
-    const out = new Uint8Array(size); // ordinary allocation
-    out.fill(7);
-    return out; // >= 256 KiB: handed over borrowed, not copied out on the host
-  },
-});
-```
-
-That copy into the region is also what makes it safe: the bytes the host sees
-are overwritten in full, so they can never carry a previous return's remainder.
-
-`sharedBytes` is still the faster path, and by a wide margin — it skips both the
-allocation and that copy. Handing an ordinary return over borrowed only moves
-work off the host thread; it does not remove it.
+Only `sharedBytes` has this rule. It is deliberately still an unsafe, explicit
+arena loan.
 
 #### When it pays
 
-Speedup over the copy path, `set`-style production, 16 calls in flight on a
-4-core laptop. `sharedBytes` is the explicit path; `borrow` is what an ordinary
-`Uint8Array` return gets for free.
-
-| Return size | `sharedBytes` (bun) | `sharedBytes` (node) | `borrow` (bun) | `borrow` (node) |
-| ----------- | ------------------- | -------------------- | -------------- | --------------- |
-| 4 KiB   | 2.1x – 2.5x | 1.7x – 1.8x | 1x — under the threshold | 1x |
-| 64 KiB  | 3.1x – 4.6x | 1.3x – 1.4x | 1x | 1x |
-| 256 KiB | 5.2x – 5.3x | 0.7x – 1.4x | 1.8x – 2.3x | 0.7x – 0.9x |
-| 1 MiB   | 2.4x – 3.8x | 0.8x – 2.1x | 1.3x         | 0.9x – 1.5x |
-
-Two things that table is telling you, and both are worth reading before turning
-this on:
+`sharedBytes` is worthwhile only when the worker writes directly into it and
+the result is consumed immediately. There is no size threshold that settles it,
+because two things move the answer more than size does:
 
 - **The engine matters as much as the size.** V8 has no fast path for byte
-  stores into shared memory — measured at 1 MiB it is 2.4x slower than a heap
-  buffer with `set` and 20x slower with `fill`, while JSC shows no difference at
-  all. Building a result in shared memory means paying that, so the same code is
-  a 6x win on bun and a 3x win on node. An element-wise producer is the worst
-  case; asking for `zeroFill` doubles the exposure.
+  stores into shared memory; JSC shows no difference between shared and heap at
+  all. Building a result in shared memory means paying that penalty on V8, so
+  the same code can be a solid win on bun and a wash on node. An element-wise
+  producer is the worst case; asking for `zeroFill` doubles the exposure.
 - **Borrowing trades a copy for a working set.** Every outstanding region is live
   arena, and one lane of 1 MiB returns is 32 MiB of it. Past the point where
   that stops fitting in cache, the host copy you saved costs less than the cache
   misses you bought.
 
-Run `bench/shared-return.ts` on your own workload rather than trusting the
-table; it interleaves all the arms in one process for exactly that reason.
+So measure it. `bench/shared-return.ts` interleaves all the arms in one process
+for exactly that reason.
 
 #### Arguments, going the other way
 
@@ -1350,9 +1344,10 @@ shared-memory-write reason above.
 #### Keeping it off
 
 This is the default. `unsafe.SharedBytes: false` can be used to state the choice
-explicitly; borrowed returns stay out of the picture, `sharedBytes` degrades to
-a plain `Uint8Array`, ordinary returns are copied out as before, and every result
-is privately owned by whoever received it:
+explicitly; borrowed returns stay out of the picture and `sharedBytes` degrades
+to a plain `Uint8Array`. Large top-level thread returns still use the safe
+ownership path above (zero-copy on the owning Node backend, one host copy on
+Deno/Bun); all other results use the normal private-copy path:
 
 ```ts
 using pool = createPool({

@@ -195,9 +195,9 @@ and refreshed `prebuilds/`.
    - `echoBufferPlusOne`; full Deno suite (250) + Bun green.
 4. **Hardening — mostly DONE.** README + `ref.ts` rewritten to the move contract
    (both verified runnable on Deno + Bun); `bench/buffer-reference.ts` added
-   (BufferReference round trip vs Uint8Array transport). Shutdown-drain is
-   **deferred by design** — see open risks. Node build/bench pending a Node
-   toolchain.
+   (BufferReference round trip vs Uint8Array transport). Node worker shutdown
+   now waits for the loop acknowledgement to drain returned pins, and the addon
+   removes any remaining producer entries in its environment-cleanup hook.
 
 ### Benchmark (2026-06-03, threads: 1, avg per call, round trip)
 
@@ -278,12 +278,10 @@ the `SharedArrayBuffer::New` path was removed from the addon entirely.
 - `GetBackingStore()` / `ArrayBuffer::New(isolate, store)` are stable V8 APIs
   since 7.9; confirm no deprecation noise on the Node 22 ABI used by
   `prebuilds/`.
-- **Shutdown-drain is deferred.** Pool teardown is an abrupt
-  `terminateWorkerQuietly` with no graceful worker-side hook, so a clean
-  in-worker drain is not wireable against a hard terminate. In the steady state
-  this is a non-issue: the worker `loop` drains the pending-release queue every
-  time the return lock quiesces, so by the time a pool is idle/shut down the
-  queue is normally empty. The only leak is a worker terminated **mid-flight**
-  with un-acked returns: on Deno/Bun the producer holds are freed with the
-  isolate; on Node the process-global `shared_ptr<BackingStore>` entries persist
-  until process exit. A future signal/exit handler can flush them.
+- **Teardown races reject the affected call.** Node shutdown now waits briefly
+  for the worker loop to acknowledge and drain its deferred return pins. A hard
+  worker termination also invokes the addon environment-cleanup hook, which
+  removes producer registry entries from that isolate. If termination wins
+  before the host adopts a returned descriptor, that call is rejected rather
+  than exposing a stale pointer; an already adopted host `ArrayBuffer` keeps
+  its independent `shared_ptr` and remains valid.

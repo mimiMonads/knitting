@@ -74,14 +74,7 @@ export const createWorkerRxQueue = (
   const returnHostBits = returnLock.hostBits;
   const returnWorkerBits = returnLock.workerBits;
   const deferredReleases: Array<() => void> = [];
-  const drainReturnReleases = () => {
-    if (deferredReleases.length === 0) return;
-    // `returnHostBits` is the publication word of the return lock, and only
-    // this thread ever writes it (encode() toggles hostBits, the host toggles
-    // workerBits). Reading our own word plainly skips an `Atomics.load`, which
-    // is a non-inlined call an order of magnitude dearer than a plain read;
-    // the peer's word still needs the atomic.
-    if ((returnHostBits[0]! ^ a_load(returnWorkerBits, 0)) !== 0) return;
+  const releaseDeferredReturns = () => {
     for (let i = 0; i < deferredReleases.length; i++) {
       try {
         deferredReleases[i]!();
@@ -90,6 +83,16 @@ export const createWorkerRxQueue = (
       }
     }
     deferredReleases.length = 0;
+  };
+  const drainReturnReleases = () => {
+    if (deferredReleases.length === 0) return;
+    // `returnHostBits` is the publication word of the return lock, and only
+    // this thread ever writes it (encode() toggles hostBits, the host toggles
+    // workerBits). Reading our own word plainly skips an `Atomics.load`, which
+    // is a non-inlined call an order of magnitude dearer than a plain read;
+    // the peer's word still needs the atomic.
+    if ((returnHostBits[0]! ^ a_load(returnWorkerBits, 0)) !== 0) return;
+    releaseDeferredReturns();
   };
   const runByIndex = listOfFunctions.reduce((acc, fixed, idx) => {
     const job = jobs[idx]!;
@@ -217,6 +220,7 @@ export const createWorkerRxQueue = (
     },
     enqueueLock,
     drainReturnReleases,
+    releaseDeferredReturns,
     hasAwaiting: () => awaiting > 0,
     getAwaiting: () => awaiting,
   };

@@ -187,6 +187,10 @@ export const workerMainLoop = async (
     textCompat: returnLock.textCompat,
     processBoundary: RUNTIME_IS_PROCESS_WORKER,
     sharedReturn: sharedReturn === true,
+    // A thread return moves its source before publication. Node transfers the
+    // backing-store ownership; Deno and Bun make one owned host copy before
+    // the worker drops its pin. Both avoid the borrowed-return lifetime.
+    moveReturn: !RUNTIME_IS_PROCESS_WORKER,
     // The host parks on this lock's publication word when it has no work to
     // flush. Request locks are host-produced and must not wake that waiter.
     notifyOnHostPublish: notifyOnHostPublish ||
@@ -256,6 +260,7 @@ export const workerMainLoop = async (
     writeBatch,
     getAwaiting,
     drainReturnReleases,
+    releaseDeferredReturns,
   } = createWorkerRxQueue({
     listOfFunctions,
     workerOptions,
@@ -326,6 +331,7 @@ export const workerMainLoop = async (
   const _hasCompleted = hasCompleted;
   const _getAwaiting = getAwaiting;
   const _drainReturnReleases = drainReturnReleases;
+  const _releaseDeferredReturns = releaseDeferredReturns;
   const _pauseSpin = pauseSpin;
   const _enqueueLock = traceSignals
     ? (): boolean => {
@@ -372,6 +378,9 @@ export const workerMainLoop = async (
 
   /** Leave the dispatch loop and acknowledge shutdown. */
   const stopLoop = () => {
+    // A shutdown rejects unconsumed calls, so no return can still be adopted.
+    // Do not let a worker-isolate exit strand native BufferReference pins.
+    _releaseDeferredReturns();
     a_store(stopView, 0, WORKER_STOP.acknowledged);
     a_store(rxStatus, 0, 0);
     try {
