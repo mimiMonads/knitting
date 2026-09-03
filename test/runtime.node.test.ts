@@ -417,7 +417,9 @@ test("node:test workerData lock buffers are hidden from task code", {
   concurrency: false,
   timeout: TEST_TIMEOUT_MS,
 }, async () => {
-  const result = await runProbe(sharedMemoryCorruptionProbePath);
+  // The probe now allows 1.5s per call (the doorbell watchdog is 1s), and it
+  // makes two calls that can stall, so 4s of process budget is not enough.
+  const result = await runProbe(sharedMemoryCorruptionProbePath, 8_000);
 
   assert.equal(
     result.timedOut,

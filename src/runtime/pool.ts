@@ -815,6 +815,11 @@ export const spawnWorkerContext = ({
   }
 
   let closedReason: string | undefined;
+  // A worker that exits because the host asked it to stop is a closed thread,
+  // not a crash. The stop is acknowledged in shared memory before the worker
+  // unwinds, so on a slow host the `exit` event can land ahead of `kills()`
+  // and label an orderly shutdown "Worker exited with code 0".
+  let stopRequested = false;
   const deactivateStealConsumer = () => {
     stealPool?.hostSubmitLock.deactivateStealConsumer(
       stealPool.consumerId,
@@ -861,6 +866,10 @@ export const spawnWorkerContext = ({
       deactivateStealConsumer();
       nodeCompletionDoorbell?.close();
       if (closedReason !== undefined) return;
+      if (stopRequested) {
+        markWorkerClosed("Thread closed");
+        return;
+      }
       const normalized = typeof code === "number" ? code : -1;
       markWorkerClosed(`Worker exited with code ${normalized}`);
     });
@@ -907,6 +916,7 @@ export const spawnWorkerContext = ({
   };
 
   const requestWorkerStop = async (): Promise<boolean> => {
+    stopRequested = true;
     const stopView = signalBox.stopView;
     if (stopView === undefined) return true;
     try {

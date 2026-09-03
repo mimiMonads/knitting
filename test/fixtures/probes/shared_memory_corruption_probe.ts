@@ -31,11 +31,19 @@ const pool = createPool({
   passthroughNumber,
 });
 
+// The host doorbell recovers a missed completion wake on a 1s watchdog, so a
+// budget under that turns one late wake into a probe failure. This asks
+// whether the pool still works, not how fast, so leave the watchdog room.
+const CALL_TIMEOUT_MS = 1_500;
+
 try {
   let blocked = false;
 
   try {
-    await withTimeout(pool.call.corruptSharedMemoryViaWorkerData(), 500);
+    await withTimeout(
+      pool.call.corruptSharedMemoryViaWorkerData(),
+      CALL_TIMEOUT_MS,
+    );
   } catch (_error) {
     blocked = true;
   }
@@ -46,7 +54,10 @@ try {
   }
 
   for (let i = 0; i < 20; i++) {
-    const value = await withTimeout(pool.call.passthroughNumber(i), 500);
+    const value = await withTimeout(
+      pool.call.passthroughNumber(i),
+      CALL_TIMEOUT_MS,
+    );
     if (value !== i) {
       console.error("probe-worker-corrupted");
       process.exit(3);

@@ -100,19 +100,25 @@ test("one task reads a body whichever way it travelled", async () => {
   try {
     for (const { name, bytes, wire } of CASES) {
       const body = pattern(bytes);
-      using handle = await allocator.readBody(streamingRequest(body), {
+      // `using` reads better, but the node test job runs on Node 22, which
+      // cannot parse it. Same reason for every dispose below.
+      const handle = await allocator.readBody(streamingRequest(body), {
         referenceAboveBytes: 512 * KIB,
         maxByteLength: 4 * MIB,
       });
 
-      assert.equal(wireKind(handle.wire), wire, `${name}: took its own path`);
-      assert.equal(handle.byteLength, bytes, `${name}: length`);
-      assert.deepEqual([...handle.u8().subarray(0, 32)], [...body.subarray(0, 32)], `${name}: host bytes`);
-      assert.equal(
-        await pool.call.digestBody(handle.wire),
-        digestOf(body),
-        `${name}: the worker saw the same bytes`,
-      );
+      try {
+        assert.equal(wireKind(handle.wire), wire, `${name}: took its own path`);
+        assert.equal(handle.byteLength, bytes, `${name}: length`);
+        assert.deepEqual([...handle.u8().subarray(0, 32)], [...body.subarray(0, 32)], `${name}: host bytes`);
+        assert.equal(
+          await pool.call.digestBody(handle.wire),
+          digestOf(body),
+          `${name}: the worker saw the same bytes`,
+        );
+      } finally {
+        handle[Symbol.dispose]();
+      }
     }
   } finally {
     await pool.shutdown();
@@ -140,18 +146,22 @@ test("a body shorter than it claimed still travels at its real length", async ()
     // Declares more than it sends, and is too large for the arena, so it takes
     // the standalone buffer -- which was sized to the claim, not the body.
     const body = pattern(300 * KIB);
-    using handle = await allocator.readBody(
+    const handle = await allocator.readBody(
       streamingRequest(body, { contentLength: 384 * KIB }),
       { referenceAboveBytes: 512 * KIB, maxByteLength: 4 * MIB },
     );
 
-    assert.equal(wireKind(handle.wire), "buffer", "it took the standalone path");
-    assert.equal(handle.byteLength, body.byteLength, "the host reports what arrived");
-    assert.equal(
-      await pool.call.digestBody(handle.wire),
-      digestOf(body),
-      "and the worker does not see the unwritten tail",
-    );
+    try {
+      assert.equal(wireKind(handle.wire), "buffer", "it took the standalone path");
+      assert.equal(handle.byteLength, body.byteLength, "the host reports what arrived");
+      assert.equal(
+        await pool.call.digestBody(handle.wire),
+        digestOf(body),
+        "and the worker does not see the unwritten tail",
+      );
+    } finally {
+      handle[Symbol.dispose]();
+    }
   } finally {
     await pool.shutdown();
   }
@@ -179,11 +189,15 @@ test("the host owns the body and reclaims the identity after the call", async ()
     // released, or the host's dispose did not, this runs out and overflows.
     for (let i = 0; i < 200; i++) {
       const body = pattern(4 * KIB);
-      using handle = await allocator.readBody(streamingRequest(body), {
+      const handle = await allocator.readBody(streamingRequest(body), {
         referenceAboveBytes: 512 * KIB,
         maxByteLength: 4 * MIB,
       });
-      assert.equal(await pool.call.digestBody(handle.wire), digestOf(body));
+      try {
+        assert.equal(await pool.call.digestBody(handle.wire), digestOf(body));
+      } finally {
+        handle[Symbol.dispose]();
+      }
     }
     assert.equal(
       allocator.stats().overflows,
