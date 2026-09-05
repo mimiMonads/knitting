@@ -46,7 +46,10 @@
  * design choice, and it is why `copy()` exists.
  */
 
-import { createLazyRegionRegistry } from "./lazy-region-registry.ts";
+import {
+  createLazyRegionRegistry,
+  type LazyRegionRegistryMode,
+} from "./lazy-region-registry.ts";
 import {
   LOCK_SECTOR_BYTE_LENGTH,
   PAYLOAD_LOCK_WORKER_BITS_OFFSET_BYTES,
@@ -478,13 +481,67 @@ export type KnittingAllocatorOptions = {
   backstopWatermark?: number;
 };
 
+/** This pool's own counters merged with its region registry's. */
+export type KnittingAllocatorStats = {
+  pooled: number;
+  overflows: number;
+  registered: number;
+  live: number;
+  slots: number;
+  mode: LazyRegionRegistryMode;
+  tableLength: number;
+  tailEnd: number;
+  highWater: number;
+  reconciles: number;
+  firstFits: number;
+  appends: number;
+  resets: number;
+};
+
+/** What a consumer thread needs to attach: SABs, not pointers. */
+export type KnittingAllocatorTransport = {
+  lane: number;
+  lockSAB: SharedArrayBuffer;
+  arena: SharedArrayBuffer;
+  slots: number;
+  arenaByteLength: number;
+};
+
+/** Written out rather than inferred: JSR cannot resolve an inferred return type. */
+export type KnittingAllocator = {
+  lane: number;
+  /** Bump window this pool was built with; the ceiling on a pooled region. */
+  arenaByteLength: number;
+  alloc: (byteLength: number) => KnittingSharedBuffer;
+  allocUpTo: (maxByteLength: number) => KnittingSharedBuffer;
+  allocOrRefer: (
+    request: Request,
+    options: ReadBodyOrReferOptions,
+  ) => Promise<KnittingBody>;
+  describe: (region: KnittingSharedBuffer) => KnittingBufferDescriptor;
+  moveTo: (region: KnittingSharedBuffer) => KnittingBufferDescriptor;
+  reconcile: () => boolean;
+  stats: () => KnittingAllocatorStats;
+  resetCounters: () => void;
+  transport: () => KnittingAllocatorTransport;
+};
+
+/** The consumer side of another thread's pool: it adopts, it never allocates. */
+export type AttachedKnittingAllocator = {
+  lane: number;
+  adopt: (
+    descriptor: KnittingBufferDescriptor | SharedArrayBuffer,
+    options?: { gcBackstop?: boolean; borrow?: boolean },
+  ) => KnittingSharedBuffer;
+};
+
 export const createKnittingAllocator = ({
   lane = 0,
   slots = 128,
   arenaByteLength = DEFAULT_ARENA_BYTE_LENGTH,
   gcBackstop = true,
   backstopWatermark = 0.5,
-}: KnittingAllocatorOptions = {}) => {
+}: KnittingAllocatorOptions = {}): KnittingAllocator => {
   const lockSAB = new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH);
   const arena = new SharedArrayBuffer(arenaByteLength);
   const regions = createLazyRegionRegistry({
@@ -786,8 +843,6 @@ export const createKnittingAllocator = ({
   };
 };
 
-export type KnittingAllocator = ReturnType<typeof createKnittingAllocator>;
-
 /**
  * The consumer side of another thread's pool. It never allocates; it
  * materializes regions over the producer's arena and releases the producer's
@@ -800,7 +855,7 @@ export const attachKnittingAllocator = (
     arena: SharedArrayBuffer;
     slots: number;
   },
-) => {
+): AttachedKnittingAllocator => {
   const words = slots >>> 5;
   const workerBits = new Int32Array(
     lockSAB,

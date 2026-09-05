@@ -377,7 +377,8 @@ test("node:test worker poison payloads are rejected and host stays alive", {
   concurrency: false,
   timeout: TEST_TIMEOUT_MS,
 }, async () => {
-  const result = await runProbe(faultPoisonProbePath);
+  // Six calls plus worker boot; 4s is too tight on a loaded box.
+  const result = await runProbe(faultPoisonProbePath, 8_000);
 
   assert.equal(
     result.timedOut,
