@@ -52,8 +52,7 @@ const a_load = Atomics.load;
 const a_store = Atomics.store;
 const a_wait = typeof Atomics.wait === "function" ? Atomics.wait : undefined;
 const p_now = performance.now.bind(performance);
-// `SharedArrayBuffer` is undeclared on pages that are not cross-origin
-// isolated, and this module has to load anyway so the pool can report why.
+// Some pages do not define SharedArrayBuffer; keep this module loadable there.
 const waitFallbackView =
   a_wait === undefined || typeof SharedArrayBuffer !== "function"
     ? undefined
@@ -73,20 +72,24 @@ const isPlainNodeWindows = runtimeGlobals.process?.platform === "win32" &&
   runtimeGlobals.process?.versions?.bun === undefined &&
   runtimeGlobals.Deno === undefined;
 
-// Windows has no working cross-process wake. The native wake (WakeByAddress)
-// is keyed to a virtual address, so a host cannot wake a process worker parked
-// on the same physical page mapped at a different address in the child — the
-// addon's FutexWake is a no-op there. A parked Windows Node process worker can
-// therefore never be signalled and must rediscover work by polling. Cap the
-// native wait at 1ms so it re-checks every millisecond instead of sleeping the
-// full parkMs (up to seconds); the long park with no wake is what made CI
-// runners appear to hang. The native wait already polls internally, so this is
-// just bounding each poll slice.
+// Bun on Windows requires special handling for short waits and process rings.
+export const IS_BUN_WINDOWS = runtimeGlobals.process?.platform === "win32" &&
+  typeof runtimeGlobals.process?.versions?.bun === "string";
+
+// Bun on Windows busy-spins for waits of 1ms or less; use a 2ms minimum.
+const BUN_WINDOWS_MIN_WAIT_MS = 2;
+const floorBunWindowsWait = (ms: number): number =>
+  IS_BUN_WINDOWS && ms < BUN_WINDOWS_MIN_WAIT_MS ? BUN_WINDOWS_MIN_WAIT_MS : ms;
+
+// Windows process workers cannot be woken through the native address-based
+// wait, so cap their wait to 1ms and let polling rediscover work.
 const nativeWaitTimeoutMs = (parkMs?: number): number =>
   isPlainNodeWindows ? 1 : Number.isFinite(parkMs) ? parkMs! : Infinity;
 
 const pollingWaitTimeoutMs = (parkMs?: number): number =>
-  Number.isFinite(parkMs) ? Math.min(Math.max(parkMs!, 0), 1) : 1;
+  floorBunWindowsWait(
+    Number.isFinite(parkMs) ? Math.min(Math.max(parkMs!, 0), 1) : 1,
+  );
 
 export const whilePausing = ({ pauseInNanoseconds }: PauseOptions) => {
   const forNanoseconds = pauseInNanoseconds ?? DEFAULT_PAUSE_TIME;
@@ -119,12 +122,7 @@ export const sleepUntilChanged = (
     write?: () => number | boolean;
     nativeWaitU32?: NativeWaitU32;
     useSharedMemoryWait?: boolean;
-    /**
-     * Stealing only: write results back before attempting to claim more work.
-     * A claim can spin waiting for a peer to withdraw its intent, so claiming
-     * first puts arbitration latency in front of a finished response. Measured
-     * to hurt the per-lane path, so it stays off by default.
-     */
+    /** Stealing only: flush results before claiming more work. */
     flushBeforeClaim?: boolean;
   },
 ) => {
@@ -186,19 +184,16 @@ export const sleepUntilChanged = (
       a_wait &&
       opView.buffer instanceof SharedArrayBuffer
     ) {
-      // This is the notify-able path: a host Atomics.notify on opView wakes it.
-      // An infinite parkMs (debug) is intentional here — the worker blocks until
-      // a real signal instead of re-polling on a timeout.
+      // This path can be woken with Atomics.notify; an infinite debug wait is
+      // intentional.
       a_wait!(
         opView,
         at,
         value,
-        parkMs ?? Infinity,
+        floorBunWindowsWait(parkMs ?? Infinity),
       );
     } else if (a_wait && waitFallbackView) {
-      // waitFallbackView is never notified — this wait only ever times out and
-      // re-polls. Keep the slice short and finite so FFI-backed process workers
-      // stay responsive without a cross-process native wake primitive.
+      // This fallback is timeout-driven; keep the slice short for responsiveness.
       a_wait(waitFallbackView, 0, 0, pollingWaitTimeoutMs(parkMs));
     }
 

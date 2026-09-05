@@ -5,7 +5,8 @@ type NodeRequire = (specifier: string) => unknown;
 export type NodeNativeAddonName =
   | "knitting_shared_memory"
   | "knitting_shm"
-  | "knitting_buffer_pointer";
+  | "knitting_buffer_pointer"
+  | "knitting_doorbell";
 
 export type NodePlatformInfo = {
   arch: string;

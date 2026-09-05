@@ -237,6 +237,11 @@ const addons = [
     source: "src/knitting_buffer_pointer.cc",
     output: "build/Release/knitting_buffer_pointer.node",
   },
+  {
+    name: "knitting_doorbell",
+    source: "src/knitting_doorbell.cc",
+    output: "build/Release/knitting_doorbell.node",
+  },
 ];
 const ffiLibraries = isWindows
   ? [

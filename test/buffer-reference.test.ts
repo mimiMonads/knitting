@@ -6,7 +6,6 @@ import {
   isBufferReferenceMetadata,
 } from "../unsafe.ts";
 import { createPool } from "../knitting.ts";
-import { withBufferReferenceReturnReleaser } from "../src/connections/buffer-reference.ts";
 import {
   echoBufferPlusOne,
   returnsBuffer,
@@ -186,7 +185,7 @@ test("transport finalizer is idempotent", () => {
   assert.equal(ref.source, undefined);
 });
 
-test("transport finalizer detaches materialized borrowed buffers", () => {
+test("transport finalizer detaches materialized forward buffers", () => {
   if (!supported) return;
 
   const ref = new BufferReference(new Uint8Array([1, 2, 3]));
@@ -261,270 +260,18 @@ test("worker returns a BufferReference moved back to the host", async () => {
   if (!supported) return;
 
   const pool = createPool({ threads: 1 })({ returnsBuffer });
+  let ref!: BufferReference;
   try {
-    const ref = await pool.call.returnsBuffer(5);
+    ref = await pool.call.returnsBuffer(5);
     // Safe mode claims bytes before the worker drains its hold.
     assert.deepEqual([...ref.toUint8Array()], [0, 3, 6, 9, 12]);
   } finally {
     await pool.shutdown();
   }
-});
-
-test("worker can return a borrowed BufferReference with explicit release", async () => {
-  if (!supported) return;
-
-  const pool = createPool({
-    threads: 1,
-    unsafe: {
-      BufferReferenceReturn: "borrow",
-    },
-  })({ returnsBuffer });
-  try {
-    const ref = await pool.call.returnsBuffer(5);
-    assert.deepEqual([...ref.toUint8Array()], [0, 3, 6, 9, 12]);
-
-    ref.release();
-    assert.throws(() => ref.toUint8Array(), /released/);
-  } finally {
-    await pool.shutdown();
-  }
-});
-
-test("borrowed BufferReference return can be released without materializing", async () => {
-  if (!supported) return;
-
-  const pool = createPool({
-    threads: 1,
-    unsafe: {
-      BufferReferenceReturn: "borrow",
-    },
-  })({ returnsBuffer });
-  try {
-    const ref = await pool.call.returnsBuffer(5);
-    ref.release();
-    assert.throws(() => ref.toUint8Array(), /released/);
-  } finally {
-    await pool.shutdown();
-  }
-});
-
-test("borrowed claim: release revokes escaped views before the pin drops", () => {
-  if (!supported) return;
-
-  const producer = new BufferReference(new Uint8Array([10, 20, 30]));
-  const released: bigint[] = [];
-  try {
-    const consumer = withBufferReferenceReturnReleaser(
-      (token) => void released.push(token),
-      () =>
-        BufferReference.fromMetadata(producer.toMetadata()).claimOwnership(),
-    );
-    const view = consumer.toUint8Array();
-    assert.deepEqual([...view], [10, 20, 30]);
-
-    consumer.release();
-    assert.equal(view.byteLength, 0, "escaped views are revoked by release");
-    assert.equal(released.length, 1, "worker pin released exactly once");
-  } finally {
-    finishReference(producer);
-  }
-});
-
-test("borrow track hook records the reference, then its alias on first read", () => {
-  if (!supported) return;
-
-  const producer = new BufferReference(new Uint8Array([1, 2, 3]));
-  const tracked: {
-    ref: BufferReference;
-    token: bigint;
-    buffer: ArrayBuffer | undefined;
-  }[] = [];
-  try {
-    const consumer = withBufferReferenceReturnReleaser(
-      {
-        release: () => {},
-        track: (ref, token, buffer) =>
-          void tracked.push({
-            ref,
-            token,
-            buffer,
-          }),
-      },
-      () =>
-        BufferReference.fromMetadata(producer.toMetadata()).claimOwnership(),
-    );
-    assert.equal(tracked.length, 1, "claim tracks the reference eagerly");
-    assert.equal(tracked[0]!.ref, consumer);
-    assert.equal(
-      tracked[0]!.buffer,
-      undefined,
-      "no alias exists before the first read",
-    );
-
-    consumer.toUint8Array();
-    assert.equal(tracked.length, 2, "first read tracks the alias buffer");
-    assert.equal(tracked[1]!.token, tracked[0]!.token);
-    assert.deepEqual([...new Uint8Array(tracked[1]!.buffer!)], [1, 2, 3]);
-    consumer.release();
-  } finally {
-    finishReference(producer);
-  }
-});
-
-test("revokeBorrow with copy keeps an unread reference readable", () => {
-  if (!supported) return;
-
-  const producer = new BufferReference(new Uint8Array([11, 22, 33]));
-  const released: bigint[] = [];
-  try {
-    const consumer = withBufferReferenceReturnReleaser(
-      (token) => void released.push(token),
-      () =>
-        BufferReference.fromMetadata(producer.toMetadata()).claimOwnership(),
-    );
-
-    // Never materialized before the revoke.
-    consumer.revokeBorrow(true);
-
-    assert.deepEqual(
-      [...consumer.toUint8Array()],
-      [11, 22, 33],
-      "unread reference survives on bytes taken at revoke time",
-    );
-    assert.equal(released.length, 1);
-  } finally {
-    finishReference(producer);
-  }
-});
-
-test("revokeBorrow without copy poisons an unread reference", () => {
-  if (!supported) return;
-
-  const producer = new BufferReference(new Uint8Array([1, 2, 3]));
-  try {
-    const consumer = withBufferReferenceReturnReleaser(
-      () => {},
-      () =>
-        BufferReference.fromMetadata(producer.toMetadata()).claimOwnership(),
-    );
-
-    consumer.revokeBorrow(false);
-
-    assert.throws(
-      () => consumer.toUint8Array(),
-      /released/,
-      "an unread borrow must not materialize after its worker is gone",
-    );
-  } finally {
-    finishReference(producer);
-  }
-});
-
-test("revokeBorrow with copy keeps the reference readable and revokes views", () => {
-  if (!supported) return;
-
-  const producer = new BufferReference(new Uint8Array([7, 8, 9]));
-  const released: bigint[] = [];
-  try {
-    const consumer = withBufferReferenceReturnReleaser(
-      (token) => void released.push(token),
-      () =>
-        BufferReference.fromMetadata(producer.toMetadata()).claimOwnership(),
-    );
-    const view = consumer.toUint8Array();
-
-    consumer.revokeBorrow(true);
-
-    assert.equal(view.byteLength, 0, "old views are revoked");
-    assert.deepEqual(
-      [...consumer.toUint8Array()],
-      [7, 8, 9],
-      "the reference survives on owned bytes",
-    );
-    assert.equal(released.length, 1, "early release sent while worker lives");
-
-    consumer.release();
-    assert.equal(released.length, 1, "release() does not double-release");
-  } finally {
-    finishReference(producer);
-  }
-});
-
-test("revokeBorrow without copy makes reads fail loud", () => {
-  if (!supported) return;
-
-  const producer = new BufferReference(new Uint8Array([4, 5, 6]));
-  try {
-    const consumer = withBufferReferenceReturnReleaser(
-      () => {},
-      () =>
-        BufferReference.fromMetadata(producer.toMetadata()).claimOwnership(),
-    );
-    const view = consumer.toUint8Array();
-
-    consumer.revokeBorrow(false);
-
-    assert.equal(view.byteLength, 0, "old views are revoked");
-    assert.throws(() => consumer.toUint8Array());
-  } finally {
-    finishReference(producer);
-  }
-});
-
-test("pool shutdown revokes outstanding borrowed returns safely", async () => {
-  if (!supported) return;
-
-  const pool = createPool({
-    threads: 1,
-    unsafe: {
-      BufferReferenceReturn: "borrow",
-    },
-  })({ returnsBuffer });
-
-  let ref!: BufferReference;
-  let view!: Uint8Array;
-  try {
-    ref = await pool.call.returnsBuffer(5);
-    view = ref.toUint8Array();
-    assert.deepEqual([...view], [0, 3, 6, 9, 12]);
-  } finally {
-    await pool.shutdown();
-  }
-
-  assert.equal(view.byteLength, 0, "borrowed views are revoked at shutdown");
   assert.deepEqual(
     [...ref.toUint8Array()],
     [0, 3, 6, 9, 12],
-    "the reference itself survives shutdown on copied bytes",
-  );
-  ref.release();
-});
-
-test("default stealing tracks borrowed returns on the producing worker", async () => {
-  if (!supported) return;
-
-  const pool = createPool({
-    threads: 3,
-    unsafe: {
-      BufferReferenceReturn: "borrow",
-    },
-  })({ returnsBuffer });
-
-  let ref!: BufferReference;
-  let view!: Uint8Array;
-  try {
-    ref = await pool.call.returnsBuffer(5);
-    view = ref.toUint8Array();
-    assert.deepEqual([...view], [0, 3, 6, 9, 12]);
-  } finally {
-    await pool.shutdown();
-  }
-
-  assert.equal(view.byteLength, 0, "the producing lane's borrow was revoked");
-  assert.deepEqual(
-    [...ref.toUint8Array()],
-    [0, 3, 6, 9, 12],
-    "the returned reference survives shutdown on copied bytes",
+    "the returned reference remains readable after worker shutdown",
   );
   ref.release();
 });

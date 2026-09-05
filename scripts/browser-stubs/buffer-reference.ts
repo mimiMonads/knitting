@@ -6,9 +6,6 @@
 export const BUFFER_REFERENCE_NUMERIC_TRANSFER = Symbol.for(
   "knitting.bufferReference.numericTransfer",
 );
-export const BUFFER_REFERENCE_RETURN_RELEASE_TOKEN = Symbol.for(
-  "knitting.bufferReference.returnReleaseToken",
-);
 
 const unavailable = (): never => {
   throw new Error('BufferReference cannot run in runtime "browser"');
@@ -23,14 +20,10 @@ export class BufferReference {
 
 export const isBufferReferenceValue = (_value: unknown): boolean => false;
 
-export const withBufferReferenceReturnReleaser = <T>(
-  _releaser: unknown,
-  run: () => T,
-): T => run();
-
-export const readBufferReferenceReturnReleaseMessage = (
-  _value: unknown,
-): undefined => undefined;
-
-export const createBufferReferenceReturnReleaseMessage = unavailable;
 export const detachArrayBufferBestEffort = unavailable;
+
+// A page has no way to move a buffer, so the codec never reaches its move path
+// and never asks. `byteLength === 0` is the same heuristic the real
+// implementation falls back to when a runtime has no `detached` getter.
+export const isArrayBufferDetached = (buffer: ArrayBuffer): boolean =>
+  buffer.byteLength === 0;

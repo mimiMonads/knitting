@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <unordered_map>
+#include <vector>
 
 namespace knitting_buffer_pointer {
 
@@ -27,11 +28,50 @@ struct RetainedBackingStore {
   std::shared_ptr<v8::BackingStore> store;
   size_t byte_offset;
   size_t byte_length;
+  // The isolate that produced the move. This is only a registry hold: a
+  // consumer's adopted ArrayBuffer owns its own shared_ptr.
+  v8::Isolate* producer_isolate;
 };
 
 std::mutex backing_mutex;
 uint64_t next_backing_id = 1;
 std::unordered_map<uint64_t, RetainedBackingStore> retained_backings;
+
+// Node tears a worker down without running its JavaScript finalizers. Both
+// registries are process-global, so discard holds produced by that environment
+// during teardown. Any consumer that adopted a backing store already has an
+// independent shared_ptr and is unaffected.
+void CleanupEnvironment(void* data) {
+  v8::Isolate* isolate = static_cast<v8::Isolate*>(data);
+  // Collect first, destroy on scope exit: releasing a hold must not run under
+  // the registry lock that found it.
+  std::vector<std::unique_ptr<RetainedReference>> released_refs;
+  std::vector<RetainedBackingStore> released_backings;
+
+  {
+    std::lock_guard<std::mutex> lock(retained_mutex);
+    for (auto it = retained_refs.begin(); it != retained_refs.end();) {
+      if (it->second->isolate != isolate) {
+        ++it;
+        continue;
+      }
+      released_refs.push_back(std::move(it->second));
+      it = retained_refs.erase(it);
+    }
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(backing_mutex);
+    for (auto it = retained_backings.begin(); it != retained_backings.end();) {
+      if (it->second.producer_isolate != isolate) {
+        ++it;
+        continue;
+      }
+      released_backings.push_back(std::move(it->second));
+      it = retained_backings.erase(it);
+    }
+  }
+}
 
 void ThrowType(v8::Isolate* isolate, const char* message) {
   isolate->ThrowException(v8::Exception::TypeError(
@@ -318,7 +358,18 @@ void RetainBackingStore(const v8::FunctionCallbackInfo<v8::Value>& args) {
   uintptr_t address = reinterpret_cast<uintptr_t>(base + byte_offset);
 
   // Detach only after taking the shared_ptr; ordinary JS buffers use no key.
-  DetachDefaultArrayBuffer(buffer);
+  // A failed detach must not be ignored: retaining the store while the source
+  // stays live hands the consumer an "owned" buffer that still aliases memory
+  // the producer can write. WASM memory and externally pinned buffers are the
+  // ones that land here, and the caller falls back to copying.
+  if (!DetachDefaultArrayBuffer(buffer)) {
+    ThrowType(
+      isolate,
+      "retainBackingStore requires a detachable ArrayBuffer; this buffer "
+      "cannot be moved without leaving the source aliasing it"
+    );
+    return;
+  }
 
   uint64_t token = 0;
   {
@@ -327,7 +378,9 @@ void RetainBackingStore(const v8::FunctionCallbackInfo<v8::Value>& args) {
     if (token == 0) token = next_backing_id++;
     retained_backings.emplace(
       token,
-      RetainedBackingStore{ std::move(store), byte_offset, byte_length }
+      RetainedBackingStore{
+        std::move(store), byte_offset, byte_length, isolate
+      }
     );
   }
 
@@ -410,6 +463,8 @@ void Initialize(
   v8::Local<v8::Value>,
   v8::Local<v8::Context>
 ) {
+  v8::Isolate* isolate = exports->GetIsolate();
+  node::AddEnvironmentCleanupHook(isolate, CleanupEnvironment, isolate);
   NODE_SET_METHOD(exports, "getPointer", GetPointer);
   NODE_SET_METHOD(exports, "retainPointer", RetainPointer);
   NODE_SET_METHOD(exports, "releasePointer", ReleasePointer);

@@ -355,6 +355,16 @@ const isWindowsRuntimeHost = (): boolean => {
   }).process?.platform === "win32";
 };
 
+const processWorkerNeedsNamedMemory = (
+  sharedMemory: ResolvedProcessSharedMemorySettings,
+): boolean =>
+  // `Deno.Command` does not reliably carry an anonymous memfd/shm fd into a
+  // child as stdin: Linux can hand the child a non-mappable descriptor and
+  // macOS cannot always reopen the host fd through `/dev/fd`. Named mappings
+  // are reopened by the worker instead, which works across Deno's supported
+  // hosts and process-worker runtimes.
+  sharedMemory.mode === "named" || isWindowsRuntimeHost() || RUNTIME === "deno";
+
 let processWorkerMemoryNameCounter = 0;
 
 const makeProcessWorkerMemoryName = (
@@ -424,7 +434,7 @@ export const createProcessWorkerMemoryLayout = ({
   const returnPayloadSlice = carpet.take("returnPayload", payloadBytes);
 
   const primitives = getProcessWorkerSharedMemoryPrimitives();
-  const forceNamed = sharedMemory.mode === "named" || isWindowsRuntimeHost();
+  const forceNamed = processWorkerNeedsNamedMemory(sharedMemory);
   const mapping = primitives.createSharedMemory(
     forceNamed
       ? {
@@ -535,7 +545,7 @@ export const createProcessStealMemoryLayout = ({
   }));
 
   const primitives = getProcessWorkerSharedMemoryPrimitives();
-  const forceNamed = sharedMemory.mode === "named" || isWindowsRuntimeHost();
+  const forceNamed = processWorkerNeedsNamedMemory(sharedMemory);
   const mapping = primitives.createSharedMemory(
     forceNamed
       ? {
@@ -986,6 +996,27 @@ export const createProcessWorkerNativeSignalNotifier = ({
   } catch {
     return undefined;
   }
+};
+
+/**
+ * Whether this host/child pair has the Node-compatible IPC channel that the
+ * process completion-doorbell prototype uses. Deno process workers currently
+ * boot through environment data and do not have that channel.
+ */
+export const processWorkerUsesIpc = ({
+  processRuntime,
+  commandPrefix,
+}: {
+  processRuntime: ProcessWorkerRuntime | undefined;
+  commandPrefix?: ProcessWorkerCommandPrefix;
+}): boolean => {
+  if (processRuntime === undefined || commandPrefix !== undefined) return false;
+
+  if (RUNTIME === "node") {
+    return processRuntime === "node" || processRuntime === "bun";
+  }
+
+  return RUNTIME === "bun" && processRuntime === "bun";
 };
 
 const createProcessWorkerEventHub = () => {

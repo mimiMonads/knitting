@@ -55,6 +55,13 @@ const expectGuardedReject = async (
 };
 
 try {
+  // Boot the worker first: spawn and module import would land inside the case budget.
+  const boot = await pool.call.passthroughNumber(0);
+  if (boot !== 0) {
+    console.error("boot-unexpected", boot);
+    process.exit(6);
+  }
+
   await expectGuardedReject(pool.call.attemptProcessExit(), "process.exit");
   await expectGuardedReject(pool.call.attemptProcessKill(), "process.kill");
 

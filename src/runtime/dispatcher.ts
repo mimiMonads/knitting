@@ -8,33 +8,12 @@ import {
 import { RUNTIME, SET_IMMEDIATE } from "../common/runtime.ts";
 import type { DispatcherSettings } from "../types.ts";
 
-/**
- * Macrotask primitive for the host pump, picked per runtime: a round trip costs
- * 757ns on Bun via MessageChannel but 4662ns on Deno, where `setImmediate` is
- * 1110ns. Bun keeps the channel; browser and Andromeda have no choice.
- *
- * `serial-channel` opts back into the channel explicitly (see `src/api.ts`): one
- * hop drives every lane's check in turn and relies on the channel's delivery to
- * do it, so a merely cheaper pump starves it -- it cost 25% throughput there.
- */
+/** Runtime-specific macrotask primitive used by the host dispatcher. */
 const IMMEDIATE_PUMP = RUNTIME === "deno" || RUNTIME === "node"
   ? SET_IMMEDIATE
   : undefined;
 
-/**
- * Free drain hops before `scheduleNotify` stops re-arming the pump for free.
- *
- * The window has to match what the dispatcher escalates *to*, so these are
- * chosen together and `canUseDoorbell` picks between them. Polling escalates to
- * the `setTimeout` ladder, whose finest rung is ~1.1ms on every runtime, so it
- * wants a wide window; that sleep is also load-bearing, since it batches
- * completions. A doorbell escalates to `Atomics.waitAsync` at about the price of
- * one hop, so it wants a narrow one.
- *
- * Mixing them is the trap: a doorbell behind the wide window keeps every poll
- * hop *and* adds the arm, and loses to plain polling at every thread count.
- * Measurements behind both values: `docs/host-doorbell-proposal.md`.
- */
+// Polling tolerates a wider free window; a doorbell should arm promptly.
 const POLL_STALL_FREE_LOOPS = 128;
 const DOORBELL_STALL_FREE_LOOPS = 1;
 
@@ -50,20 +29,27 @@ export const hostDispatcherLoop = ({
     flushToWorker,
     txIdle,
     waitForCompletion,
+    armCompletionNotifier,
     setCompletionWaiterArmed,
   },
   channelHandler,
   dispatcherOptions,
   notifySignal,
   crossProcess,
+  nativeCompletionDoorbell,
+  processCompletionDoorbell,
 }: {
   queue: MultiQueue;
   signalBox: MainSignal;
   channelHandler: ChannelHandler;
   dispatcherOptions?: DispatcherSettings;
   notifySignal?: () => void;
-  /** Workers live in other processes; disables the doorbell. */
+  /** Workers live in other processes; disables only the atomic doorbell. */
   crossProcess?: boolean;
+  /** A runtime-native completion ring that wakes the host event loop. */
+  nativeCompletionDoorbell?: boolean;
+  /** A process IPC completion doorbell that wakes the host event loop. */
+  processCompletionDoorbell?: boolean;
 }) => {
   const a_load = Atomics.load;
   const a_store = Atomics.store;
@@ -74,14 +60,16 @@ export const hostDispatcherLoop = ({
       if (canNotifySignal) a_notify(opView, 0, 1);
     });
   const notify = () => channelHandler.notify();
-  // `crossProcess` is a capability, not a preference, so it overrides an
-  // explicit `doorbell: true`: V8's Atomics waiter list is per isolate, so a
-  // worker in another process can never ring the host's waiter, and an armed
-  // doorbell would just sleep to the watchdog.
-  const canUseDoorbell = crossProcess !== true &&
-    (dispatcherOptions?.doorbell ?? true) &&
-    (RUNTIME === "bun" || RUNTIME === "node") &&
+  // Atomics waiters are process-local, so cross-process workers cannot use this
+  // doorbell.
+  const canUseAtomicDoorbell = (RUNTIME === "bun" || RUNTIME === "node") &&
     typeof Atomics.waitAsync === "function";
+  const canUseDoorbell = (dispatcherOptions?.doorbell ?? true) &&
+    (
+      processCompletionDoorbell === true ||
+      (crossProcess !== true &&
+        (canUseAtomicDoorbell || nativeCompletionDoorbell === true))
+    );
   let doorbellEnabled = canUseDoorbell;
   let doorbellArmed = false;
   let doorbellEpoch = 0 | 0;
@@ -119,12 +107,21 @@ export const hostDispatcherLoop = ({
     doorbellEpoch = token;
     doorbellArmed = true;
     let woke = false;
-    const wake = () => {
+    const wake = (direct = false) => {
       if (!doorbellArmed || doorbellEpoch !== token || woke) return;
       woke = true;
       doorbellArmed = false;
       doorbellEpoch = (doorbellEpoch + 1) | 0;
       setCompletionWaiterArmed(false);
+      if (direct) {
+        // A native arm that observes an already-published completion has no
+        // callback to wait for. Drain it now: routing this known result back
+        // through setImmediate recreates the very millisecond-sized hop that
+        // the native doorbell exists to remove.
+        check.isRunning = true;
+        check();
+        return;
+      }
       // Keep the existing macrotask boundary. Calling check directly from a
       // resolved waitAsync promise can chain microtasks under a hot workload
       // and starve host I/O.
@@ -132,10 +129,31 @@ export const hostDispatcherLoop = ({
     };
 
     let supported = false;
-    try {
-      supported = waitForCompletion(wake, DOORBELL_WATCHDOG_MS);
-    } catch {
-      supported = false;
+    if (
+      nativeCompletionDoorbell === true ||
+      processCompletionDoorbell === true
+    ) {
+      // A native arm reports two different things and they must not be
+      // conflated: `false` means a completion was already published so the arm
+      // deliberately did not ring, which is a normal hot-path outcome. Only a
+      // throw means the transport is unusable. Treating the race as
+      // "unsupported" disabled the doorbell permanently on its second arm.
+      let armed = false;
+      let usable = true;
+      try {
+        armed = armCompletionNotifier();
+      } catch {
+        usable = false;
+      }
+      supported = usable;
+      // The arm itself drains the completion it just observed.
+      if (usable && !armed) wake(true);
+    } else {
+      try {
+        supported = waitForCompletion(wake, DOORBELL_WATCHDOG_MS);
+      } catch {
+        supported = false;
+      }
     }
 
     // Some runtimes reject waitAsync on their SharedArrayBuffer variants; fall
@@ -150,7 +168,10 @@ export const hostDispatcherLoop = ({
       doorbellArmed = false;
       doorbellEpoch = (doorbellEpoch + 1) | 0;
       setCompletionWaiterArmed(false);
-      notify();
+      if (
+        nativeCompletionDoorbell !== true &&
+        processCompletionDoorbell !== true
+      ) notify();
     }
   };
 
@@ -166,9 +187,7 @@ export const hostDispatcherLoop = ({
     // callback inert instead.
     cancelDoorbell();
 
-    // Idle lane: skip the drain. Otherwise it pays a txStatus write, an rxStatus
-    // load, and an Atomics.notify that wakes a parked worker for nothing — the
-    // waste that makes serial-channel latency grow with thread count.
+    // Avoid waking an idle lane.
     if (txIdle()) {
       check.isRunning = false;
       return;
@@ -186,16 +205,14 @@ export const hostDispatcherLoop = ({
 
       txStatus[0] = 1;
 
-      // Wake the worker before draining so it can start processing while we flush.
+      // Wake a parked worker whenever its receive status is clear. Pending
+      // frames are not a reliable gate because the queue may have room.
       if (a_load(rxStatus, 0) === 0) {
         a_store(opView, 0, 1);
         wakeSignal();
       }
 
-      // Local vars so V8 keeps them as unboxed int32. Only a reaped completion
-      // counts as progress for `stallCount`: the pump exists to notice work a
-      // worker cannot announce, and letting a flush reset the counter would
-      // leave the escalation unreachable for a pool that never runs dry.
+      // Only completed frames count as progress for backoff purposes.
       let completed = false;
       let progressed = true;
       while (progressed) {
@@ -213,7 +230,9 @@ export const hostDispatcherLoop = ({
       txStatus[0] = 0;
 
       if (!txIdle()) {
-        if (completed || hasPendingFrames()) {
+        // Queued frames indicate back-pressure, not progress; only a completion
+        // frees a request slot.
+        if (completed) {
           stallCount = 0 | 0;
         } else {
           stallCount = (stallCount + 1) | 0;
@@ -233,6 +252,16 @@ export const hostDispatcherLoop = ({
 
   check.isRunning = false;
   check.rerun = false;
+
+  /** Enter the drain from a native or IPC completion event. */
+  const wakeCompletion = () => {
+    if (inFlight || check.isRunning) {
+      check.rerun = true;
+      return;
+    }
+    check.isRunning = true;
+    check();
+  };
 
   const scheduleNotify = () => {
     if (stallCount <= stallFreeLoops) {
@@ -266,7 +295,7 @@ export const hostDispatcherLoop = ({
     }, delay);
   };
 
-  return { check };
+  return { check, wakeCompletion };
 };
 
 type CheckWithState = (() => void) & {
@@ -287,15 +316,17 @@ export class ChannelHandler {
 
   #handler: (() => void) | undefined;
   readonly #notify: () => void;
+  #pending = false;
+  readonly #run = () => {
+    // Clear before draining so a busy lane can request the next turn.
+    this.#pending = false;
+    this.#handler?.();
+  };
 
   constructor(pump: ChannelHandlerPump = "auto") {
     if (pump === "auto" && IMMEDIATE_PUMP !== undefined) {
       const immediate = IMMEDIATE_PUMP;
-      // Allocated once; the pump fires hundreds of thousands of times a second.
-      // Routing via `#handler` also makes a callback outliving `close()` inert.
-      const run = () => {
-        this.#handler?.();
-      };
+      const run = this.#run;
       this.#notify = () => {
         immediate(run);
       };
@@ -313,13 +344,13 @@ export class ChannelHandler {
   }
 
   public notify(): void {
+    // Coalesce notifications into one pending drain.
+    if (this.#pending) return;
+    this.#pending = true;
     this.#notify();
   }
 
-  /**
-   * Registers the handler the pump calls back into. On the channel pump this is
-   * also where the ports are opened, so `notify` can reach port 1.
-   */
+  /** Register the pump handler and start channel ports when present. */
   public open(f: () => void): void {
     this.#handler = f;
     const port1 = this.port1 as unknown as {
@@ -329,10 +360,10 @@ export class ChannelHandler {
     } | undefined;
     if (port1 === undefined) return;
     if (typeof port1.on === "function") {
-      port1.on("message", f);
+      port1.on("message", this.#run);
     } else {
       // @ts-ignore
-      port1.onmessage = f;
+      port1.onmessage = this.#run;
     }
     this.port1?.start?.();
     this.port2?.start?.();

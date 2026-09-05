@@ -7,6 +7,7 @@ import {
   createProcessWorkerNativeSignalNotifier,
   type ProcessSharedMemoryBacking,
   type ProcessStealMemoryLayout,
+  processWorkerUsesIpc,
   readProcessSharedMemorySettings,
   readProcessWorkerCommandPrefix,
   readProcessWorkerRuntime,
@@ -33,15 +34,17 @@ import {
   type DispatcherCheck,
   hostDispatcherLoop,
 } from "./dispatcher.ts";
+import type { DenoCompletionDoorbell } from "./deno-doorbell.ts";
+import { createNodeCompletionDoorbell } from "./node-doorbell.ts";
 import {
   HEADER_SLOT_STRIDE_U32,
   lock2,
   LOCK_SECTOR_BYTE_LENGTH,
   LockBound,
+  type StealClaimDiscipline,
   type Task,
 } from "../memory/lock.ts";
-// Side-effect import: registers the payload codec (cycle break for Andromeda;
-// see lock.ts). Must run before any lock2() call.
+// Registers the payload codec before any lock is built.
 import "../memory/payloadCodec.ts";
 import type {
   DebugOptions,
@@ -61,6 +64,7 @@ import {
 } from "../common/runtime.ts";
 import {
   HAS_NODE_WORKER_THREADS,
+  isProcessCompletionDoorbell,
   RUNTIME_WORKER,
   type RuntimeWorkerLike,
 } from "../common/worker-runtime.ts";
@@ -71,15 +75,10 @@ import {
   type PayloadBufferOptions,
   resolvePayloadBufferOptions,
 } from "../memory/payload-config.ts";
-import {
-  type BufferReference,
-  type BufferReferenceRuntime,
-  createBufferReferenceReturnReleaseMessage,
-  detachArrayBufferBestEffort,
-} from "../connections/buffer-reference.ts";
 import { spawnCompiledWorkerContext } from "./compiled-worker.ts";
 
 const WORKER_FATAL_MESSAGE_KEY = "__knittingWorkerFatal";
+
 const isWorkerFatalMessage = (
   value: unknown,
 ): value is { [WORKER_FATAL_MESSAGE_KEY]: string } =>
@@ -91,7 +90,10 @@ const isWorkerFatalMessage = (
 
 // Bound the wait for a worker to acknowledge loop exit.
 const WORKER_STOP_ACK_TIMEOUT_MS = 50;
-const WORKER_STOP_NEEDS_ACK = RUNTIME === "deno";
+// Node owns returned BufferReference backing stores in a process-global native
+// registry. Give its worker loop a chance to drain deferred producer pins
+// before the host falls back to terminate().
+const WORKER_STOP_NEEDS_ACK = RUNTIME === "deno" || RUNTIME === "node";
 
 // Keep idle workers self-healing if an Atomics.notify wake is missed.
 const DEFAULT_WORKER_PARK_MS = 1;
@@ -139,16 +141,7 @@ const withFixedPayloadConfig = (
   payloadInitialBytes: config.payloadMaxByteLength,
 });
 
-/**
- * Build the buffers, host-side locks and pending registry that a stealing pool
- * shares. One submit region for every worker to claim from, one private return
- * region per worker, and a single pool-global queue so a response arriving on
- * any lane settles the right promise.
- *
- * Region width follows paper §6.1: the largest power-of-two `g` leaving a spare
- * region for a delayed claimant (`slots / g >= consumers + 1`). At 32 slots that
- * caps how wide a region can be well before it caps the worker count.
- */
+/** Build the shared submit and private return buffers for a stealing pool. */
 export const resolveStealRegionLanes = (consumers: number): number => {
   for (let lanes = LockBound.slots; lanes >= 1; lanes >>= 1) {
     if (LockBound.slots / lanes >= consumers + 1) return lanes;
@@ -158,20 +151,34 @@ export const resolveStealRegionLanes = (consumers: number): number => {
   );
 };
 
+/** Return the widest region allowed by the selected claim discipline. */
+export const resolveMaxStealRegionLanes = (
+  consumers: number,
+  stealClaim?: StealClaimDiscipline,
+): number =>
+  stealClaim !== undefined && stealClaim !== "dekker"
+    ? LockBound.slots
+    : resolveStealRegionLanes(consumers);
+
 /** Maximum claimants that leave the protocol's required spare region. */
 export const MAX_STEAL_CONSUMERS = LockBound.slots - 1;
 
 export const createStealPoolBuffers = ({
   threads,
   payload,
+  sharedArgs,
   regionLanes,
+  stealClaim,
   abortSignalCapacity,
   usesAbortSignal,
   processWorker,
 }: {
   threads: number;
   payload?: PayloadBufferOptions;
+  /** Hand large arguments to workers as borrowed regions. See `unsafe.SharedArgs`. */
+  sharedArgs?: boolean;
   regionLanes?: number;
+  stealClaim?: StealClaimDiscipline;
   abortSignalCapacity?: number;
   usesAbortSignal?: boolean;
   processWorker?: {
@@ -214,9 +221,10 @@ export const createStealPoolBuffers = ({
       }),
     }) as LockBuffers;
 
-  const maxLanes = resolveStealRegionLanes(threads);
+  // Keep the default width valid for Dekker; wider CAS-mask regions are explicit.
+  const maxLanes = resolveMaxStealRegionLanes(threads, stealClaim);
   const lanes = regionLanes === undefined
-    ? maxLanes
+    ? resolveStealRegionLanes(threads)
     : Math.min(Math.max(1, regionLanes | 0), maxLanes);
 
   const resolvedAbortSignalCapacity = resolveAbortSignalCapacity(
@@ -255,7 +263,11 @@ export const createStealPoolBuffers = ({
     textCompat: submitBuffers.textCompat,
     consumers: threads,
     regionLanes: lanes,
+    stealClaim,
     processBoundary: processMemory !== undefined,
+    // Shared arguments are opt-in because the receiving task may outlive the
+    // borrowed region.
+    sharedReturn: sharedArgs === true,
   });
 
   const returnBuffers: LockBuffers[] = [];
@@ -310,6 +322,7 @@ export const createStealPoolBuffers = ({
     hostReturnLocks,
     sharedQueue,
     regionLanes: lanes,
+    stealClaim,
     processMemory,
     abortSignalSAB,
     abortSignalMax: processMemory?.abortSignalMax ??
@@ -334,10 +347,11 @@ export const spawnWorkerContext = ({
   permission,
   host,
   payload,
-  bufferReferenceReturn,
+  sharedBytesEnabled,
   abortSignalCapacity,
   usesAbortSignal,
   sharedChannelHandler,
+  denoCompletionDoorbell,
   stealPool,
 }: {
   list: string[];
@@ -362,7 +376,7 @@ export const spawnWorkerContext = ({
   permission?: WorkerData["permission"];
   host?: DispatcherSettings;
   payload?: PayloadBufferOptions;
-  bufferReferenceReturn?: "copy" | "borrow";
+  sharedBytesEnabled?: boolean;
   abortSignalCapacity?: number;
   usesAbortSignal?: boolean;
   /**
@@ -370,6 +384,8 @@ export const spawnWorkerContext = ({
    * macro channel that runs all lane checks.
    */
   sharedChannelHandler?: ChannelHandler;
+  /** Deno-only native callback shared by every thread worker in this pool. */
+  denoCompletionDoorbell?: DenoCompletionDoorbell;
   /**
    * Work-stealing wiring. When present the submit region, both host-side locks
    * and the pending registry are owned by `createPool` and shared: every worker
@@ -386,6 +402,7 @@ export const spawnWorkerContext = ({
     consumers: number;
     consumerId: number;
     regionLanes: number;
+    stealClaim?: StealClaimDiscipline;
     abortSignalSAB?: LockBuffers["headers"];
     abortSignalMax?: number;
     processMemory?: ProcessStealMemoryLayout;
@@ -408,12 +425,20 @@ export const spawnWorkerContext = ({
     withDefaultWorkerTimers(workerOptions, workerCount ?? totalNumberOfThread),
   );
   const useProcessWorkerRuntime = resolvedWorkerOptions.runtime === "process";
+  const canUseDenoCompletionDoorbell = !useProcessWorkerRuntime &&
+    denoCompletionDoorbell !== undefined;
   const processWorkerRuntime = useProcessWorkerRuntime
     ? readProcessWorkerRuntime(resolvedWorkerOptions)
     : undefined;
   const processWorkerCommandPrefix = useProcessWorkerRuntime
     ? readProcessWorkerCommandPrefix(resolvedWorkerOptions)
     : undefined;
+  const canUseProcessCompletionDoorbell = useProcessWorkerRuntime &&
+    host?.doorbell !== false &&
+    processWorkerUsesIpc({
+      processRuntime: processWorkerRuntime,
+      commandPrefix: processWorkerCommandPrefix,
+    });
   const processSharedMemorySettings = useProcessWorkerRuntime
     ? readProcessSharedMemorySettings(resolvedWorkerOptions)
     : undefined;
@@ -457,10 +482,7 @@ export const spawnWorkerContext = ({
   const abortBytes = stealPool === undefined && usesAbortSignal === true
     ? abortSignalByteLength(resolvedAbortSignalCapacity)
     : 0;
-  // A stealing process pool carves every lane out of one mapping, so lane
-  // `thread` must find its slice there. Falling back to a private layout would
-  // silently give this lane its own submit region — it would boot and then
-  // never see a task the host published to the shared one.
+  // Stealing process workers use their slice of the pool-wide mapping.
   const stealProcessMemory = stealPool?.processMemory;
   const processWorkerMemory = !useProcessWorkerRuntime
     ? undefined
@@ -486,8 +508,7 @@ export const spawnWorkerContext = ({
   const createPayloadBuffer = processSharedMemory?.createBuffer;
   const makePayloadBuffer = () =>
     createPayloadBuffer
-      // ProcessSharedBuffer is fixed-size today, so reserve the configured
-      // payload ceiling instead of relying on SAB growth.
+      // Process-shared buffers are fixed-size.
       ? createPayloadBuffer(resolvedPayloadConfig.payloadMaxByteLength)
       : resolvedPayloadConfig.mode === "growable"
       ? createSharedArrayBuffer(
@@ -497,11 +518,8 @@ export const spawnWorkerContext = ({
       : createSharedArrayBuffer(resolvedPayloadConfig.payloadInitialBytes);
 
   const makeLockControlLayout = () => {
-    // Keep the hottest control words in one compact front strip:
-    // transport signals -> request lock -> return lock.
-    // Request/return headers stay in separate contiguous slabs to preserve
-    // sequential batching locality.
-    // Abort bitmap stays at the tail.
+    // Place hot control words first; keep headers contiguous and the abort bitmap
+    // at the tail.
     return createLockControlCarpet({
       signalBytes,
       abortBytes,
@@ -580,88 +598,11 @@ export const spawnWorkerContext = ({
     signal: signalBox.opView,
   });
 
-  // Outstanding borrowed returns, revoked before this lane's worker dies so
-  // no borrowed alias can outlive the isolate that pins its bytes.
-  type BorrowedReturnRecord = {
-    ref: WeakRef<BufferReference>;
-    /** Set on first materialize; absent while the borrow was never read. */
-    aliasBuffer?: WeakRef<ArrayBuffer>;
-    runtime: BufferReferenceRuntime;
-  };
-
-  const outstandingBorrowedReturns =
-    bufferReferenceReturn === "borrow" && typeof WeakRef === "function"
-      ? new Map<bigint, BorrowedReturnRecord>()
-      : undefined;
-
-  const releaseBorrowedReturnToken = (token: bigint): void => {
-    outstandingBorrowedReturns?.delete(token);
-    worker?.postMessage?.(
-      createBufferReferenceReturnReleaseMessage(token),
-    );
-  };
-
-  const revokeOutstandingBorrowedReturns = (copyBytes: boolean): void => {
-    if (outstandingBorrowedReturns === undefined) return;
-    for (const [token, record] of outstandingBorrowedReturns) {
-      try {
-        const ref = record.ref.deref();
-        if (ref !== undefined) {
-          ref.revokeBorrow(copyBytes);
-          continue;
-        }
-
-        const aliasBuffer = record.aliasBuffer?.deref();
-        if (
-          aliasBuffer !== undefined &&
-          detachArrayBufferBestEffort(record.runtime, aliasBuffer) &&
-          copyBytes
-        ) {
-          releaseBorrowedReturnToken(token);
-        }
-      } catch {
-        // best effort
-      }
-    }
-    outstandingBorrowedReturns.clear();
-  };
-
-  const returnHooks = bufferReferenceReturn === "borrow"
-    ? {
-      release: releaseBorrowedReturnToken,
-      track: (
-        ref: BufferReference,
-        token: bigint,
-        aliasBuffer?: ArrayBuffer,
-      ) => {
-        if (outstandingBorrowedReturns === undefined) return;
-        const record = outstandingBorrowedReturns.get(token);
-        if (record !== undefined) {
-          if (aliasBuffer !== undefined) {
-            record.aliasBuffer = new WeakRef(aliasBuffer);
-          }
-          return;
-        }
-        outstandingBorrowedReturns.set(token, {
-          ref: new WeakRef(ref),
-          aliasBuffer: aliasBuffer === undefined
-            ? undefined
-            : new WeakRef(aliasBuffer),
-          runtime: ref.runtime,
-        });
-      },
-    }
-    : undefined;
-
   const queue = stealPool?.sharedQueue ?? createHostTxQueue({
     lock,
     returnLock,
     abortSignals,
-    releaseBufferReferenceReturn: returnHooks,
   });
-  if (stealPool !== undefined) {
-    stealPool.sharedQueue.setReturnHooks(stealPool.consumerId, returnHooks);
-  }
 
   const {
     enqueue,
@@ -676,8 +617,7 @@ export const spawnWorkerContext = ({
   const notifySignal = nativeNotifySignal ??
     (canNotifySignal ? (() => a_notify(thisSignal, 0, 1)) : undefined);
 
-  // Wakes this lane's worker when it is parked (rxStatus 0). Used by send()
-  // (new work just arrived) — the dispatcher drain wakes it the same way.
+  // Wake this lane when its worker is parked.
   const laneWake = () => {
     if (a_load(signalBox.rxStatus, 0) === 0) {
       a_add(thisSignal, 0, 1);
@@ -692,10 +632,19 @@ export const spawnWorkerContext = ({
   const ownsChannel = sharedChannelHandler === undefined &&
     stealPool === undefined;
   const ownChannel = sharedChannelHandler ?? new ChannelHandler();
-  // Under stealing there is one queue, so one dispatcher drives it from the
-  // pool; a per-lane dispatcher would double-drain the shared registry.
-  const { check: dispatcherCheck } = stealPool !== undefined
-    ? { check: undefined }
+  // Create the Node doorbell before bootstrapping the worker.
+  let nodeCompletionWake: (() => void) | undefined;
+  const nodeCompletionDoorbell = !useProcessWorkerRuntime &&
+      host?.doorbell !== false && host?.nativeDoorbell === true
+    ? createNodeCompletionDoorbell(() => nodeCompletionWake?.())
+    : undefined;
+  const canUseNodeCompletionDoorbell = nodeCompletionDoorbell !== undefined;
+  // A stealing pool has one dispatcher for its shared queue.
+  const {
+    check: dispatcherCheck,
+    wakeCompletion: directCompletionWake,
+  } = stealPool !== undefined
+    ? { check: undefined, wakeCompletion: undefined }
     : hostDispatcherLoop({
       signalBox,
       queue,
@@ -703,14 +652,22 @@ export const spawnWorkerContext = ({
       dispatcherOptions: host,
       notifySignal: nativeNotifySignal,
       crossProcess: useProcessWorkerRuntime,
+      nativeCompletionDoorbell: canUseDenoCompletionDoorbell ||
+        canUseNodeCompletionDoorbell,
+      processCompletionDoorbell: canUseProcessCompletionDoorbell,
     });
+  if (canUseDenoCompletionDoorbell && dispatcherCheck !== undefined) {
+    denoCompletionDoorbell.listen(thread, directCompletionWake!);
+  }
+  nodeCompletionWake = directCompletionWake;
+  let processCompletionWake = directCompletionWake;
   if (ownsChannel && dispatcherCheck !== undefined) {
     ownChannel.open(dispatcherCheck);
     channelHandler = ownChannel;
     dispatchSend = () => {
       if (dispatcherCheck.isRunning === true) return;
       dispatcherCheck.isRunning = true;
-      Promise.resolve().then(dispatcherCheck);
+      queueMicrotask(dispatcherCheck);
       laneWake();
     };
   }
@@ -745,18 +702,29 @@ export const spawnWorkerContext = ({
     lock: lockBuffers,
     returnLock: returnLockBuffers,
     payloadConfig: resolvedPayloadConfig,
-    bufferReferenceReturn,
+    sharedReturn: sharedBytesEnabled === true,
     permission,
-    // Mirrors the dispatcher's `canUseDoorbell`: a cross-process worker cannot
-    // ring the host's waiter, so do not make it pay the atomic op.
-    notifyOnHostPublish: !useProcessWorkerRuntime &&
-      host?.doorbell !== false &&
-      (RUNTIME === "bun" || RUNTIME === "node") &&
-      typeof Atomics.waitAsync === "function",
+    // Select the completion doorbell supported by the worker runtime.
+    notifyOnHostPublish: host?.doorbell !== false &&
+      (
+        canUseProcessCompletionDoorbell ||
+        canUseNodeCompletionDoorbell ||
+        (!useProcessWorkerRuntime &&
+          (RUNTIME === "bun" || RUNTIME === "node") &&
+          typeof Atomics.waitAsync === "function")
+      ),
+    processCompletionDoorbell: canUseProcessCompletionDoorbell,
+    denoCompletionDoorbell: canUseDenoCompletionDoorbell
+      ? denoCompletionDoorbell.pointer
+      : undefined,
+    nodeCompletionDoorbell: canUseNodeCompletionDoorbell
+      ? nodeCompletionDoorbell.pointer
+      : undefined,
     steal: stealPool === undefined ? undefined : {
       consumers: stealPool.consumers,
       consumerId: stealPool.consumerId,
       regionLanes: stealPool.regionLanes,
+      claim: stealPool.stealClaim,
     },
   } as WorkerData;
   const baseWorkerOptions = {
@@ -847,6 +815,11 @@ export const spawnWorkerContext = ({
   }
 
   let closedReason: string | undefined;
+  // A worker that exits because the host asked it to stop is a closed thread,
+  // not a crash. The stop is acknowledged in shared memory before the worker
+  // unwinds, so on a slow host the `exit` event can land ahead of `kills()`
+  // and label an orderly shutdown "Worker exited with code 0".
+  let stopRequested = false;
   const deactivateStealConsumer = () => {
     stealPool?.hostSubmitLock.deactivateStealConsumer(
       stealPool.consumerId,
@@ -862,25 +835,21 @@ export const spawnWorkerContext = ({
       deactivateStealConsumer();
     }
   };
-  // `workerBytesReadable`: while the worker is still alive its pinned bytes
-  // can be copied out; after a crash/exit they are gone and borrows are
-  // detached so stale reads fail loud instead of aliasing freed memory.
-  const markWorkerClosed = (
-    reason: string,
-    workerBytesReadable = false,
-  ): void => {
+  const markWorkerClosed = (reason: string): void => {
     if (closedReason) return;
     closedReason = reason;
-    revokeOutstandingBorrowedReturns(workerBytesReadable);
     rejectAll(reason);
     channelHandler?.close();
   };
 
   const onWorkerMessage = (message: unknown) => {
+    if (isProcessCompletionDoorbell(message)) {
+      processCompletionWake?.();
+      return;
+    }
     if (!isWorkerFatalMessage(message)) return;
     markWorkerClosed(
       `Worker startup failed: ${message[WORKER_FATAL_MESSAGE_KEY]}`,
-      true,
     );
     terminateFailedWorker();
   };
@@ -894,10 +863,13 @@ export const spawnWorkerContext = ({
     nodeWorker.on("message", onWorkerMessage);
     nodeWorker.on("error", onWorkerError);
     nodeWorker.on("exit", (code: unknown) => {
-      // Exit is the point at which this endpoint can no longer write WANT, so
-      // survivors may safely ignore any intent it left behind.
       deactivateStealConsumer();
+      nodeCompletionDoorbell?.close();
       if (closedReason !== undefined) return;
+      if (stopRequested) {
+        markWorkerClosed("Thread closed");
+        return;
+      }
       const normalized = typeof code === "number" ? code : -1;
       markWorkerClosed(`Worker exited with code ${normalized}`);
     });
@@ -943,23 +915,24 @@ export const spawnWorkerContext = ({
     };
   };
 
-  // Ask the worker to leave its loop before termination.
-  const requestWorkerStop = async (): Promise<void> => {
+  const requestWorkerStop = async (): Promise<boolean> => {
+    stopRequested = true;
     const stopView = signalBox.stopView;
-    if (stopView === undefined) return;
+    if (stopView === undefined) return true;
     try {
       Atomics.store(stopView, 0, WORKER_STOP.requested);
       laneWake();
       notifySignal?.();
     } catch {
-      return;
+      return false;
     }
-    if (!WORKER_STOP_NEEDS_ACK) return;
+    if (!WORKER_STOP_NEEDS_ACK) return true;
     const deadline = Date.now() + WORKER_STOP_ACK_TIMEOUT_MS;
     while (Atomics.load(stopView, 0) !== WORKER_STOP.acknowledged) {
-      if (Date.now() >= deadline) return;
+      if (Date.now() >= deadline) return false;
       await new Promise((resolve) => setTimeout(resolve, 1));
     }
+    return true;
   };
 
   const context: WorkerContext & {
@@ -968,12 +941,15 @@ export const spawnWorkerContext = ({
     dispatcherCheck?: DispatcherCheck;
     laneWake?: () => void;
     bindSend?: (fn: () => void) => void;
+    bindCompletionWake?: (fn: () => void) => void;
+    processCompletionDoorbell?: boolean;
+    nodeCompletionDoorbell?: boolean;
   } = {
     txIdle,
     call,
     requestStop: requestWorkerStop,
     kills: async () => {
-      markWorkerClosed("Thread closed", true);
+      markWorkerClosed("Thread closed");
       // Process workers must exit before their shared memory is unmapped.
       const awaitExit = processWorkerMemory !== undefined;
       const termination = terminateWorkerQuietly(worker, awaitExit);
@@ -989,6 +965,16 @@ export const spawnWorkerContext = ({
     bindSend: sharedChannelHandler !== undefined || stealPool !== undefined
       ? ((fn: () => void) => void (dispatchSend = fn))
       : undefined,
+    bindCompletionWake: (canUseProcessCompletionDoorbell ||
+        canUseNodeCompletionDoorbell) &&
+        stealPool !== undefined
+      ? ((fn: () => void) => {
+        processCompletionWake = fn;
+        nodeCompletionWake = fn;
+      })
+      : undefined,
+    processCompletionDoorbell: canUseProcessCompletionDoorbell,
+    nodeCompletionDoorbell: canUseNodeCompletionDoorbell,
   };
 
   return context;

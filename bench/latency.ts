@@ -1,6 +1,8 @@
 import { availableParallelism } from "node:os";
 import { bench, group, run as mitataRun } from "mitata";
 import { createPool, isMain, task } from "../knitting.ts";
+import { processWorkerUsesIpc } from "../src/runtime/process-worker.ts";
+import { RUNTIME } from "../src/common/runtime.ts";
 import { createWorkerPool } from "./postmessage/single.ts";
 import { format, parseJsonBench, print } from "./util/json-parse.ts";
 
@@ -10,6 +12,14 @@ import { format, parseJsonBench, print } from "./util/json-parse.ts";
  *
  *   LATENCY_CORES=1,2,4 LATENCY_BATCHES=1,10,100,1000 \
  *     deno run -A bench/latency.ts --json
+ *
+ * Process doorbell A/B (only host/child pairs with a Node-compatible IPC
+ * channel are accepted):
+ *
+ *   LATENCY_WORKER=process LATENCY_PROCESS_RUNTIME=node \
+ *     LATENCY_DOORBELL=both LATENCY_CORES=1 LATENCY_BATCHES=1 \
+ *     LATENCY_STALL_FREE_LOOPS=0 \
+ *     node --no-warnings --experimental-transform-types bench/latency.ts
  *
  * The task is intentionally empty, so additional cores are not expected to
  * improve throughput; this isolates scheduling and transport overhead.
@@ -31,6 +41,27 @@ const readPositiveIntegers = (value: string, label: string): number[] => {
   return [...new Set(values)];
 };
 
+const processWorker = process.env.LATENCY_WORKER === "process";
+const processRuntime: "node" | "bun" | "deno" =
+  process.env.LATENCY_PROCESS_RUNTIME === "bun"
+    ? "bun"
+    : process.env.LATENCY_PROCESS_RUNTIME === "deno"
+    ? "deno"
+    : "node";
+const stallFreeLoops = Math.max(
+  0,
+  Number(process.env.LATENCY_STALL_FREE_LOOPS ?? "0"),
+);
+const doorbellMode = process.env.LATENCY_DOORBELL ?? "both";
+if (!["poll", "doorbell", "both"].includes(doorbellMode)) {
+  throw new Error("LATENCY_DOORBELL must be poll, doorbell, or both");
+}
+const processDoorbellModes = doorbellMode === "poll"
+  ? [false]
+  : doorbellMode === "doorbell"
+  ? [true]
+  : [false, true];
+
 if (isMain) {
   const parallelism = availableParallelism();
   const defaultCores = [1, 2, 4].filter((cores) => cores <= parallelism);
@@ -49,36 +80,64 @@ if (isMain) {
       Object.assign(jsonResults, parseJsonBench(jsonString))
     : print;
 
+  if (
+    processWorker &&
+    !processWorkerUsesIpc({ processRuntime })
+  ) {
+    throw new Error(
+      `No IPC completion doorbell for ${RUNTIME} host -> ${processRuntime} process worker`,
+    );
+  }
+
   for (const threads of cores) {
-    const knitting = createPool({ threads })({ inLine });
-    const worker = createWorkerPool(threads);
+    const knitting = processWorker
+      ? processDoorbellModes.map((doorbell) => ({
+        name: `knitting process ${processRuntime} (${doorbell ? "IPC doorbell" : "poll"})`,
+        pool: createPool({
+          threads,
+          host: { doorbell, stallFreeLoops },
+          worker: { runtime: "process", processRuntime },
+        })({ inLine }),
+      }))
+      : [{
+        name: "knitting",
+        pool: createPool({ threads })({ inLine }),
+      }];
+    const worker = processWorker ? undefined : createWorkerPool(threads);
 
     try {
-      group(`knitting (${threads} worker${threads === 1 ? "" : "s"})`, () => {
-        for (const size of sizes) {
-          bench(`batch ${size}`, async () => {
-            await Promise.all(
-              Array.from({ length: size }, () => knitting.call.inLine()),
-            );
-          });
-        }
-      });
-
-      group(
-        `worker_threads (${threads} worker${threads === 1 ? "" : "s"})`,
-        () => {
+      for (const { name, pool } of knitting) {
+        group(`${name} (${threads} worker${threads === 1 ? "" : "s"})`, () => {
           for (const size of sizes) {
             bench(`batch ${size}`, async () => {
               await Promise.all(
-                Array.from({ length: size }, () => worker.call()),
+                Array.from({ length: size }, () => pool.call.inLine()),
               );
             });
           }
-        },
-      );
+        });
+      }
+
+      if (worker !== undefined) {
+        group(
+          `worker_threads (${threads} worker${threads === 1 ? "" : "s"})`,
+          () => {
+            for (const size of sizes) {
+              bench(`batch ${size}`, async () => {
+                await Promise.all(
+                  Array.from({ length: size }, () => worker.call()),
+                );
+              });
+            }
+          },
+        );
+      }
       await mitataRun({ format, print: benchmarkPrint });
     } finally {
-      await Promise.all([knitting.shutdown(), worker.shutdown()]);
+      await Promise.all([
+        ...knitting.map(({ pool }) => pool.shutdown()),
+        worker?.shutdown(),
+      ]);
     }
   }
 

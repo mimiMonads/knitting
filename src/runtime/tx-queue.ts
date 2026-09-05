@@ -16,10 +16,6 @@ import {
   OneShotDeferred,
   type SignalAbortStore,
 } from "../shared/abortSignal.ts";
-import {
-  type BufferReferenceReturnHooks,
-  withBufferReferenceReturnReleaser,
-} from "../connections/buffer-reference.ts";
 
 type RawArguments = unknown;
 type WorkerResponse = unknown;
@@ -52,19 +48,12 @@ type CreateHostTxQueueArgs = {
    * When omitted, only `returnLock` is drained (the classic one-lane shape).
    */
   extraReturnLocks?: readonly Lock2[];
-  releaseBufferReferenceReturn?:
-    | ((token: bigint) => void)
-    | BufferReferenceReturnHooks;
   abortSignals?: Pick<
     SignalAbortStore,
     "getSignal" | "setSignal" | "resetSignal" | "closeNow"
   >;
   now?: () => number;
 };
-
-type ReturnHooks =
-  | ((token: bigint) => void)
-  | BufferReferenceReturnHooks;
 
 const p_now = performance.now.bind(performance);
 
@@ -73,7 +62,6 @@ export function createHostTxQueue({
   lock,
   returnLock,
   extraReturnLocks,
-  releaseBufferReferenceReturn,
   abortSignals,
   now,
 }: CreateHostTxQueueArgs) {
@@ -153,41 +141,20 @@ export function createHostTxQueue({
       ? each.setHostWaiterArmed
       : (_armed: boolean) => {}
   );
-  // A stealing queue drains one private return lock per worker. Borrowed
-  // BufferReferences must therefore be claimed with the hooks belonging to the
-  // worker that produced that particular return. The hooks are bound after the
-  // worker context exists, while the pool-global queue is built before workers
-  // spawn, so keep one mutable hook slot per return lane.
-  const returnHooks = new Array<ReturnHooks | undefined>(
-    returnResolvers.length,
+  const returnNativeArmers = [
+    returnLock,
+    ...(extraReturnLocks ?? []),
+  ].map((each) =>
+    typeof each.armHostNotifier === "function"
+      ? each.armHostNotifier
+      : () => false
   );
-  if (releaseBufferReferenceReturn !== undefined) {
-    returnHooks[0] = releaseBufferReferenceReturn;
-  }
-
-  const resolveReturnAt = (index: number): number => {
-    const resolve = returnResolvers[index]!;
-    const hooks = returnHooks[index];
-    return hooks === undefined
-      ? resolve()
-      : withBufferReferenceReturnReleaser(hooks, resolve);
-  };
-
-  // Preserve the original one-lane fast path exactly: no wrapper, array lookup,
-  // or hook branch is paid by the default one-worker transport. Mutable
-  // per-return-lane hooks are needed only by a multi-worker stealing queue.
   const completeFrame = returnResolvers.length === 1
-    ? releaseBufferReferenceReturn === undefined
-      ? returnResolvers[0]!
-      : () =>
-        withBufferReferenceReturnReleaser(
-          releaseBufferReferenceReturn,
-          returnResolvers[0]!,
-        )
+    ? returnResolvers[0]!
     : () => {
       let resolved = 0 | 0;
       for (let i = 0; i < returnResolvers.length; i++) {
-        resolved = (resolved + resolveReturnAt(i)) | 0;
+        resolved = (resolved + returnResolvers[i]!()) | 0;
       }
       return resolved;
     };
@@ -199,6 +166,16 @@ export function createHostTxQueue({
   const completionArmed = new Uint8Array(returnWaiters.length);
   let completionWake: (() => void) | undefined;
   let completionGeneration = 0 | 0;
+  const completionGenerations = new Int32Array(returnWaiters.length);
+  // Reuse one callback per lane and capture the generation before re-arming.
+  const completionCallbacks = returnWaiters.map((_, index) => () => {
+    if (completionArmed[index] === 0) return;
+    const generation = completionGenerations[index];
+    completionArmed[index] = 0;
+    returnArmers[index]!(false);
+    if (generation !== completionGeneration) return;
+    completionWake?.();
+  });
   const setCompletionWaiterArmed = (armed: boolean) => {
     for (const setArmed of returnArmers) setArmed(armed);
   };
@@ -207,13 +184,18 @@ export function createHostTxQueue({
     timeoutMs?: number,
   ): boolean => {
     completionWake = onWake;
-    // A persistent waiter may still be pending after a send preempted the
-    // dispatcher. Re-arm its shared gate before relying on that waiter again.
-    setCompletionWaiterArmed(true);
     let supported = true;
 
     for (let index = 0; index < returnWaiters.length; index++) {
-      if (completionArmed[index] !== 0) continue;
+      if (completionArmed[index] !== 0) {
+        // Re-arm persistent waiters with an atomic check; a result may have
+        // arrived while the gate was off, and setting ARMED alone can strand it.
+        if (!returnNativeArmers[index]!()) {
+          onWake();
+          return true;
+        }
+        continue;
+      }
 
       let wait;
       try {
@@ -227,17 +209,15 @@ export function createHostTxQueue({
       }
 
       completionArmed[index] = 1;
-      const generation = completionGeneration;
-      const wakeLane = () => {
-        if (completionArmed[index] === 0) return;
-        completionArmed[index] = 0;
-        returnArmers[index]!(false);
-        if (generation !== completionGeneration) return;
-        completionWake?.();
-      };
+      completionGenerations[index] = completionGeneration;
+      const wakeLane = completionCallbacks[index]!;
 
-      if (!wait.async) wakeLane();
-      else Promise.resolve(wait.value).then(wakeLane, wakeLane);
+      if (!wait.async) {
+        wakeLane();
+        // A synchronous wake may disarm the whole queue, so stop here.
+        return true;
+      }
+      Promise.resolve(wait.value).then(wakeLane, wakeLane);
     }
 
     if (!supported) {
@@ -246,6 +226,21 @@ export function createHostTxQueue({
       completionGeneration = (completionGeneration + 1) | 0;
     }
     return supported;
+  };
+
+  /**
+   * Native callbacks (Deno's threadSafe UnsafeCallback) cannot use waitAsync,
+   * but they use the same shared arm word. Each lane is armed and checked for
+   * a publication in one operation; a false return means the dispatcher must
+   * drain again rather than sleep waiting for a ring that already happened.
+   */
+  const armCompletionNotifier = (): boolean => {
+    for (const arm of returnNativeArmers) {
+      if (arm()) continue;
+      setCompletionWaiterArmed(false);
+      return false;
+    }
+    return true;
   };
 
   const hasActiveTasks = () => {
@@ -287,13 +282,8 @@ export function createHostTxQueue({
     txIdle,
     completeFrame,
     waitForCompletion,
+    armCompletionNotifier,
     setCompletionWaiterArmed,
-    setReturnHooks: (lane: number, hooks: ReturnHooks | undefined) => {
-      if (!Number.isInteger(lane) || lane < 0 || lane >= returnHooks.length) {
-        throw new RangeError(`return lane ${lane} out of range`);
-      }
-      returnHooks[lane] = hooks;
-    },
     enqueue: (
       functionID: FunctionID,
       timeout?: TaskTimeout,

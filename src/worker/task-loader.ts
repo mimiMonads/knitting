@@ -14,8 +14,7 @@ type GetFunctionParams = {
 
 type WorkerCallable = (args: unknown, abortToolkit?: unknown) => unknown;
 
-// const object, not `const enum`: Andromeda's Nova engine can't parse `enum`.
-// No longer inlined, but only read on cold paths.
+// Use a const object; Andromeda's Nova engine cannot parse `enum`.
 export const TimeoutKind = {
   Reject: 0,
   Resolve: 1,

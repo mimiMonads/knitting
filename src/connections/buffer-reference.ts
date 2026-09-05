@@ -12,27 +12,12 @@ export type { BufferReferenceRuntime } from "./buffer-reference-native.ts";
 
 export const BUFFER_REFERENCE_KIND = "knitting.bufferReference" as const;
 
-/** Named values for the `unsafe.BufferReferenceReturn` pool option. */
-export const BufferReferenceReturn = {
-  /** Safe default: Deno/Bun copy the returned bytes so they outlive the worker. */
-  Copy: "copy",
-  /** Zero-copy: borrow the worker's backing store until the reference is released. */
-  Borrow: "borrow",
-} as const;
-
-export type BufferReferenceReturn =
-  (typeof BufferReferenceReturn)[keyof typeof BufferReferenceReturn];
 export const BUFFER_REFERENCE_NUMERIC_TRANSFER = Symbol.for(
   "knitting.bufferReference.numericTransfer",
-);
-export const BUFFER_REFERENCE_RETURN_RELEASE_TOKEN = Symbol.for(
-  "knitting.bufferReference.returnReleaseToken",
 );
 
 const EXTERNAL_PAYLOAD_BRAND = Symbol.for("knitting.payloadCodec");
 export const BUFFER_REFERENCE_CODEC_ID = BUFFER_REFERENCE_KIND;
-const BUFFER_REFERENCE_RETURN_RELEASE_MESSAGE_KEY =
-  "__knittingBufferReferenceRelease";
 
 export type BufferReferenceNumericMetadata = readonly [
   pointerLow: number,
@@ -56,32 +41,8 @@ export type BufferReferenceMetadata = {
   readonly byteLength: number;
 };
 
-export type BufferReferenceReturnReleaseMessage = {
-  readonly [BUFFER_REFERENCE_RETURN_RELEASE_MESSAGE_KEY]: string;
-};
-
-type BufferReferenceReturnReleaser = (token: bigint) => void;
-
-/** Host-side hooks for borrowed returns: release channel plus shutdown tracking. */
-export type BufferReferenceReturnHooks = {
-  /** Ask the producing worker to drop its pin for `token`. */
-  release: BufferReferenceReturnReleaser;
-  /**
-   * Record a borrowed reference so the pool can revoke it before its worker
-   * dies. Called at claim time without `aliasBuffer`, then again on first
-   * materialize with the alias buffer once it exists.
-   */
-  track?: (
-    ref: BufferReference,
-    token: bigint,
-    aliasBuffer?: ArrayBuffer,
-  ) => void;
-};
-
 type BufferSource = ArrayBufferView | ArrayBuffer;
-type BufferReferenceTransportFinalizer = (() => void) & {
-  [BUFFER_REFERENCE_RETURN_RELEASE_TOKEN]?: bigint;
-};
+type BufferReferenceTransportFinalizer = () => void;
 
 const getRuntime = (): BufferReferenceRuntime => {
   if (RUNTIME === "deno" || RUNTIME === "bun" || RUNTIME === "node") {
@@ -108,7 +69,6 @@ const RUNTIME_BUN = 3;
 const PAYLOAD_TRANSPORT_FINALIZER = Symbol.for(
   "knitting.payloadCodec.transportFinalizer",
 );
-let currentReturnHooks: BufferReferenceReturnHooks | undefined;
 const bufferReferenceInstances = new WeakSet<object>();
 
 const encodeRuntime = (runtime: BufferReferenceRuntime): number => {
@@ -178,50 +138,6 @@ const numericMetadataToMetadata = (
   };
 };
 
-const toReturnHooks = (
-  releaser: BufferReferenceReturnReleaser | BufferReferenceReturnHooks,
-): BufferReferenceReturnHooks =>
-  typeof releaser === "function" ? { release: releaser } : releaser;
-
-export const withBufferReferenceReturnReleaser = <T>(
-  releaser:
-    | BufferReferenceReturnReleaser
-    | BufferReferenceReturnHooks
-    | undefined,
-  run: () => T,
-): T => {
-  if (releaser === undefined) return run();
-  const previous = currentReturnHooks;
-  currentReturnHooks = toReturnHooks(releaser);
-  try {
-    return run();
-  } finally {
-    currentReturnHooks = previous;
-  }
-};
-
-export const createBufferReferenceReturnReleaseMessage = (
-  token: bigint,
-): BufferReferenceReturnReleaseMessage => ({
-  [BUFFER_REFERENCE_RETURN_RELEASE_MESSAGE_KEY]: token.toString(),
-});
-
-export const readBufferReferenceReturnReleaseMessage = (
-  value: unknown,
-): bigint | undefined => {
-  if (value === null || typeof value !== "object") return undefined;
-  const raw = (value as Record<string, unknown>)[
-    BUFFER_REFERENCE_RETURN_RELEASE_MESSAGE_KEY
-  ];
-  if (typeof raw !== "string") return undefined;
-  try {
-    const token = BigInt(raw);
-    return token > 0n ? token : undefined;
-  } catch {
-    return undefined;
-  }
-};
-
 // Backstop for references that never flow through the transport. The held
 // value is a shared countdown over the reference AND every alias buffer it
 // materialized: views strongly reference their buffer, so the pin can only
@@ -242,20 +158,6 @@ const producerFinalizer = typeof FinalizationRegistry === "function"
       // best effort
     }
   })
-  : undefined;
-
-const borrowedReturnFinalizer = typeof FinalizationRegistry === "function"
-  ? new FinalizationRegistry<
-    { token: bigint; release: BufferReferenceReturnReleaser }
-  >(
-    ({ token, release }) => {
-      try {
-        release(token);
-      } catch {
-        // best effort
-      }
-    },
-  )
   : undefined;
 
 const isSharedArrayBufferInstance = (
@@ -293,6 +195,17 @@ type TransferableArrayBuffer = ArrayBuffer & {
 const isDetached = (buffer: ArrayBuffer): boolean =>
   (buffer as TransferableArrayBuffer).detached === true ||
   buffer.byteLength === 0;
+
+/**
+ * Whether a buffer has given up its bytes.
+ *
+ * Exported so a caller that *moved* a source can confirm the move actually
+ * happened. A runtime that cannot detach a buffer -- WASM memory, anything an
+ * external API has pinned -- otherwise leaves the producer still able to write
+ * memory the consumer has been told it owns.
+ */
+export const isArrayBufferDetached = (buffer: ArrayBuffer): boolean =>
+  isDetached(buffer);
 
 /** Revocation primitive: detach `buffer` so every view over it is neutralized. */
 export const detachArrayBufferBestEffort = (
@@ -378,9 +291,6 @@ export class BufferReference {
   #producerBackstop: ProducerBackstop | undefined;
   #materializedRegions: AdoptedRegion[] | undefined;
   #owned: AdoptedRegion | undefined;
-  #borrowedReturnReleaser: BufferReferenceReturnReleaser | undefined;
-  #borrowedReturnTrack: BufferReferenceReturnHooks["track"];
-  #borrowedReturnFinalizerToken: object | undefined;
   #transportRefs = 0;
   #released = false;
 
@@ -509,16 +419,8 @@ export class BufferReference {
   }
 
   /** Prepare a returned reference before the worker-side producer hold drains. */
-  claimOwnership(
-    releaser:
-      | BufferReferenceReturnReleaser
-      | BufferReferenceReturnHooks
-      | undefined = currentReturnHooks,
-  ): this {
-    if (
-      this.#owned !== undefined || this.#borrowedReturnReleaser !== undefined ||
-      this.#released
-    ) return this;
+  claimOwnership(): this {
+    if (this.#owned !== undefined || this.#released) return this;
     this.#assertLocal();
     const caps = getBufferReferenceCapabilities();
     const input = {
@@ -527,26 +429,6 @@ export class BufferReference {
       byteOffset: this.byteOffset,
       byteLength: this.byteLength,
     };
-
-    if (releaser !== undefined) {
-      const hooks = toReturnHooks(releaser);
-      // Borrow: adopt lazily — the alias costs GC-visible external memory on
-      // FFI runtimes, so it is only created when the bytes are actually read.
-      // Until then no view can exist, so the GC backstop safely watches the
-      // reference itself; first materialize migrates it to the alias buffer
-      // (views strongly reference their buffer, so the worker pin can only
-      // drop once no view can reach the borrowed bytes).
-      this.#borrowedReturnReleaser = hooks.release;
-      this.#borrowedReturnTrack = hooks.track;
-      this.#borrowedReturnFinalizerToken = {};
-      borrowedReturnFinalizer?.register(
-        this,
-        { token: this.#token, release: hooks.release },
-        this.#borrowedReturnFinalizerToken,
-      );
-      hooks.track?.(this, this.#token);
-      return this;
-    }
 
     this.#owned = caps.adopt(
       input,
@@ -565,24 +447,6 @@ export class BufferReference {
       byteOffset: this.byteOffset,
       byteLength: this.byteLength,
     });
-    if (this.#borrowedReturnReleaser !== undefined) {
-      // First borrowed read: views over this alias exist from here on, so
-      // move the GC backstop from the reference onto the alias buffer.
-      this.#owned = region;
-      if (
-        this.#borrowedReturnFinalizerToken !== undefined &&
-        borrowedReturnFinalizer !== undefined
-      ) {
-        borrowedReturnFinalizer.unregister(this.#borrowedReturnFinalizerToken);
-        borrowedReturnFinalizer.register(
-          region.buffer,
-          { token: this.#token, release: this.#borrowedReturnReleaser },
-          this.#borrowedReturnFinalizerToken,
-        );
-      }
-      this.#borrowedReturnTrack?.(this, this.#token, region.buffer);
-      return region;
-    }
     (this.#materializedRegions ??= []).push(region);
     if (
       this.#producerBackstop !== undefined && producerFinalizer !== undefined
@@ -624,6 +488,11 @@ export class BufferReference {
     if (this.#released) return;
     this.#released = true;
 
+    // A claimed Node return is an owning ArrayBuffer, not a borrow. Drop this
+    // wrapper's ownership immediately; any ArrayBuffer or typed-array the
+    // caller kept still co-owns the backing store and stays valid.
+    this.#owned = undefined;
+
     // Revoke every alias this reference handed out before any pin can drop.
     // Leak-not-UAF: if a detach fails, the pin must stay held — the GC
     // backstops remain registered and retry once the buffers are unreachable.
@@ -637,33 +506,6 @@ export class BufferReference {
           detachArrayBufferBestEffort(this.runtime, regions[i]!.buffer) &&
           allDetached;
       }
-    }
-
-    const borrowedReturnReleaser = this.#borrowedReturnReleaser;
-    this.#borrowedReturnReleaser = undefined;
-    this.#borrowedReturnTrack = undefined;
-    if (borrowedReturnReleaser !== undefined) {
-      const owned = this.#owned;
-      this.#owned = undefined;
-      if (owned !== undefined) {
-        allDetached = detachArrayBufferBestEffort(this.runtime, owned.buffer) &&
-          allDetached;
-      }
-      if (allDetached) {
-        if (this.#borrowedReturnFinalizerToken !== undefined) {
-          borrowedReturnFinalizer?.unregister(
-            this.#borrowedReturnFinalizerToken,
-          );
-          this.#borrowedReturnFinalizerToken = undefined;
-        }
-        try {
-          borrowedReturnReleaser(this.#token);
-        } catch {
-          // best effort
-        }
-      }
-      // else: the finalizer stays registered on the alias buffer and sends
-      // the release once every escaped view is gone.
     }
 
     // Only the producer owns the registry hold; consumers must not drop it.
@@ -683,70 +525,6 @@ export class BufferReference {
     // reference and every materialized alias are unreachable.
   }
 
-  /**
-   * Revoke a borrowed return before its producing worker goes away: detach
-   * the borrowed alias so no view can dangle. With `copyBytes` the reference
-   * itself survives on an owned copy; without it (worker bytes already gone)
-   * later reads fail loud instead of aliasing freed memory.
-   */
-  revokeBorrow(copyBytes: boolean): void {
-    const releaser = this.#borrowedReturnReleaser;
-    if (releaser === undefined || this.#released) return;
-
-    const owned = this.#owned;
-    let nextOwned: AdoptedRegion | undefined;
-    let detached = true;
-    if (owned !== undefined) {
-      if (copyBytes) {
-        nextOwned = {
-          buffer: owned.buffer.slice(
-            owned.byteOffset,
-            owned.byteOffset + owned.byteLength,
-          ),
-          byteOffset: 0,
-          byteLength: owned.byteLength,
-        };
-      }
-      // Without a copy, keep the (now detached) region so reads throw
-      // instead of re-materializing an alias over freed worker memory.
-      detached = detachArrayBufferBestEffort(this.runtime, owned.buffer);
-    } else if (copyBytes) {
-      // Never materialized: take the bytes now, while the worker still pins
-      // them, so the reference stays readable after its worker dies.
-      const caps = getBufferReferenceCapabilities();
-      nextOwned = caps.adopt(
-        {
-          token: this.#token,
-          pointer: this.pointer,
-          byteOffset: this.byteOffset,
-          byteLength: this.byteLength,
-        },
-        { copy: !caps.supportsOwningAdopt },
-      );
-    } else {
-      // Never materialized and the worker bytes are already gone: no view
-      // exists, so poison future reads instead of aliasing freed memory.
-      this.#released = true;
-    }
-
-    if (!detached) return;
-
-    if (nextOwned !== undefined) this.#owned = nextOwned;
-    this.#borrowedReturnReleaser = undefined;
-    this.#borrowedReturnTrack = undefined;
-    if (this.#borrowedReturnFinalizerToken !== undefined) {
-      borrowedReturnFinalizer?.unregister(this.#borrowedReturnFinalizerToken);
-      this.#borrowedReturnFinalizerToken = undefined;
-    }
-
-    // Best effort: if the worker is still alive it can drop its pin early.
-    try {
-      releaser(this.#token);
-    } catch {
-      // best effort
-    }
-  }
-
   [Symbol.dispose](): void {
     this.release();
   }
@@ -761,9 +539,6 @@ export class BufferReference {
       this.#transportRefs--;
       if (this.#transportRefs <= 0) this.release();
     }) as BufferReferenceTransportFinalizer;
-    if (this.#isProducer) {
-      finalizer[BUFFER_REFERENCE_RETURN_RELEASE_TOKEN] = this.#token;
-    }
     return finalizer;
   }
 }

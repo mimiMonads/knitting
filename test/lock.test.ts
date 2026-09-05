@@ -917,6 +917,37 @@ test("waitForHostChange reports a publication that raced the arm", () => {
   assert.equal(wait!.value, "not-equal");
 });
 
+test("armHostNotifier observes a prior publication and rings a later one", () => {
+  const lockSector = new SharedArrayBuffer(LOCK_SECTOR_BYTE_LENGTH);
+  const headers = new SharedArrayBuffer(HEADER_BYTE_LENGTH);
+  const payloadSector = new SharedArrayBuffer(PAYLOAD_LOCK_SECTOR_BYTE_LENGTH);
+  const payload = new SharedArrayBuffer(64 * 1024);
+  let rings = 0;
+  const producer = lock2({
+    headers,
+    LockBoundSector: lockSector,
+    payload,
+    payloadSector,
+    notifyOnHostPublish: true,
+    notifyHostPublish: () => rings++,
+  });
+  const consumer = lock2({
+    headers,
+    LockBoundSector: lockSector,
+    payload,
+    payloadSector,
+  });
+
+  assert.equal(consumer.armHostNotifier(), true);
+  assert.equal(producer.encode(makeValueTask("rings")), true);
+  assert.equal(producer.encode(makeValueTask("coalesced")), true);
+  assert.equal(rings, 1);
+  consumer.setHostWaiterArmed(false);
+
+  assert.equal(producer.encode(makeValueTask("already published")), true);
+  assert.equal(consumer.armHostNotifier(), false);
+});
+
 test("worker publication wakes an async host waiter", {
   skip: RUNTIME === "deno",
 }, async () => {
@@ -950,7 +981,9 @@ test("worker publication wakes an async host waiter", {
 
   const result = await Promise.race([
     Promise.resolve(wait!.value),
-    new Promise<"timeout">((resolve) => setTimeout(() => resolve("timeout"), 500)),
+    new Promise<"timeout">((resolve) =>
+      setTimeout(() => resolve("timeout"), 500)
+    ),
   ]);
   assert.equal(result, "ok");
 });

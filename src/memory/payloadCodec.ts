@@ -2,7 +2,6 @@ import {
   attachPayloadTransportFinalizer,
   beginPromisePayload,
   finishPromisePayload,
-  getTaskSlotIndex,
   HEADER_BYTE_LENGTH,
   HEADER_SLOT_STRIDE_U32,
   HEADER_STATIC_PAYLOAD_U32,
@@ -13,6 +12,7 @@ import {
   type PromisePayloadHandler,
   registerLockPayloadCodec,
   type Task,
+  TASK_SLOT_INDEX_MASK,
   TaskIndex,
 } from "./lock.ts";
 import { register } from "./regionRegistry.ts";
@@ -28,7 +28,10 @@ import {
   type PayloadBufferOptions,
   resolvePayloadBufferOptions,
 } from "./payload-config.ts";
-import type { SharedBufferSource } from "../common/shared-buffer-region.ts";
+import {
+  type SharedBufferSource,
+  toSharedBufferRegion,
+} from "../common/shared-buffer-region.ts";
 import {
   getSharedArrayBufferPayload,
   SHARED_ARRAY_BUFFER_CODEC_ID,
@@ -38,8 +41,12 @@ import {
 import {
   BUFFER_REFERENCE_NUMERIC_TRANSFER,
   BufferReference,
+  isArrayBufferDetached,
   isBufferReferenceValue,
 } from "../connections/buffer-reference.ts";
+import {
+  getBufferReferenceCapabilities,
+} from "../connections/buffer-reference-native.ts";
 import {
   isProcessSharedBufferValue,
   ProcessSharedBuffer,
@@ -55,8 +62,11 @@ type ExternalPayloadLike = {
 };
 
 type ExternalPayloadCodec = {
-  decode: (metadata: unknown) => unknown;
-  decodeNumeric?: (metadata: ArrayLike<number>) => unknown;
+  decode: (metadata: unknown, transportKey?: object) => unknown;
+  decodeNumeric?: (
+    metadata: ArrayLike<number>,
+    transportKey?: object,
+  ) => unknown;
 };
 
 type BufferReferencePayloadLike = ExternalPayloadLike & {
@@ -212,6 +222,7 @@ const readTrustedExternalPayloadMetadata = (
 const decodeExternalPayload = (
   raw: string,
   processBoundary: boolean,
+  transportKey?: object,
 ): unknown => {
   const payload = parseJSON(raw);
   if (!arrayIsArray(payload) || payload.length !== 2) return payload;
@@ -227,7 +238,7 @@ const decodeExternalPayload = (
 
   const codec = externalPayloadGlobal.__KNITTING_PAYLOAD_CODECS__?.[codecId];
   return typeof codec?.decode === "function"
-    ? codec.decode(metadata)
+    ? codec.decode(metadata, transportKey)
     : { codec: codecId, metadata };
 };
 
@@ -235,13 +246,32 @@ const PROCESS_SHARED_BUFFER_NUMERIC_WORDS = 8;
 const BUFFER_REFERENCE_NUMERIC_WORDS = 8;
 const NUMERIC_SENTINEL = 0xffffffff;
 
+/** Minimum size for automatically borrowed byte returns. */
+export const SHARED_RETURN_MIN_BYTES = 256 * 1024;
+
+/** Number of later borrowed returns kept before a region is recycled. */
+export const SHARED_RETURN_BORROW_WINDOW = 32;
+
+// Each payload buffer has one allocator for the worker return lane.
+const sharedReturnAllocators = new WeakMap<
+  object,
+  (byteLength: number, zeroFill?: boolean) => Uint8Array | undefined
+>();
+
+/** The borrowed-region allocator for `payload`, if an encoder built one. */
+export const getSharedReturnAllocator = (
+  payload: object,
+): ((byteLength: number, zeroFill?: boolean) => Uint8Array | undefined) |
+  undefined => sharedReturnAllocators.get(payload);
+
 const decodeNumericExternalPayload = (
   codecId: string,
   words: ArrayLike<number>,
+  transportKey?: object,
 ): unknown => {
   const codec = externalPayloadGlobal.__KNITTING_PAYLOAD_CODECS__?.[codecId];
   if (typeof codec?.decodeNumeric === "function") {
-    return codec.decodeNumeric(words);
+    return codec.decodeNumeric(words, transportKey);
   }
   return { codec: codecId, metadata: Array.from(words) };
 };
@@ -255,9 +285,18 @@ const decodeBufferReferenceNumericWords = (
   words: ArrayLike<number>,
 ): unknown => decodeNumericExternalPayload(BUFFER_REFERENCE_CODEC_ID, words);
 
+// The transport key scopes the host's adopted-alias cache to one return lane:
+// producer tokens restart at 1 in every worker isolate, so a shared cache would
+// serve one worker's buffer for another worker's identical token.
 const decodeSharedArrayBufferNumericWords = (
   words: ArrayLike<number>,
-): unknown => decodeNumericExternalPayload(SHARED_ARRAY_BUFFER_CODEC_ID, words);
+  transportKey?: object,
+): unknown =>
+  decodeNumericExternalPayload(
+    SHARED_ARRAY_BUFFER_CODEC_ID,
+    words,
+    transportKey,
+  );
 
 const tryEncodePrimitiveTask = (task: Task): boolean => {
   const value = task.value;
@@ -466,6 +505,8 @@ export const encodePayload = ({
   textCompat,
   onPromise,
   processBoundary = false,
+  sharedReturn = false,
+  moveReturn = false,
 }: {
   lockSector?: SharedBufferSource;
   payload?: {
@@ -489,6 +530,16 @@ export const encodePayload = ({
    * Process transports must set this on both encoders and decoders.
    */
   processBoundary?: boolean;
+  /**
+   * Enable explicit `sharedBytes()` allocations on a worker return lane.
+   * Ordinary byte returns never become borrowed implicitly.
+   */
+  sharedReturn?: boolean;
+  /**
+   * Move large top-level byte returns into an owned host ArrayBuffer. Unlike a
+   * borrowed return, the result stays valid until the host drops it.
+   */
+  moveReturn?: boolean;
 }) => {
   const payloadSab = payload?.sab ?? sab;
   const resolvedPayloadConfig = resolvePayloadBufferOptions({
@@ -496,14 +547,30 @@ export const encodePayload = ({
     options: payload?.config ?? payloadConfig,
   });
   const maxPayloadBytes = resolvedPayloadConfig.maxPayloadBytes;
+  // Automatic moves are an optimization. Keep ordinary byte returns working
+  // when this runtime has no usable ownership/FFI backend.
+  const canMoveReturn = moveReturn && (() => {
+    try {
+      getBufferReferenceCapabilities();
+      return true;
+    } catch {
+      return false;
+    }
+  })();
 
-  const { allocTask, setSlotLength, free } = register({ lockSector });
+  const registryHandle = register({ lockSector });
+  const { allocTask, setSlotLength, tagTaskSlot, free } = registryHandle;
+  const { allocRegion, regionStart } = registryHandle;
   const {
     writeBinary: writeDynamicBinary,
     writeBuffer: writeDynamicBuffer,
     writeArrayBuffer: writeDynamicArrayBuffer,
     write8Binary: writeDynamic8Binary,
     writeUtf8: writeDynamicUtf8,
+    readBytesView: dynamicRegionView,
+    ensureCapacity: ensureDynamicCapacity,
+    currentBuffer: currentDynamicBuffer,
+    regionBase: dynamicRegionBase,
   } = createSharedDynamicBufferIO({
     sab: payloadSab,
     payloadConfig: resolvedPayloadConfig,
@@ -574,9 +641,75 @@ export const encodePayload = ({
     label: string,
   ): number => dynamicUtf8ReserveBytesWithExtra(task, text, 0, label);
 
+  // Borrowed regions are tracked as [slot, start, end] triples, oldest first.
+  const borrowed: number[] = [];
+  const BORROW_STRIDE = 3;
+
+  /** Limit borrowed regions to half the payload arena. */
+  const maxBorrowBytes =
+    ((resolvedPayloadConfig.payloadMaxByteLength >> 1) /
+      SHARED_RETURN_BORROW_WINDOW) | 0;
+
+  /** Reserve a region to hand over by reference, or -1 when none is free. */
+  const reserveBorrowedRegion = (bytes: number): number => {
+    if (bytes > maxBorrowBytes) return -1;
+    const slot = allocRegion(bytes);
+    if (slot === -1) return -1;
+    const start = regionStart(slot);
+    if (!ensureDynamicCapacity(start + bytes)) {
+      free(slot);
+      return -1;
+    }
+    borrowed.push(slot, start, start + bytes);
+    if (borrowed.length > SHARED_RETURN_BORROW_WINDOW * BORROW_STRIDE) {
+      free(borrowed[0]!);
+      borrowed.splice(0, BORROW_STRIDE);
+    }
+    return slot;
+  };
+
+  const dropBorrowedRegion = (slot: number): void => {
+    for (let at = 0; at < borrowed.length; at += BORROW_STRIDE) {
+      if (borrowed[at] === slot) {
+        borrowed.splice(at, BORROW_STRIDE);
+        break;
+      }
+    }
+    free(slot);
+  };
+
+  /** Return the arena offset when `view` is inside a live borrowed region. */
+  const borrowedStartOf = (view: Uint8Array): number => {
+    if (borrowed.length === 0) return -1;
+    if (view.buffer !== currentDynamicBuffer()) return -1;
+    const start = view.byteOffset - dynamicRegionBase();
+    const end = start + view.byteLength;
+    for (let at = borrowed.length - BORROW_STRIDE; at >= 0; at -= BORROW_STRIDE) {
+      if (start >= borrowed[at + 1]! && end <= borrowed[at + 2]!) return start;
+    }
+    return -1;
+  };
+
+  /** Allocate a borrowed return region, or fall back when none is available. */
+  const allocateSharedReturn = (
+    byteLength: number,
+    zeroFill = false,
+  ): Uint8Array | undefined => {
+    const slot = reserveBorrowedRegion(byteLength);
+    if (slot === -1) return undefined;
+    const start = regionStart(slot);
+    const view = dynamicRegionView(start, start + byteLength);
+    if (zeroFill) view.fill(0);
+    return view;
+  };
+  if (sharedReturn && payloadSab !== undefined) {
+    sharedReturnAllocators.set(payloadSab as object, allocateSharedReturn);
+  }
+
   const reserveDynamic = (task: Task, bytes: number) => {
     task[TaskIndex.PayloadLen] = bytes;
-    // PayloadCodec only reserves after the lock has guaranteed capacity.
+    // -1 is dynamic-region backpressure. Returning false leaves this frame on
+    // the lock's existing pending list until a receiver releases a region.
     return allocTask(task);
   };
   let objectDynamicSlot = -1;
@@ -646,6 +779,7 @@ export const encodePayload = ({
     if (reserveBytes < 0) return false;
     task[TaskIndex.Type] = PayloadBuffer.Error;
     const reservedSlot = reserveDynamicObject(task, reserveBytes);
+    if (reservedSlot === -1) return false;
     const written = writeDynamicUtf8(
       text,
       task[TaskIndex.Start],
@@ -683,6 +817,7 @@ export const encodePayload = ({
       return false;
     }
     const reservedSlot = reserveDynamicObject(task, bytes);
+    if (reservedSlot === -1) return false;
     const written = writeDynamicBinary(bytesView, task[TaskIndex.Start]);
     if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
     task[TaskIndex.PayloadLen] = written;
@@ -696,6 +831,15 @@ export const encodePayload = ({
     bytesView: Uint8Array,
   ) => {
     const bytes = bytesView.byteLength;
+    // Preserve an arena-backed subarray as an offset/length frame.
+    const borrowedStart = borrowedStartOf(bytesView);
+    if (borrowedStart !== -1) {
+      task[TaskIndex.Type] = PayloadBuffer.ArenaBinary;
+      task[TaskIndex.Start] = borrowedStart;
+      task[TaskIndex.PayloadLen] = bytes;
+      task.value = null;
+      return true;
+    }
     if (bytes <= staticMaxBytes) {
       writeStaticExactUint8Array(bytesView, slotIndex);
       task[TaskIndex.Type] = PayloadBuffer.StaticBinary;
@@ -704,9 +848,22 @@ export const encodePayload = ({
       return true;
     }
 
+    if (
+      canMoveReturn && bytes >= SHARED_RETURN_MIN_BYTES &&
+      tryEncodeMovedReturn(
+        task,
+        slotIndex,
+        bytesView,
+        PayloadBuffer.MovedBinary,
+      )
+    ) {
+      return true;
+    }
+
     task[TaskIndex.Type] = PayloadBuffer.Binary;
     if (!ensureWithinDynamicLimit(task, bytes, "Binary")) return false;
     const reservedSlot = reserveDynamicObject(task, bytes);
+    if (reservedSlot === -1) return false;
     const written = writeDynamicBinary(bytesView, task[TaskIndex.Start]);
     if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
     task[TaskIndex.PayloadLen] = written;
@@ -733,6 +890,7 @@ export const encodePayload = ({
     task[TaskIndex.Type] = PayloadBuffer.Buffer;
     if (!ensureWithinDynamicLimit(task, bytes, "Buffer")) return false;
     const reservedSlot = reserveDynamicObject(task, bytes);
+    if (reservedSlot === -1) return false;
     const written = writeDynamicBuffer(buffer, task[TaskIndex.Start]);
     if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
     task[TaskIndex.PayloadLen] = written;
@@ -760,6 +918,7 @@ export const encodePayload = ({
     task[TaskIndex.Type] = PayloadBuffer.Float64Array;
     if (!ensureWithinDynamicLimit(task, bytes, "Float64Array")) return false;
     const reservedSlot = reserveDynamicObject(task, bytes);
+    if (reservedSlot === -1) return false;
     const written = writeDynamic8Binary(float64, task[TaskIndex.Start]);
     if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
     task[TaskIndex.PayloadLen] = written;
@@ -793,6 +952,7 @@ export const encodePayload = ({
     task[TaskIndex.Type] = PayloadBuffer.NumericArray;
     if (!ensureWithinDynamicLimit(task, bytes, "NumericArray")) return false;
     const reservedSlot = reserveDynamicObject(task, bytes);
+    if (reservedSlot === -1) return false;
     const written = writeDynamic8Binary(float64, task[TaskIndex.Start]);
     if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
     task[TaskIndex.PayloadLen] = written;
@@ -816,9 +976,22 @@ export const encodePayload = ({
       }
     }
 
+    if (
+      canMoveReturn && bytes >= SHARED_RETURN_MIN_BYTES &&
+      tryEncodeMovedReturn(
+        task,
+        slotIndex,
+        arrayBuffer,
+        PayloadBuffer.MovedArrayBuffer,
+      )
+    ) {
+      return true;
+    }
+
     task[TaskIndex.Type] = PayloadBuffer.ArrayBuffer;
     if (!ensureWithinDynamicLimit(task, bytes, "ArrayBuffer")) return false;
     const reservedSlot = reserveDynamicObject(task, bytes);
+    if (reservedSlot === -1) return false;
     const written = writeDynamicArrayBuffer(arrayBuffer, task[TaskIndex.Start]);
     if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
     task[TaskIndex.PayloadLen] = written;
@@ -899,6 +1072,86 @@ export const encodePayload = ({
       slotIndex,
     );
     attachPayloadTransportFinalizer(task, value);
+    task.value = null;
+    return true;
+  };
+  /**
+   * The safe counterpart to an arena borrow. The producer's source is detached
+   * only after its task has settled; the host adopts the backing store before
+   * its acknowledgement lets the producer release the registry pin.
+   *
+   * This needs its own frame type because public task results remain ordinary
+   * Uint8Array / ArrayBuffer values rather than exposing BufferReference.
+   */
+  const tryEncodeMovedReturn = (
+    task: Task,
+    slotIndex: number,
+    source: Uint8Array | ArrayBuffer,
+    type:
+      | typeof PayloadBuffer.MovedBinary
+      | typeof PayloadBuffer.MovedArrayBuffer,
+  ): boolean => {
+    if (source.byteLength > 0xffffffff) return false;
+    const backing = ArrayBuffer.isView(source) ? source.buffer : source;
+    if (
+      typeof SharedArrayBuffer === "function" &&
+      backing instanceof SharedArrayBuffer
+    ) {
+      return false;
+    }
+    // Narrowed by the check above: what is left is a detachable ArrayBuffer.
+    const store = backing as ArrayBuffer;
+
+    // A move takes the whole backing store, not the slice that was returned.
+    // `return scratch.subarray(0, n)` would detach the producer's entire
+    // scratch buffer and break its next call, so a partial view is copied
+    // like any other return. Only a view that *is* its buffer can move.
+    if (
+      ArrayBuffer.isView(source) &&
+      (source.byteOffset !== 0 || source.byteLength !== store.byteLength)
+    ) {
+      return false;
+    }
+
+    // Moving is an optimization, so a source this runtime cannot detach --
+    // WASM memory, a buffer an external API pinned -- copies rather than
+    // failing the task. Construction is what detaches: a throw before it
+    // leaves the bytes intact and the copy path still works, while a throw
+    // after it has already consumed them has to be reported.
+    let reference: BufferReference;
+    try {
+      reference = new BufferReference(source);
+    } catch (error) {
+      if (isArrayBufferDetached(store)) throw error;
+      return false;
+    }
+
+    // Belt and braces for a runtime that reports success without detaching.
+    // The host would be handed a store still aliasing memory the producer can
+    // write; the source is intact in that case, so dropping the reference and
+    // copying is both safe and the honest answer.
+    if (!isArrayBufferDetached(store)) {
+      reference.release();
+      return false;
+    }
+
+    const words = BufferReference.prototype[BUFFER_REFERENCE_NUMERIC_TRANSFER]
+      .call(reference);
+
+    // The size check above guarantees the numeric form for a local reference.
+    // Do not fall back after construction: the source has intentionally moved.
+    if (words === undefined) {
+      reference.release();
+      throw new Error("Moved BufferReference has no numeric transport form");
+    }
+
+    task[TaskIndex.Type] = type;
+    task[TaskIndex.PayloadLen] = writeStaticU32Words(
+      words,
+      BUFFER_REFERENCE_NUMERIC_WORDS,
+      slotIndex,
+    );
+    attachPayloadTransportFinalizer(task, reference);
     task.value = null;
     return true;
   };
@@ -1043,6 +1296,7 @@ export const encodePayload = ({
     );
     if (reserveBytes < 0) return false;
     const reservedSlot = reserveDynamicObject(task, reserveBytes);
+    if (reservedSlot === -1) return false;
     const written = writeDynamicUtf8(
       text,
       task[TaskIndex.Start],
@@ -1055,6 +1309,54 @@ export const encodePayload = ({
     task.value = null;
     return true;
   };
+  /** Encode plain objects, arrays, and null-prototype objects as JSON. */
+  const encodeObjectJson = (
+    task: Task,
+    slotIndex: number,
+    objectValue: object,
+  ): boolean => {
+    let text: string;
+    try {
+      text = stringifyJSON(objectValue);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return encoderError({
+        task,
+        type: ErrorKnitting.Json,
+        onPromise,
+        detail,
+      });
+    }
+    if (text.length <= staticMaxBytes) {
+      const written = writeStaticUtf8(text, slotIndex);
+      if (written !== -1) {
+        task[TaskIndex.Type] = PayloadBuffer.StaticJson;
+        task[TaskIndex.PayloadLen] = written;
+        // Retain any transport-owned memory until the call settles.
+        attachPayloadTransportFinalizer(task, objectValue);
+        task.value = null;
+        return true;
+      }
+    }
+
+    task[TaskIndex.Type] = PayloadBuffer.Json;
+    const reserveBytes = dynamicUtf8ReserveBytes(task, text, "Json");
+    if (reserveBytes < 0) return false;
+    const reservedSlot = reserveDynamicObject(task, reserveBytes);
+    if (reservedSlot === -1) return false;
+    const written = writeDynamicUtf8(
+      text,
+      task[TaskIndex.Start],
+      reserveBytes,
+    );
+    if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
+    task[TaskIndex.PayloadLen] = written;
+    setSlotLength(reservedSlot, written);
+    attachPayloadTransportFinalizer(task, objectValue);
+    task.value = null;
+    return true;
+  };
+
   const encodeObjectDate = (task: Task, date: Date) => {
     Float64View[0] = date.getTime();
     task[TaskIndex.Type] = PayloadBuffer.Date;
@@ -1147,6 +1449,7 @@ export const encodePayload = ({
         )
       ) return false;
       const reservedSlot = reserveDynamicObject(task, payloadReserveBytes);
+      if (reservedSlot === -1) return false;
       task[TaskIndex.Type] = headerIsString
         ? PayloadBuffer.EnvelopeStaticHeaderString
         : PayloadBuffer.EnvelopeStaticHeader;
@@ -1161,8 +1464,11 @@ export const encodePayload = ({
           return failDynamicWriteAfterReserve(task, reservedSlot);
         }
         setSlotLength(reservedSlot, payloadWritten);
+      } else {
+        setSlotLength(reservedSlot, 0);
       }
       task.value = null;
+      tagTaskSlot(task, reservedSlot);
       return true;
     }
 
@@ -1180,6 +1486,7 @@ export const encodePayload = ({
       task,
       headerReserveBytes + payloadLength,
     );
+    if (reservedSlot === -1) return false;
     const baseStart = task[TaskIndex.Start];
     const writtenHeaderBytes = writeDynamicUtf8(
       headerText,
@@ -1205,6 +1512,7 @@ export const encodePayload = ({
       writtenHeaderBytes + payloadLength,
     );
     task.value = null;
+    tagTaskSlot(task, reservedSlot);
     return true;
   };
 
@@ -1284,6 +1592,7 @@ export const encodePayload = ({
         )
       ) return false;
       const reservedSlot = reserveDynamicObject(task, bodyLength);
+      if (reservedSlot === -1) return false;
       task[TaskIndex.Type] = headerIsString
         ? PayloadBuffer.EnvelopeStaticHeaderStringExternal
         : PayloadBuffer.EnvelopeStaticHeaderExternal;
@@ -1296,6 +1605,7 @@ export const encodePayload = ({
       setSlotLength(reservedSlot, bodyWritten);
       attachPayloadTransportFinalizer(task, externalBody);
       task.value = null;
+      tagTaskSlot(task, reservedSlot);
       return true;
     }
 
@@ -1315,6 +1625,7 @@ export const encodePayload = ({
       task,
       headerReserveBytes + bodyLength,
     );
+    if (reservedSlot === -1) return false;
     const baseStart = task[TaskIndex.Start];
     const writtenHeaderBytes = writeDynamicUtf8(
       headerText,
@@ -1336,6 +1647,7 @@ export const encodePayload = ({
     setSlotLength(reservedSlot, writtenHeaderBytes + bodyLength);
     attachPayloadTransportFinalizer(task, externalBody);
     task.value = null;
+    tagTaskSlot(task, reservedSlot);
     return true;
   };
 
@@ -1426,6 +1738,10 @@ export const encodePayload = ({
           return false;
         }
         const reservedSlot = reserveDynamic(task, binaryBytes);
+        if (reservedSlot === -1) {
+          clearBigIntScratch(binaryBytes);
+          return false;
+        }
         const written = writeDynamicBinary(binary, task[TaskIndex.Start]);
         if (written < 0) {
           clearBigIntScratch(binaryBytes);
@@ -1448,6 +1764,13 @@ export const encodePayload = ({
 
         try {
           const objectValue = args as object;
+          const objectProto = objectGetPrototypeOf(objectValue);
+
+          // Plain objects can skip the typed-array and external-payload checks.
+          if (objectProto === objectPrototype) {
+            return encodeObjectJson(task, slotIndex, objectValue);
+          }
+
           const sharedArrayBufferPayload = getSharedArrayBufferPayload(
             objectValue,
           );
@@ -1460,7 +1783,6 @@ export const encodePayload = ({
             );
           }
 
-          const objectProto = objectGetPrototypeOf(objectValue);
           if (isRuntimeUint8Array(objectValue)) {
             return encodeObjectUint8Array(
               task,
@@ -1477,51 +1799,8 @@ export const encodePayload = ({
             );
           }
 
-          if (
-            arrayIsArray(objectValue) ||
-            objectProto === objectPrototype ||
-            objectProto === null
-          ) {
-            let text: string;
-            try {
-              text = stringifyJSON(objectValue);
-            } catch (error) {
-              const detail = error instanceof Error
-                ? error.message
-                : String(error);
-              return encoderError({
-                task,
-                type: ErrorKnitting.Json,
-                onPromise,
-                detail,
-              });
-            }
-            if (text.length <= staticMaxBytes) {
-              const written = writeStaticUtf8(text, slotIndex);
-              if (written !== -1) {
-                task[TaskIndex.Type] = PayloadBuffer.StaticJson;
-                task[TaskIndex.PayloadLen] = written;
-                task.value = null;
-                return true;
-              }
-            }
-
-            task[TaskIndex.Type] = PayloadBuffer.Json;
-            const reserveBytes = dynamicUtf8ReserveBytes(task, text, "Json");
-            if (reserveBytes < 0) return false;
-            const reservedSlot = reserveDynamicObject(task, reserveBytes);
-            const written = writeDynamicUtf8(
-              text,
-              task[TaskIndex.Start],
-              reserveBytes,
-            );
-            if (written < 0) {
-              return failDynamicWriteAfterReserve(task, reservedSlot);
-            }
-            task[TaskIndex.PayloadLen] = written;
-            setSlotLength(reservedSlot, written);
-            task.value = null;
-            return true;
+          if (arrayIsArray(objectValue) || objectProto === null) {
+            return encodeObjectJson(task, slotIndex, objectValue);
           }
 
           if (
@@ -1682,6 +1961,7 @@ export const encodePayload = ({
         const reserveBytes = dynamicUtf8ReserveBytes(task, text, "String");
         if (reserveBytes < 0) return false;
         const reservedSlot = reserveDynamic(task, reserveBytes);
+        if (reservedSlot === -1) return false;
 
         const written = writeDynamicUtf8(
           text,
@@ -1719,6 +1999,7 @@ export const encodePayload = ({
         const reserveBytes = dynamicUtf8ReserveBytes(task, key, "Symbol");
         if (reserveBytes < 0) return false;
         const reservedSlot = reserveDynamic(task, reserveBytes);
+        if (reservedSlot === -1) return false;
         const written = writeDynamicUtf8(
           key,
           task[TaskIndex.Start],
@@ -1778,7 +2059,12 @@ export const decodePayload = ({
     options: payload?.config ?? payloadConfig,
   });
   const { free } = register({ lockSector });
-  const freeTaskSlot = (task: Task) => free(getTaskSlotIndex(task));
+  // Region identity is 6 bits only for dynamic payloads. Its high bit rides in
+  // End's otherwise-unused top bit, preserving the 5-bit queue-slot field.
+  const freeTaskSlot = (task: Task) => free(
+    (task[TaskIndex.slotBuffer] & TASK_SLOT_INDEX_MASK) |
+      ((task[TaskIndex.End] >>> 31) << 5),
+  );
   const {
     readUtf8: readDynamicUtf8,
     readBytesCopy: readDynamicBytesCopy,
@@ -1788,6 +2074,8 @@ export const decodePayload = ({
     readArrayBufferCopy: readDynamicArrayBuffer,
     read8BytesFloatCopy: readDynamic8BytesFloatCopy,
     read8BytesFloatView: readDynamic8BytesFloatView,
+    readBytesView: readDynamicBytesView,
+    syncGrowth: syncDynamicGrowth,
   } = createSharedDynamicBufferIO({
     sab: payloadSab,
     payloadConfig: resolvedPayloadConfig,
@@ -1816,11 +2104,14 @@ export const decodePayload = ({
   const sharedArrayBufferWords = new Uint32Array(
     SHARED_ARRAY_BUFFER_NUMERIC_WORDS,
   );
+  // `readStaticU32Words` returns the whole scratch, and the SAB codec dispatches
+  // on word count, so hand it a view cut to the frame's own length.
+  const sharedArrayBufferWordViews: Uint32Array[] = [];
+  for (let count = 0; count <= SHARED_ARRAY_BUFFER_NUMERIC_WORDS; count++) {
+    sharedArrayBufferWordViews.push(sharedArrayBufferWords.subarray(0, count));
+  }
   const bufferReferenceWords = new Uint32Array(BUFFER_REFERENCE_NUMERIC_WORDS);
 
-  // TODO: remove slotIndex and make that all their callers
-  // store the slot in their Task, to just get it when it comes
-  // to the static versions of decoding
   return (task: Task, slotIndex: number, specialFlags?: number) => {
     const payloadType = task[TaskIndex.Type];
     if (
@@ -1894,7 +2185,7 @@ export const decodePayload = ({
           task[TaskIndex.Type] === PayloadBuffer.EnvelopeStaticHeaderString
             ? rawHeader
             : parseJSON(rawHeader);
-        const payloadLength = task[TaskIndex.End];
+        const payloadLength = task[TaskIndex.End] & 0x7FFFFFFF;
         const payload = payloadLength > 0
           ? readDynamicArrayBufferCopy(
             task[TaskIndex.Start],
@@ -1909,7 +2200,7 @@ export const decodePayload = ({
       case PayloadBuffer.EnvelopeDynamicHeaderString: {
         const headerStart = task[TaskIndex.Start];
         const payloadStart = headerStart + task[TaskIndex.PayloadLen];
-        const payloadLength = task[TaskIndex.End];
+        const payloadLength = task[TaskIndex.End] & 0x7FFFFFFF;
         const rawHeader = readDynamicUtf8(headerStart, payloadStart);
         const header =
           task[TaskIndex.Type] === PayloadBuffer.EnvelopeDynamicHeaderString
@@ -1938,7 +2229,10 @@ export const decodePayload = ({
           : parseJSON(rawHeader);
         const bodyStart = task[TaskIndex.Start];
         const body = decodeExternalPayload(
-          readDynamicUtf8(bodyStart, bodyStart + task[TaskIndex.End]),
+          readDynamicUtf8(
+            bodyStart,
+            bodyStart + (task[TaskIndex.End] & 0x7FFFFFFF),
+          ),
           processBoundary,
         );
         task.value = new Envelope(header as any, body as any);
@@ -1955,7 +2249,10 @@ export const decodePayload = ({
           ? rawHeader
           : parseJSON(rawHeader);
         const body = decodeExternalPayload(
-          readDynamicUtf8(bodyStart, bodyStart + task[TaskIndex.End]),
+          readDynamicUtf8(
+            bodyStart,
+            bodyStart + (task[TaskIndex.End] & 0x7FFFFFFF),
+          ),
           processBoundary,
         );
         task.value = new Envelope(header as any, body as any);
@@ -2131,6 +2428,7 @@ export const decodePayload = ({
             task[TaskIndex.Start] + task[TaskIndex.PayloadLen],
           ),
           processBoundary,
+          lockSector as object | undefined,
         );
         freeTaskSlot(task);
         return;
@@ -2138,6 +2436,7 @@ export const decodePayload = ({
         task.value = decodeExternalPayload(
           readStaticUtf8(0, task[TaskIndex.PayloadLen], slotIndex),
           processBoundary,
+          lockSector as object | undefined,
         );
         return;
       case PayloadBuffer.ProcessSharedBuffer:
@@ -2149,15 +2448,18 @@ export const decodePayload = ({
           ),
         );
         return;
-      case PayloadBuffer.SharedArrayBuffer:
+      case PayloadBuffer.SharedArrayBuffer: {
+        const wordCount = task[TaskIndex.PayloadLen] >>> 2;
         task.value = decodeSharedArrayBufferNumericWords(
           readStaticU32Words(
-            sharedArrayBufferWords,
-            task[TaskIndex.PayloadLen] >>> 2,
+            sharedArrayBufferWordViews[wordCount] ?? sharedArrayBufferWords,
+            wordCount,
             slotIndex,
           ),
+          lockSector as object | undefined,
         );
         return;
+      }
       case PayloadBuffer.BufferReference:
         task.value = decodeBufferReferenceNumericWords(
           readStaticU32Words(
@@ -2167,6 +2469,34 @@ export const decodePayload = ({
           ),
         );
         return;
+      case PayloadBuffer.MovedBinary: {
+        const reference = decodeBufferReferenceNumericWords(
+          readStaticU32Words(
+            bufferReferenceWords,
+            BUFFER_REFERENCE_NUMERIC_WORDS,
+            slotIndex,
+          ),
+        );
+        if (!isBufferReferenceValue(reference)) {
+          throw new TypeError("Invalid moved Uint8Array payload");
+        }
+        task.value = reference.toUint8Array();
+        return;
+      }
+      case PayloadBuffer.MovedArrayBuffer: {
+        const reference = decodeBufferReferenceNumericWords(
+          readStaticU32Words(
+            bufferReferenceWords,
+            BUFFER_REFERENCE_NUMERIC_WORDS,
+            slotIndex,
+          ),
+        );
+        if (!isBufferReferenceValue(reference)) {
+          throw new TypeError("Invalid moved ArrayBuffer payload");
+        }
+        task.value = reference.toArrayBuffer();
+        return;
+      }
       case PayloadBuffer.Date:
         Uint32View[0] = task[TaskIndex.Start];
         Uint32View[1] = task[TaskIndex.End];
@@ -2180,6 +2510,15 @@ export const decodePayload = ({
           ),
         );
         freeTaskSlot(task);
+        return;
+      // Borrowed region: decode a view into the shared arena.
+      case PayloadBuffer.ArenaBinary:
+        // A borrowed region can sit past the length this endpoint last saw.
+        syncDynamicGrowth();
+        task.value = readDynamicBytesView(
+          task[TaskIndex.Start],
+          task[TaskIndex.Start] + task[TaskIndex.PayloadLen],
+        );
         return;
       case PayloadBuffer.Binary:
         {

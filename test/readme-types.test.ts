@@ -2,6 +2,7 @@ import test from "./_runner.ts";
 import { createPool, Envelope, importTask, task } from "../knitting.ts";
 import type { ProcessSharedBuffer } from "../shared-memory.ts";
 import type { BufferReference } from "../unsafe.ts";
+import { sharedBytes } from "../unsafe.ts";
 
 const runtimeProcess = (globalThis as typeof globalThis & {
   process?: {
@@ -327,6 +328,31 @@ const assertReadmeTypes = () => {
     // @ts-expect-error README balancer names are camelCase API strings.
     balancer: "least-busy",
   })({ add });
+
+  // README: zero-copy returns with `sharedBytes`.
+  const render = task<number, Uint8Array>({
+    f: (size) => {
+      const out = sharedBytes(size);
+      for (let i = 0; i < out.length; i++) out[i] = i & 0xff;
+      return out;
+    },
+  });
+
+  const renderPool = createPool({
+    threads: 4,
+    unsafe: { SharedBytes: true },
+  })({ render });
+
+  type RenderReturn = Awaited<ReturnType<typeof renderPool.call.render>>;
+  type _RenderIsBytes = Assert<Equal<RenderReturn, Uint8Array>>;
+
+  // README: `unsafe.SharedBytes: false` turns borrowed returns off entirely.
+  createPool({ threads: 4, unsafe: { SharedBytes: false } })({ render });
+
+  createPool({
+    // @ts-expect-error the off switch is a boolean, not a mode string.
+    unsafe: { SharedBytes: "off" },
+  })({ render });
 };
 
 void assertReadmeTypes;

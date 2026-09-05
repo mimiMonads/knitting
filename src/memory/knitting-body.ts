@@ -1,0 +1,90 @@
+/**
+ * One handle for a request body, whichever way it travels.
+ *
+ * A body uses either pooled arena bytes or a moved `BufferReference`;
+ * `allocOrRefer()` hides that choice behind one disposable handle.
+ *
+ * The host owns the body, while each send holds it until the call settles, so
+ * early disposal cannot recycle bytes still in use by a worker. The worker gets
+ * a `Uint8Array` and never releases the body.
+ *
+ * The bytes are valid only until the host releases. A worker that wants to
+ * keep them past the call must copy.
+ */
+
+import {
+  attachKnittingAllocator,
+  type KnittingAllocator,
+  type KnittingBufferDescriptor,
+} from "./knitting-buffer.ts";
+import {
+  BufferReference,
+  isBufferReferenceValue,
+} from "../connections/buffer-reference.ts";
+
+/** What `allocator.transport()` hands a worker so it can attach once. */
+export type KnittingTransport = ReturnType<KnittingAllocator["transport"]>;
+
+/**
+ * The value a body travels as. Three shapes, because a body has three homes:
+ * the arena (a descriptor), the heap (a moved reference), or a standalone
+ * buffer when the body did not fit the arena. `openBody` resolves all three.
+ */
+export type KnittingBodyWire =
+  | KnittingBufferDescriptor
+  | BufferReference
+  | SharedArrayBuffer;
+
+/** The host's handle: send `wire`, read `u8()`, and dispose when done. */
+export type KnittingBody = {
+  /** Pass this as the task argument. */
+  readonly wire: KnittingBodyWire;
+  readonly byteLength: number;
+  /** The bytes on the host side, whichever transport was chosen. */
+  u8(): Uint8Array;
+  release(): void;
+  [Symbol.dispose](): void;
+};
+
+const hasSharedArrayBuffer = typeof SharedArrayBuffer === "function";
+
+/**
+ * True for a buffer that arrived over a transport.
+ *
+ * knitting ships a SharedArrayBuffer by pointer and rebuilds it branded as an
+ * ArrayBuffer, so `instanceof SharedArrayBuffer` is false on the far side even
+ * though the memory is shared.
+ */
+const isTransportedBuffer = (value: unknown): value is SharedArrayBuffer =>
+  (hasSharedArrayBuffer && value instanceof SharedArrayBuffer) ||
+  value instanceof ArrayBuffer;
+
+/**
+ * Attach this worker to the host's arena and return the opener.
+ *
+ * Call it once per worker from a bootstrap module -- `transport()` nests
+ * SharedArrayBuffers in an object, which survives the bootstrap's structured
+ * clone but not a task payload's encoding.
+ *
+ * The returned function is total over `KnittingBodyWire`: whatever the host
+ * chose, the task sees bytes.
+ */
+export const createBodyReader = (
+  transport: KnittingTransport,
+): ((wire: KnittingBodyWire) => Uint8Array) => {
+  const lane = attachKnittingAllocator(transport);
+
+  return (wire: KnittingBodyWire): Uint8Array => {
+    // Moved: this worker holds the only live alias, and the host releases the
+    // reference once the call settles.
+    if (isBufferReferenceValue(wire)) return wire.toUint8Array();
+
+    // A body too large for the arena travels as its own buffer. It carries no
+    // identity, so there is nothing to borrow and nothing to release.
+    if (isTransportedBuffer(wire)) return lane.adopt(wire).u8();
+
+    // Pooled: borrowed for the call. `borrow` is what makes it impossible for
+    // this worker to release an identity the host still owns.
+    return lane.adopt(wire, { borrow: true }).u8();
+  };
+};

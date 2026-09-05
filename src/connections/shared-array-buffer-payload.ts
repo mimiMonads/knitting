@@ -1,9 +1,13 @@
 import { RUNTIME } from "../common/runtime.ts";
 import { getNodeProcess } from "../common/node-compat.ts";
 import { getBufferReferenceCapabilities } from "./buffer-reference-native.ts";
+import {
+  type BufferReferenceRuntime,
+  detachArrayBufferBestEffort,
+} from "./buffer-reference.ts";
 
-// Thread-worker SharedArrayBuffer transport by process-local pointer.
-// SABs are shared, not moved or detached; process workers reject them.
+// SharedArrayBuffer transport uses a process-local pointer and is limited to
+// thread workers; SABs are not moved or detached.
 
 export const SHARED_ARRAY_BUFFER_CODEC_ID =
   "knitting.sharedArrayBuffer" as const;
@@ -12,6 +16,8 @@ export const SHARED_ARRAY_BUFFER_NUMERIC_TRANSFER = Symbol.for(
 );
 export const SHARED_ARRAY_BUFFER_NUMERIC_WORDS = 8;
 const SHARED_ARRAY_BUFFER_TOKEN_NUMERIC_WORDS = 2;
+
+// Slice frames carry an explicit length; warm frames carry only the token.
 
 const EXTERNAL_PAYLOAD_BRAND = Symbol.for("knitting.payloadCodec");
 
@@ -69,13 +75,34 @@ export const isSharedArrayBufferValue = (
 ): value is SharedArrayBuffer =>
   hasSharedArrayBuffer && value instanceof SharedArrayBuffer;
 
-// Pin each SAB once; the finalizer releases the pin when the producer SAB dies.
+// Pin each SAB once and release the pin when the producer SAB is collected.
 type SharedPin = { token: bigint; pointer: bigint; byteLength: number };
 
 const pinnedBySab = new WeakMap<SharedArrayBuffer, SharedPin>();
 const payloadBySharedBuffer = new WeakMap<object, SharedArrayBufferPayload>();
 const warmedTokensByTransport = new WeakMap<object, Set<bigint>>();
-const cachedSharedBuffersByToken = new Map<bigint, ArrayBuffer | SharedArrayBuffer>();
+
+// Tokens are isolate-local, so adopted aliases are cached per transport lane.
+const adoptedByTransport = new WeakMap<
+  object,
+  Map<bigint, ArrayBuffer | SharedArrayBuffer>
+>();
+const adoptedWithoutTransport = new Map<
+  bigint,
+  ArrayBuffer | SharedArrayBuffer
+>();
+
+const adoptedCacheFor = (
+  transportKey?: object,
+): Map<bigint, ArrayBuffer | SharedArrayBuffer> => {
+  if (transportKey === undefined) return adoptedWithoutTransport;
+  let cache = adoptedByTransport.get(transportKey);
+  if (cache === undefined) {
+    cache = new Map<bigint, ArrayBuffer | SharedArrayBuffer>();
+    adoptedByTransport.set(transportKey, cache);
+  }
+  return cache;
+};
 
 const pinFinalizer = typeof FinalizationRegistry === "function"
   ? new FinalizationRegistry<bigint>((token) => {
@@ -145,6 +172,10 @@ const pinSab = (sab: SharedArrayBuffer): SharedPin => {
   }
   return pin;
 };
+
+/** The pin backing `buffer`, when it has been shared at least once. */
+export const getSharedPin = (buffer: object): SharedPin | undefined =>
+  pinnedBySab.get(buffer as SharedArrayBuffer);
 
 const makeMetadata = (pin: SharedPin): SharedArrayBufferMetadata => ({
   kind: SHARED_ARRAY_BUFFER_CODEC_ID,
@@ -251,6 +282,7 @@ const isSharedArrayBufferMetadata = (
 const materializeSharedBuffer = (
   metadata: SharedArrayBufferMetadata,
   warmOnly: boolean,
+  transportKey?: object,
 ): ArrayBuffer | SharedArrayBuffer => {
   if (metadata.origin !== PROCESS_ORIGIN) {
     throw new Error(
@@ -260,7 +292,8 @@ const materializeSharedBuffer = (
   }
 
   const token = BigInt(metadata.token);
-  const cached = cachedSharedBuffersByToken.get(token);
+  const cache = adoptedCacheFor(transportKey);
+  const cached = cache.get(token);
   if (cached !== undefined) return cached;
 
   if (warmOnly) {
@@ -273,7 +306,7 @@ const materializeSharedBuffer = (
     byteOffset: 0,
     byteLength: metadata.byteLength,
   });
-  cachedSharedBuffersByToken.set(token, region.buffer);
+  cache.set(token, region.buffer);
   createSharedArrayBufferPayload(region.buffer, {
     token,
     pointer: BigInt(metadata.pointer),
@@ -282,19 +315,23 @@ const materializeSharedBuffer = (
   return region.buffer;
 };
 
-const decode = (metadata: unknown): ArrayBuffer | SharedArrayBuffer => {
+const decode = (
+  metadata: unknown,
+  transportKey?: object,
+): ArrayBuffer | SharedArrayBuffer => {
   if (!isSharedArrayBufferMetadata(metadata)) {
     throw new TypeError("Invalid SharedArrayBuffer payload metadata");
   }
-  return materializeSharedBuffer(metadata, false);
+  return materializeSharedBuffer(metadata, false, transportKey);
 };
 
 const decodeNumeric = (
   words: ArrayLike<number>,
+  transportKey?: object,
 ): ArrayBuffer | SharedArrayBuffer => {
   if (words.length === SHARED_ARRAY_BUFFER_TOKEN_NUMERIC_WORDS) {
     const token = joinU64(words[0] ?? 0, words[1] ?? 0);
-    const cached = cachedSharedBuffersByToken.get(token);
+    const cached = adoptedCacheFor(transportKey).get(token);
     if (cached !== undefined) return cached;
     throw new TypeError("SharedArrayBuffer cache miss for warm token payload");
   }
@@ -326,18 +363,18 @@ const decodeNumeric = (
     byteLength: words[4] ?? 0,
   };
 
-  return materializeSharedBuffer(
-    metadata,
-    false,
-  );
+  return materializeSharedBuffer(metadata, false, transportKey);
 };
 
 const codecGlobal = globalThis as typeof globalThis & {
   __KNITTING_PAYLOAD_CODECS__?: Record<
     string,
     {
-      decode: (metadata: unknown) => unknown;
-      decodeNumeric?: (metadata: ArrayLike<number>) => unknown;
+      decode: (metadata: unknown, transportKey?: object) => unknown;
+      decodeNumeric?: (
+        metadata: ArrayLike<number>,
+        transportKey?: object,
+      ) => unknown;
     } | undefined
   >;
 };

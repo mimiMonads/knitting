@@ -205,22 +205,7 @@ export const createSharedDynamicBufferIO = ({
 
   const capacityBytes = () => backingByteLength - DYNAMIC_HEADER_BYTES;
 
-  const ensureCapacity = (neededBytes: number) => {
-    if (capacityBytes() >= neededBytes) return true;
-    if (!canGrow) return false;
-
-    try {
-      if (!(lockSAB instanceof SharedArrayBuffer)) return false;
-      lockSAB = growSharedArrayBuffer(
-        lockSAB,
-        alignUpto64(
-          DYNAMIC_HEADER_BYTES + neededBytes + DYNAMIC_SAFE_PADDING_BYTES,
-        ),
-      );
-    } catch {
-      return false;
-    }
-
+  const adoptBuffer = () => {
     baseByteOffset = 0;
     backingByteLength = lockSAB.byteLength;
     u8 = new Uint8Array(
@@ -234,6 +219,34 @@ export const createSharedDynamicBufferIO = ({
       baseByteOffset + DYNAMIC_HEADER_BYTES,
       (backingByteLength - DYNAMIC_HEADER_BYTES) >>> 3,
     );
+  };
+
+  /** Refresh views after the other endpoint grows the shared arena. */
+  const syncGrowth = () => {
+    if (!canGrow) return;
+    if (lockSAB.byteLength === backingByteLength) return;
+    adoptBuffer();
+  };
+
+  const ensureCapacity = (neededBytes: number) => {
+    if (capacityBytes() >= neededBytes) return true;
+    if (!canGrow) return false;
+    syncGrowth();
+    if (capacityBytes() >= neededBytes) return true;
+
+    try {
+      if (!(lockSAB instanceof SharedArrayBuffer)) return false;
+      lockSAB = growSharedArrayBuffer(
+        lockSAB,
+        alignUpto64(
+          DYNAMIC_HEADER_BYTES + neededBytes + DYNAMIC_SAFE_PADDING_BYTES,
+        ),
+      );
+    } catch {
+      return false;
+    }
+
+    adoptBuffer();
     return true;
   };
 
@@ -330,6 +343,13 @@ export const createSharedDynamicBufferIO = ({
   };
 
   return {
+    ensureCapacity,
+    syncGrowth,
+    capacityBytes,
+    /** The buffer the dynamic views currently sit on; growth can replace it. */
+    currentBuffer: () => lockSAB,
+    /** Byte offset of region 0 inside that buffer; growth can move it. */
+    regionBase: () => u8.byteOffset,
     readUtf8,
     writeBinary,
     writeBuffer,
@@ -347,7 +367,7 @@ export const createSharedDynamicBufferIO = ({
   };
 };
 
-// it has to be convert it to 8
+// Static payload words are stored in eight-byte units.
 export const createSharedStaticBufferIO = ({
   headersBuffer,
   slotStrideU32,
@@ -424,9 +444,15 @@ export const createSharedStaticBufferIO = ({
   const canWrite = (start: number, length: number) =>
     (start | 0) >= 0 && (start + length) <= writableBytes;
 
+  // Reuse one fixed view per slot; writes no longer allocate a subarray.
+  const slotUtf8Targets: Uint8Array[] = new Array(LockBound.slots);
+  for (let i = 0; i < LockBound.slots; i++) {
+    const start = slotByteOffsets[i]!;
+    slotUtf8Targets[i] = baseU8.subarray(start, start + writableBytes);
+  }
+
   const writeUtf8 = (str: string, at: number) => {
-    const start = slotByteOffsets[at]!;
-    const target = baseU8.subarray(start, start + writableBytes);
+    const target = slotUtf8Targets[at]!;
     if (!baseBuf) {
       const { read, written } = sharedBufferEncodeInto(
         str,

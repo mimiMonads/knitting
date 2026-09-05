@@ -31,20 +31,20 @@ export const withResolvers = <T = unknown>(): Deferred<T> => {
   const native = (Promise as PromiseWithResolversCtor).withResolvers;
   if (typeof native === "function") {
     const deferred = native.call(Promise) as PromiseResolvers<T>;
-    return {
-      promise: attachReject(deferred.promise, deferred.reject),
-      resolve: deferred.resolve,
-      reject: deferred.reject,
-    };
+    attachReject(deferred.promise, deferred.reject);
+    return deferred as Deferred<T>;
   }
 
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;
 
-  const promise = attachReject(new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  }), reject);
+  const promise = attachReject(
+    new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    }),
+    reject,
+  );
 
   return { promise, resolve, reject };
 };

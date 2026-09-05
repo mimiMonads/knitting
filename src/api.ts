@@ -13,6 +13,7 @@ import {
   spawnWorkerContext,
 } from "./runtime/pool.ts";
 import { ChannelHandler, hostDispatcherLoop } from "./runtime/dispatcher.ts";
+import { createDenoCompletionDoorbell } from "./runtime/deno-doorbell.ts";
 import { createSharedArrayBuffer, RUNTIME } from "./common/runtime.ts";
 import {
   RUNTIME_IS_MAIN_THREAD,
@@ -36,6 +37,7 @@ import { inspectCompiledWorkerArtifact } from "./runtime/compiled-artifact.ts";
 
 import { managerMethod } from "./runtime/balancer.ts";
 import { createInlineExecutor } from "./runtime/inline-executor.ts";
+import { createHostArgAllocator } from "./runtime/host-arg-arena.ts";
 import type {
   AbortSignalConfig,
   AbortSignalOption,
@@ -63,7 +65,7 @@ import type {
   WorkerSettings,
 } from "./types.ts";
 
-// NOTE: Explicit API typings keep JSR from widening curried signatures.
+// Keep the explicit factory type so JSR preserves the curried signatures.
 type ToListAndIds = {
   list: string[];
   ids: number[];
@@ -433,7 +435,8 @@ export const createPool: CreatePoolFactory = ({
   host,
 }: CreatePool) =>
 <T extends tasks>(tasks: T): Pool<T> => {
-  const bufferReferenceReturn = unsafe?.BufferReferenceReturn;
+  const sharedBytesEnabled = unsafe?.SharedBytes === true;
+  const sharedArgsEnabled = unsafe?.SharedArgs === true;
   const debugRequested = DEBUG_ENABLED ||
     (debug !== undefined && debug !== false);
   let debugNamespaces: Set<string> | undefined;
@@ -607,14 +610,21 @@ export const createPool: CreatePoolFactory = ({
     : stealEnvRaw === "0" || stealEnvRaw === "false"
     ? false
     : undefined;
-  // Shared-submit stealing is the default for compatible multi-worker pools.
-  // An explicit option wins over the environment; compiled and inline
-  // transports retain their existing topology.
+  // Shared-submit stealing is the default for compatible multi-worker pools;
+  // explicit options take precedence over the environment.
   const dispatcherExplicitlySelected = host?.dispatcher !== undefined ||
     dispatcherEnv === "serial-channel" || dispatcherEnv === "per-thread";
   const stealDefaultCompatible = balancer === undefined &&
     !dispatcherExplicitlySelected && (threads ?? 1) <= MAX_STEAL_CONSUMERS;
   const stealRequested = host?.steal ?? stealEnv ?? stealDefaultCompatible;
+  const stealClaimEnvRaw = nodeProcess?.env?.KNITTING_STEAL_CLAIM?.trim()
+    .toLowerCase();
+  const stealClaimEnv = stealClaimEnvRaw === "cas-mask" ||
+      stealClaimEnvRaw === "dekker"
+    ? stealClaimEnvRaw
+    : undefined;
+  // Select the stealing claim discipline, preferring the explicit option.
+  const stealClaim = host?.stealClaim ?? stealClaimEnv ?? "dekker";
   const usingCompiledWorker = resolvedWorker?.runtime === "compiled";
   if (resolvedWorker?.compiled !== undefined && !usingCompiledWorker) {
     throw new Error(
@@ -705,18 +715,15 @@ export const createPool: CreatePoolFactory = ({
         : undefined
     );
   const autoDispatcher = (() => {
-    // Experimental default for HTTP-style bursts: Bun still favors direct
-    // per-thread channels, while Node/Deno multi-worker pools favor one shared
-    // macro channel over the per-lane dispatcher checks.
+    // Bun and single-worker pools use per-thread dispatch; other pools share a
+    // channel across their private lanes.
     if (RUNTIME === "bun") return "per-thread";
     if ((threads ?? 1) <= 1) return "per-thread";
     return "serial-channel";
   })();
   const dispatcher = explicitDispatcher ?? autoDispatcher;
-  // Work stealing: one shared submit region, private return lanes, one
-  // pool-global pending registry. It is the compatible multi-worker default;
-  // an explicit balancer/dispatcher keeps the private-lane topology unless
-  // stealing itself was explicitly requested.
+  // Stealing uses one submit region and private return lanes. Explicit balancer
+  // or dispatcher settings retain private lanes unless stealing is requested.
   const useSteal = stealRequested &&
     !usingCompiledWorker &&
     (threads ?? 1) > 1 &&
@@ -725,7 +732,9 @@ export const createPool: CreatePoolFactory = ({
     ? createStealPoolBuffers({
       threads: threads ?? 1,
       payload,
+      sharedArgs: sharedArgsEnabled,
       regionLanes: host?.stealRegionLanes,
+      stealClaim,
       abortSignalCapacity,
       usesAbortSignal,
       processWorker: resolvedWorker?.runtime === "process"
@@ -738,12 +747,15 @@ export const createPool: CreatePoolFactory = ({
     : undefined;
   const serialChannel = !usingCompiledWorker && !useSteal &&
     dispatcher === "serial-channel";
-  // One serial-channel hop drives every lane check in turn, and it depends on
-  // the channel's delivery to do that: swapping in the cheaper `setImmediate`
-  // pump cost 25% throughput and tripled p99 here, where every other topology
-  // gained. See ChannelHandler's note.
+  // The serial topology relies on channel delivery to run each lane check.
   const serialDispatcherChannel = serialChannel
     ? new ChannelHandler("channel")
+    : undefined;
+  // Deno uses a threadSafe FFI callback because waitAsync does not wake an idle
+  // event loop; process workers cannot use the process-local pointer.
+  const denoCompletionDoorbell = !usingCompiledWorker &&
+      resolvedWorker?.runtime !== "process" && host?.doorbell !== false
+    ? createDenoCompletionDoorbell()
     : undefined;
 
   let workers = Array.from({
@@ -766,11 +778,12 @@ export const createPool: CreatePoolFactory = ({
       workerExecArgv: execArgv,
       host,
       payload,
-      bufferReferenceReturn,
+      sharedBytesEnabled,
       abortSignalCapacity,
       usesAbortSignal,
       permission: permissionProtocol,
       sharedChannelHandler: serialDispatcherChannel,
+      denoCompletionDoorbell,
       stealPool: stealBuffers === undefined ? undefined : {
         submitBuffers: stealBuffers.submitBuffers,
         returnBuffers: stealBuffers.returnBuffers[thread]!,
@@ -780,6 +793,7 @@ export const createPool: CreatePoolFactory = ({
         consumers: threads ?? 1,
         consumerId: thread,
         regionLanes: stealBuffers.regionLanes,
+        stealClaim: stealBuffers.stealClaim,
         abortSignalSAB: stealBuffers.abortSignalSAB,
         abortSignalMax: stealBuffers.abortSignalMax,
         processMemory: stealBuffers.processMemory,
@@ -792,10 +806,8 @@ export const createPool: CreatePoolFactory = ({
     const channel = stealChannel!;
     const queue = stealBuffers!.sharedQueue;
 
-    // Wake exactly one worker per drain, round-robin. Stealing decouples the
-    // wake target from the assignment: if the woken worker is busy, any other
-    // idle endpoint claims the region instead. So this costs one notify per
-    // publish regardless of pool size, rather than one per lane.
+    // Round-robin wake keeps stealing at one notify per publish; any idle worker
+    // can claim the region.
     let wakeCursor = 0;
     const wakeOne = () => {
       const lanes = workers.length;
@@ -812,7 +824,7 @@ export const createPool: CreatePoolFactory = ({
         3 * Int32Array.BYTES_PER_ELEMENT,
       ) as ArrayBufferLike,
     );
-    const { check } = hostDispatcherLoop({
+    const { check, wakeCompletion } = hostDispatcherLoop({
       signalBox: {
         opView: signalWords.subarray(0, 1),
         txStatus: signalWords.subarray(1, 2),
@@ -823,20 +835,42 @@ export const createPool: CreatePoolFactory = ({
       dispatcherOptions: host,
       notifySignal: wakeOne,
       crossProcess: resolvedWorker?.runtime === "process",
+      nativeCompletionDoorbell: denoCompletionDoorbell !== undefined ||
+        workers.some((context) =>
+          (context as { nodeCompletionDoorbell?: boolean })
+            .nodeCompletionDoorbell === true
+        ),
+      processCompletionDoorbell: workers.some((context) =>
+        (context as {
+          processCompletionDoorbell?: boolean;
+        }).processCompletionDoorbell === true
+      ),
     });
 
     channel.open(check);
+    if (denoCompletionDoorbell !== undefined) {
+      workers.forEach((_, thread) => {
+        denoCompletionDoorbell.listen(thread, wakeCompletion);
+      });
+    }
+    workers.forEach((context) => {
+      (context as {
+        bindCompletionWake?: (wake: () => void) => void;
+      }).bindCompletionWake?.(wakeCompletion);
+    });
     workers.forEach((context) => {
       context.bindSend!(() => {
         if (check.isRunning !== true) {
           check.isRunning = true;
-          Promise.resolve().then(check);
+          queueMicrotask(check);
         }
         wakeOne();
       });
     });
     hostDebug?.log(
-      `dispatcher=steal lanes=${workers.length} g=${stealBuffers!.regionLanes}`,
+      `dispatcher=steal lanes=${workers.length} g=${
+        stealBuffers!.regionLanes
+      } claim=${stealClaim}`,
     );
   }
 
@@ -849,11 +883,7 @@ export const createPool: CreatePoolFactory = ({
     let serialInFlight = false;
     let serialRerun = false;
 
-    // Busy-lane set: a tick walks only the lanes that have work, not all of
-    // them. `active` is a dense list of lane indices; `isActive` keeps the
-    // membership test O(1). A lane joins on send() and leaves once its queue
-    // reports idle, so an N-worker pool with one busy lane costs one check per
-    // tick instead of N.
+    // Visit only active private lanes; inactive lanes stay out of the tick.
     const active: number[] = [];
     const isActive = new Uint8Array(checks.length);
 
@@ -898,7 +928,7 @@ export const createPool: CreatePoolFactory = ({
       }
       if (serialScheduled) return;
       serialScheduled = true;
-      Promise.resolve().then(runSerialChecks);
+      queueMicrotask(runSerialChecks);
     };
 
     channel.open(runSerialChecks);
@@ -948,15 +978,30 @@ export const createPool: CreatePoolFactory = ({
   const closePoolNow = (): Promise<void> => {
     if (closePromise) return closePromise;
     closing = true;
+    let canCloseNativeDoorbells = denoCompletionDoorbell === undefined;
     closePromise = Promise.allSettled(
       workers.map((context) => context.requestStop?.()),
     )
-      .then(() =>
-        Promise.allSettled(workers.map((context) => context.kills()))
-      )
+      .then((stops) => {
+        if (denoCompletionDoorbell !== undefined) {
+          canCloseNativeDoorbells = stops.every((result, index) => {
+            if (workers[index]!.requestStop === undefined) return true;
+            return result.status === "fulfilled" && result.value === true;
+          });
+        }
+        return Promise.allSettled(workers.map((context) => context.kills()));
+      })
       .then(() => {
         sharedDispatcherChannel?.close();
         stealChannel?.close();
+      })
+      .finally(() => {
+        if (canCloseNativeDoorbells) {
+          denoCompletionDoorbell?.close();
+          return;
+        }
+        // Keep the callback alive if a worker failed to acknowledge shutdown.
+        denoCompletionDoorbell?.unref();
       });
     return closePromise;
   };
@@ -1040,27 +1085,44 @@ export const createPool: CreatePoolFactory = ({
     callHandlers.set(name, []);
   }
 
-  for (const worker of workers) {
+  if (useSteal) {
+    // Every worker context points at the same pool-global submit queue in the
+    // stealing topology. There is therefore no worker to assign here: the
+    // claimant is selected later by decodeSteal(). Keep one call closure per
+    // task and avoid paying N equivalent wrapper allocations at pool setup.
+    const sharedWorker = workers[0]!;
     for (const { name, index, timeout, abortSignal } of indexedFunctions) {
-      callHandlers.get(name)!.push(
+      callHandlers.set(name, [
         wrapGuardedInvoke({
           taskName: name,
-          invoke: worker.call({
+          invoke: sharedWorker.call({
             fnNumber: index,
             timeout,
             abortSignal,
           }),
         }),
-      );
+      ]);
+    }
+  } else {
+    for (const worker of workers) {
+      for (const { name, index, timeout, abortSignal } of indexedFunctions) {
+        callHandlers.get(name)!.push(
+          wrapGuardedInvoke({
+            taskName: name,
+            invoke: worker.call({
+              fnNumber: index,
+              timeout,
+              abortSignal,
+            }),
+          }),
+        );
+      }
     }
   }
 
   const useDirectHandler = (threads ?? 1) === 1 && !usingInliner;
 
-  // Imported tasks must never execute on the host inliner lane: their module
-  // import is meant to happen inside the worker so worker permission policies
-  // apply. When the inliner is active we strip the inline lane from their
-  // handler set so they only ever reach real worker lanes.
+  // Imported tasks must run on a worker so worker-side permission policies apply.
   const buildImportedInvoker = (handlers: WorkerInvoke[]): WorkerInvoke => {
     const workerHandlers: WorkerInvoke[] = [];
     const workerContexts: CreateContext[] = [];
@@ -1092,6 +1154,11 @@ export const createPool: CreatePoolFactory = ({
     handlers: WorkerInvoke[],
     imported: boolean,
   ): WorkerInvoke => {
+    // Stealing owns one shared submit queue. The worker that runs a call is
+    // deliberately chosen by the worker-side claim protocol, not by the host
+    // balancer, so round-robin/first-idle selection would only add overhead.
+    if (useSteal) return handlers[0]!;
+
     if (imported && usingInliner) {
       return buildImportedInvoker(handlers);
     }
@@ -1129,6 +1196,10 @@ export const createPool: CreatePoolFactory = ({
     shutdown: shutdownWithDelay,
     [Symbol.dispose]: disposePool,
     call: Object.fromEntries(callEntries) as unknown as FunctionMapType<T>,
+    // Only the shared submit queue has a single arena to build arguments in.
+    sharedArgBytes: createHostArgAllocator(
+      sharedArgsEnabled ? stealBuffers?.submitBuffers.payload : undefined,
+    ),
   } as Pool<T>;
 };
 

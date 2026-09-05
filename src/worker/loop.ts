@@ -1,6 +1,6 @@
 import {
-  addRuntimeDataListener,
   createRuntimeMessageChannel,
+  PROCESS_COMPLETION_DOORBELL,
   RUNTIME_IS_MAIN_THREAD,
   RUNTIME_IS_PROCESS_WORKER,
   RUNTIME_PARENT_PORT,
@@ -8,18 +8,25 @@ import {
 } from "../common/worker-runtime.ts";
 import { isSharedBufferSource } from "../common/shared-buffer-region.ts";
 import { isLockBufferTextCompat } from "../common/shared-buffer-text.ts";
+import { createDenoCompletionNotifier } from "../runtime/deno-doorbell.ts";
+import { createNodeCompletionNotifier } from "../runtime/node-doorbell.ts";
 import { createWorkerRxQueue } from "./rx-queue.ts";
+import { installSharedReturn } from "./shared-return.ts";
 import {
   createSharedMemoryTransport,
   WORKER_STOP,
 } from "../ipc/transport/shared-memory.ts";
 import { lock2 } from "../memory/lock.ts";
-// Side-effect import: registers the payload codec (cycle break for Andromeda;
-// see lock.ts). Must run before any lock2() call.
+// Registers the payload codec before any lock is built.
 import "../memory/payloadCodec.ts";
 import type { LockBuffers, WorkerData } from "../types.ts";
 import { getFunctions } from "./task-loader.ts";
-import { pauseGeneric, sleepUntilChanged, whilePausing } from "./timers.ts";
+import {
+  IS_BUN_WINDOWS,
+  pauseGeneric,
+  sleepUntilChanged,
+  whilePausing,
+} from "./timers.ts";
 import { IS_ANDROMEDA, RUNTIME, SET_IMMEDIATE } from "../common/runtime.ts";
 import { getNodeProcess } from "../common/node-compat.ts";
 import {
@@ -36,9 +43,6 @@ import {
   getProcessWorkerNativeWaitU32,
   installProcessWorkerBootstrap,
 } from "./process-worker-bootstrap.ts";
-import {
-  readBufferReferenceReturnReleaseMessage,
-} from "../connections/buffer-reference.ts";
 import { resolveDebugNamespaces } from "../debug/gate.ts";
 
 const WORKER_FATAL_MESSAGE_KEY = "__knittingWorkerFatal";
@@ -81,30 +85,6 @@ const reportWorkerStartupFatal = (error: unknown): void => {
   }
 };
 
-const installBufferReferenceReleaseListener = (
-  releaseReturnedBufferReference: (token: bigint) => void,
-): void => {
-  const handleMessage = (message: unknown): void => {
-    const token = readBufferReferenceReturnReleaseMessage(message);
-    if (token !== undefined) releaseReturnedBufferReference(token);
-  };
-
-  if (RUNTIME_PARENT_PORT !== undefined) {
-    addRuntimeDataListener(RUNTIME_PARENT_PORT, handleMessage);
-    return;
-  }
-
-  const scope = globalThis as typeof globalThis & {
-    addEventListener?: (
-      type: string,
-      listener: (event: { data?: unknown }) => void,
-    ) => void;
-  };
-  scope.addEventListener?.("message", (event) => {
-    handleMessage((event as { data?: unknown })?.data);
-  });
-};
-
 export const workerMainLoop = async (
   startupData: WorkerData,
 ): Promise<void> => {
@@ -124,9 +104,12 @@ export const workerMainLoop = async (
     abortSignalSAB,
     abortSignalMax,
     payloadConfig,
-    bufferReferenceReturn,
+    sharedReturn,
     permission,
     notifyOnHostPublish,
+    processCompletionDoorbell,
+    denoCompletionDoorbell,
+    nodeCompletionDoorbell,
     totalNumberOfThread,
     list,
     ids,
@@ -149,7 +132,7 @@ export const workerMainLoop = async (
     )
     : undefined;
 
-  // const object, not `enum`: Andromeda's Nova engine can't parse `enum`.
+  // Andromeda cannot parse enums.
   const Comment = {
     thisIsAHint: 0,
   } as const;
@@ -176,7 +159,24 @@ export const workerMainLoop = async (
     consumers: steal?.consumers,
     consumerId: steal?.consumerId,
     regionLanes: steal?.regionLanes,
+    stealClaim: steal?.claim,
   });
+  const notifyDenoHost = createDenoCompletionNotifier(denoCompletionDoorbell);
+  const notifyNodeHost = createNodeCompletionNotifier(nodeCompletionDoorbell);
+  const processParentPort = processCompletionDoorbell === true
+    ? RUNTIME_PARENT_PORT
+    : undefined;
+  // Bun on Windows flushes process messages only after an event-loop turn.
+  let processRingPending = false;
+  const flushProcessRing = IS_BUN_WINDOWS;
+  const notifyProcessHost = processParentPort === undefined
+    ? undefined
+    : flushProcessRing
+    ? () => {
+      processParentPort.postMessage(PROCESS_COMPLETION_DOORBELL);
+      processRingPending = true;
+    }
+    : () => processParentPort.postMessage(PROCESS_COMPLETION_DOORBELL);
   const returnLockState = lock2({
     headers: returnLock.headers,
     headerSlotStrideU32: returnLock.headerSlotStrideU32,
@@ -186,9 +186,22 @@ export const workerMainLoop = async (
     payloadConfig,
     textCompat: returnLock.textCompat,
     processBoundary: RUNTIME_IS_PROCESS_WORKER,
+    sharedReturn: sharedReturn === true,
+    // A thread return moves its source before publication. Node transfers the
+    // backing-store ownership; Deno and Bun make one owned host copy before
+    // the worker drops its pin. Both avoid the borrowed-return lifetime.
+    moveReturn: !RUNTIME_IS_PROCESS_WORKER,
     // The host parks on this lock's publication word when it has no work to
     // flush. Request locks are host-produced and must not wake that waiter.
-    notifyOnHostPublish,
+    notifyOnHostPublish: notifyOnHostPublish ||
+      notifyDenoHost !== undefined ||
+      notifyNodeHost !== undefined ||
+      notifyProcessHost !== undefined,
+    notifyHostPublish: notifyDenoHost !== undefined
+      ? () => notifyDenoHost(thread)
+      : notifyNodeHost !== undefined
+      ? notifyNodeHost
+      : notifyProcessHost,
   });
 
   const timers = workerOptions?.timers;
@@ -245,20 +258,18 @@ export const workerMainLoop = async (
     serviceBatchImmediate,
     hasCompleted,
     writeBatch,
-    hasPending,
     getAwaiting,
     drainReturnReleases,
-    releaseReturnedBufferReference,
+    releaseDeferredReturns,
   } = createWorkerRxQueue({
     listOfFunctions,
     workerOptions,
     lock: lockState,
     returnLock: returnLockState,
-    borrowReturnedBufferReferences: bufferReferenceReturn === "borrow",
     hasAborted: abortSignals?.hasAborted,
     stealing: steal !== undefined,
   });
-  installBufferReferenceReleaseListener(releaseReturnedBufferReference);
+  if (sharedReturn === true) installSharedReturn(returnLock.payload);
 
   a_store(rxStatus, 0, 1);
 
@@ -318,9 +329,9 @@ export const workerMainLoop = async (
 
   const traceSignals = dbg?.enabled("signals") === true;
   const _hasCompleted = hasCompleted;
-  const _hasPending = hasPending;
   const _getAwaiting = getAwaiting;
   const _drainReturnReleases = drainReturnReleases;
+  const _releaseDeferredReturns = releaseDeferredReturns;
   const _pauseSpin = pauseSpin;
   const _enqueueLock = traceSignals
     ? (): boolean => {
@@ -352,10 +363,24 @@ export const workerMainLoop = async (
     }
     : pauseUntil;
 
-  const flushBeforeClaim = steal !== undefined;
+  // Stealing flushes completed work before claiming more; private lanes claim
+  // first to keep their single-consumer path short.
+  const pump = steal !== undefined
+    ? (): boolean => {
+      let progressed = false;
+      if (_hasCompleted() && _writeBatch(WRITE_MAX) > 0) progressed = true;
+      return _enqueueLock() || progressed;
+    }
+    : (): boolean => {
+      const claimed = _enqueueLock();
+      return (_hasCompleted() && _writeBatch(WRITE_MAX) > 0) || claimed;
+    };
 
   /** Leave the dispatch loop and acknowledge shutdown. */
   const stopLoop = () => {
+    // A shutdown rejects unconsumed calls, so no return can still be adopted.
+    // Do not let a worker-isolate exit strand native BufferReference pins.
+    _releaseDeferredReturns();
     a_store(stopView, 0, WORKER_STOP.acknowledged);
     a_store(rxStatus, 0, 0);
     try {
@@ -366,41 +391,22 @@ export const workerMainLoop = async (
 
   const loop = () => {
     isInMacro = false;
+    // Recompute progress on every pass so idle workers can park.
     let progressed = true;
     let awaiting = 0;
     while (true) {
       if (stopView[0] !== WORKER_STOP.running) return stopLoop();
 
-      if (flushBeforeClaim) {
-        // Stealing only. Flush finished work before taking more on: a computed
-        // response should not wait behind a claim, and that claim can block on
-        // a peer withdrawing its intent. Measured to hurt the per-lane path,
-        // where a claim is a cheap private decode and picking work up promptly
-        // matters more, so the classic order is kept below.
-        // Reordering must not make `progressed` sticky: it answers "did this
-        // iteration move anything", so it has to start false every pass or the
-        // park below is unreachable and the worker spins a core forever.
-        progressed = false;
-        if (_hasCompleted()) {
-          if (_writeBatch(WRITE_MAX) > 0) progressed = true;
-        }
-        progressed = _enqueueLock() || progressed;
-      } else {
-        progressed = _enqueueLock();
-
-        if (_hasCompleted()) {
-          if (_writeBatch(WRITE_MAX) > 0) progressed = true;
-        }
-      }
+      progressed = pump();
 
       _drainReturnReleases();
 
-      if (_hasPending()) {
-        if (_serviceBatchImmediate() > 0) progressed = true;
-      }
+      if (_serviceBatchImmediate() > 0) progressed = true;
 
       if ((awaiting = _getAwaiting()) > 0) {
-        if (awaiting !== lastAwaiting) awaitingSpins = 0;
+        // Promise callbacks need the loop to yield; delay only when no progress
+        // was made, otherwise queued work pays an unnecessary timer hop.
+        if (progressed || awaiting !== lastAwaiting) awaitingSpins = 0;
         lastAwaiting = awaiting;
         awaitingSpins++;
         const delay = Math.min(MAX_AWAITING_MS, Math.max(0, awaitingSpins - 1));
@@ -409,9 +415,20 @@ export const workerMainLoop = async (
       }
       awaitingSpins = lastAwaiting = 0;
 
+      if (processRingPending) {
+        processRingPending = false;
+        scheduleTimer(0);
+        return;
+      }
+
       if (!progressed) {
         if (txStatus[Comment.thisIsAHint] === 1) {
-          _pauseSpin();
+          // During a hint spin only host-driven state can change.
+          do {
+            _pauseSpin();
+            if (stopView[0] !== WORKER_STOP.running) return stopLoop();
+            if (pump()) break;
+          } while (txStatus[Comment.thisIsAHint] === 1);
           continue;
         }
         _pauseUntil(wakeToken, spinMicroseconds, parkMs);

@@ -11,6 +11,9 @@ export const createProcessWorkerNativeSignalNotifier = (): undefined =>
 
 export const cleanupProcessWorkerMemoryQuietly = (): void => {};
 
+// Browser workers have no parent-process IPC channel.
+export const processWorkerUsesIpc = (): false => false;
+
 const unavailable = (): never => {
   throw new Error("process workers are unavailable in the browser build");
 };

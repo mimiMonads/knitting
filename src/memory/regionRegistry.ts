@@ -1,6 +1,5 @@
 import {
   LOCK_SECTOR_BYTE_LENGTH,
-  LockBound,
   PAYLOAD_LOCK_HOST_BITS_OFFSET_BYTES,
   PAYLOAD_LOCK_WORKER_BITS_OFFSET_BYTES,
   TASK_SLOT_INDEX_MASK,
@@ -13,9 +12,15 @@ import {
   toSharedBufferRegion,
 } from "../common/shared-buffer-region.ts";
 
-// Low 5 bits = slot index, high 27 bits = caller meta.
-// Inlined from setTaskSlotIndex to avoid cross-closure call on hot path.
-const SLOT_META_PACKED_MASK = 0xFFFFFFE0; // (~0x1F) >>> 0
+/** Dynamic payload-region identities; independent from 32 queue header slots. */
+export const DYNAMIC_PAYLOAD_SLOTS = 64;
+export const DYNAMIC_PAYLOAD_SLOT_MASK = DYNAMIC_PAYLOAD_SLOTS - 1;
+
+const PAYLOAD_LOCK_STATE_WORDS = DYNAMIC_PAYLOAD_SLOTS / 32;
+
+// Low 6 bits store the region index; the remaining bits store its byte offset.
+const EMPTY = 0xFFFFFFBF >>> 0; // 111...10111111
+const SLOT_META_PACKED_MASK = (~TASK_SLOT_INDEX_MASK) >>> 0;
 
 export type RegisterMalloc = ReturnType<typeof register>;
 
@@ -31,311 +36,190 @@ export const register = (
   );
   const lockSAB = lockRegion.sab;
 
+  // Dynamic-region state shares the queue lock's cache-line padding.
   const hostBits = new Int32Array(
     lockSAB,
     lockRegion.byteOffset + PAYLOAD_LOCK_HOST_BITS_OFFSET_BYTES,
-    1,
+    PAYLOAD_LOCK_STATE_WORDS,
   );
   const workerBits = new Int32Array(
     lockSAB,
     lockRegion.byteOffset + PAYLOAD_LOCK_WORKER_BITS_OFFSET_BYTES,
-    1,
+    PAYLOAD_LOCK_STATE_WORDS,
   );
 
-  const startAndIndex = new Uint32Array(LockBound.slots);
-  const size64bit = new Uint32Array(LockBound.slots);
+  const startAndIndex = new Uint32Array(DYNAMIC_PAYLOAD_SLOTS);
+  const size64bit = new Uint32Array(DYNAMIC_PAYLOAD_SLOTS);
+  // Keep region offsets indexed by slot for O(1) lookup.
+  const startBySlot = new Uint32Array(DYNAMIC_PAYLOAD_SLOTS);
 
-  const clz32 = Math.clz32;
   const a_load = Atomics.load;
   const a_store = Atomics.store;
   const a_xor = Atomics.xor;
 
-  const EMPTY = 0xFFFFFFFF >>> 0;
-  const SLOT_MASK = TASK_SLOT_INDEX_MASK;
+  const SLOT_MASK = DYNAMIC_PAYLOAD_SLOT_MASK;
   const START_MASK = (~SLOT_MASK) >>> 0;
 
   startAndIndex.fill(EMPTY);
 
   let tableLength = 0;
-  let usedBits = 0 | 0;
-
-  // scalar state (faster than Uint32Array(1))
-  let hostLast = 0 | 0;
+  // Keep the common <=32-region path in scalar words.
+  let usedBits0 = 0 | 0;
+  let usedBits1 = 0 | 0;
+  let hostLast0 = 0 | 0;
+  let hostLast1 = 0 | 0;
 
   const startAndIndexToArray = (length: number) =>
     startAndIndex.slice(0, length);
 
-  const compactFreeBitsStable = (b: number, freeBits: number) => {
+  const slotWord = (slot: number) => slot >>> 5;
+  const slotBit = (slot: number) => 1 << (slot & 31);
+
+  const compactFreed = (freeBits0: number, freeBits1: number) => {
     const sai = startAndIndex;
-    let w = 0 | 0;
+    let write = 0;
 
-    b = b | 0;
-    freeBits = freeBits >>> 0;
-
-    for (let r = 0; r < b; r++) {
-      const v = sai[r];
-      if (v === EMPTY) continue;
-      if ((freeBits & (1 << (v & SLOT_MASK))) !== 0) continue;
-      if (w !== r) sai[w] = v;
-      w++;
+    for (let read = 0; read < tableLength; read++) {
+      const value = sai[read]!;
+      const slot = value & SLOT_MASK;
+      const freeBits = slot < 32 ? freeBits0 : freeBits1;
+      if ((freeBits & slotBit(slot)) !== 0) continue;
+      if (write !== read) sai[write] = value;
+      write++;
     }
 
-    const live = w;
-    for (; w < b; w++) sai[w] = EMPTY;
-    return live;
+    for (let at = write; at < tableLength; at++) sai[at] = EMPTY;
+    tableLength = write;
   };
 
+  const findFreeSlot = (): number => {
+    let available = ~usedBits0;
+    if (available !== 0) {
+      return 31 - Math.clz32((available & -available) >>> 0);
+    }
+    available = ~usedBits1;
+    return available === 0
+      ? -1
+      : 32 + 31 - Math.clz32((available & -available) >>> 0);
+  };
+
+  /** Store the sixth region-index bit in bit 31 of the task length word. */
+  const tagTaskSlot = (task: Task, slot: number) => {
+    task[TaskIndex.End] = (
+      (task[TaskIndex.End] & 0x7FFFFFFF) | ((slot & 32) << 26)
+    ) >>> 0;
+  };
+
+  const reserveSlot = (slot: number) => {
+    const bit = slotBit(slot);
+    if (slot < 32) {
+      usedBits0 = (usedBits0 | bit) | 0;
+      hostLast0 = (hostLast0 ^ bit) | 0;
+      a_store(hostBits, 0, hostLast0);
+    } else {
+      usedBits1 = (usedBits1 | bit) | 0;
+      hostLast1 = (hostLast1 ^ bit) | 0;
+      a_store(hostBits, 1, hostLast1);
+    }
+  };
+
+  // Reconcile completed reads and remove freed regions from the table.
   const updateTable = () => {
-    // state = which bits are currently "in use" under toggle-protocol
-    const w = a_load(workerBits, 0) | 0;
-    const state = (hostLast ^ w) >>> 0;
+    if (tableLength === 0) return;
 
-    // freeBits = bits where host/worker agree (toggle resolved)
-    let freeBits = (~state) >>> 0;
+    const freeBits0 = usedBits0 === 0
+      ? 0
+      : (~(hostLast0 ^ a_load(workerBits, 0)) & usedBits0) | 0;
+    const freeBits1 = usedBits1 === 0
+      ? 0
+      : (~(hostLast1 ^ a_load(workerBits, 1)) & usedBits1) | 0;
+    if ((freeBits0 | freeBits1) === 0) return;
 
-    if (tableLength === 0 || freeBits === 0) return;
-
-    // all cleared
-    if (freeBits === EMPTY) {
+    if (freeBits0 === usedBits0 && freeBits1 === usedBits1) {
       tableLength = 0;
-      usedBits = 0 | 0;
+      usedBits0 = 0;
+      usedBits1 = 0;
       return;
     }
 
-    // only bother with bits we actually consider used
-    freeBits &= usedBits;
-    if (freeBits === 0) return;
-
-    usedBits &= ~freeBits;
-    tableLength = compactFreeBitsStable(tableLength, freeBits);
+    usedBits0 = (usedBits0 & ~freeBits0) | 0;
+    usedBits1 = (usedBits1 & ~freeBits1) | 0;
+    compactFreed(freeBits0, freeBits1);
   };
 
-  // Hot-path allocation: reconcile frees, optionally reuse an exact-fit freed
-  // region in place, otherwise compact survivors while looking for the first gap.
-  const findAndInsert = (task: Task, size: number): number => {
-    const sai = startAndIndex;
-    const sz = size64bit;
-    let tl = tableLength;
-    let insertAt = -1;
-    let insertStart = 0;
-    let prevEnd = 0;
-    let didCompactScan = false;
+  // The extent table stays sorted by offset and is limited to 64 regions.
+  const findAndInsert = (size: number): number => {
+    updateTable();
 
-    if (tl === 0 && usedBits === 0) {
-      sai[0] = 0;
-      sz[0] = size;
-      task[TaskIndex.Start] = 0;
-      task[TaskIndex.slotBuffer] =
-        ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | 0) >>> 0;
-      tableLength = 1;
-      usedBits = 1;
-      hostLast ^= 1;
-      return 0;
-    }
+    if (tableLength >= DYNAMIC_PAYLOAD_SLOTS) return -1;
+    const slot = findFreeSlot();
+    if (slot === -1) return -1;
 
-    if (tl !== 0) {
-      const w = a_load(workerBits, 0) | 0;
-      let freeBits = (~(hostLast ^ w)) >>> 0;
-      if (freeBits !== 0) freeBits &= usedBits;
-
-      // Every tracked slot is free, so restart the arena from offset 0. A free
-      // racing after this snapshot can only delay reclamation until the next
-      // allocation; it cannot make a live slot appear free.
-      if (freeBits === (usedBits >>> 0)) {
-        tableLength = 0;
-        usedBits = 0 | 0;
-        tl = 0;
-        freeBits = 0 >>> 0;
-      } else if (freeBits !== 0) {
-        for (let i = 0; i < tl; i++) {
-          const v = sai[i];
-          const reclaimedSlot = v & SLOT_MASK;
-          const reclaimedBit = 1 << reclaimedSlot;
-          if ((freeBits & reclaimedBit) === 0) continue;
-          if ((sz[reclaimedSlot] >>> 0) !== (size >>> 0)) continue;
-
-          const availableBits = (~usedBits) >>> 0;
-          const freeBit = (availableBits & -availableBits) >>> 0;
-          if (freeBit === 0) return -1;
-
-          const slotIndex = 31 - clz32(freeBit);
-          const start = v & START_MASK;
-          sai[i] = (start | slotIndex) >>> 0;
-          sz[slotIndex] = size;
-          task[TaskIndex.Start] = start;
-          task[TaskIndex.slotBuffer] =
-            ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) |
-              slotIndex) >>> 0;
-          usedBits = (usedBits & ~reclaimedBit) | freeBit;
-          hostLast ^= freeBit;
-          return slotIndex;
-        }
+    let previousEnd = 0;
+    let insertAt = tableLength;
+    for (let at = 0; at < tableLength; at++) {
+      const value = startAndIndex[at]!;
+      const start = value & START_MASK;
+      if (((start - previousEnd) >>> 0) >= (size >>> 0)) {
+        insertAt = at;
+        break;
       }
-      if (tl !== 0 && freeBits !== 0 && freeBits !== EMPTY) {
-        didCompactScan = true;
-        let write = 0;
-        for (let read = 0; read < tl; read++) {
-          const v = sai[read];
-          const slot = v & SLOT_MASK;
-
-          if ((freeBits & (1 << slot)) !== 0) continue;
-
-          const curStart = v & START_MASK;
-          if (insertAt === -1 && ((curStart - prevEnd) >>> 0) >= (size >>> 0)) {
-            insertAt = write;
-            insertStart = prevEnd;
-          }
-
-          if (write !== read) sai[write] = v;
-          write++;
-          prevEnd = (curStart + (sz[slot] >>> 0)) >>> 0;
-        }
-
-        for (let i = write; i < tl; i++) sai[i] = EMPTY;
-
-        if (freeBits !== 0) usedBits &= ~freeBits;
-        tableLength = tl = write;
-      }
+      previousEnd = (start + (size64bit[value & SLOT_MASK] >>> 0)) >>> 0;
     }
 
-    if (tl >= LockBound.slots) return -1;
-
-    const availableBits = (~usedBits) >>> 0;
-    const freeBit = (availableBits & -availableBits) >>> 0;
-    if (freeBit === 0) return -1;
-
-    const slotIndex = 31 - clz32(freeBit);
-
-    if (!didCompactScan && tl !== 0) {
-      const firstStart = sai[0] & START_MASK;
-      if (firstStart >= (size >>> 0)) {
-        for (let i = tl; i > 0; i--) sai[i] = sai[i - 1]!;
-        sai[0] = slotIndex;
-        sz[slotIndex] = size;
-        task[TaskIndex.Start] = 0;
-        task[TaskIndex.slotBuffer] =
-          ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>>
-          0;
-        tableLength = tl + 1;
-        usedBits |= freeBit;
-        hostLast ^= freeBit;
-        return slotIndex;
-      }
-
-      for (let at = 0; at + 1 < tl; at++) {
-        const cur = sai[at];
-        const curStart = cur & START_MASK;
-        const curEnd = (curStart + (sz[cur & SLOT_MASK] >>> 0)) >>> 0;
-        const nextStart = sai[at + 1] & START_MASK;
-
-        if ((nextStart - curEnd) >>> 0 < (size >>> 0)) continue;
-
-        for (let i = tl; i > at + 1; i--) sai[i] = sai[i - 1]!;
-        sai[at + 1] = (curEnd | slotIndex) >>> 0;
-        sz[slotIndex] = size;
-        task[TaskIndex.Start] = curEnd;
-        task[TaskIndex.slotBuffer] =
-          ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>>
-          0;
-        tableLength = tl + 1;
-        usedBits |= freeBit;
-        hostLast ^= freeBit;
-        return slotIndex;
-      }
-
-      const last = sai[tl - 1];
-      const lastStart = last & START_MASK;
-      const newStart = (lastStart + (sz[last & SLOT_MASK] >>> 0)) >>> 0;
-      sai[tl] = (newStart | slotIndex) >>> 0;
-      sz[slotIndex] = size;
-      task[TaskIndex.Start] = newStart;
-      task[TaskIndex.slotBuffer] =
-        ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>>
-        0;
-      tableLength = tl + 1;
-      usedBits |= freeBit;
-      hostLast ^= freeBit;
-      return slotIndex;
+    for (let at = tableLength; at > insertAt; at--) {
+      startAndIndex[at] = startAndIndex[at - 1]!;
     }
-
-    if (tl === 0) {
-      sai[0] = slotIndex;
-      sz[slotIndex] = size;
-      task[TaskIndex.Start] = 0;
-      task[TaskIndex.slotBuffer] =
-        ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>>
-        0;
-      tableLength = 1;
-      usedBits |= freeBit;
-      hostLast ^= freeBit;
-      return slotIndex;
-    }
-
-    if (insertAt !== -1) {
-      for (let i = tl; i > insertAt; i--) sai[i] = sai[i - 1]!;
-      sai[insertAt] = (insertStart | slotIndex) >>> 0;
-      sz[slotIndex] = size;
-      task[TaskIndex.Start] = insertStart;
-      task[TaskIndex.slotBuffer] =
-        ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>>
-        0;
-      tableLength = tl + 1;
-      usedBits |= freeBit;
-      hostLast ^= freeBit;
-      return slotIndex;
-    }
-
-    sai[tl] = (prevEnd | slotIndex) >>> 0;
-    sz[slotIndex] = size;
-    task[TaskIndex.Start] = prevEnd;
-    task[TaskIndex.slotBuffer] =
-      ((task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) | slotIndex) >>> 0;
-    tableLength = tl + 1;
-    usedBits |= freeBit;
-    hostLast ^= freeBit;
-    return slotIndex;
+    startAndIndex[insertAt] = (previousEnd | slot) >>> 0;
+    size64bit[slot] = size >>> 0;
+    startBySlot[slot] = previousEnd >>> 0;
+    tableLength++;
+    reserveSlot(slot);
+    return slot;
   };
+
+  /**
+   * Reserve a region for `payloadLen` bytes without a task to stamp it into.
+   * Returns the region index, or -1 when every identity is taken. Its offset is
+   * `regionStart(slot)`.
+   */
+  const allocRegion = (payloadLen: number): number =>
+    findAndInsert(((payloadLen | 0) + 63) & ~63);
+
+  /** Byte offset of a region reserved by `allocRegion` or `allocTask`. */
+  const regionStart = (slot: number): number =>
+    startBySlot[slot & SLOT_MASK]!;
 
   const allocTask = (task: Task) => {
-    const payloadLen = task[TaskIndex.PayloadLen] | 0;
-    const size = (payloadLen + 63) & ~63;
-
-    const slotIndex = findAndInsert(task, size);
-    if (slotIndex === -1) return -1;
-
-    a_store(hostBits, 0, hostLast);
-    return slotIndex;
+    const slot = findAndInsert(((task[TaskIndex.PayloadLen] | 0) + 63) & ~63);
+    if (slot === -1) return -1;
+    task[TaskIndex.Start] = startBySlot[slot]!;
+    task[TaskIndex.slotBuffer] = (
+      (task[TaskIndex.slotBuffer] & SLOT_META_PACKED_MASK) |
+      (slot & TASK_SLOT_INDEX_MASK)
+    ) >>> 0;
+    tagTaskSlot(task, slot);
+    return slot;
   };
 
   const setSlotLength = (slotIndex: number, payloadLen: number) => {
-    slotIndex = slotIndex & TASK_SLOT_INDEX_MASK;
-
-    //const bit = 1 << slotIndex;
-    //if ((usedBits & bit) === 0) return false;
-
-    //const current = size64bit[slotIndex] >>> 0;
-    const aligned = ((payloadLen | 0) + 63) & ~63;
-    //if (aligned < 0) return false;
-    //if ((aligned >>> 0) > current) return false;
-
-    size64bit[slotIndex] = aligned >>> 0;
+    const slot = slotIndex & SLOT_MASK;
+    size64bit[slot] = (((payloadLen | 0) + 63) & ~63) >>> 0;
     return true;
   };
 
-  // Always a read-modify-write. `free()` genuinely has two callers even without
-  // work stealing: the encode-side rollback (`failDynamicWriteAfterReserve`)
-  // and the decode-side release (`freeTaskSlot`). Each held a private
-  // `workerLast` shadow and blind-stored the whole word, so one overwrote the
-  // other's toggles — the allocator then handed out a region that was still
-  // live, aliasing payloads. XOR of distinct bits commutes, so one atomic
-  // toggle per free is correct for any number of writers.
+  // XOR preserves independent release toggles from encode and decode paths.
   const free = (index: number) => {
-    a_xor(workerBits, 0, 1 << (index & TASK_SLOT_INDEX_MASK));
+    const slot = index & SLOT_MASK;
+    a_xor(workerBits, slotWord(slot), slotBit(slot));
   };
 
   return {
     allocTask,
+    allocRegion,
+    regionStart,
     setSlotLength,
+    tagTaskSlot,
     lockSAB,
     free,
     hostBits,

@@ -6,7 +6,11 @@ const assertEquals: (actual: unknown, expected: unknown) => void = (
 ) => {
   assert.deepStrictEqual(actual, expected);
 };
-import { register } from "../src/memory/regionRegistry.ts";
+import {
+  DYNAMIC_PAYLOAD_SLOT_MASK,
+  DYNAMIC_PAYLOAD_SLOTS,
+  register,
+} from "../src/memory/regionRegistry.ts";
 import {
   LOCK_CACHE_LINE_BYTES,
   LOCK_HOST_BITS_OFFSET_BYTES,
@@ -20,8 +24,8 @@ import {
 } from "../src/memory/lock.ts";
 
 const align64 = (n: number) => (n + 63) & ~63;
-const START_MASK = (~31) >>> 0;
-const EMPTY = 0xFFFFFFFF >>> 0;
+const START_MASK = (~DYNAMIC_PAYLOAD_SLOT_MASK) >>> 0;
+const EMPTY = 0xFFFFFFBF >>> 0;
 
 const makeRegistry = () =>
   register({
@@ -64,9 +68,35 @@ test("registry uses separate words inside the shared lock sector", () => {
   assert.equal(LOCK_SECTOR_BYTE_LENGTH, LOCK_CACHE_LINE_BYTES * 4);
 });
 
+test("registry caps dynamic regions at 64 without widening queue slots", () => {
+  const registry = makeRegistry();
+  const tasks: ReturnType<typeof makeTask>[] = [];
+
+  for (let slot = 0; slot < DYNAMIC_PAYLOAD_SLOTS; slot++) {
+    const task = makeTask();
+    task[TaskIndex.PayloadLen] = 64;
+    task[TaskIndex.End] = 23;
+    task[TaskIndex.slotBuffer] = 0xCAFE0000;
+    assertEquals(registry.allocTask(task), slot);
+    assertEquals(task[TaskIndex.slotBuffer] >>> 5, 0xCAFE0000 >>> 5);
+    assertEquals(dynamicSlotOf(task), slot);
+    assertEquals(task[TaskIndex.End] & 0x7FFFFFFF, 23);
+    tasks.push(task);
+  }
+
+  const overflow = makeTask();
+  overflow[TaskIndex.PayloadLen] = 64;
+  assertEquals(registry.allocTask(overflow), -1);
+
+  for (const task of tasks) registry.free(dynamicSlotOf(task));
+  registry.updateTable();
+});
+
 const track64andIndex = (
   startAndIndex: number,
-) => [startAndIndex >>> 6, startAndIndex & 31];
+) => [startAndIndex >>> 6, startAndIndex & DYNAMIC_PAYLOAD_SLOT_MASK];
+const dynamicSlotOf = (task: ReturnType<typeof makeTask>): number =>
+  (task[TaskIndex.slotBuffer] & 31) | ((task[TaskIndex.End] >>> 31) << 5);
 const allocNoSync = (
   registry: ReturnType<typeof makeRegistry>,
   size: number,
@@ -139,19 +169,22 @@ const assertAllocatorInvariants = (
   registry: ReturnType<typeof makeRegistry>,
   live: Map<number, LiveAllocation>,
 ) => {
-  const stateBits = (registry.hostBits[0] ^ registry.workerBits[0]) >>> 0;
-  assertEquals(popcount32(stateBits), live.size);
-  assertEquals(live.size <= LockBound.slots, true);
+  let stateCount = 0;
+  for (let word = 0; word < registry.hostBits.length; word++) {
+    stateCount += popcount32(
+      (registry.hostBits[word]! ^ registry.workerBits[word]!) >>> 0,
+    );
+  }
+  assertEquals(stateCount, live.size);
+  assertEquals(live.size <= DYNAMIC_PAYLOAD_SLOTS, true);
 
   const table = live.size === 0 ? [] : registry.startAndIndexToArray(live.size);
-  let tableBits = 0;
   const seenSlots = new Set<number>();
 
   for (const packed of table) {
-    const slot = packed & 31;
+    const slot = packed & DYNAMIC_PAYLOAD_SLOT_MASK;
     assertEquals(seenSlots.has(slot), false);
     seenSlots.add(slot);
-    tableBits |= 1 << slot;
 
     const expected = live.get(slot);
     assertEquals(typeof expected !== "undefined", true);
@@ -159,7 +192,11 @@ const assertAllocatorInvariants = (
   }
 
   assertEquals(table.length, live.size);
-  assertEquals(tableBits >>> 0, stateBits >>> 0);
+  for (let slot = 0; slot < DYNAMIC_PAYLOAD_SLOTS; slot++) {
+    const state = (registry.hostBits[slot >>> 5]! ^
+      registry.workerBits[slot >>> 5]!) & (1 << (slot & 31));
+    assertEquals(state !== 0, live.has(slot));
+  }
   assertNoOverlap(live);
 };
 
@@ -486,8 +523,8 @@ test("allocTask keeps appending contiguously after clear and tail-only frees", (
   const first = allocNoSync(registry, 64);
   const second = allocNoSync(registry, 128);
 
-  registry.free(first[TaskIndex.slotBuffer]);
-  registry.free(second[TaskIndex.slotBuffer]);
+  registry.free(dynamicSlotOf(first));
+  registry.free(dynamicSlotOf(second));
   registry.updateTable();
 
   const reset = allocNoSync(registry, 96);
@@ -498,7 +535,7 @@ test("allocTask keeps appending contiguously after clear and tail-only frees", (
   assertEquals(tailA[TaskIndex.Start], align64(96));
   assertEquals(tailB[TaskIndex.Start], align64(96) + 64);
 
-  registry.free(tailB[TaskIndex.slotBuffer]);
+  registry.free(dynamicSlotOf(tailB));
   registry.updateTable();
 
   const tailReuse = allocNoSync(registry, 64);
@@ -551,7 +588,7 @@ test("setSlotLength shrinks slot and exposes gap for next allocation", () => {
   const second = allocNoSync(registry, 64);
 
   assertEquals(second[TaskIndex.Start], align64(700 * 3));
-  assertEquals(registry.setSlotLength(first[TaskIndex.slotBuffer], 700), true);
+  assertEquals(registry.setSlotLength(dynamicSlotOf(first), 700), true);
 
   const third = makeTask();
   third[TaskIndex.PayloadLen] = 128;
@@ -569,7 +606,7 @@ test("atomic publication preserves toggle-bit allocator invariants", () => {
     const task = makeTask();
     task[TaskIndex.PayloadLen] = payloadLen;
     assertEquals(registry.allocTask(task) === -1, false);
-    live.set(task[TaskIndex.slotBuffer], {
+    live.set(dynamicSlotOf(task), {
       start: task[TaskIndex.Start],
       size: align64(payloadLen),
     });
@@ -585,7 +622,7 @@ test("atomic publication preserves toggle-bit allocator invariants", () => {
   const reused = makeTask();
   reused[TaskIndex.PayloadLen] = 8;
   assertEquals(registry.allocTask(reused) === -1, false);
-  live.set(reused[TaskIndex.slotBuffer], {
+  live.set(dynamicSlotOf(reused), {
     start: reused[TaskIndex.Start],
     size: align64(reused[TaskIndex.PayloadLen]),
   });
@@ -599,7 +636,7 @@ test("allocator random overlap stress keeps allocator consistent", () => {
 
   for (let step = 0; step < 6000; step++) {
     const shouldAllocate = live.size === 0 ||
-      (live.size < LockBound.slots && (nextRandom() & 1) === 0);
+      (live.size < DYNAMIC_PAYLOAD_SLOTS && (nextRandom() & 1) === 0);
 
     if (shouldAllocate) {
       registry.updateTable();
@@ -608,20 +645,30 @@ test("allocator random overlap stress keeps allocator consistent", () => {
       const task = makeTask();
       task[TaskIndex.PayloadLen] = payloadLen;
 
-      const hostBefore = registry.hostBits[0] | 0;
-      const workerBefore = registry.workerBits[0] | 0;
-      const pendingBefore = (hostBefore ^ workerBefore) >>> 0;
+      const hostBefore = Array.from(registry.hostBits);
+      const workerBefore = Array.from(registry.workerBits);
 
       const allocated = registry.allocTask(task);
       assertEquals(allocated === -1, false);
 
-      const hostAfter = registry.hostBits[0] | 0;
-      const toggled = (hostBefore ^ hostAfter) >>> 0;
+      let toggledWord = -1;
+      let toggled = 0;
+      for (let word = 0; word < registry.hostBits.length; word++) {
+        const delta = (hostBefore[word]! ^ registry.hostBits[word]!) >>> 0;
+        if (delta === 0) continue;
+        assertEquals(toggledWord, -1);
+        toggledWord = word;
+        toggled = delta;
+      }
       assertEquals(isSingleBit(toggled), true);
-      assertEquals((pendingBefore & toggled) === 0, true);
+      assertEquals(
+        ((hostBefore[toggledWord]! ^ workerBefore[toggledWord]!) & toggled) ===
+          0,
+        true,
+      );
 
-      const slot = task[TaskIndex.slotBuffer];
-      assertEquals(31 - Math.clz32(toggled), slot);
+      const slot = dynamicSlotOf(task);
+      assertEquals((toggledWord << 5) + 31 - Math.clz32(toggled), slot);
       assertEquals(live.has(slot), false);
 
       live.set(slot, {
@@ -648,12 +695,12 @@ test("allocator random overlap stress keeps allocator consistent", () => {
   }
 
   const refilled: ReturnType<typeof makeTask>[] = [];
-  for (let i = 0; i < LockBound.slots; i++) {
+  for (let i = 0; i < DYNAMIC_PAYLOAD_SLOTS; i++) {
     const task = makeTask();
     task[TaskIndex.PayloadLen] = 64;
     assertEquals(registry.allocTask(task) === -1, false);
     refilled.push(task);
-    live.set(task[TaskIndex.slotBuffer], {
+    live.set(dynamicSlotOf(task), {
       start: task[TaskIndex.Start],
       size: align64(task[TaskIndex.PayloadLen]),
     });
@@ -665,18 +712,23 @@ test("allocator random overlap stress keeps allocator consistent", () => {
   assertEquals(registry.allocTask(overflow), -1);
 
   for (const task of refilled) {
-    registry.free(task[TaskIndex.slotBuffer]);
-    live.delete(task[TaskIndex.slotBuffer]);
+    registry.free(dynamicSlotOf(task));
+    live.delete(dynamicSlotOf(task));
   }
   registry.updateTable();
   assertAllocatorInvariants(registry, live);
-  assertEquals((registry.hostBits[0] ^ registry.workerBits[0]) >>> 0, 0);
+  assertEquals(
+    Array.from(registry.hostBits).every(
+      (host, word) => host === registry.workerBits[word],
+    ),
+    true,
+  );
 
   const probe = makeTask();
   probe[TaskIndex.PayloadLen] = 512;
   assertEquals(registry.allocTask(probe) === -1, false);
   assertEquals(probe[TaskIndex.Start], 0);
-  registry.free(probe[TaskIndex.slotBuffer]);
+  registry.free(dynamicSlotOf(probe));
   registry.updateTable();
   assertAllocatorInvariants(registry, live);
 });

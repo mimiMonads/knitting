@@ -1,6 +1,6 @@
 {
   "name": "knitting",
-  "version": "0.1.63",
+  "version": "0.1.70",
   "description": "Shared-memory IPC runtime for Node.js, Deno, and Bun.",
   "license": "Apache-2.0",
   "repository": {
@@ -86,8 +86,9 @@
     "test:deno": "deno test -A --ignore=test/runtime.node.test.ts --ignore=test/runtime.process.test.ts",
     "test:node": "node --no-warnings --experimental-transform-types --test \"./test/*.test.ts\"",
     "test:node:26": "node --no-warnings --experimental-ffi test/node26-ffi.integration.mjs",
-    "test:bun": "bun test ./test/*.test.ts --path-ignore-patterns=**/tx-queue.test.ts",
+    "test:bun": "bun test",
     "test:browser": "bun run scripts/test-browser.ts",
+    "check:windows-park": "bun run scripts/check-windows-park.ts",
     "test:runtimes": "npm run test:node && npm run test:bun",
     "test:all": "npm run test:deno && npm run test:runtimes && npm run test:browser",
     "coverage:node": "node --no-warnings --experimental-transform-types --experimental-test-coverage --test \"./test/*.test.ts\"",
@@ -107,7 +108,6 @@
     "@types/bun": "latest",
     "@types/deno": "latest",
     "@types/node": "latest",
-    "dts-bundle-generator": "^9.5.1",
     "mitata": "^1.0.34",
     "typescript": "^5.2.0"
   }

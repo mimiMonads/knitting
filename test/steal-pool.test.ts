@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import test from "./_runner.ts";
 import { createPool } from "../knitting.ts";
 import { AbortSignalPoolExhausted } from "../src/shared/abortSignal.ts";
+import { RUNTIME } from "../src/common/runtime.ts";
 import { abortA, abortB, abortReturnsInput } from "./fixtures/abort_tasks.ts";
 import { concat, double } from "./fixtures/steal_tasks.ts";
+import { delayedEcho } from "./fixtures/loop_tasks.ts";
 
 const withTimeout = async <T>(promise: Promise<T>, ms = 5_000): Promise<T> => {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -19,6 +21,22 @@ const withTimeout = async <T>(promise: Promise<T>, ms = 5_000): Promise<T> => {
     ]);
   } finally {
     if (timeoutId !== undefined) clearTimeout(timeoutId);
+  }
+};
+
+const denoFfiGranted = (): boolean => {
+  if (RUNTIME !== "deno") return false;
+  const deno = (globalThis as typeof globalThis & {
+    Deno?: {
+      permissions?: {
+        querySync?: (descriptor: { name: "ffi" }) => { state?: string };
+      };
+    };
+  }).Deno;
+  try {
+    return deno?.permissions?.querySync?.({ name: "ffi" }).state === "granted";
+  } catch {
+    return false;
   }
 };
 
@@ -53,6 +71,22 @@ test("multi-worker thread pools steal by default", async () => {
   }
 });
 
+test("explicit balancers do not change shared-submit stealing", async () => {
+  const pool = createPool({
+    threads: 3,
+    balancer: "firstIdle",
+    host: { steal: true },
+  })({ double });
+  try {
+    const values = await Promise.all(
+      Array.from({ length: 120 }, (_, i) => pool.call.double(i)),
+    );
+    assert.deepEqual(values, Array.from({ length: 120 }, (_, i) => i * 2));
+  } finally {
+    await pool.shutdown();
+  }
+});
+
 test("stealing pool completes with the host doorbell armed immediately", async () => {
   const pool = createPool({
     threads: 2,
@@ -63,6 +97,24 @@ test("stealing pool completes with the host doorbell armed immediately", async (
       Array.from({ length: 80 }, (_, i) => pool.call.double(i)),
     );
     assert.deepEqual(values, Array.from({ length: 80 }, (_, i) => i * 2));
+  } finally {
+    await pool.shutdown();
+  }
+});
+
+test("Deno FFI doorbell wakes a host armed before a delayed result", {
+  skip: !denoFfiGranted(),
+}, async () => {
+  const pool = createPool({
+    threads: 1,
+    host: { stallFreeLoops: 0 },
+  })({ delayedEcho });
+  try {
+    const started = performance.now();
+    assert.equal(await withTimeout(pool.call.delayedEcho(50), 750), 50);
+    // Without the native ring, the dispatcher reaches its 1000 ms watchdog;
+    // leave broad scheduling headroom while still proving it did not do that.
+    assert.ok(performance.now() - started < 750);
   } finally {
     await pool.shutdown();
   }
@@ -296,3 +348,31 @@ test("shutting a pool down stops its workers", {
     } cores; shutdown left them running`,
   );
 });
+
+for (const topology of ["steal", "per-thread", "serial-channel"] as const) {
+  test(`${topology} wakes repeatedly after idle periods and send bursts`, async () => {
+    const pool = createPool({
+      threads: 2,
+      host: topology === "steal"
+        ? { steal: true, stallFreeLoops: 0 }
+        : { steal: false, dispatcher: topology, stallFreeLoops: 0 },
+      // Use a long park timeout so a lost wake cannot hide.
+      worker: { timers: { spinMicroseconds: 0, parkMs: 60_000 } },
+    })({ double });
+    try {
+      for (let turn = 0; turn < 24; turn++) {
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        const size = turn % 2 === 0 ? 1 : 128;
+        const values = await withTimeout(Promise.all(
+          Array.from({ length: size }, (_, i) => pool.call.double(turn + i)),
+        ));
+        assert.deepEqual(
+          values,
+          Array.from({ length: size }, (_, i) => (turn + i) * 2),
+        );
+      }
+    } finally {
+      await pool.shutdown();
+    }
+  });
+}

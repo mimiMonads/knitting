@@ -1,10 +1,12 @@
-// Benchmark one-way BufferReference transport against Uint8Array payload copies.
+// Benchmark one-way BufferReference transport against ordinary Uint8Array payloads.
 //
 //   deno run -A bench/buffer-reference.ts
 //   bun run bench/buffer-reference.ts
 //   node --experimental-transform-types bench/buffer-reference.ts
 //
-// Return tests opt into borrowed refs so Deno/Bun measure pointer metadata.
+// Ordinary returns use the automatic ownership path: Node adopts a backing
+// store; Deno/Bun make one safe host copy. See `owned-return.ts` for the
+// focused, labelled return comparison.
 import { createPool, isMain, task } from "../knitting.ts";
 import { BufferReference } from "../unsafe.ts";
 
@@ -34,7 +36,7 @@ const outputJson = runtimeArgs().includes("--json");
 const fmtBytes = (bytes: number): string =>
   bytes >= 1024 * 1024 ? `${bytes / (1024 * 1024)} MiB` : `${bytes / 1024} KiB`;
 
-type BenchRow = { size: number; refMs: number; copyMs: number };
+type BenchRow = { size: number; refMs: number; rawMs: number };
 type DirectionRow = { size: number; sendMs: number; returnMs: number };
 
 // The tasks touch or allocate only enough to isolate transport cost.
@@ -70,9 +72,6 @@ const timeAvgMs = async (
 if (isMain) {
   using pool = createPool({
     threads: 1,
-    unsafe: {
-      BufferReferenceReturn: "borrow",
-    },
     payload: {
       payloadMaxByteLength: 64 * 1024 * 1024,
       maxPayloadBytes: 8 * 1024 * 1024,
@@ -127,22 +126,22 @@ if (isMain) {
 
   const runScenario = async (
     refRunForSize: (size: number) => Promise<void>,
-    copyRunForSize: (size: number) => Promise<unknown>,
+    rawRunForSize: (size: number) => Promise<unknown>,
   ): Promise<BenchRow[]> => {
     const results: BenchRow[] = [];
 
     for (const size of SIZES) {
       const refRun = () => refRunForSize(size);
-      const copyRun = () => copyRunForSize(size);
+      const rawRun = () => rawRunForSize(size);
 
       for (let i = 0; i < WARMUP; i++) {
         await refRun();
-        await copyRun();
+        await rawRun();
       }
 
       const refMs = await timeAvgMs(ITERATIONS, refRun);
-      const copyMs = await timeAvgMs(ITERATIONS, copyRun);
-      results.push({ size, refMs, copyMs });
+      const rawMs = await timeAvgMs(ITERATIONS, rawRun);
+      results.push({ size, refMs, rawMs });
     }
 
     return results;
@@ -210,14 +209,14 @@ if (isMain) {
 
     for (const { title, results } of scenarios) {
       console.log(`\nbuffer-reference ${title} (avg per call)\n`);
-      console.log("  size        BufferReference   Uint8Array copy   speedup");
-      for (const { size, refMs, copyMs } of results) {
-        const speedup = (copyMs / refMs).toFixed(2);
+      console.log("  size        BufferReference    Uint8Array raw   speedup");
+      for (const { size, refMs, rawMs } of results) {
+        const speedup = (rawMs / refMs).toFixed(2);
         console.log(
           `  ${fmtBytes(size).padEnd(10)}  ${
             refMs.toFixed(3).padStart(10)
           } ms  ` +
-            `${copyMs.toFixed(3).padStart(12)} ms  ${speedup.padStart(6)}x`,
+            `${rawMs.toFixed(3).padStart(12)} ms  ${speedup.padStart(6)}x`,
         );
       }
     }

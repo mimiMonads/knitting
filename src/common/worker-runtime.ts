@@ -49,6 +49,16 @@ export const RUNTIME_PROCESS_WORKER_BOOT_VERSION = 1;
 
 export const RUNTIME_POOL_DEPTH_ENV = "KNITTING_POOL_DEPTH";
 
+/**
+ * A coalesced completion wake sent over a process worker's existing IPC
+ * channel. The result itself remains in shared memory; this is only the
+ * doorbell byte.
+ */
+export const PROCESS_COMPLETION_DOORBELL = "__knittingCompletionDoorbell";
+
+export const isProcessCompletionDoorbell = (value: unknown): boolean =>
+  value === PROCESS_COMPLETION_DOORBELL;
+
 type ProcessLikeWithIpc = NonNullable<ReturnType<typeof getNodeProcess>> & {
   send?: (message: unknown) => void;
 };

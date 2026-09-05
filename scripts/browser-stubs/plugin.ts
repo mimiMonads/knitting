@@ -27,6 +27,7 @@ const stubbed: Record<string, string> = {
   "src/permission/index.ts": "permission.ts",
   "src/runtime/compiled-artifact.ts": "compiled-artifact.ts",
   "src/runtime/compiled-worker.ts": "compiled-worker.ts",
+  "src/runtime/node-doorbell.ts": "node-doorbell.ts",
   "src/runtime/process-worker.ts": "process-worker.ts",
   "src/worker/process-worker-bootstrap.ts": "process-worker-bootstrap.ts",
 };

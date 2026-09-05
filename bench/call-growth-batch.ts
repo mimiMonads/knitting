@@ -39,7 +39,7 @@ const makeBytes = (size: number) => {
 
 const pool = createPool({
   threads: THREADS,
-  payloadInitialBytes: 64 * 1028 * 1028,
+  payload: { payloadInitialBytes: 64 * 1024 * 1024 },
 })({ echoString, echoBytes });
 
 let sink = 0;
