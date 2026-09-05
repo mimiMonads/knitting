@@ -1,0 +1,113 @@
+name: Publish npm package
+
+on:
+  push:
+    branches:
+      - main
+      - beta
+      - nigthly
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: Check the package without publishing it to npm
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: npm-publish-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish from ${{ github.ref_name }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Check npm credentials
+        if: github.event_name == 'push' || inputs.dry_run != true
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [[ -z "$NODE_AUTH_TOKEN" ]]; then
+            echo "::error::The NPM_TOKEN repository secret is required for publishing."
+            exit 1
+          fi
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: https://registry.npmjs.org
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v1
+        with:
+          deno-version: "2.8.2"
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: |
+          deno install
+          bun install --frozen-lockfile
+
+      - name: Run the full test suite
+        run: npm run test:all
+
+      - name: Build the npm package
+        run: npm run build
+
+      - name: Select npm tag and version
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          case "$GITHUB_REF_NAME" in
+            main)
+              npm_tag="latest"
+              version="$(node -p "require('./package.json').version")"
+              ;;
+            beta)
+              npm_tag="beta"
+              base_version="$(node -p "require('./package.json').version.split('-')[0]")"
+              version="${base_version}-beta.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+              npm version "$version" --no-git-tag-version
+              ;;
+            nigthly)
+              npm_tag="nightly"
+              base_version="$(node -p "require('./package.json').version.split('-')[0]")"
+              version="${base_version}-nightly.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+              npm version "$version" --no-git-tag-version
+              ;;
+            *)
+              echo "Unsupported publishing branch: $GITHUB_REF_NAME" >&2
+              exit 1
+              ;;
+          esac
+
+          echo "npm_tag=$npm_tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Publishing knitting@$version with npm tag $npm_tag"
+
+      - name: Check package contents
+        run: npm pack --dry-run
+
+      - name: Publish package
+        if: github.event_name == 'push' || inputs.dry_run != true
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --access public --tag "${{ steps.package.outputs.npm_tag }}"
+
+      - name: Dry-run publish
+        if: github.event_name == 'workflow_dispatch' && inputs.dry_run == true
+        run: npm publish --dry-run --access public --tag "${{ steps.package.outputs.npm_tag }}"

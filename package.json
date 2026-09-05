@@ -1,6 +1,6 @@
 {
   "name": "knitting",
-  "version": "0.1.63",
+  "version": "0.1.70",
   "description": "Shared-memory IPC runtime for Node.js, Deno, and Bun.",
   "license": "Apache-2.0",
   "repository": {
