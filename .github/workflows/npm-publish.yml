@@ -1,11 +1,6 @@
 name: Publish npm package
 
 on:
-  push:
-    branches:
-      - main
-      - beta
-      - nigthly
   workflow_dispatch:
     inputs:
       dry_run:
@@ -30,7 +25,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Check npm credentials
-        if: github.event_name == 'push' || inputs.dry_run != true
+        if: inputs.dry_run != true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
@@ -103,11 +98,11 @@ jobs:
         run: npm pack --dry-run
 
       - name: Publish package
-        if: github.event_name == 'push' || inputs.dry_run != true
+        if: inputs.dry_run != true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: npm publish --access public --tag "${{ steps.package.outputs.npm_tag }}"
 
       - name: Dry-run publish
-        if: github.event_name == 'workflow_dispatch' && inputs.dry_run == true
+        if: inputs.dry_run == true
         run: npm publish --dry-run --access public --tag "${{ steps.package.outputs.npm_tag }}"
