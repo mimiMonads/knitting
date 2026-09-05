@@ -697,17 +697,34 @@ test("Node process worker wakes promptly from a parked native wait", {
 
   let testError: unknown;
   try {
-    await withTimeout("parked Node process worker startup delay", delay(50));
+    // Boot the child process on its own clock. Spawning it and importing the
+    // task module costs ~250ms idle and over 1.5s on a loaded box, so timing the
+    // very first call measures startup, not the wake. What is under test is the
+    // second call: with spinMicroseconds 0 the worker drops straight into the
+    // native wait, so a doorbell that never rings stalls it for parkMs (5s),
+    // three orders of magnitude above the ~1ms a real wake takes.
+    assert.equal(
+      await withTimeout(
+        "parked Node process worker boot call",
+        pool.call.addOnePromise(0),
+      ),
+      1,
+    );
+    await withTimeout("parked Node process worker park delay", delay(200));
+
     const started = performance.now();
     const value = await withTimeout(
       "parked Node process worker addOnePromise",
       pool.call.addOnePromise(41),
     );
+    const elapsed = performance.now() - started;
 
     assert.equal(value, 42);
     assert.ok(
-      performance.now() - started < 1_000,
-      "parked Node process worker was not woken promptly",
+      elapsed < 1_000,
+      `parked Node process worker was not woken promptly (${
+        elapsed.toFixed(1)
+      }ms)`,
     );
   } catch (error) {
     testError = error;
