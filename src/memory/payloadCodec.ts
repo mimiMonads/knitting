@@ -1309,6 +1309,54 @@ export const encodePayload = ({
     task.value = null;
     return true;
   };
+  /** Encode plain objects, arrays, and null-prototype objects as JSON. */
+  const encodeObjectJson = (
+    task: Task,
+    slotIndex: number,
+    objectValue: object,
+  ): boolean => {
+    let text: string;
+    try {
+      text = stringifyJSON(objectValue);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      return encoderError({
+        task,
+        type: ErrorKnitting.Json,
+        onPromise,
+        detail,
+      });
+    }
+    if (text.length <= staticMaxBytes) {
+      const written = writeStaticUtf8(text, slotIndex);
+      if (written !== -1) {
+        task[TaskIndex.Type] = PayloadBuffer.StaticJson;
+        task[TaskIndex.PayloadLen] = written;
+        // Retain any transport-owned memory until the call settles.
+        attachPayloadTransportFinalizer(task, objectValue);
+        task.value = null;
+        return true;
+      }
+    }
+
+    task[TaskIndex.Type] = PayloadBuffer.Json;
+    const reserveBytes = dynamicUtf8ReserveBytes(task, text, "Json");
+    if (reserveBytes < 0) return false;
+    const reservedSlot = reserveDynamicObject(task, reserveBytes);
+    if (reservedSlot === -1) return false;
+    const written = writeDynamicUtf8(
+      text,
+      task[TaskIndex.Start],
+      reserveBytes,
+    );
+    if (written < 0) return failDynamicWriteAfterReserve(task, reservedSlot);
+    task[TaskIndex.PayloadLen] = written;
+    setSlotLength(reservedSlot, written);
+    attachPayloadTransportFinalizer(task, objectValue);
+    task.value = null;
+    return true;
+  };
+
   const encodeObjectDate = (task: Task, date: Date) => {
     Float64View[0] = date.getTime();
     task[TaskIndex.Type] = PayloadBuffer.Date;
@@ -1716,6 +1764,13 @@ export const encodePayload = ({
 
         try {
           const objectValue = args as object;
+          const objectProto = objectGetPrototypeOf(objectValue);
+
+          // Plain objects can skip the typed-array and external-payload checks.
+          if (objectProto === objectPrototype) {
+            return encodeObjectJson(task, slotIndex, objectValue);
+          }
+
           const sharedArrayBufferPayload = getSharedArrayBufferPayload(
             objectValue,
           );
@@ -1728,7 +1783,6 @@ export const encodePayload = ({
             );
           }
 
-          const objectProto = objectGetPrototypeOf(objectValue);
           if (isRuntimeUint8Array(objectValue)) {
             return encodeObjectUint8Array(
               task,
@@ -1745,52 +1799,8 @@ export const encodePayload = ({
             );
           }
 
-          if (
-            arrayIsArray(objectValue) ||
-            objectProto === objectPrototype ||
-            objectProto === null
-          ) {
-            let text: string;
-            try {
-              text = stringifyJSON(objectValue);
-            } catch (error) {
-              const detail = error instanceof Error
-                ? error.message
-                : String(error);
-              return encoderError({
-                task,
-                type: ErrorKnitting.Json,
-                onPromise,
-                detail,
-              });
-            }
-            if (text.length <= staticMaxBytes) {
-              const written = writeStaticUtf8(text, slotIndex);
-              if (written !== -1) {
-                task[TaskIndex.Type] = PayloadBuffer.StaticJson;
-                task[TaskIndex.PayloadLen] = written;
-                task.value = null;
-                return true;
-              }
-            }
-
-            task[TaskIndex.Type] = PayloadBuffer.Json;
-            const reserveBytes = dynamicUtf8ReserveBytes(task, text, "Json");
-            if (reserveBytes < 0) return false;
-            const reservedSlot = reserveDynamicObject(task, reserveBytes);
-            if (reservedSlot === -1) return false;
-            const written = writeDynamicUtf8(
-              text,
-              task[TaskIndex.Start],
-              reserveBytes,
-            );
-            if (written < 0) {
-              return failDynamicWriteAfterReserve(task, reservedSlot);
-            }
-            task[TaskIndex.PayloadLen] = written;
-            setSlotLength(reservedSlot, written);
-            task.value = null;
-            return true;
+          if (arrayIsArray(objectValue) || objectProto === null) {
+            return encodeObjectJson(task, slotIndex, objectValue);
           }
 
           if (

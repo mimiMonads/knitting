@@ -13,7 +13,7 @@ const assertEquals: (actual: unknown, expected: unknown) => void = (
   assert.deepStrictEqual(actual, expected);
 };
 import { createPool } from "../knitting.ts";
-import { addOne, delayedEcho } from "./fixtures/loop_tasks.ts";
+import { addOne, addOneAsync, delayedEcho } from "./fixtures/loop_tasks.ts";
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const rootPath = fileURLToPath(new URL("../", import.meta.url));
@@ -96,6 +96,32 @@ test("worker loop progresses across async work and idle periods", async () => {
     ];
     const result2 = await withTimeout(Promise.all(batch2), 2000);
     assertEquals(result2, [2, 41, 0]);
+  } finally {
+    await shutdown();
+  }
+});
+
+/** Compare async and sync throughput for timer regressions. */
+test("an immediately-resolved async task keeps up with a sync one", async () => {
+  const CALLS = 2000;
+  const { call, shutdown } = createPool({ threads: 2 })({ addOne, addOneAsync });
+
+  const run = async (fn: (value: number) => Promise<number>) => {
+    await Promise.all(Array.from({ length: 64 }, (_, i) => fn(i)));
+    const started = Date.now();
+    await Promise.all(Array.from({ length: CALLS }, (_, i) => fn(i)));
+    return Date.now() - started;
+  };
+
+  try {
+    const syncMs = await run(call.addOne);
+    const asyncMs = await run(call.addOneAsync);
+    const budget = syncMs * 25 + 200;
+    assert.ok(
+      asyncMs <= budget,
+      `${CALLS} async calls took ${asyncMs}ms against ${syncMs}ms sync ` +
+        `(budget ${budget}ms): the worker is backing off between batches`,
+    );
   } finally {
     await shutdown();
   }

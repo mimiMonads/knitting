@@ -11,6 +11,7 @@ import {
   HTTP_BODY_STREAM_THRESHOLD_BYTES,
   readBodyIntoBytes,
   readBodyIntoRegion,
+  readBodyOrRefer,
 } from "../src/memory/knitting-buffer-http.ts";
 
 const MIB = 1024 * 1024;
@@ -83,12 +84,12 @@ test("a small body is materialized and copied", async () => {
   region.release();
 });
 
-test("allocOrRefer keeps a small request in the allocator", async () => {
+test("readBodyOrRefer keeps a small request in the allocator", async () => {
   if (!supported) return;
   const allocator = createKnittingAllocator({ slots: 64 });
   const body = pattern(4 * KIB);
 
-  const payload = await allocator.allocOrRefer(streamingRequest(body), {
+  const payload = await readBodyOrRefer(streamingRequest(body), allocator, {
     referenceAboveBytes: 64 * KIB,
     maxByteLength: MIB,
   });
@@ -98,7 +99,7 @@ test("allocOrRefer keeps a small request in the allocator", async () => {
   payload.release();
 });
 
-test("allocOrRefer moves a large request into BufferReference", async () => {
+test("readBodyOrRefer moves a large request into BufferReference", async () => {
   if (!supported || !bufferReferenceSupported) return;
   const allocator = createKnittingAllocator({
     slots: 64,
@@ -106,7 +107,7 @@ test("allocOrRefer moves a large request into BufferReference", async () => {
   });
   const body = pattern(96 * KIB);
 
-  const payload = await allocator.allocOrRefer(streamingRequest(body), {
+  const payload = await readBodyOrRefer(streamingRequest(body), allocator, {
     referenceAboveBytes: 64 * KIB,
     maxByteLength: MIB,
   });
@@ -116,13 +117,14 @@ test("allocOrRefer moves a large request into BufferReference", async () => {
   assert.equal(allocator.stats().live, 0, "the reference path does not use the arena");
 });
 
-test("allocOrRefer chooses by actual size for chunked bodies", async () => {
+test("readBodyOrRefer chooses by actual size for chunked bodies", async () => {
   if (!supported || !bufferReferenceSupported) return;
   const allocator = createKnittingAllocator({ slots: 64 });
   const body = pattern(96 * KIB);
 
-  const payload = await allocator.allocOrRefer(
+  const payload = await readBodyOrRefer(
     streamingRequest(body, { contentLength: null }),
+    allocator,
     { referenceAboveBytes: 64 * KIB, maxByteLength: MIB },
   );
   assert.ok(payload instanceof BufferReference);
@@ -130,11 +132,11 @@ test("allocOrRefer chooses by actual size for chunked bodies", async () => {
   payload.release();
 });
 
-test("allocOrRefer's moved result round-trips through a thread worker", async () => {
+test("readBodyOrRefer's moved result round-trips through a thread worker", async () => {
   if (!supported || !bufferReferenceSupported) return;
   const allocator = createKnittingAllocator({ slots: 64 });
   const body = pattern(96 * KIB);
-  const payload = await allocator.allocOrRefer(streamingRequest(body), {
+  const payload = await readBodyOrRefer(streamingRequest(body), allocator, {
     referenceAboveBytes: 64 * KIB,
     maxByteLength: MIB,
   });

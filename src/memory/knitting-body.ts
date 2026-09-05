@@ -1,21 +1,12 @@
 /**
  * One handle for a request body, whichever way it travels.
  *
- * `allocator.allocOrRefer()` deliberately returns two different things -- a
- * pooled region for a small body, a moved `BufferReference` for a large one --
- * because they are genuinely different transports. That is the right answer
- * for the allocator and the wrong one for a request handler, which then has to
- * branch, pick between two tasks, and get a different release rule right on
- * each side.
+ * A body uses either pooled arena bytes or a moved `BufferReference`;
+ * `allocOrRefer()` hides that choice behind one disposable handle.
  *
- * `readBody()` keeps the choice and hides the branch. The host gets one
- * disposable handle; the worker gets a `Uint8Array`.
- *
- * Ownership: the host owns the body and lends it for the duration of the call.
- * The worker never releases anything -- a region is adopted with
- * `borrow: true`, so its `release()` cannot toggle an identity the host still
- * owns -- and the host's `using` scope is the lifetime. That is the same rule
- * for both transports, which is what makes the two sides uniform.
+ * The host owns the body, while each send holds it until the call settles, so
+ * early disposal cannot recycle bytes still in use by a worker. The worker gets
+ * a `Uint8Array` and never releases the body.
  *
  * The bytes are valid only until the host releases. A worker that wants to
  * keep them past the call must copy.

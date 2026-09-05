@@ -93,6 +93,7 @@ if (isMain) {
     if (stop) return;
     const expected = performance.now() + PROBE_MS;
     setTimeout(() => {
+      if (stop) return;
       if (recording) timerLag.push(performance.now() - expected);
       if (!socketPending) {
         socketPending = true;
@@ -138,21 +139,30 @@ if (isMain) {
   await new Promise((resolve) => setTimeout(resolve, WARMUP_MS));
   const warmCompleted = completed;
   const warmAt = performance.now();
+  const processCpuStart = process.cpuUsage();
+  // cpuUsage includes worker threads. Only threadCpuUsage measures the host.
+  const threadCpuUsage = (process as typeof process & {
+    threadCpuUsage?: typeof process.cpuUsage;
+  }).threadCpuUsage;
+  const hostCpuStart = threadCpuUsage?.();
   recording = true;
   await new Promise((resolve) => setTimeout(resolve, DURATION_MS));
   recording = false;
   const measuredCompleted = completed - warmCompleted;
   const measuredMs = performance.now() - warmAt;
+  const processCpu = process.cpuUsage(processCpuStart);
+  const hostCpu = hostCpuStart === undefined
+    ? undefined
+    : threadCpuUsage!(hostCpuStart);
   draining = true;
   await new Promise<void>((resolve) => {
     done = resolve;
     if (issued === completed) resolve();
   });
   stop = true;
-  client.destroy();
+  client.end();
   server.close();
 
-  const cpu = process.cpuUsage();
   console.log(JSON.stringify({
     label: process.env.HL_LABEL ?? "",
     threads: THREADS,
@@ -164,7 +174,11 @@ if (isMain) {
     ops_per_second: (measuredCompleted / measuredMs) * 1000,
     completed: measuredCompleted,
     wall_ms: performance.now() - startedAt,
-    host_cpu_ms: (cpu.user + cpu.system) / 1000,
+    measured_ms: measuredMs,
+    process_cpu_ms: (processCpu.user + processCpu.system) / 1000,
+    host_cpu_ms: hostCpu === undefined
+      ? null
+      : (hostCpu.user + hostCpu.system) / 1000,
     timer_lag_ms: summarise(timerLag),
     socket_rtt_ms: summarise(socketRtt),
     sink,

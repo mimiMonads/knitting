@@ -166,6 +166,16 @@ export function createHostTxQueue({
   const completionArmed = new Uint8Array(returnWaiters.length);
   let completionWake: (() => void) | undefined;
   let completionGeneration = 0 | 0;
+  const completionGenerations = new Int32Array(returnWaiters.length);
+  // Reuse one callback per lane and capture the generation before re-arming.
+  const completionCallbacks = returnWaiters.map((_, index) => () => {
+    if (completionArmed[index] === 0) return;
+    const generation = completionGenerations[index];
+    completionArmed[index] = 0;
+    returnArmers[index]!(false);
+    if (generation !== completionGeneration) return;
+    completionWake?.();
+  });
   const setCompletionWaiterArmed = (armed: boolean) => {
     for (const setArmed of returnArmers) setArmed(armed);
   };
@@ -174,13 +184,18 @@ export function createHostTxQueue({
     timeoutMs?: number,
   ): boolean => {
     completionWake = onWake;
-    // A persistent waiter may still be pending after a send preempted the
-    // dispatcher. Re-arm its shared gate before relying on that waiter again.
-    setCompletionWaiterArmed(true);
     let supported = true;
 
     for (let index = 0; index < returnWaiters.length; index++) {
-      if (completionArmed[index] !== 0) continue;
+      if (completionArmed[index] !== 0) {
+        // Re-arm persistent waiters with an atomic check; a result may have
+        // arrived while the gate was off, and setting ARMED alone can strand it.
+        if (!returnNativeArmers[index]!()) {
+          onWake();
+          return true;
+        }
+        continue;
+      }
 
       let wait;
       try {
@@ -194,17 +209,15 @@ export function createHostTxQueue({
       }
 
       completionArmed[index] = 1;
-      const generation = completionGeneration;
-      const wakeLane = () => {
-        if (completionArmed[index] === 0) return;
-        completionArmed[index] = 0;
-        returnArmers[index]!(false);
-        if (generation !== completionGeneration) return;
-        completionWake?.();
-      };
+      completionGenerations[index] = completionGeneration;
+      const wakeLane = completionCallbacks[index]!;
 
-      if (!wait.async) wakeLane();
-      else Promise.resolve(wait.value).then(wakeLane, wakeLane);
+      if (!wait.async) {
+        wakeLane();
+        // A synchronous wake may disarm the whole queue, so stop here.
+        return true;
+      }
+      Promise.resolve(wait.value).then(wakeLane, wakeLane);
     }
 
     if (!supported) {

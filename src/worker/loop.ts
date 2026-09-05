@@ -404,7 +404,9 @@ export const workerMainLoop = async (
       if (_serviceBatchImmediate() > 0) progressed = true;
 
       if ((awaiting = _getAwaiting()) > 0) {
-        if (awaiting !== lastAwaiting) awaitingSpins = 0;
+        // Promise callbacks need the loop to yield; delay only when no progress
+        // was made, otherwise queued work pays an unnecessary timer hop.
+        if (progressed || awaiting !== lastAwaiting) awaitingSpins = 0;
         lastAwaiting = awaiting;
         awaitingSpins++;
         const delay = Math.min(MAX_AWAITING_MS, Math.max(0, awaitingSpins - 1));

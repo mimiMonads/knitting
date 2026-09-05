@@ -102,7 +102,7 @@ test("one task reads a body whichever way it travelled", async () => {
       const body = pattern(bytes);
       // `using` reads better, but the node test job runs on Node 22, which
       // cannot parse it. Same reason for every dispose below.
-      const handle = await allocator.readBody(streamingRequest(body), {
+      const handle = await allocator.allocOrRefer(streamingRequest(body), {
         referenceAboveBytes: 512 * KIB,
         maxByteLength: 4 * MIB,
       });
@@ -146,7 +146,7 @@ test("a body shorter than it claimed still travels at its real length", async ()
     // Declares more than it sends, and is too large for the arena, so it takes
     // the standalone buffer -- which was sized to the claim, not the body.
     const body = pattern(300 * KIB);
-    const handle = await allocator.readBody(
+    const handle = await allocator.allocOrRefer(
       streamingRequest(body, { contentLength: 384 * KIB }),
       { referenceAboveBytes: 512 * KIB, maxByteLength: 4 * MIB },
     );
@@ -189,7 +189,7 @@ test("the host owns the body and reclaims the identity after the call", async ()
     // released, or the host's dispose did not, this runs out and overflows.
     for (let i = 0; i < 200; i++) {
       const body = pattern(4 * KIB);
-      const handle = await allocator.readBody(streamingRequest(body), {
+      const handle = await allocator.allocOrRefer(streamingRequest(body), {
         referenceAboveBytes: 512 * KIB,
         maxByteLength: 4 * MIB,
       });
@@ -206,5 +206,129 @@ test("the host owns the body and reclaims the identity after the call", async ()
     );
   } finally {
     await pool.shutdown();
+  }
+});
+
+// Use one body-sized region so premature disposal would immediately reuse the
+// worker's bytes.
+test("a body released mid-call is not recycled under the worker", async () => {
+  if (!supported) return;
+  const SIZE = 256 * KIB;
+  const allocator = createKnittingAllocator({
+    slots: 32,
+    arenaByteLength: SIZE,
+  });
+  const pool = createPool({
+    threads: 1,
+    worker: {
+      bootstrap: {
+        href: "./fixtures/knitting_body_bootstrap.ts",
+        name: "setup",
+        data: allocator.transport(),
+      },
+    },
+  })({ digestBody });
+
+  try {
+    const body = pattern(SIZE);
+    const handle = await allocator.allocOrRefer(streamingRequest(body), {
+      referenceAboveBytes: 4 * MIB,
+      maxByteLength: 4 * MIB,
+    });
+    assert.equal(wireKind(handle.wire), "descriptor", "it is a pooled region");
+
+    const inFlight = pool.call.digestBody(handle.wire);
+    handle[Symbol.dispose]();
+
+    // Reuse the only region while the call is in flight.
+    const next = allocator.alloc(SIZE);
+    next.u8().fill(0xab);
+
+    assert.equal(
+      await inFlight,
+      digestOf(body),
+      "the worker read the body it was lent, not the one that followed it",
+    );
+    next.release();
+  } finally {
+    await pool.shutdown();
+  }
+});
+
+// Pooled and moved bodies should remain readable and reusable until disposal.
+test("every transport stays readable until the handle is disposed", async () => {
+  if (!supported) return;
+  const allocator = createKnittingAllocator({
+    slots: 64,
+    arenaByteLength: 256 * KIB,
+  });
+  const pool = createPool({
+    threads: 1,
+    worker: {
+      bootstrap: {
+        href: "./fixtures/knitting_body_bootstrap.ts",
+        name: "setup",
+        data: allocator.transport(),
+      },
+    },
+  })({ digestBody });
+
+  try {
+    for (const { name, bytes, wire } of CASES) {
+      const body = pattern(bytes);
+      const handle = await allocator.allocOrRefer(streamingRequest(body), {
+        referenceAboveBytes: 512 * KIB,
+        maxByteLength: 4 * MIB,
+      });
+
+      try {
+        assert.equal(wireKind(handle.wire), wire, `${name}: took its own path`);
+        assert.equal(await pool.call.digestBody(handle.wire), digestOf(body));
+        assert.equal(
+          handle.u8().byteLength,
+          bytes,
+          `${name}: still readable on the host after the call`,
+        );
+        assert.equal(
+          await pool.call.digestBody(handle.wire),
+          digestOf(body),
+          `${name}: still sendable a second time`,
+        );
+      } finally {
+        handle[Symbol.dispose]();
+      }
+    }
+  } finally {
+    await pool.shutdown();
+  }
+});
+
+// `maxByteLength` is a runtime security bound, including the reference path.
+test("maxByteLength is required at runtime, not only by the types", async () => {
+  if (!supported) return;
+  const allocator = createKnittingAllocator({
+    slots: 32,
+    arenaByteLength: 64 * KIB,
+  });
+  const body = pattern(8 * KIB);
+
+  for (
+    const [name, options] of [
+      ["omitted", {}],
+      ["undefined", { maxByteLength: undefined }],
+      ["negative", { maxByteLength: -1 }],
+      ["not an integer", { maxByteLength: 1.5 }],
+    ] as const
+  ) {
+    await assert.rejects(
+      () =>
+        allocator.allocOrRefer(
+          // No declared length forces the reference-allocation path.
+          streamingRequest(body, { contentLength: null }),
+          options as unknown as { maxByteLength: number },
+        ),
+      /maxByteLength/,
+      `${name}: refused before a byte is read`,
+    );
   }
 });

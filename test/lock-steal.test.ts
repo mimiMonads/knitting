@@ -365,3 +365,48 @@ test("a throw mid-region still retires decoded lanes and frees the region", () =
 
   assert.equal(seen.size, TOTAL, "no task was stranded by the failed claim");
 });
+
+/** Stealing must preserve producer order within each claimed region. */
+for (const claim of ["dekker", "cas-mask"] as const) {
+  for (const regionLanes of [4, 8, 16]) {
+    test(
+      `${claim} decodes a claimed region in producer order, g=${regionLanes}`,
+      () => {
+        const { producer, consumers: endpoints } = buildStealLock(
+          2,
+          regionLanes,
+          claim,
+        );
+
+        const TOTAL = 16;
+        for (let i = 0; i < TOTAL; i++) {
+          assert.equal(producer.encode(makeValueTask(i)), true);
+        }
+
+        const endpoint = endpoints[0]!;
+        const claims: number[][] = [];
+        let drained = 0;
+        for (let guard = 0; guard < 100 && endpoint.decode(); guard++) {
+          const values: number[] = [];
+          for (const task of endpoint.resolved.toArray()) {
+            values.push(task.value as number);
+          }
+          endpoint.resolved.clear();
+          claims.push(values);
+          drained += values.length;
+        }
+
+        assert.equal(drained, TOTAL, "one consumer drains what it published");
+        for (const values of claims) {
+          for (let i = 1; i < values.length; i++) {
+            assert.equal(
+              values[i],
+              values[i - 1]! + 1,
+              `region decoded out of producer order: ${values.join(",")}`,
+            );
+          }
+        }
+      },
+    );
+  }
+}

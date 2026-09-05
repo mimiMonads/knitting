@@ -66,6 +66,9 @@ cross-runtime shared memory.
 - Deno 2+
 - Bun 1+
 
+See [Platform and native support](#platform-and-native-support) for the prebuild
+matrix and the flags native features need.
+
 ## Install
 
 From npm:
@@ -149,10 +152,16 @@ if (isMain) {
 }
 ```
 
-`using` starts pool shutdown when the scope exits and does not wait for it.
-TypeScript 5.2+ can compile this pattern for runtimes that do not parse `using`
-syntax directly. Use `await pool.shutdown()` when you need to wait for shutdown
-or pass a shutdown delay.
+`using` starts pool shutdown when the scope exits and does not wait for it. Use
+`await pool.shutdown()` when you need to wait for shutdown or pass a shutdown
+delay.
+
+Deno 2+, Bun 1+, and Node.js 24+ parse `using` natively. Node.js 22 does not: it
+has `Symbol.dispose`, but the declaration itself is a `SyntaxError`, and Node's
+own type stripping (`--experimental-strip-types` /
+`--experimental-transform-types`) does not downlevel it, so a `.ts` file with
+`using` fails there too. For Node 22, compile the file with TypeScript 5.2+
+(`target: "es2022"`), or call `await pool.shutdown()` instead.
 
 For simple tasks that do not need timeout or abort metadata, exported functions
 can be used directly:
@@ -314,6 +323,125 @@ if (isMain) {
 }
 ```
 
+## Payloads
+
+Worker calls can carry the following values across the shared-memory transport:
+
+- `string`, `number`, `boolean`, `bigint`, `null`, and `undefined`.
+- Plain objects and arrays made from supported values.
+- `ArrayBuffer`, Node `Buffer`, `DataView`, and supported typed arrays.
+- `ProcessSharedBuffer`.
+- `BufferReference` from `knitting/unsafe` for experimental zero-copy buffers to
+  thread workers (same process only; see below).
+- `Envelope` for a JSON header plus a binary body (`ArrayBuffer`,
+  `SharedArrayBuffer`, `ProcessSharedBuffer`, or `BufferReference`).
+- `Error`, `Date`, and global symbols created with `Symbol.for(...)`.
+- Native `Promise<supported-value>` inputs. The promise is awaited before
+  dispatch.
+- Thenables are not awaited by the transport.
+
+If it isn't on that list, assume it isn't portable. Some things don't (or
+shouldn't) cross the boundary:
+
+- DOM objects and platform handles.
+- Functions, unless they are exported pool tasks or part of a `task` or
+  `importTask` definition.
+- Cyclic object graphs.
+- `Map`, `Set`, `WeakMap`, and non-global symbols.
+- Objects with behavior that depends on prototypes, getters, setters, or hidden
+  process-local state.
+
+### Envelope
+
+`Envelope` pairs a JSON-serializable header with a binary body. Use it when a
+call needs both structured metadata and raw bytes in a single argument — the
+transport carries one special binary value per call, so an envelope is the way
+to attach a header to one.
+
+```ts
+import { createPool, Envelope, isMain, task } from "knitting";
+
+export const processImage = task<
+  Envelope<{ format: string }>,
+  Envelope<{ width: number; height: number }>
+>({
+  f: (envelope) => {
+    const pixels = new Uint8Array(envelope.payload);
+    // ... process pixels
+    return new Envelope({ width: 800, height: 600 }, pixels.buffer);
+  },
+});
+
+if (isMain) {
+  const pool = createPool({ threads: 2 })({ processImage });
+
+  try {
+    const buffer = new ArrayBuffer(1024);
+    const result = await pool.call.processImage(
+      new Envelope({ format: "png" }, buffer),
+    );
+    console.log(result.header); // { width: 800, height: 600 }
+  } finally {
+    await pool.shutdown();
+  }
+}
+```
+
+#### Body types
+
+The body is generic — `Envelope<Header, Body>` — and accepts any of the binary
+shapes the transport understands:
+
+| Body                  | Copy?             | Workers          | Notes                                                               |
+| --------------------- | ----------------- | ---------------- | ------------------------------------------------------------------- |
+| `ArrayBuffer`         | copied            | thread + process | The default body; works everywhere.                                 |
+| `SharedArrayBuffer`   | zero-copy, shared | thread only      | Shared by reference; process workers reject it.                     |
+| `ProcessSharedBuffer` | zero-copy, shared | thread + process | Cross-process shared memory.                                        |
+| `BufferReference`     | zero-copy, moved  | thread only      | From `knitting/unsafe`; same constraints as bare `BufferReference`. |
+
+The header keeps its fast paths regardless of the body: a small header is
+written inline, and only large headers spill to the dynamic payload region. A
+zero-copy body keeps its own semantics — a `SharedArrayBuffer` stays shared by
+reference, and a `BufferReference` body is still moved (its source is detached)
+and joins the same borrow/copy/release flow it follows on its own.
+
+```ts
+import { createPool, Envelope, isMain, task } from "knitting";
+import { BufferReference } from "knitting/unsafe";
+
+export const invert = task<
+  Envelope<{ op: string }, BufferReference>,
+  Envelope<{ op: string }, BufferReference>
+>({
+  f: (envelope) => {
+    const pixels = envelope.payload.toUint8Array();
+    const out = new Uint8Array(pixels.length);
+    for (let i = 0; i < pixels.length; i++) out[i] = 255 - pixels[i];
+    return new Envelope({ op: "inverted" }, new BufferReference(out));
+  },
+});
+
+if (isMain) {
+  using pool = createPool({ threads: 1 })({ invert });
+  const pixels = new Uint8Array([0, 64, 128, 192, 255]);
+
+  using result = await pool.call.invert(
+    new Envelope({ op: "invert" }, new BufferReference(pixels)),
+  );
+  console.log(result.header, [...result.payload.toUint8Array()]);
+}
+```
+
+`Envelope` is disposable: disposing it (via `using` or `Symbol.dispose`)
+disposes a disposable body such as a `BufferReference`, and is a harmless no-op
+for `ArrayBuffer` / `SharedArrayBuffer` bodies. See
+[Large binary values in thread workers](#large-binary-values-in-thread-workers)
+for the full `BufferReference` constraints, which apply unchanged to a
+`BufferReference` body.
+
+If a payload is large, set `payload.maxPayloadBytes` deliberately and prefer
+binary/shared-memory shapes over deeply nested objects.
+
 ## Creating Pools
 
 You typically create one pool per set of tasks and reuse it.
@@ -349,22 +477,6 @@ Common options you might tweak:
 | `debug`                           | Enable diagnostics (`host`, `globals`, `signals`, `imports`, `lifecycle`) or use `KNITTING_DEBUG`.                                |
 | `source`                          | Worker source override for advanced runtimes.                                                                                     |
 
-Most users can leave `host.dispatcher` alone. It selects the dispatcher for
-private-lane pools: Bun and single-worker pools default to `"per-thread"`, while
-multi-worker Node/Deno pools use `"serial-channel"`. Selecting a dispatcher or
-balancer explicitly preserves that private-lane topology unless
-`host.steal: true` is also explicit.
-
-Ordinary multi-worker thread and process pools use shared-submit work stealing
-by default. It is not used by one-worker pools, the inliner, compiled/Porffor
-workers, or pools with an explicit balancer/dispatcher, so those modes retain
-their existing transport. Process workers use one process-shared submit region
-and one private return region per process. Pools above the current 31-claimant
-protocol limit also fall back. Set `host: { steal: false }` or
-`KNITTING_STEAL=0` to opt out for uniformly cheap, low-concurrency workloads
-where arbitration has nothing to rebalance. `host: { steal: true }` or
-`KNITTING_STEAL=1` forces it for an otherwise compatible pool.
-
 ### Worker bootstrap
 
 Use `worker.bootstrap` when a worker needs privileged setup before task modules
@@ -387,6 +499,45 @@ Bootstrap code runs with worker startup privileges, so keep it trusted. It is a
 good place to remove environment variables, install runtime guards, open shared
 memory metadata, or prepare globals that task modules should see at import time.
 Bootstrap is worker-only and cannot be combined with the inline host lane.
+
+## Scheduling and Tuning
+
+### Choosing a balancer
+
+Choose a balancer based on the shape of your work:
+
+- `"roundRobin"` is simple and works well for similarly sized tasks.
+- `"firstIdle"` helps when task durations vary.
+- `"randomLane"` is useful for simple spreading and experiments.
+- `"firstIdleOrRandom"` prefers an idle worker, then falls back to random.
+- `"robinRound"` is kept as a legacy alias of `"roundRobin"`.
+
+### Dispatcher and work stealing
+
+Most users can leave `host.dispatcher` alone. It selects the dispatcher for
+private-lane pools: Bun and single-worker pools default to `"per-thread"`, while
+multi-worker Node/Deno pools use `"serial-channel"`. Selecting a dispatcher or
+balancer explicitly preserves that private-lane topology unless
+`host.steal: true` is also explicit.
+
+Ordinary multi-worker thread and process pools use shared-submit work stealing
+by default. It is not used by one-worker pools, the inliner, compiled/Porffor
+workers, or pools with an explicit balancer/dispatcher, so those modes retain
+their existing transport. Process workers use one process-shared submit region
+and one private return region per process. Pools above the current 31-claimant
+protocol limit also fall back. Set `host: { steal: false }` or
+`KNITTING_STEAL=0` to opt out for uniformly cheap, low-concurrency workloads
+where arbitration has nothing to rebalance. `host: { steal: true }` or
+`KNITTING_STEAL=1` forces it for an otherwise compatible pool.
+
+### Useful tuning options
+
+- Increase `threads` for parallel CPU-heavy work.
+- Increase `payload.payloadMaxByteLength` only when the transport buffer needs
+  more room.
+- Increase `payload.maxPayloadBytes` only when individual calls genuinely need
+  larger payloads.
+- Use process workers when isolation matters more than startup cost.
 
 ## Worker Runtimes
 
@@ -642,84 +793,6 @@ const pool = createPool({
 })({ add });
 ```
 
-## Browsers
-
-Knitting also runs in the browser, where the pool spawns web workers over
-`SharedArrayBuffer` instead of threads. Two rules apply there and nowhere else.
-
-**The page must be cross-origin isolated.** Browsers hand out
-`SharedArrayBuffer` only under these two response headers, and `createPool`
-fails with a clear error when they are missing:
-
-```
-Cross-Origin-Opener-Policy: same-origin
-Cross-Origin-Embedder-Policy: require-corp
-```
-
-**Task modules must declare their own URL.** On Node, Deno, and Bun a task
-finds its module by walking the stack; a bundler erases the paths that depends
-on, so call `setModuleUrl(import.meta.url)` in the module that exports tasks:
-
-```ts
-import { createPool, isMain, setModuleUrl, task } from "knitting/browser";
-
-setModuleUrl(import.meta.url);
-
-export const square = task({ f: (value: number) => value * value });
-
-if (isMain) {
-  const pool = createPool({ threads: 4 })({ square });
-  console.log(await pool.call.square(7)); // 49
-  await pool.shutdown();
-}
-```
-
-Bundle that module with any browser-targeting bundler. The result is
-self-hosting: the page loads it, and every worker the pool spawns loads the
-same file, which is why both sides agree on the module URL.
-
-`knitting/browser` ships as one self-contained file, so it also works without a
-bundler at all — serve it next to a plain task module:
-
-```html
-<script type="module" src="./tasks.js"></script>
-```
-
-```js
-// tasks.js
-import { createPool, isMain, setModuleUrl, task } from "./knitting.browser.js";
-
-setModuleUrl(import.meta.url);
-
-export const square = task({ f: (value) => value * value });
-
-if (isMain) {
-  const pool = createPool({ threads: 2 })({ square });
-  console.log(await pool.call.square(7)); // 49
-  await pool.shutdown();
-}
-```
-
-It is the same API as the main entry without the compiled worker (Porffor)
-helpers, which need a filesystem. Process workers, native addons, FFI, and the
-permission system are inert in a browser — permissions are skipped entirely,
-since there is no filesystem or process to police.
-
-Process workers, compiled workers, native addons, FFI, `BufferReference`, and
-`ProcessSharedBuffer` are all unavailable in a page, and permissions are
-skipped rather than enforced. [BROWSER.md](BROWSER.md) documents every one of
-those, with the error each raises.
-
-The published file is bundled and minified, with the Node-only subsystems
-(process workers, compiled workers, native addons, FFI, permissions) replaced
-by stubs that keep their browser behaviour — roughly 94 KB, 32 KB over gzip.
-Both layouts above are covered by the browser test lane:
-
-```bash
-npm run build:browser   # build/knitting.browser.js and .min.js
-npm run test:browser    # end-to-end checks in headless Chromium
-```
-
 ## Permissions
 
 Knitting defaults to a strict worker permission policy:
@@ -797,124 +870,97 @@ process workers likewise need `--allow-ffi`. Those capabilities apply to the
 entire worker process, including task code, so explicit native-code denial fails
 closed. Use an OS sandbox when task code is hostile.
 
-## Payloads
+## Runtime Safety
 
-Worker calls can carry the following values across the shared-memory transport:
+Knitting aims to make the safer path the default:
 
-- `string`, `number`, `boolean`, `bigint`, `null`, and `undefined`.
-- Plain objects and arrays made from supported values.
-- `ArrayBuffer`, Node `Buffer`, `DataView`, and supported typed arrays.
-- `ProcessSharedBuffer`.
-- `BufferReference` from `knitting/unsafe` for experimental zero-copy buffers to
-  thread workers (same process only; see below).
-- `Envelope` for a JSON header plus a binary body (`ArrayBuffer`,
-  `SharedArrayBuffer`, `ProcessSharedBuffer`, or `BufferReference`).
-- `Error`, `Date`, and global symbols created with `Symbol.for(...)`.
-- Native `Promise<supported-value>` inputs. The promise is awaited before
-  dispatch.
-- Thenables are not awaited by the transport.
+- Strict worker permissions are the default.
+- Anonymous shared memory is the default.
+- Named shared memory requires an explicit `mode`.
+- Payload sizes are bounded.
+- Abort-aware tasks reserve shared abort slots.
+- Workers can be guarded with `worker.hardTimeoutMs`.
+- Shutdown can stop immediately or wait for submitted work with
+  `worker.resolveAfterFinishingAll`.
 
-If it isn't on that list, assume it isn't portable. Some things don't (or
-shouldn't) cross the boundary:
+That said, workers still run code. If you treat tasks like plugins, keep
+permissions tight, keep named shared-memory names hard to guess, and avoid
+passing broad capabilities into worker code.
 
-- DOM objects and platform handles.
-- Functions, unless they are exported pool tasks or part of a `task` or
-  `importTask` definition.
-- Cyclic object graphs.
-- `Map`, `Set`, `WeakMap`, and non-global symbols.
-- Objects with behavior that depends on prototypes, getters, setters, or hidden
-  process-local state.
+## Browsers
 
-### Envelope
+Knitting also runs in the browser, where the pool spawns web workers over
+`SharedArrayBuffer` instead of threads. Two rules apply there and nowhere else.
 
-`Envelope` pairs a JSON-serializable header with a binary body. Use it when a
-call needs both structured metadata and raw bytes in a single argument — the
-transport carries one special binary value per call, so an envelope is the way
-to attach a header to one.
+**The page must be cross-origin isolated.** Browsers hand out
+`SharedArrayBuffer` only under these two response headers, and `createPool`
+fails with a clear error when they are missing:
+
+```
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+```
+
+**Task modules must declare their own URL.** On Node, Deno, and Bun a task
+finds its module by walking the stack; a bundler erases the paths that depends
+on, so call `setModuleUrl(import.meta.url)` in the module that exports tasks:
 
 ```ts
-import { createPool, Envelope, isMain, task } from "knitting";
+import { createPool, isMain, setModuleUrl, task } from "knitting/browser";
 
-export const processImage = task<
-  Envelope<{ format: string }>,
-  Envelope<{ width: number; height: number }>
->({
-  f: (envelope) => {
-    const pixels = new Uint8Array(envelope.payload);
-    // ... process pixels
-    return new Envelope({ width: 800, height: 600 }, pixels.buffer);
-  },
-});
+setModuleUrl(import.meta.url);
+
+export const square = task({ f: (value: number) => value * value });
 
 if (isMain) {
-  const pool = createPool({ threads: 2 })({ processImage });
-
-  try {
-    const buffer = new ArrayBuffer(1024);
-    const result = await pool.call.processImage(
-      new Envelope({ format: "png" }, buffer),
-    );
-    console.log(result.header); // { width: 800, height: 600 }
-  } finally {
-    await pool.shutdown();
-  }
+  const pool = createPool({ threads: 4 })({ square });
+  console.log(await pool.call.square(7)); // 49
+  await pool.shutdown();
 }
 ```
 
-#### Body types
+Bundle that module with any browser-targeting bundler. The result is
+self-hosting: the page loads it, and every worker the pool spawns loads the
+same file, which is why both sides agree on the module URL.
 
-The body is generic — `Envelope<Header, Body>` — and accepts any of the binary
-shapes the transport understands:
+`knitting/browser` ships as one self-contained file, so it also works without a
+bundler at all — serve it next to a plain task module:
 
-| Body                  | Copy?             | Workers          | Notes                                                               |
-| --------------------- | ----------------- | ---------------- | ------------------------------------------------------------------- |
-| `ArrayBuffer`         | copied            | thread + process | The default body; works everywhere.                                 |
-| `SharedArrayBuffer`   | zero-copy, shared | thread only      | Shared by reference; process workers reject it.                     |
-| `ProcessSharedBuffer` | zero-copy, shared | thread + process | Cross-process shared memory.                                        |
-| `BufferReference`     | zero-copy, moved  | thread only      | From `knitting/unsafe`; same constraints as bare `BufferReference`. |
+```html
+<script type="module" src="./tasks.js"></script>
+```
 
-The header keeps its fast paths regardless of the body: a small header is
-written inline, and only large headers spill to the dynamic payload region. A
-zero-copy body keeps its own semantics — a `SharedArrayBuffer` stays shared by
-reference, and a `BufferReference` body is still moved (its source is detached)
-and joins the same borrow/copy/release flow it follows on its own.
+```js
+// tasks.js
+import { createPool, isMain, setModuleUrl, task } from "./knitting.browser.js";
 
-```ts
-import { createPool, Envelope, isMain, task } from "knitting";
-import { BufferReference } from "knitting/unsafe";
+setModuleUrl(import.meta.url);
 
-export const invert = task<
-  Envelope<{ op: string }, BufferReference>,
-  Envelope<{ op: string }, BufferReference>
->({
-  f: (envelope) => {
-    const pixels = envelope.payload.toUint8Array();
-    const out = new Uint8Array(pixels.length);
-    for (let i = 0; i < pixels.length; i++) out[i] = 255 - pixels[i];
-    return new Envelope({ op: "inverted" }, new BufferReference(out));
-  },
-});
+export const square = task({ f: (value) => value * value });
 
 if (isMain) {
-  using pool = createPool({ threads: 1 })({ invert });
-  const pixels = new Uint8Array([0, 64, 128, 192, 255]);
-
-  using result = await pool.call.invert(
-    new Envelope({ op: "invert" }, new BufferReference(pixels)),
-  );
-  console.log(result.header, [...result.payload.toUint8Array()]);
+  const pool = createPool({ threads: 2 })({ square });
+  console.log(await pool.call.square(7)); // 49
+  await pool.shutdown();
 }
 ```
 
-`Envelope` is disposable: disposing it (via `using` or `Symbol.dispose`)
-disposes a disposable body such as a `BufferReference`, and is a harmless no-op
-for `ArrayBuffer` / `SharedArrayBuffer` bodies. See
-[Experimental zero-copy buffers for thread workers](#experimental-zero-copy-buffers-for-thread-workers)
-for the full `BufferReference` constraints, which apply unchanged to a
-`BufferReference` body.
+It is the same API as the main entry without the compiled worker (Porffor)
+helpers, which need a filesystem. Process workers, compiled workers, native
+addons, FFI, `BufferReference`, and `ProcessSharedBuffer` are all unavailable in
+a page, and permissions are skipped rather than enforced — there is no
+filesystem or process to police. [BROWSER.md](BROWSER.md) documents every one of
+those, with the error each raises.
 
-If a payload is large, set `payload.maxPayloadBytes` deliberately and prefer
-binary/shared-memory shapes over deeply nested objects.
+The published file is bundled and minified, with the Node-only subsystems
+(process workers, compiled workers, native addons, FFI, permissions) replaced
+by stubs that keep their browser behaviour — roughly 94 KB, 32 KB over gzip.
+Both layouts above are covered by the browser test lane:
+
+```bash
+npm run build:browser   # build/knitting.browser.js and .min.js
+npm run test:browser    # end-to-end checks in headless Chromium
+```
 
 ## Shared Memory Channels
 
@@ -926,7 +972,7 @@ are written into the allocator arena; larger bodies are moved into a
 `BufferReference`. The threshold is configurable because the best crossover
 depends on request concurrency and the runtime.
 
-`readBody()` makes that choice without making you handle it. It returns one
+`allocOrRefer()` makes that choice without making you handle it. It returns one
 disposable handle: send `body.wire` to a task, and the host owns the bytes
 until the handle is disposed.
 
@@ -938,7 +984,7 @@ const allocator = createKnittingAllocator({
   arenaByteLength: 8 * 1024 * 1024,
 });
 
-using body = await allocator.readBody(request, {
+using body = await allocator.allocOrRefer(request, {
   referenceAboveBytes: 2 * 1024 * 1024,
   maxByteLength: 8 * 1024 * 1024,
 });
@@ -992,29 +1038,37 @@ const pool = createPool({
 ```
 
 The host owns the body for the whole call and the worker only borrows it, so
-there is exactly one release and it is the `using` scope. Nothing needs to call
-`reconcile()`: the registry reclaims identities when the next allocation wants
-them. The bytes a worker reads are valid only for the duration of the call — to
-keep them, copy.
+there is exactly one release and it is the `using` scope. That holds for both
+transports, and it holds even if the scope exits early: sending `body.wire`
+takes a hold on the body for the duration of the call, so a handler that lets
+go before its call settles defers the release rather than freeing memory a
+worker is still reading. Nothing needs to call `reconcile()`: the registry
+reclaims identities when the next allocation wants them. The bytes a worker
+reads are valid only for the duration of the call — to keep them, copy.
 
-`maxByteLength` is required because a declared `Content-Length` is a claim by
-the client, and the memory is committed on the strength of that claim before a
-byte arrives. A body with no declared length is read against the same cap
-rather than buffered whole and measured afterwards.
+`maxByteLength` is required, and enforced at runtime rather than only by the
+types, because a declared `Content-Length` is a claim by the client and the
+memory is committed on the strength of that claim before a byte arrives. A body
+with no declared length is read against the same cap rather than buffered whole
+and measured afterwards. Omitting the bound raises a `RangeError` before
+anything is read, since this path deliberately allocates outside the arena and
+so has no ceiling to fall back on.
 
-`readBody()` also handles chunked requests without `Content-Length`: it
+`allocOrRefer()` also handles chunked requests without `Content-Length`: it
 materializes the body only long enough to choose the representation by its
 actual size. `BufferReference` is for same-process thread workers; use
 `ProcessSharedBuffer` for process workers.
 
-If you would rather make the choice yourself, `allocOrRefer()` returns the
-underlying `KnittingSharedBuffer` or `BufferReference` directly. Sending a
-region by hand means picking an ownership rule: `moveTo()` hands the identity
-to the consumer, which then releases it, while `describe()` keeps it here and
-the consumer must adopt with `{ borrow: true }`. Doing both — describing a
-region and releasing it here while the consumer also releases — gives one
-identity two releasers, which is the one way to hand a live region's bytes out
-twice.
+If you would rather make the choice yourself, the exported
+`readBodyOrRefer(request, allocator, options)` returns the underlying
+`KnittingSharedBuffer` or `BufferReference` directly and leaves the lifetime to
+you — including the hold that `allocOrRefer()` takes for you, so an early
+release there really does free the bytes. Sending a region by hand means
+picking an ownership rule: `moveTo()` hands the identity to the consumer, which
+then releases it, while `describe()` keeps it here and the consumer must adopt
+with `{ borrow: true }`. Doing both — describing a region and releasing it here
+while the consumer also releases — gives one identity two releasers, which is
+the one way to hand a live region's bytes out twice.
 
 `ProcessSharedBuffer` is the lower-level building block for process-safe shared
 memory. Use it when two workers or processes need to see the same bytes without
@@ -1375,7 +1429,7 @@ path out while chasing a bug.
   returns the bytes that were there — it does not throw and does not read freed
   memory. It is a snapshot, not a live channel.
 
-### Current support
+## Platform and native support
 
 Knitting supports Node.js 22+, Deno 2+, and Bun 1+ on Linux, macOS, and Windows.
 
@@ -1412,42 +1466,6 @@ bun run build:native
 
 For Deno projects with permissions enabled, allow FFI when using process workers
 or `ProcessSharedBuffer`.
-
-## Runtime Safety
-
-Knitting aims to make the safer path the default:
-
-- Strict worker permissions are the default.
-- Anonymous shared memory is the default.
-- Named shared memory requires an explicit `mode`.
-- Payload sizes are bounded.
-- Abort-aware tasks reserve shared abort slots.
-- Workers can be guarded with `worker.hardTimeoutMs`.
-- Shutdown can stop immediately or wait for submitted work with
-  `worker.resolveAfterFinishingAll`.
-
-That said, workers still run code. If you treat tasks like plugins, keep
-permissions tight, keep named shared-memory names hard to guess, and avoid
-passing broad capabilities into worker code.
-
-## Scheduling and Tuning
-
-Choose a balancer based on the shape of your work:
-
-- `"roundRobin"` is simple and works well for similarly sized tasks.
-- `"firstIdle"` helps when task durations vary.
-- `"randomLane"` is useful for simple spreading and experiments.
-- `"firstIdleOrRandom"` prefers an idle worker, then falls back to random.
-- `"robinRound"` is kept as a legacy alias of `"roundRobin"`.
-
-Useful tuning options:
-
-- Increase `threads` for parallel CPU-heavy work.
-- Increase `payload.payloadMaxByteLength` only when the transport buffer needs
-  more room.
-- Increase `payload.maxPayloadBytes` only when individual calls genuinely need
-  larger payloads.
-- Use process workers when isolation matters more than startup cost.
 
 ## Benchmarks
 

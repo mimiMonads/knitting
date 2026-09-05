@@ -348,3 +348,31 @@ test("shutting a pool down stops its workers", {
     } cores; shutdown left them running`,
   );
 });
+
+for (const topology of ["steal", "per-thread", "serial-channel"] as const) {
+  test(`${topology} wakes repeatedly after idle periods and send bursts`, async () => {
+    const pool = createPool({
+      threads: 2,
+      host: topology === "steal"
+        ? { steal: true, stallFreeLoops: 0 }
+        : { steal: false, dispatcher: topology, stallFreeLoops: 0 },
+      // Use a long park timeout so a lost wake cannot hide.
+      worker: { timers: { spinMicroseconds: 0, parkMs: 60_000 } },
+    })({ double });
+    try {
+      for (let turn = 0; turn < 24; turn++) {
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        const size = turn % 2 === 0 ? 1 : 128;
+        const values = await withTimeout(Promise.all(
+          Array.from({ length: size }, (_, i) => pool.call.double(turn + i)),
+        ));
+        assert.deepEqual(
+          values,
+          Array.from({ length: size }, (_, i) => (turn + i) * 2),
+        );
+      }
+    } finally {
+      await pool.shutdown();
+    }
+  });
+}

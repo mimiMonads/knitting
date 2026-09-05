@@ -12,3 +12,8 @@ export const delayedEcho = task<number, number>({
     return value;
   },
 });
+
+/** Resolves immediately: isolates the worker's awaiting path from the work. */
+export const addOneAsync = task<number, number>({
+  f: async (value) => value + 1,
+});

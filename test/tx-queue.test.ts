@@ -342,3 +342,213 @@ test("abort-aware promise reject with no reason signals and waits for worker", a
   assert.deepEqual(resetSignals, [7]);
   assert.equal(capturedQueue?.[0]?.value, null);
 });
+
+const completionQueue = (returns: Partial<Lock2>[]) => {
+  const lock = {
+    publish: () => true,
+    flushPending: () => false,
+    hasPendingFrames: () => false,
+    getPendingFrameCount: () => 0,
+    getPendingPromiseCount: () => 0,
+    resetPendingState: () => {},
+  } as unknown as Lock2;
+  const lanes = returns.map((lane) =>
+    ({
+      resolveHost: () => () => 0,
+      ...lane,
+    }) as Lock2
+  );
+  return createHostTxQueue({
+    lock,
+    returnLock: lanes[0]!,
+    extraReturnLocks: lanes.slice(1),
+  });
+};
+
+test("completion waits reuse idle lanes across preemption and wake the current drain", async () => {
+  const arms = [false, false];
+  const waits = [0, 0];
+  const rearms = [0, 0];
+  const releases: Array<() => void> = [];
+  const tx = completionQueue(arms.map((_, index) => ({
+    armHostNotifier: () => {
+      arms[index] = true;
+      rearms[index]++;
+      return true;
+    },
+    setHostWaiterArmed: (armed: boolean) => {
+      arms[index] = armed;
+      if (armed) rearms[index]++;
+    },
+    waitForHostChange: () => {
+      waits[index]++;
+      arms[index] = true;
+      return {
+        async: true,
+        value: new Promise<"ok">((resolve) => {
+          releases[index] = () => resolve("ok");
+        }),
+      };
+    },
+  })));
+  let oldWakes = 0;
+  let newWakes = 0;
+  assert.equal(tx.waitForCompletion(() => oldWakes++), true);
+  assert.deepEqual(rearms, [0, 0], "new waits arm themselves");
+  releases[0]!();
+  await Promise.resolve();
+  assert.equal(oldWakes, 1);
+
+  tx.setCompletionWaiterArmed(false);
+  assert.equal(tx.waitForCompletion(() => newWakes++), true);
+  assert.deepEqual(waits, [2, 1], "lane 1 retains its original waiter");
+  assert.deepEqual(rearms, [0, 1]);
+  assert.deepEqual(arms, [true, true]);
+
+  releases[1]!();
+  await Promise.resolve();
+  assert.equal(oldWakes, 1);
+  assert.equal(newWakes, 1, "persistent waiter uses the latest wake callback");
+  releases[0]!();
+  await Promise.resolve();
+  assert.equal(newWakes, 2, "reused lane callback handles its new waiter");
+  assert.deepEqual(arms, [false, false]);
+});
+
+test("a synchronous completion stops arming later lanes after the wake disarms them", () => {
+  const arms = [false, false];
+  let laterWaits = 0;
+  const tx = completionQueue([
+    {
+      setHostWaiterArmed: (armed) => {
+        arms[0] = armed;
+      },
+      waitForHostChange: () => ({ async: false, value: "not-equal" }),
+    },
+    {
+      setHostWaiterArmed: (armed) => {
+        arms[1] = armed;
+      },
+      waitForHostChange: () => {
+        laterWaits++;
+        arms[1] = true;
+        return { async: true, value: new Promise(() => {}) };
+      },
+    },
+  ]);
+  let wakes = 0;
+  assert.equal(
+    tx.waitForCompletion(() => {
+      wakes++;
+      tx.setCompletionWaiterArmed(false);
+    }),
+    true,
+  );
+  assert.equal(wakes, 1);
+  assert.equal(laterWaits, 0);
+  assert.deepEqual(arms, [false, false]);
+});
+
+for (const throws of [false, true]) {
+  test(`unsupported completion lane disarms and invalidates earlier waits (throws=${throws})`, async () => {
+    const arms = [false, false];
+    let release!: () => void;
+    const tx = completionQueue([
+      {
+        setHostWaiterArmed: (armed) => {
+          arms[0] = armed;
+        },
+        waitForHostChange: () => {
+          arms[0] = true;
+          return {
+            async: true,
+            value: new Promise<"ok">((resolve) => {
+              release = () => resolve("ok");
+            }),
+          };
+        },
+      },
+      {
+        setHostWaiterArmed: (armed) => {
+          arms[1] = armed;
+        },
+        waitForHostChange: () => {
+          if (throws) throw new Error("unsupported buffer");
+          return undefined;
+        },
+      },
+    ]);
+    let wakes = 0;
+    assert.equal(tx.waitForCompletion(() => wakes++), false);
+    assert.deepEqual(arms, [false, false]);
+    release();
+    await Promise.resolve();
+    assert.equal(wakes, 0);
+  });
+}
+
+test("rearming a persistent waiter observes a result published while its gate was off", async () => {
+  let armed = false;
+  let published = false;
+  let release!: () => void;
+  let waits = 0;
+  const tx = completionQueue([{
+    setHostWaiterArmed: (value) => {
+      armed = value;
+    },
+    armHostNotifier: () => {
+      armed = !published;
+      return !published;
+    },
+    waitForHostChange: () => {
+      waits++;
+      armed = true;
+      return {
+        async: true,
+        value: new Promise<"ok">((resolve) => release = () => resolve("ok")),
+      };
+    },
+  }]);
+  let wakes = 0;
+  const wake = () => {
+    wakes++;
+    tx.setCompletionWaiterArmed(false);
+  };
+  assert.equal(tx.waitForCompletion(wake), true);
+  tx.setCompletionWaiterArmed(false);
+  published = true;
+  assert.equal(tx.waitForCompletion(wake), true);
+  assert.equal(wakes, 1, "published completion must not wait for the watchdog");
+  assert.equal(armed, false);
+  assert.equal(waits, 1, "the original waiter remains the only queued waiter");
+  release();
+  await Promise.resolve();
+});
+
+test("a real return publication wakes a rearmed persistent atomic waiter", {
+  skip: typeof Atomics.waitAsync !== "function",
+}, async () => {
+  const returnLock = lock2({ notifyOnHostPublish: true });
+  const tx = completionQueue([returnLock]);
+  let wakes = 0;
+  const wake = () => {
+    wakes++;
+    tx.setCompletionWaiterArmed(false);
+  };
+  try {
+    assert.equal(tx.waitForCompletion(wake, 1000), true);
+    tx.setCompletionWaiterArmed(false);
+    const response = makeTask();
+    response.value = 7;
+    assert.equal(returnLock.encode(response), true);
+    // Publication while the gate is off must not wake the old waiter.
+    assert.equal(wakes, 0);
+    assert.equal(tx.waitForCompletion(wake, 1000), true);
+    assert.equal(wakes, 1);
+  } finally {
+    tx.setCompletionWaiterArmed(false);
+    Atomics.notify(returnLock.hostBits, 0);
+    // Let the waitAsync callback retire before ending the test.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+});

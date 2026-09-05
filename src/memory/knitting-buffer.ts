@@ -50,6 +50,8 @@ import { createLazyRegionRegistry } from "./lazy-region-registry.ts";
 import {
   LOCK_SECTOR_BYTE_LENGTH,
   PAYLOAD_LOCK_WORKER_BITS_OFFSET_BYTES,
+  PayloadTransportFinalizer,
+  takePayloadTransportHold,
 } from "./lock.ts";
 import {
   readBodyOrRefer,
@@ -673,56 +675,70 @@ export const createKnittingAllocator = ({
   };
 
   /**
-   * Read a Request body and choose a pooled region or a moved
-   * `BufferReference`. The default HTTP crossover is 2 MiB and can be
-   * overridden per request. Regions still use the allocator descriptor when
-   * they are sent to a worker; `BufferReference` can be passed directly to a
-   * thread-worker call.
+   * Read a request body into one disposable handle.
    *
-   * `maxByteLength` is required: this path deliberately handles bodies too
-   * large for the arena, so neither the pool nor the crossover implies a
-   * bound, and a declared length is only ever a claim by the client.
+   * Small bodies use a pooled descriptor; large or unknown bodies use a moved
+   * `BufferReference`. Send `body.wire`, read `body.u8()`, and dispose when done.
+   *
+   * Sends hold the body until settlement, so early disposal cannot recycle bytes
+   * still in use. For manual ownership, use `readBodyOrRefer()` directly.
    */
-  const allocOrRefer = (
-    request: Request,
-    options: ReadBodyOrReferOptions,
-  ): Promise<ReadBodyPayload> =>
-    readBodyOrRefer(request, { alloc, arenaByteLength }, options);
-
-  /**
-   * Read a request body into one disposable handle, whichever way it travels.
-   *
-   * This is `allocOrRefer()` with the branch folded in: send `body.wire` to a
-   * task, read `body.u8()` on the host, and dispose it when the call settles.
-   * The worker resolves `wire` back to bytes with `createBodyReader()`.
-   *
-   * The host stays the owner for the whole call. There is no `reconcile()` to
-   * remember either -- the registry reconciles when it needs identities, so a
-   * released body is reclaimed by the next allocation that wants it.
-   */
-  const readBody = async (
+  const allocOrRefer = async (
     request: Request,
     options: ReadBodyOrReferOptions,
   ): Promise<KnittingBody> => {
-    const payload = await allocOrRefer(request, options);
+    const payload: ReadBodyPayload = await readBodyOrRefer(
+      request,
+      { alloc, arenaByteLength },
+      options,
+    );
 
     if (!(payload instanceof KnittingSharedBuffer)) {
-      // Already its own wire form: a moved reference travels as the payload.
+      // Hold moved references until the handle is disposed, not just the first
+      // call settles.
+      const hold = takePayloadTransportHold(payload);
+      const release = hold ?? (() => payload.release());
       return {
         wire: payload,
         byteLength: payload.byteLength,
         u8: () => payload.toUint8Array(),
-        release: () => payload.release(),
-        [Symbol.dispose]: () => payload.release(),
+        release,
+        [Symbol.dispose]: release,
       };
     }
 
+    const wire = wireFor(payload);
+    let inFlight = 0;
+    let disposed = false;
+    const settle = (): void => {
+      if (disposed && inFlight === 0) payload.release();
+    };
+
+    // Only pooled regions return an identity to the registry.
+    if (!isTransportedBuffer(wire)) {
+      (wire as Record<symbol, unknown>)[PayloadTransportFinalizer] = () => {
+        inFlight++;
+        let done = false;
+        return () => {
+          if (done) return;
+          done = true;
+          inFlight--;
+          settle();
+        };
+      };
+    }
+
+    const release = (): void => {
+      disposed = true;
+      settle();
+    };
+
     return {
-      wire: wireFor(payload),
+      wire,
       byteLength: payload.byteLength,
       u8: () => payload.u8(),
-      release: () => payload.release(),
-      [Symbol.dispose]: () => payload.release(),
+      release,
+      [Symbol.dispose]: release,
     };
   };
 
@@ -753,7 +769,6 @@ export const createKnittingAllocator = ({
     alloc,
     allocUpTo,
     allocOrRefer,
-    readBody,
     describe,
     moveTo,
     reconcile: regions.reconcile,

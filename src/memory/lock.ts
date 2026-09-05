@@ -189,6 +189,17 @@ export const addTaskFinalizer = (
   };
 };
 
+/** Take an owner-lifetime transport hold, if the value supports one. */
+export const takePayloadTransportHold = (
+  value: unknown,
+): (() => void) | undefined => {
+  if (value === null || typeof value !== "object") return undefined;
+  const finalizer = (value as PayloadTransportFinalizable)[
+    PayloadTransportFinalizer
+  ]?.();
+  return typeof finalizer === "function" ? finalizer : undefined;
+};
+
 export const attachPayloadTransportFinalizer = (
   task: Task,
   value: unknown,
@@ -978,6 +989,21 @@ export const lock2 = ({
       ? -1
       : ((((1 << stealRegionLanes) - 1) << (region * stealRegionLanes)) | 0);
 
+  const stealRegionBits = stealRegionLanes === 32
+    ? -1
+    : ((1 << stealRegionLanes) - 1) | 0;
+
+  /** Find the oldest pending lane in a claimed region. */
+  const stealOldestLane = (region: number, take: number): number => {
+    const low = (region * stealRegionLanes) | 0;
+    const lanes = ((take >>> low) & stealRegionBits) | 0;
+    const predecessors =
+      ((lanes >>> 1) | (lanes << (stealRegionLanes - 1))) & stealRegionBits;
+    const oldest = (lanes & ~predecessors) | 0;
+    return low +
+      (oldest === 0 ? stealRegionLanes - 1 : 31 - clz32(oldest >>> 0));
+  };
+
   const stealJuniorWants = (intent: number): boolean => {
     const live = a_load(stealView, stealLiveIndex) | 0;
     for (let c = stealId + 1; c < stealConsumers; c++) {
@@ -1076,12 +1102,20 @@ export const lock2 = ({
     // Retire lanes and release the claim even if decoding throws.
     let lanes = take;
     let done = 0 | 0;
+    // Decode the claimed lanes in producer order.
+    let at = stealOldestLane(region, take);
+    const regionLow = (region * stealRegionLanes) | 0;
+    const regionHigh = (regionLow + stealRegionLanes - 1) | 0;
     try {
-      while (lanes !== 0) {
-        const bit = (lanes & -lanes) | 0;
-        decodeAt(31 - clz32(bit >>> 0));
-        lanes = (lanes & (lanes - 1)) | 0;
-        done = (done ^ bit) | 0;
+      for (let step = 0; step < stealRegionLanes; step++) {
+        const bit = (1 << at) | 0;
+        if ((lanes & bit) !== 0) {
+          decodeAt(at);
+          lanes = (lanes ^ bit) | 0;
+          done = (done ^ bit) | 0;
+          if (lanes === 0) break;
+        }
+        at = at === regionLow ? regionHigh : at - 1;
       }
     } finally {
       // Publish the ACK before clearing intent.
@@ -1141,12 +1175,20 @@ export const lock2 = ({
 
     let lanes = take;
     let done = 0 | 0;
+    // Decode the claimed lanes in producer order.
+    let at = stealOldestLane(region, take);
+    const regionLow = (region * stealRegionLanes) | 0;
+    const regionHigh = (regionLow + stealRegionLanes - 1) | 0;
     try {
-      while (lanes !== 0) {
-        const bit = (lanes & -lanes) | 0;
-        decodeAt(31 - clz32(bit >>> 0));
-        lanes = (lanes & (lanes - 1)) | 0;
-        done = (done ^ bit) | 0;
+      for (let step = 0; step < stealRegionLanes; step++) {
+        const bit = (1 << at) | 0;
+        if ((lanes & bit) !== 0) {
+          decodeAt(at);
+          lanes = (lanes ^ bit) | 0;
+          done = (done ^ bit) | 0;
+          if (lanes === 0) break;
+        }
+        at = at === regionLow ? regionHigh : at - 1;
       }
     } finally {
       LastWorker = (LastWorker ^ done) | 0;

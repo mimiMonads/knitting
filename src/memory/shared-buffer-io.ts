@@ -444,9 +444,15 @@ export const createSharedStaticBufferIO = ({
   const canWrite = (start: number, length: number) =>
     (start | 0) >= 0 && (start + length) <= writableBytes;
 
+  // Reuse one fixed view per slot; writes no longer allocate a subarray.
+  const slotUtf8Targets: Uint8Array[] = new Array(LockBound.slots);
+  for (let i = 0; i < LockBound.slots; i++) {
+    const start = slotByteOffsets[i]!;
+    slotUtf8Targets[i] = baseU8.subarray(start, start + writableBytes);
+  }
+
   const writeUtf8 = (str: string, at: number) => {
-    const start = slotByteOffsets[at]!;
-    const target = baseU8.subarray(start, start + writableBytes);
+    const target = slotUtf8Targets[at]!;
     if (!baseBuf) {
       const { read, written } = sharedBufferEncodeInto(
         str,

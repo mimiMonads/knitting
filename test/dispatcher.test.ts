@@ -1,9 +1,45 @@
 import assert from "node:assert/strict";
 import test from "./_runner.ts";
 import {
-  type ChannelHandler,
+  ChannelHandler,
   hostDispatcherLoop,
 } from "../src/runtime/dispatcher.ts";
+
+for (const pump of ["auto", "channel"] as const) {
+  test(`${pump} pump coalesces lane notifications and allows a subsequent turn`, async () => {
+    const channel = new ChannelHandler(pump);
+    let calls = 0;
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => finish = resolve);
+    channel.open(() => {
+      calls++;
+      if (calls === 1) {
+        for (let lane = 0; lane < 8; lane++) channel.notify();
+      } else {
+        finish();
+      }
+    });
+    try {
+      for (let lane = 0; lane < 8; lane++) channel.notify();
+      await finished;
+      // Drain queued callbacks before asserting the count.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.equal(calls, 2);
+    } finally {
+      channel.close();
+    }
+  });
+
+  test(`${pump} pump ignores a queued callback after close`, async () => {
+    const channel = new ChannelHandler(pump);
+    let calls = 0;
+    channel.open(() => calls++);
+    channel.notify();
+    channel.close();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.equal(calls, 0);
+  });
+}
 
 test("process completion doorbell drains directly without a channel hop", () => {
   let active = true;

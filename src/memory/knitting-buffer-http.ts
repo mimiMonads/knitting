@@ -176,6 +176,10 @@ export const readBodyIntoBytes = async (
     maxByteLength,
   }: ReadBodyIntoBytesOptions,
 ): Promise<Uint8Array> => {
+  if (!Number.isSafeInteger(maxByteLength) || maxByteLength < 0) {
+    throw new RangeError("maxByteLength must be a non-negative safe integer");
+  }
+
   const req = request as unknown as BytesCapableRequest;
   const declared = declaredLength(req);
 
@@ -334,6 +338,15 @@ export const readBodyOrRefer = async (
   ) {
     throw new RangeError(
       "referenceAboveBytes must be a non-negative safe integer",
+    );
+  }
+  // Reference allocations need an explicit runtime size bound.
+  if (
+    !Number.isSafeInteger(bodyOptions.maxByteLength) ||
+    bodyOptions.maxByteLength < 0
+  ) {
+    throw new RangeError(
+      "maxByteLength must be a non-negative safe integer",
     );
   }
 

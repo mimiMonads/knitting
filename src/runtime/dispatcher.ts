@@ -316,14 +316,17 @@ export class ChannelHandler {
 
   #handler: (() => void) | undefined;
   readonly #notify: () => void;
+  #pending = false;
+  readonly #run = () => {
+    // Clear before draining so a busy lane can request the next turn.
+    this.#pending = false;
+    this.#handler?.();
+  };
 
   constructor(pump: ChannelHandlerPump = "auto") {
     if (pump === "auto" && IMMEDIATE_PUMP !== undefined) {
       const immediate = IMMEDIATE_PUMP;
-      // Keep one callback allocation and make callbacks after close harmless.
-      const run = () => {
-        this.#handler?.();
-      };
+      const run = this.#run;
       this.#notify = () => {
         immediate(run);
       };
@@ -341,6 +344,9 @@ export class ChannelHandler {
   }
 
   public notify(): void {
+    // Coalesce notifications into one pending drain.
+    if (this.#pending) return;
+    this.#pending = true;
     this.#notify();
   }
 
@@ -354,10 +360,10 @@ export class ChannelHandler {
     } | undefined;
     if (port1 === undefined) return;
     if (typeof port1.on === "function") {
-      port1.on("message", f);
+      port1.on("message", this.#run);
     } else {
       // @ts-ignore
-      port1.onmessage = f;
+      port1.onmessage = this.#run;
     }
     this.port1?.start?.();
     this.port2?.start?.();
