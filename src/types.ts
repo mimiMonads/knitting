@@ -71,8 +71,8 @@ type WorkerData = {
     consumers: number;
     consumerId: number;
     regionLanes: number;
-    /** Region mutual-exclusion discipline; see `DispatcherSettings.stealClaim`. */
-    claim?: "dekker" | "cas-mask";
+    /** Claim discipline; see `DispatcherSettings.stealClaim`. */
+    claim?: "dekker" | "ticket";
   };
 };
 
@@ -562,8 +562,13 @@ type DispatcherSettings = {
    * tasks; Dekker requires at least one spare region per live consumer.
    */
   stealRegionLanes?: number;
-  /** Region-claim discipline: per-consumer Dekker intents or a shared CAS mask. */
-  stealClaim?: "dekker" | "cas-mask";
+  /**
+   * Publication-ordered tickets (`"ticket"`, the default) or Dekker regions
+   * (`"dekker"`). Unrecognised values are rejected rather than defaulted, so a
+   * removed discipline such as `cas-mask` fails at pool creation. Ticket pools
+   * reject pending and future calls on worker failure.
+   */
+  stealClaim?: "dekker" | "ticket";
 };
 
 type CreatePool = {

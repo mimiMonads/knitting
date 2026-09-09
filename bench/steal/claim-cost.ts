@@ -5,6 +5,8 @@
 import { Worker } from "node:worker_threads";
 import { createLockControlCarpet } from "../../src/memory/byte-carpet.ts";
 import {
+  assertStealClaim,
+  DEFAULT_STEAL_CLAIM,
   HEADER_SLOT_STRIDE_U32,
   lock2,
   LOCK_SECTOR_BYTE_LENGTH,
@@ -27,9 +29,12 @@ const REPS = Number(process.env.CC_REPS ?? "5");
 const FORCED_G = Number(process.env.CC_G ?? "0");
 const IDLE = process.env.CC_IDLE === "1";
 const BURST = Number(process.env.CC_BURST ?? "0");
-const CLAIM: StealClaimDiscipline = process.env.CC_CLAIM === "cas-mask"
-  ? "cas-mask"
-  : "dekker";
+// Validated, not defaulted: CC_CLAIM=cas-mask used to silently benchmark
+// Dekker and report it under a name that no longer exists.
+const CLAIM: StealClaimDiscipline =
+  process.env.CC_CLAIM === undefined || process.env.CC_CLAIM === ""
+    ? DEFAULT_STEAL_CLAIM
+    : assertStealClaim(process.env.CC_CLAIM, "CC_CLAIM");
 
 // Control cells shared with every claimant.
 const CTL_STATE = 0; // 0 = setup, 1 = running, 2 = stop

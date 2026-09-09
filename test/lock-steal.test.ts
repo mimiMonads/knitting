@@ -2,12 +2,17 @@ import assert from "node:assert/strict";
 import test from "./_runner.ts";
 import { createLockControlCarpet } from "../src/memory/byte-carpet.ts";
 import {
+  assertStealClaim,
+  DEFAULT_STEAL_CLAIM,
+  DOORBELL_ARMED_SLOT_OFFSET_U32,
   HEADER_SLOT_STRIDE_U32,
   lock2,
   LOCK_SECTOR_BYTE_LENGTH,
   LockBound,
   makeTask,
-  STEAL_CLAIM_MASK_SLOT_OFFSET_U32,
+  STEAL_TICKET_HEAD_SLOT_OFFSET_U32,
+  STEAL_TICKET_ORDER_SLOT_OFFSET_U32,
+  STEAL_TICKET_FAILED,
   type StealClaimDiscipline,
   STEAL_WANT_SLOT_OFFSET_U32,
 } from "../src/memory/lock.ts";
@@ -42,6 +47,7 @@ const buildStealLock = (
   };
   const headersRegion = toSharedBufferRegion(shared.headers);
   return {
+    shared,
     producer: lock2({ ...shared, consumers, regionLanes, stealClaim }),
     consumers: Array.from(
       { length: consumers },
@@ -61,7 +67,7 @@ const buildStealLock = (
 //
 // Dynamic payloads under arena pressure are covered separately by
 // test/payload-arena-reuse.test.ts.
-for (const claim of ["dekker", "cas-mask"] as const) {
+for (const claim of ["dekker", "ticket"] as const) {
 for (const [consumers, regionLanes] of [[2, 8], [3, 8], [4, 4], [2, 16]]) {
   test(`${claim} stealing with ${consumers} consumers, g=${regionLanes}: exactly once`, () => {
     const { producer, consumers: endpoints } = buildStealLock(
@@ -115,137 +121,6 @@ for (const [consumers, regionLanes] of [[2, 8], [3, 8], [4, 4], [2, 16]]) {
   });
 }
 }
-
-const claimMaskIndex = LockBound.header + STEAL_CLAIM_MASK_SLOT_OFFSET_U32;
-const wantIndex = (consumerId: number): number =>
-  (consumerId * HEADER_SLOT_STRIDE_U32) + LockBound.header +
-  STEAL_WANT_SLOT_OFFSET_U32;
-
-test("cas-mask claiming excludes a peer from held regions and releases its claim", () => {
-  const { producer, consumers, headers } = buildStealLock(2, 8, "cas-mask");
-  const regions = LockBound.slots / 8;
-
-  for (let i = 0; i < 4; i++) {
-    assert.equal(producer.encode(makeValueTask(i)), true);
-  }
-
-  // Every region is held by an in-flight claimant, so nobody may take one.
-  Atomics.store(headers, claimMaskIndex, (1 << regions) - 1);
-  assert.equal(consumers[1]!.decode(), false);
-  assert.equal(consumers[1]!.resolved.size, 0);
-
-  // Released regions are claimable again, and a finished claim must hand its
-  // bit back or the pool would leak a region per claim.
-  Atomics.store(headers, claimMaskIndex, 0);
-  assert.equal(consumers[1]!.decode(), true);
-  assert.notEqual(consumers[1]!.resolved.size, 0);
-  assert.equal(Atomics.load(headers, claimMaskIndex), 0);
-});
-
-test("cas-mask hands back a dead claimant's recorded region", () => {
-  const { producer, consumers, headers } = buildStealLock(2, 8, "cas-mask");
-
-  assert.equal(producer.encode(makeValueTask(42)), true);
-  const pending = (Atomics.load(producer.hostBits, 0) ^
-    Atomics.load(producer.workerBits, 0)) >>> 0;
-  const slot = 31 - Math.clz32(pending);
-  const intent = 1 << ((slot / 8) | 0);
-
-  // Consumer 0 died holding the pending region. Its WANT records the owned bit for
-  // host-side recovery; the host does not write the dead consumer's WANT word.
-  Atomics.store(headers, claimMaskIndex, intent);
-  Atomics.store(headers, wantIndex(0), intent);
-  assert.equal(consumers[1]!.decode(), false);
-
-  assert.equal(producer.deactivateStealConsumer(0), true);
-  assert.equal(Atomics.load(headers, claimMaskIndex), 0, "handed back");
-  assert.equal(
-    Atomics.load(headers, wantIndex(0)),
-    intent,
-    "WANT remains single-writer",
-  );
-  assert.equal(consumers[1]!.decode(), true);
-  assert.equal(consumers[1]!.resolved.toArray()[0]!.value, 42);
-});
-
-test("cas-mask only hands back the dead claimant's recorded region", () => {
-  const { producer, headers } = buildStealLock(3, 8, "cas-mask");
-  // Consumer 1 owns region 0; consumer 2 owns region 1.
-  Atomics.store(headers, claimMaskIndex, 0b11);
-  Atomics.store(headers, wantIndex(1), 0b01);
-  Atomics.store(headers, wantIndex(2), 0b10);
-
-  assert.equal(producer.deactivateStealConsumer(1), true);
-  assert.equal(Atomics.load(headers, claimMaskIndex), 0b10, "dead bit cleared");
-});
-
-test("cas-mask allows more consumers than regions; dekker does not", () => {
-  // g=8 leaves 4 regions. Dekker needs a spare region per claimant, so 6
-  // consumers is rejected; a CAS-mask claimant bails and retries instead of
-  // deadlocking.
-  assert.throws(() => buildStealLock(6, 8), /too few for 6 consumers/);
-
-  const { producer, consumers } = buildStealLock(6, 8, "cas-mask");
-  const TOTAL = 200;
-  const seen = new Set<number>();
-  let published = 0;
-  let drained = 0;
-  let guard = 0;
-
-  while (drained < TOTAL && ++guard < 100_000) {
-    if (published < TOTAL && producer.encode(makeValueTask(published))) {
-      published++;
-      continue;
-    }
-    for (let c = 0; c < consumers.length; c++) {
-      const endpoint = consumers[(guard + c) % consumers.length]!;
-      if (!endpoint.decode()) continue;
-      const taken = endpoint.resolved.toArray();
-      endpoint.resolved.clear();
-      for (const task of taken) {
-        const value = task.value as number;
-        assert.equal(seen.has(value), false, `duplicate delivery of ${value}`);
-        seen.add(value);
-        drained++;
-      }
-    }
-  }
-
-  assert.equal(published, TOTAL);
-  assert.equal(drained, TOTAL, "every task drained exactly once with R < N");
-});
-
-test("cas-mask works with a single region (g=32, R=1)", () => {
-  // The widest legal region leaves one region for every claimant to contend
-  // for -- the degenerate end of relaxing `R >= N`.
-  const { producer, consumers } = buildStealLock(2, 32, "cas-mask");
-  const TOTAL = 64;
-  const seen = new Set<number>();
-  let published = 0;
-  let drained = 0;
-  let guard = 0;
-
-  while (drained < TOTAL && ++guard < 100_000) {
-    if (published < TOTAL && producer.encode(makeValueTask(published))) {
-      published++;
-      continue;
-    }
-    for (let c = 0; c < consumers.length; c++) {
-      const endpoint = consumers[(guard + c) % consumers.length]!;
-      if (!endpoint.decode()) continue;
-      const taken = endpoint.resolved.toArray();
-      endpoint.resolved.clear();
-      for (const task of taken) {
-        const value = task.value as number;
-        assert.equal(seen.has(value), false, `duplicate ${value}`);
-        seen.add(value);
-        drained++;
-      }
-    }
-  }
-
-  assert.equal(drained, TOTAL, "every task drained exactly once at R = 1");
-});
 
 test("stealing rejects a region layout with too few regions", () => {
   assert.throws(
@@ -320,16 +195,28 @@ test("a throw mid-region still retires decoded lanes and frees the region", () =
     headersRegion.byteLength >>> 2,
   );
 
+  // Pinned to Dekker on purpose: this asserts Dekker's recovery contract — the
+  // region is released and a peer finishes the rest. Ticket deliberately does
+  // the opposite (a mid-batch throw closes the queue permanently), so it must
+  // not inherit this case from the default.
   const consumers = 2;
-  const producer = lock2({ ...shared, consumers, regionLanes: 8 });
+  const claim = "dekker" as const;
+  const producer = lock2({ ...shared, consumers, regionLanes: 8, stealClaim: claim });
   const failing = lock2({
     ...shared,
     consumers,
     consumerId: 0,
     regionLanes: 8,
+    stealClaim: claim,
     recycleList: explodingRecycle as never,
   });
-  const survivor = lock2({ ...shared, consumers, consumerId: 1, regionLanes: 8 });
+  const survivor = lock2({
+    ...shared,
+    consumers,
+    consumerId: 1,
+    regionLanes: 8,
+    stealClaim: claim,
+  });
 
   const TOTAL = 3;
   for (let i = 0; i < TOTAL; i++) {
@@ -367,7 +254,7 @@ test("a throw mid-region still retires decoded lanes and frees the region", () =
 });
 
 /** Stealing must preserve producer order within each claimed region. */
-for (const claim of ["dekker", "cas-mask"] as const) {
+for (const claim of ["dekker", "ticket"] as const) {
   for (const regionLanes of [4, 8, 16]) {
     test(
       `${claim} decodes a claimed region in producer order, g=${regionLanes}`,
@@ -410,3 +297,375 @@ for (const claim of ["dekker", "cas-mask"] as const) {
     );
   }
 }
+
+/**
+ * Sequential claims follow publication order. Concurrent consumers may finish
+ * decoding or executing later claims before earlier claimants resume.
+ * The region disciplines only promise order *within* a claimed region.
+ */
+for (const [consumers, batch] of [[2, 1], [3, 4], [4, 8], [6, 8]]) {
+  test(
+    `ticket sequential claims follow publication order, ${consumers} consumers, g=${batch}`,
+    () => {
+      const { producer, consumers: endpoints } = buildStealLock(
+        consumers,
+        batch,
+        "ticket",
+      );
+
+      const TOTAL = 500;
+      const order: number[] = [];
+      let published = 0;
+      let guard = 0;
+
+      while (order.length < TOTAL) {
+        if (++guard > 200_000) break;
+        if (published < TOTAL && producer.encode(makeValueTask(published))) {
+          published++;
+          continue;
+        }
+        for (let c = 0; c < endpoints.length; c++) {
+          const endpoint = endpoints[(guard + c) % endpoints.length]!;
+          if (!endpoint.decode()) continue;
+          for (const task of endpoint.resolved.toArray()) {
+            order.push(task.value as number);
+          }
+          endpoint.resolved.clear();
+        }
+      }
+
+      assert.equal(published, TOTAL, "producer published every task");
+      assert.equal(order.length, TOTAL, "every task drained exactly once");
+      for (let i = 0; i < TOTAL; i++) {
+        assert.equal(order[i], i, `drained out of publication order at ${i}`);
+      }
+    },
+  );
+}
+
+/** An over-claim must be impossible: the head never passes the tail. */
+test("ticket never claims past the published tail", () => {
+  const { producer, consumers: endpoints, headers } = buildStealLock(
+    4,
+    8,
+    "ticket",
+  );
+  const headIndex = LockBound.header + STEAL_TICKET_HEAD_SLOT_OFFSET_U32;
+  const tailIndex = HEADER_SLOT_STRIDE_U32 + LockBound.header +
+    STEAL_TICKET_HEAD_SLOT_OFFSET_U32;
+
+  // Drain an empty queue hard: this is the case fetch-add ticketing cannot
+  // survive, and the CAS claim must leave the head untouched.
+  for (let i = 0; i < 1000; i++) {
+    for (const endpoint of endpoints) {
+      assert.equal(endpoint.decode(), false, "claimed from an empty queue");
+    }
+  }
+  assert.equal(Atomics.load(headers, headIndex), 0, "idle polls moved the head");
+  assert.equal(Atomics.load(headers, tailIndex), 0, "idle polls moved the tail");
+
+  for (let i = 0; i < 20; i++) assert.equal(producer.encode(makeValueTask(i)), true);
+  assert.equal(Atomics.load(headers, tailIndex), 20, "tail counts publications");
+
+  let guard = 0;
+  while (Atomics.load(headers, headIndex) < 20 && guard++ < 1000) {
+    for (const endpoint of endpoints) {
+      endpoint.decode();
+      endpoint.resolved.clear();
+    }
+  }
+  assert.equal(Atomics.load(headers, headIndex), 20, "head reached the tail");
+  for (let i = 0; i < 100; i++) {
+    for (const endpoint of endpoints) {
+      assert.equal(endpoint.decode(), false, "claimed past the tail");
+    }
+  }
+  assert.equal(Atomics.load(headers, headIndex), 20, "head passed the tail");
+});
+
+const ticketWords = (headers: Int32Array) => ({
+  view: new BigInt64Array(
+    headers.buffer,
+    headers.byteOffset,
+    headers.length >>> 1,
+  ),
+  head: (LockBound.header + STEAL_TICKET_HEAD_SLOT_OFFSET_U32) >>> 1,
+  tail: (HEADER_SLOT_STRIDE_U32 + LockBound.header +
+    STEAL_TICKET_HEAD_SLOT_OFFSET_U32) >>> 1,
+});
+const ticketOrderIndex = (ticket: number) =>
+  (ticket & 31) * HEADER_SLOT_STRIDE_U32 + LockBound.header +
+  STEAL_TICKET_ORDER_SLOT_OFFSET_U32;
+
+test("ticket crosses the 32-bit boundary without recycling its identity", () => {
+  const { producer, consumers, headers } = buildStealLock(2, 8, "ticket");
+  for (let i = 0; i < 3; i++) producer.encode(makeValueTask(i));
+  const slots = [0, 1, 2].map((i) => headers[ticketOrderIndex(i)]!);
+  // Place the same three publications across the low-word boundary.
+  const start = 0xfffffffen;
+  slots.forEach((slot, i) => {
+    headers[ticketOrderIndex(Number((start + BigInt(i)) & 31n))] = slot;
+  });
+  const { view, head, tail } = ticketWords(headers);
+  Atomics.store(view, head, start);
+  Atomics.store(view, tail, start + 3n);
+  assert.equal(consumers[0]!.decode(), true);
+  assert.deepEqual(consumers[0]!.resolved.toArray().map((t) => t.value), [
+    0,
+    1,
+    2,
+  ]);
+  assert.equal(Atomics.load(view, head), 0x100000001n);
+  assert.equal(consumers[1]!.decode(), false);
+});
+
+test("ticket rejects a stale CAS after a full low-word cycle", () => {
+  const { producer, consumers, headers } = buildStealLock(2, 1, "ticket");
+  producer.encode(makeValueTask(42));
+  const { view, head, tail } = ticketWords(headers);
+  const original = Atomics.compareExchange;
+  let intercepted = false;
+  // Inject the state reached if a claimant pauses before CAS while peers
+  // process 2^32 tickets and empty the queue. No wall-clock wait is needed.
+  Atomics.compareExchange = ((
+    array: BigInt64Array,
+    index: number,
+    expected: bigint,
+    replacement: bigint,
+  ) => {
+    if (array instanceof BigInt64Array && index === head && !intercepted) {
+      intercepted = true;
+      Atomics.store(view, head, 1n << 32n);
+      Atomics.store(view, tail, 1n << 32n);
+    }
+    return original(array, index, expected, replacement);
+  }) as typeof Atomics.compareExchange;
+  try {
+    assert.equal(consumers[0]!.decode(), false);
+  } finally {
+    Atomics.compareExchange = original;
+  }
+  assert.equal(intercepted, true);
+  assert.equal(consumers[0]!.resolved.isEmpty, true);
+  assert.equal(Atomics.load(view, head), 1n << 32n);
+});
+
+test("ticket decode exceptions poison the queue instead of silently losing a batch", () => {
+  const { shared, producer, consumers, headers } = buildStealLock(
+    2,
+    8,
+    "ticket",
+  );
+  let shifts = 0;
+  const failing = lock2({
+    ...shared,
+    consumers: 2,
+    consumerId: 0,
+    regionLanes: 8,
+    stealClaim: "ticket",
+    recycleList: {
+      shiftNoClear: () => {
+        if (++shifts === 2) throw new Error("decode blew up");
+        return undefined;
+      },
+    } as never,
+  });
+  for (let i = 0; i < 3; i++) producer.encode(makeValueTask(i));
+  assert.throws(() => failing.decode(), /decode blew up/);
+  assert.deepEqual(failing.resolved.toArray().map((t) => t.value), [0]);
+  const { view, head } = ticketWords(headers);
+  assert.equal(Atomics.load(view, head), STEAL_TICKET_FAILED);
+  assert.equal(consumers[1]!.decode(), false);
+  assert.equal(failing.decode(), false);
+});
+
+test("ticket deactivating a claimant permanently stops new claims", () => {
+  const { producer, consumers, headers } = buildStealLock(2, 1, "ticket");
+  producer.encode(makeValueTask(1));
+  assert.equal(producer.deactivateStealConsumer(0), true);
+  const { view, head } = ticketWords(headers);
+  assert.equal(Atomics.load(view, head), STEAL_TICKET_FAILED);
+  assert.equal(consumers[1]!.decode(), false);
+  assert.equal(producer.deactivateStealConsumer(0), false);
+});
+
+test("ticket batch publication flushes earlier tickets when encoding throws", () => {
+  const { producer, consumers, headers } = buildStealLock(2, 8, "ticket");
+  const bad = makeValueTask(2);
+  Object.defineProperty(bad, "value", {
+    get: () => {
+      throw new Error("encode blew up");
+    },
+  });
+  producer.enlist(makeValueTask(1));
+  producer.enlist(bad);
+  assert.throws(() => producer.encodeAll(), /encode blew up/);
+  const { view, tail } = ticketWords(headers);
+  assert.equal(Atomics.load(view, tail), 1n);
+  assert.equal(consumers[0]!.decode(), true);
+  assert.deepEqual(consumers[0]!.resolved.toArray().map((t) => t.value), [1]);
+});
+
+for (const start of [(1n << 53n) - 1n, (1n << 63n) - 2n]) {
+  test(`ticket preserves exact identity at ${start}`, () => {
+    const { producer, consumers, headers } = buildStealLock(2, 1, "ticket");
+    producer.encode(makeValueTask(99));
+    headers[ticketOrderIndex(Number(start & 31n))] =
+      headers[ticketOrderIndex(0)]!;
+    const { view, head, tail } = ticketWords(headers);
+    Atomics.store(view, head, start);
+    Atomics.store(view, tail, start + 1n);
+    assert.equal(consumers[0]!.decode(), true);
+    assert.equal(Atomics.load(view, head), start + 1n);
+    assert.deepEqual(consumers[0]!.resolved.toArray().map((t) => t.value), [
+      99,
+    ]);
+    assert.equal(consumers[1]!.decode(), false);
+  });
+}
+
+test("ticket retains the aligned slot-stride requirement", () => {
+  const { shared } = buildStealLock(2, 1, "ticket");
+  assert.throws(() => lock2({
+    ...shared,
+    consumers: 2,
+    stealClaim: "ticket",
+    headerSlotStrideU32: HEADER_SLOT_STRIDE_U32 + 1,
+  }), /8-byte aligned slot stride/);
+});
+
+for (const count of [1, 3]) {
+  test(`ticket notifier observes all ${count} published tickets`, () => {
+    const { shared, consumers, headers } = buildStealLock(2, 8, "ticket");
+    let notifications = 0;
+    let observedTail = -1;
+    const received: unknown[] = [];
+    const producer = lock2({
+      ...shared,
+      consumers: 2,
+      regionLanes: 8,
+      stealClaim: "ticket",
+      notifyOnHostPublish: true,
+      notifyHostPublish: () => {
+        notifications++;
+        observedTail = Atomics.load(
+          headers,
+          HEADER_SLOT_STRIDE_U32 + LockBound.header +
+            STEAL_TICKET_HEAD_SLOT_OFFSET_U32,
+        );
+        consumers[0]!.decode();
+        received.push(...consumers[0]!.resolved.toArray().map((t) => t.value));
+      },
+    });
+    Atomics.store(headers, DOORBELL_ARMED_SLOT_OFFSET_U32, 1);
+    if (count === 1) producer.encode(makeValueTask(0));
+    else {
+      for (let i = 0; i < count; i++) producer.enlist(makeValueTask(i));
+      producer.encodeAll();
+    }
+    assert.equal(notifications, 1);
+    assert.equal(observedTail, count);
+    assert.deepEqual(received, Array.from({ length: count }, (_, i) => i));
+  });
+}
+
+test("ticket fails closed instead of wrapping the 64-bit claim identity", () => {
+  const { producer, consumers, headers } = buildStealLock(2, 1, "ticket");
+  producer.encode(makeValueTask(42));
+  const { view, head, tail } = ticketWords(headers);
+  Atomics.store(view, head, (1n << 63n) - 1n);
+  // The 32-bit producer tail has wrapped. There is one publication beyond
+  // the head's supported lifetime: fail the queue rather than repeat a head.
+  Atomics.store(headers, tail * 2, 0);
+  assert.throws(() => consumers[0]!.decode(), /exhausted its 64-bit sequence/);
+  assert.equal(Atomics.load(view, head), STEAL_TICKET_FAILED);
+  assert.equal(consumers[1]!.decode(), false);
+});
+
+for (const start of [0x7fffffffn, 0xffffffffn]) {
+  test(`ticket unsigned tail distance crosses ${start}`, () => {
+    const { producer, consumers, headers } = buildStealLock(2, 8, "ticket");
+    producer.encode(makeValueTask(1));
+    producer.encode(makeValueTask(2));
+    const slots = [
+      headers[ticketOrderIndex(0)]!,
+      headers[ticketOrderIndex(1)]!,
+    ];
+    slots.forEach((slot, i) => {
+      headers[ticketOrderIndex(Number((start + BigInt(i)) & 31n))] = slot;
+    });
+    const { view, head, tail } = ticketWords(headers);
+    Atomics.store(view, head, start);
+    Atomics.store(headers, tail * 2, Number((start + 2n) & 0xffffffffn));
+    assert.equal(consumers[0]!.decode(), true);
+    assert.equal(Atomics.load(view, head), start + 2n);
+    assert.deepEqual(consumers[0]!.resolved.toArray().map((t) => t.value), [
+      1,
+      2,
+    ]);
+    assert.equal(consumers[1]!.decode(), false);
+  });
+}
+
+/**
+ * A silently-ignored claim setting is worse than a crash: `cas-mask` was
+ * removed, and a stale config or a typo used to run Dekker under the wrong
+ * name, so every benchmark built on it reported the wrong discipline.
+ */
+test("assertStealClaim accepts the shipped disciplines", () => {
+  assert.equal(assertStealClaim("dekker", "x"), "dekker");
+  assert.equal(assertStealClaim("ticket", "x"), "ticket");
+});
+
+test("assertStealClaim rejects the removed cas-mask and says so", () => {
+  assert.throws(
+    () => assertStealClaim("cas-mask", "KNITTING_STEAL_CLAIM"),
+    (error: unknown) =>
+      error instanceof RangeError &&
+      error.message.includes("KNITTING_STEAL_CLAIM") &&
+      error.message.includes("cas-mask was removed"),
+  );
+});
+
+test("assertStealClaim rejects typos, casing and non-strings", () => {
+  for (const bad of ["Ticket", "tickett", "", "dekker ", 1, null, undefined]) {
+    assert.throws(
+      () => assertStealClaim(bad, "host.stealClaim"),
+      RangeError,
+      `expected ${JSON.stringify(bad)} to be rejected`,
+    );
+  }
+});
+
+test("lock2 rejects an unknown claim discipline instead of falling back", () => {
+  assert.throws(
+    () =>
+      buildStealLock(2, 8, "cas-mask" as unknown as StealClaimDiscipline),
+    RangeError,
+  );
+});
+
+test("the default claim discipline is ticket", () => {
+  assert.equal(DEFAULT_STEAL_CLAIM, "ticket");
+  // Observable, not just declarative: one region for four consumers is a
+  // Dekker error and a non-issue for ticket, which has no regions.
+  const controlLayout = createLockControlCarpet({
+    signalBytes: 0,
+    abortBytes: 0,
+    lockSectorBytes: LOCK_SECTOR_BYTE_LENGTH,
+    headerSlotStrideU32: HEADER_SLOT_STRIDE_U32,
+    slotCount: LockBound.slots,
+    headerLayout: "split",
+  });
+  const shared = {
+    LockBoundSector: controlLayout.lock.lockSector,
+    headers: controlLayout.lock.headers,
+    payload: new SharedArrayBuffer(1 << 16),
+    payloadSector: controlLayout.lock.payloadSector,
+  };
+  lock2({ ...shared, consumers: 4, regionLanes: 32 });
+  assert.throws(
+    () => lock2({ ...shared, consumers: 4, regionLanes: 32, stealClaim: "dekker" }),
+    RangeError,
+  );
+});

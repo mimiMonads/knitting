@@ -367,9 +367,32 @@ export const STEAL_PAYLOAD_ACK_SLOT_OFFSET_U32 = STEAL_ACK_SLOT_OFFSET_U32 + 2;
 export const STEAL_LIVE_SLOT_OFFSET_U32 = STEAL_PAYLOAD_ACK_SLOT_OFFSET_U32 + 1;
 /** Host-owned arm word for the return-lock completion doorbell. */
 export const DOORBELL_ARMED_SLOT_OFFSET_U32 = STEAL_LIVE_SLOT_OFFSET_U32 + 1;
-/** Shared region-owner mask for the `cas-mask` claim discipline. */
-export const STEAL_CLAIM_MASK_SLOT_OFFSET_U32 =
-  DOORBELL_ARMED_SLOT_OFFSET_U32 + 1;
+/**
+ * Non-wrapping 64-bit claim head for the `ticket` discipline. The producer
+ * publishes only the low 32 bits of the tail. A successful head CAS validates
+ * the snapshot: with that head unchanged, at most 32 tickets can be pending,
+ * so unsigned subtraction recovers the exact distance even across tail wrap.
+ * Head and tail occupy different slots' header lines (slots 0 and 1).
+ */
+export const STEAL_TICKET_HEAD_SLOT_OFFSET_U32 =
+  DOORBELL_ARMED_SLOT_OFFSET_U32 + 2; // Keep the 64-bit head aligned.
+/** Negative head permanently closes a failed ticket queue. */
+export const STEAL_TICKET_FAILED = -1n;
+const STEAL_TICKET_LIMIT = (1n << 63n) - 1n;
+const STEAL_TICKET_LOW_MASK = 0xffffffffn;
+/**
+ * Publication-order ring. `order[t & 31]` is the slot the producer filled for
+ * ticket `t`, so a ticket names a lane without the ticket having to *be* the
+ * lane: the producer keeps its free-bit allocation and claims follow publication
+ * order. Cell `i` uses the former ACK word; words 14..15
+ * are reserved for the head in slot 0 and the tail in slot 1.
+ */
+export const STEAL_TICKET_ORDER_SLOT_OFFSET_U32 =
+  STEAL_ACK_SLOT_OFFSET_U32;
+/** Ring cells, and therefore the wrap mask, follow the slot count. */
+export const STEAL_TICKET_RING_MASK = (LockBound.slots - 1) | 0;
+/** Bounded CAS retries before a claimant re-polls from the worker loop. */
+const STEAL_TICKET_ATTEMPTS = 2;
 
 // A producer claims ARMED before ringing the host. Keeping SIGNALLED until the
 // host drains coalesces a burst of published frames into one native/IPC wake.
@@ -447,12 +470,55 @@ const settleTask = (task: Task) => {
 export type Lock2 = ReturnType<typeof lock2>;
 
 /**
- * Region mutual-exclusion discipline for stealing consumers.
+ * Claim discipline for stealing consumers.
  *
  * - `dekker`: per-consumer intent words and an O(N) peer survey.
- * - `cas-mask`: one shared owner mask for all regions.
+ * - `ticket`: one monotonic counter; a CAS on the head claims lanes in
+ *   publication order, with no regions and no per-consumer state.
  */
-export type StealClaimDiscipline = "dekker" | "cas-mask";
+export const STEAL_CLAIM_DISCIPLINES = ["dekker", "ticket"] as const;
+export type StealClaimDiscipline = typeof STEAL_CLAIM_DISCIPLINES[number];
+
+/** Disciplines that once existed, so a stale config gets a useful error. */
+const REMOVED_STEAL_CLAIMS: Record<string, string> = {
+  "cas-mask": "cas-mask was removed; use ticket",
+};
+
+/**
+ * Validate a claim discipline coming from an untrusted source — an env var, or
+ * a JS caller the type system never saw.
+ *
+ * This throws rather than falling back, because a silent fallback is worse than
+ * a crash here: a stale `cas-mask` setting or a typo would quietly run Dekker,
+ * and every benchmark and test built on it would report Dekker's numbers under
+ * another name. Both sides of a lock must also agree, so an unrecognised value
+ * that resolved differently on host and worker would corrupt the protocol.
+ */
+export const assertStealClaim = (
+  value: unknown,
+  source: string,
+): StealClaimDiscipline => {
+  if (
+    typeof value === "string" &&
+    (STEAL_CLAIM_DISCIPLINES as readonly string[]).includes(value)
+  ) {
+    return value as StealClaimDiscipline;
+  }
+  const hint = typeof value === "string" && REMOVED_STEAL_CLAIMS[value] !== undefined
+    ? ` (${REMOVED_STEAL_CLAIMS[value]})`
+    : "";
+  throw new RangeError(
+    `${source} must be one of ${STEAL_CLAIM_DISCIPLINES.join(", ")}; ` +
+      `got ${JSON.stringify(value)}${hint}`,
+  );
+};
+
+/**
+ * The discipline chosen when nothing selects one. Host and worker default
+ * independently, so this must be a single shared constant: two sides landing on
+ * different disciplines would read the same buffer under different protocols.
+ */
+export const DEFAULT_STEAL_CLAIM: StealClaimDiscipline = "ticket";
 
 export type WaitAsyncState = "not-equal" | "ok" | "timed-out";
 export type WaitAsyncResult = {
@@ -595,17 +661,23 @@ export const lock2 = ({
   const stealId = (consumerId ?? 0) | 0;
   const stealRegionLanes = (regionLanes ?? 8) | 0;
   const stealRegions = (LockBound.slots / stealRegionLanes) | 0;
-  const stealClaimMask = stealClaim === "cas-mask";
+  // Validate before use: an unrecognised value must not degrade to Dekker.
+  const stealClaimResolved = stealClaim === undefined
+    ? DEFAULT_STEAL_CLAIM
+    : assertStealClaim(stealClaim, "stealClaim");
+  const stealTicket = stealClaimResolved === "ticket";
 
   if (stealEnabled) {
+    if (stealTicket && headersSlotStride % 2 !== 0) {
+      throw new RangeError("ticket headers must have an 8-byte aligned slot stride");
+    }
     if (
       stealRegionLanes < 1 || (stealRegionLanes & (stealRegionLanes - 1)) !== 0
     ) {
       throw new RangeError("regionLanes must be a power of two");
     }
-    // Dekker requires at least one region per live consumer plus a spare.
-    // CAS-mask claimants can retry when all regions are owned.
-    if (!stealClaimMask && stealRegions < stealConsumers) {
+    // Dekker requires at least one region per consumer.
+    if (!stealTicket && stealRegions < stealConsumers) {
       throw new RangeError(
         `regionLanes=${stealRegionLanes} yields ${stealRegions} regions, ` +
           `too few for ${stealConsumers} consumers`,
@@ -629,15 +701,49 @@ export const lock2 = ({
       STEAL_WANT_SLOT_OFFSET_U32;
   }
   const stealLiveIndex = LockBound.header + STEAL_LIVE_SLOT_OFFSET_U32;
-  /** Single shared owner bitmask, used by `cas-mask` only. */
-  const stealMaskIndex = LockBound.header + STEAL_CLAIM_MASK_SLOT_OFFSET_U32;
+  /** Head (consumer-CAS) and tail (producer-store) on separate slot lines. */
+  const stealTicketHeadIndex = LockBound.header +
+    STEAL_TICKET_HEAD_SLOT_OFFSET_U32;
+  const stealTicketTailIndex = headersSlotStride + LockBound.header +
+    STEAL_TICKET_HEAD_SLOT_OFFSET_U32;
+  const stealTicketTailWord = stealEnabled && stealTicket
+    ? new Int32Array(
+      headersRegion.sab,
+      headersRegion.byteOffset + stealTicketTailIndex * Int32Array.BYTES_PER_ELEMENT,
+      1,
+    )
+    : undefined;
+  const stealTicketView = stealEnabled && stealTicket
+    ? new BigInt64Array(
+      headersRegion.sab,
+      headersRegion.byteOffset,
+      headersRegion.byteLength >>> 3,
+    )
+    : undefined;
+  const stealTicketHead64 = stealTicketHeadIndex >>> 1;
+  const stealTicketOrderIndex = new Int32Array(LockBound.slots);
+  for (let slot = 0; slot < LockBound.slots; slot++) {
+    stealTicketOrderIndex[slot] = (slot * headersSlotStride) +
+      LockBound.header + STEAL_TICKET_ORDER_SLOT_OFFSET_U32;
+  }
+  /** A claimant drains at most one region's worth of tickets per CAS. */
+  const stealTicketBatch = stealRegionLanes;
+  const stealTicketSlots = new Int32Array(stealTicketBatch);
+  const stealTicketPublish = stealEnabled && stealIsProducer && stealTicket;
+  /** Producer-private shadow of the tail; the producer is its only writer. */
+  let stealTicketTail = 0 | 0;
+  /** At most 32 tickets can be staged, so equality is safe across uint32 wrap. */
+  let stealTicketPublishedTail = 0 | 0;
   const stealAllLiveMask = stealConsumers === 32
     ? -1
     : ((1 << stealConsumers) - 1) | 0;
   if (stealEnabled && stealIsProducer) {
     Atomics.store(stealView, stealLiveIndex, stealAllLiveMask);
     // A carpet can outlive one pool on a reused buffer; never inherit owners.
-    if (stealClaimMask) Atomics.store(stealView, stealMaskIndex, 0);
+    if (stealTicket) {
+      Atomics.store(stealTicketView!, stealTicketHead64, 0n);
+      Atomics.store(stealTicketTailWord!, 0, 0);
+    }
   }
 
   const stealIsLive = (mask: number, consumer: number): boolean =>
@@ -770,39 +876,43 @@ export const lock2 = ({
     let state = ensureSenderStateHasFree((LastLocal ^ workerShadow) | 0);
     let encoded = 0 | 0;
 
-    if (list === toBeSent) {
-      while (true) {
-        const task = toBeSentShift();
-        if (!task) break;
+    try {
+      if (list === toBeSent) {
+        while (true) {
+          const task = toBeSentShift();
+          if (!task) break;
 
-        state = ensureSenderStateHasFree(state);
-        const bit = encodeWithState(task, state) | 0;
-        if (bit === 0) {
-          toBeSentUnshift(task);
-          break;
+          state = ensureSenderStateHasFree(state);
+          const bit = encodeWithState(task, state) | 0;
+          if (bit === 0) {
+            toBeSentUnshift(task);
+            break;
+          }
+
+          state = (state ^ bit) | 0;
+          encoded = (encoded + 1) | 0;
         }
+      } else {
+        while (true) {
+          const task = list.shiftNoClear();
+          if (!task) break;
 
-        state = (state ^ bit) | 0;
-        encoded = (encoded + 1) | 0;
-      }
-    } else {
-      while (true) {
-        const task = list.shiftNoClear();
-        if (!task) break;
+          state = ensureSenderStateHasFree(state);
+          const bit = encodeWithState(task, state) | 0;
+          if (bit === 0) {
+            list.unshift(task);
+            break;
+          }
 
-        state = ensureSenderStateHasFree(state);
-        const bit = encodeWithState(task, state) | 0;
-        if (bit === 0) {
-          list.unshift(task);
-          break;
+          state = (state ^ bit) | 0;
+          encoded = (encoded + 1) | 0;
         }
-
-        state = (state ^ bit) | 0;
-        encoded = (encoded + 1) | 0;
       }
+
+      return encoded;
+    } finally {
+      flushTicketTail();
     }
-
-    return encoded;
   };
 
   const encodeManyTrackedFrom = (list: RingQueue<Task>): number => {
@@ -810,49 +920,53 @@ export const lock2 = ({
     let encoded = 0 | 0;
     deferredCount = 0 | 0;
 
-    if (list === toBeSent) {
-      while (true) {
-        const task = toBeSentShift();
-        if (!task) break;
+    try {
+      if (list === toBeSent) {
+        while (true) {
+          const task = toBeSentShift();
+          if (!task) break;
 
-        state = ensureSenderStateHasFree(state);
-        const bit = encodeWithState(task, state) | 0;
-        if (bit === 0) {
-          if (isPromisePayloadPending(task)) {
-            deferredCount = (deferredCount + 1) | 0;
-            trackDeferredTask(task);
-            continue;
+          state = ensureSenderStateHasFree(state);
+          const bit = encodeWithState(task, state) | 0;
+          if (bit === 0) {
+            if (isPromisePayloadPending(task)) {
+              deferredCount = (deferredCount + 1) | 0;
+              trackDeferredTask(task);
+              continue;
+            }
+            toBeSentUnshift(task);
+            break;
           }
-          toBeSentUnshift(task);
-          break;
+
+          state = (state ^ bit) | 0;
+          encoded = (encoded + 1) | 0;
         }
+      } else {
+        while (true) {
+          const task = list.shiftNoClear();
+          if (!task) break;
 
-        state = (state ^ bit) | 0;
-        encoded = (encoded + 1) | 0;
-      }
-    } else {
-      while (true) {
-        const task = list.shiftNoClear();
-        if (!task) break;
-
-        state = ensureSenderStateHasFree(state);
-        const bit = encodeWithState(task, state) | 0;
-        if (bit === 0) {
-          if (isPromisePayloadPending(task)) {
-            deferredCount = (deferredCount + 1) | 0;
-            trackDeferredTask(task);
-            continue;
+          state = ensureSenderStateHasFree(state);
+          const bit = encodeWithState(task, state) | 0;
+          if (bit === 0) {
+            if (isPromisePayloadPending(task)) {
+              deferredCount = (deferredCount + 1) | 0;
+              trackDeferredTask(task);
+              continue;
+            }
+            list.unshift(task);
+            break;
           }
-          list.unshift(task);
-          break;
-        }
 
-        state = (state ^ bit) | 0;
-        encoded = (encoded + 1) | 0;
+          state = (state ^ bit) | 0;
+          encoded = (encoded + 1) | 0;
+        }
       }
+
+      return encoded;
+    } finally {
+      flushTicketTail();
     }
-
-    return encoded;
   };
 
   const encodeAll = (): boolean => {
@@ -862,10 +976,8 @@ export const lock2 = ({
     return toBeSent.isEmpty;
   };
 
-  const storeHost = (bit: number) => {
-    a_store(hostBits, 0, LastLocal = (LastLocal ^ bit) | 0);
+  const notifyHostPublication = () => {
     if (
-      shouldNotifyHostPublish &&
       a_compareExchange(
           doorbellArmed,
           0,
@@ -892,6 +1004,10 @@ export const lock2 = ({
       }
     }
   };
+  const storeHost = (bit: number) => {
+    a_store(hostBits, 0, LastLocal = (LastLocal ^ bit) | 0);
+    if (shouldNotifyHostPublish) notifyHostPublication();
+  };
   const storeWorker = (bit: number) =>
     a_store(workerBits, 0, LastWorker = (LastWorker ^ bit) | 0);
   const encode = (
@@ -905,11 +1021,15 @@ export const lock2 = ({
     if (!encodeTaskValue(task, selectedSlotIndex = 31 - clz32(free))) {
       return false;
     }
-    return encodeAt(
-      task,
-      selectedSlotIndex,
-      selectedSlotBit = 1 << selectedSlotIndex,
-    );
+    try {
+      return encodeAt(
+        task,
+        selectedSlotIndex,
+        selectedSlotBit = 1 << selectedSlotIndex,
+      );
+    } finally {
+      flushTicketTail();
+    }
   };
 
   const encodeTracked = (
@@ -928,11 +1048,15 @@ export const lock2 = ({
       }
       return false;
     }
-    return encodeAt(
-      task,
-      selectedSlotIndex,
-      selectedSlotBit = 1 << selectedSlotIndex,
-    );
+    try {
+      return encodeAt(
+        task,
+        selectedSlotIndex,
+        selectedSlotBit = 1 << selectedSlotIndex,
+      );
+    } finally {
+      flushTicketTail();
+    }
   };
 
   const encodeAt = (task: Task, at: number, bit: number): boolean => {
@@ -946,8 +1070,39 @@ export const lock2 = ({
     headersBuffer[off + 6] = task[6];
     headersBuffer[off + TASK_LOCAL_FLAGS_INDEX] = 0;
 
+    if (stealTicketPublish) {
+      // The tail's seq-cst store publishes the header, ring cell and host bit
+      // together. Ticket consumers acquire the tail before reading a lane;
+      // unlike region consumers, they never arbitrate through hostBits.
+      stealView[
+        stealTicketOrderIndex[stealTicketTail & STEAL_TICKET_RING_MASK]!
+      ] = at;
+      stealTicketTail = (stealTicketTail + 1) | 0;
+      if (shouldNotifyHostPublish) {
+        a_store(hostBits, 0, LastLocal = (LastLocal ^ bit) | 0);
+      } else {
+        hostBits[0] = LastLocal = (LastLocal ^ bit) | 0;
+      }
+      // The tail store is deferred so a burst pays one atomic, not one each.
+      // Nothing is claimable until it lands, which is what makes the batch
+      // atomic; every exit from an encode path must flush, including throws.
+      return true;
+    }
+
     storeHost(bit);
     return true;
+  };
+
+  /**
+   * Publish accumulated tickets. Consumers cannot see any lane of the batch
+   * until this store lands, so skipping it strands the slots forever.
+   */
+  const flushTicketTail = (): void => {
+    if (stealTicketPublishedTail === stealTicketTail) return;
+    stealTicketPublishedTail = stealTicketTail;
+    a_store(stealTicketTailWord!, 0, stealTicketTail);
+    // A notifier must not run while its tickets are still invisible.
+    if (shouldNotifyHostPublish) notifyHostPublication();
   };
 
   const hasSpace = () => (hostBits[0] ^ LastWorker) !== 0;
@@ -1127,77 +1282,69 @@ export const lock2 = ({
     return true;
   };
 
-  /** Claim one region in the shared owner mask. */
-  const decodeStealCasMask = (): boolean => {
-    const pending = (a_load(hostBits, 0) ^ a_load(workerBits, 0)) | 0;
-    if (pending === 0) return false;
+  /**
+   * Claim tickets from one monotonic counter.
+   *
+   * The ticket is the arbiter and the FIFO order at once: a winning CAS owns
+   * lanes nobody else can name, so there are no regions, no intent words, no
+   * peer survey and no liveness mask. An idle poll costs two loads and no RMW.
+   */
+  const decodeStealTicket = (): boolean => {
+    for (let attempt = 0; attempt < STEAL_TICKET_ATTEMPTS; attempt++) {
+      const head = Atomics.load(stealTicketView!, stealTicketHead64);
+      if (head === STEAL_TICKET_FAILED) return false;
+      const lowHead = Number(head & STEAL_TICKET_LOW_MASK);
+      const available = (a_load(stealTicketTailWord!, 0) - lowHead) >>> 0;
+      if (available === 0) return false;
+      // A valid head has at most 32 published tickets ahead of it. Larger
+      // distances are stale snapshots; the 64-bit head is still the arbiter.
+      if (available > LockBound.slots) continue;
 
-    let owners = a_load(stealView, stealMaskIndex) | 0;
-    let region = -1;
-    let intent = 0 | 0;
-
-    for (let step = 0; step < stealRegions && region < 0; step++) {
-      const candidate = stealCursor + step < stealRegions
-        ? stealCursor + step
-        : stealCursor + step - stealRegions;
-      if ((pending & stealLaneMask(candidate)) === 0) continue;
-      const bit = (1 << candidate) | 0;
-
-      // Retry a changed mask once before trying another region.
-      for (let attempt = 0; attempt < 2; attempt++) {
-        if ((owners & bit) !== 0) break;
-        const previous = a_compareExchange(
-          stealView,
-          stealMaskIndex,
-          owners,
-          (owners | bit) | 0,
-        ) | 0;
-        if (previous === owners) {
-          region = candidate;
-          intent = bit;
-          break;
-        }
-        owners = previous;
+      const batch = Math.min(available, stealTicketBatch);
+      const next = head + BigInt(batch);
+      if (next > STEAL_TICKET_LIMIT) {
+        Atomics.store(stealTicketView!, stealTicketHead64, STEAL_TICKET_FAILED);
+        throw new RangeError("ticket queue exhausted its 64-bit sequence");
       }
-    }
+      const ringHead = lowHead & STEAL_TICKET_RING_MASK;
+      // Read the lane ids *before* the CAS. Cell `head & 31` cannot be refilled
+      // while the head still sits at `head` (refilling it needs a free slot,
+      // which needs a retire, which needs a claim), but once the CAS moves the
+      // head past a ticket the producer may reuse that cell immediately.
+      for (let i = 0; i < batch; i++) {
+        stealTicketSlots[i] = stealView[
+          stealTicketOrderIndex[(ringHead + i) & STEAL_TICKET_RING_MASK]!
+        ]! & STEAL_TICKET_RING_MASK;
+      }
 
-    if (region < 0) return false;
+      if (
+        Atomics.compareExchange(
+          stealTicketView!,
+          stealTicketHead64,
+          head,
+          next,
+        ) !== head
+      ) continue;
 
-    a_store(stealView, stealWantIndex[stealId]!, intent);
-
-    const take = ((a_load(hostBits, 0) ^ a_load(workerBits, 0)) &
-      stealLaneMask(region)) | 0;
-    if (take === 0) {
-      a_store(stealView, stealWantIndex[stealId]!, 0);
-      Atomics.and(stealView, stealMaskIndex, ~intent);
-      return false;
-    }
-
-    let lanes = take;
-    let done = 0 | 0;
-    // Decode the claimed lanes in producer order.
-    let at = stealOldestLane(region, take);
-    const regionLow = (region * stealRegionLanes) | 0;
-    const regionHigh = (regionLow + stealRegionLanes - 1) | 0;
-    try {
-      for (let step = 0; step < stealRegionLanes; step++) {
-        const bit = (1 << at) | 0;
-        if ((lanes & bit) !== 0) {
+      let done = 0 | 0;
+      try {
+        for (let i = 0; i < batch; i++) {
+          const at = stealTicketSlots[i]!;
           decodeAt(at);
-          lanes = (lanes ^ bit) | 0;
-          done = (done ^ bit) | 0;
-          if (lanes === 0) break;
+          done = (done ^ (1 << at)) | 0;
         }
-        at = at === regionLow ? regionHigh : at - 1;
+      } catch (error) {
+        // Decoding may already have consumed payload state. Replaying the
+        // unfinished batch is unsafe; report the fatal error and stop claims.
+        Atomics.store(stealTicketView!, stealTicketHead64, STEAL_TICKET_FAILED);
+        throw error;
+      } finally {
+        LastWorker = (LastWorker ^ done) | 0;
+        if (done !== 0) Atomics.xor(workerBits, 0, done);
       }
-    } finally {
-      LastWorker = (LastWorker ^ done) | 0;
-      if (done !== 0) Atomics.xor(workerBits, 0, done);
-      a_store(stealView, stealWantIndex[stealId]!, 0);
-      Atomics.and(stealView, stealMaskIndex, ~intent);
-      stealCursor = stealHome;
+      return true;
     }
-    return true;
+    return false;
   };
 
   const resolveHost = ({
@@ -1451,9 +1598,10 @@ export const lock2 = ({
     }
     const bit = 1 << id;
     const previous = Atomics.and(stealView, stealLiveIndex, ~bit);
-    if (stealClaimMask) {
-      const stranded = a_load(stealView, stealWantIndex[id]!) | 0;
-      if (stranded !== 0) Atomics.and(stealView, stealMaskIndex, ~stranded);
+    if (stealTicket) {
+      // No durable ownership record exists for a dead claimant. The host must
+      // close the shared pending registry instead of reusing this queue.
+      Atomics.store(stealTicketView!, stealTicketHead64, STEAL_TICKET_FAILED);
     }
     return (previous & bit) !== 0;
   };
@@ -1466,7 +1614,9 @@ export const lock2 = ({
     publish,
     flushPending,
     decode: stealEnabled
-      ? (stealClaimMask ? decodeStealCasMask : decodeSteal)
+      ? (stealTicket
+        ? decodeStealTicket
+        : decodeSteal)
       : decode,
     hasSpace,
     resolved,

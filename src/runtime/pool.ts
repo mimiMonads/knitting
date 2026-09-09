@@ -37,6 +37,7 @@ import {
 import type { DenoCompletionDoorbell } from "./deno-doorbell.ts";
 import { createNodeCompletionDoorbell } from "./node-doorbell.ts";
 import {
+  DEFAULT_STEAL_CLAIM,
   HEADER_SLOT_STRIDE_U32,
   lock2,
   LOCK_SECTOR_BYTE_LENGTH,
@@ -151,14 +152,18 @@ export const resolveStealRegionLanes = (consumers: number): number => {
   );
 };
 
-/** Return the widest region allowed by the selected claim discipline. */
+/**
+ * Return the widest region allowed by the selected claim discipline. Only
+ * Dekker needs a region per consumer; `ticket` has no regions at all and uses
+ * the width purely as a claim batch size.
+ */
 export const resolveMaxStealRegionLanes = (
   consumers: number,
-  stealClaim?: StealClaimDiscipline,
+  stealClaim: StealClaimDiscipline = DEFAULT_STEAL_CLAIM,
 ): number =>
-  stealClaim !== undefined && stealClaim !== "dekker"
-    ? LockBound.slots
-    : resolveStealRegionLanes(consumers);
+  stealClaim === "dekker"
+    ? resolveStealRegionLanes(consumers)
+    : LockBound.slots;
 
 /** Maximum claimants that leave the protocol's required spare region. */
 export const MAX_STEAL_CONSUMERS = LockBound.slots - 1;
@@ -221,7 +226,7 @@ export const createStealPoolBuffers = ({
       }),
     }) as LockBuffers;
 
-  // Keep the default width valid for Dekker; wider CAS-mask regions are explicit.
+  // Keep the default width valid for Dekker; wider regions are explicit.
   const maxLanes = resolveMaxStealRegionLanes(threads, stealClaim);
   const lanes = regionLanes === undefined
     ? resolveStealRegionLanes(threads)
@@ -838,7 +843,13 @@ export const spawnWorkerContext = ({
   const markWorkerClosed = (reason: string): void => {
     if (closedReason) return;
     closedReason = reason;
-    rejectAll(reason);
+    if (stealPool?.stealClaim === "ticket") {
+      // A claimed ticket may be lost at any point between CAS and retirement.
+      // Reject the whole shared registry and prohibit task-id/slot reuse.
+      queue.close(reason);
+    } else {
+      rejectAll(reason);
+    }
     channelHandler?.close();
   };
 

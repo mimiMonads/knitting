@@ -32,6 +32,10 @@ import {
   readProcessWorkerNodeMajor,
   readProcessWorkerRuntime,
 } from "./runtime/process-worker.ts";
+import {
+  assertStealClaim,
+  DEFAULT_STEAL_CLAIM,
+} from "./memory/lock.ts";
 import { TRANSPORT_SIGNAL_BYTES } from "./ipc/transport/shared-memory.ts";
 import { inspectCompiledWorkerArtifact } from "./runtime/compiled-artifact.ts";
 
@@ -619,12 +623,15 @@ export const createPool: CreatePoolFactory = ({
   const stealRequested = host?.steal ?? stealEnv ?? stealDefaultCompatible;
   const stealClaimEnvRaw = nodeProcess?.env?.KNITTING_STEAL_CLAIM?.trim()
     .toLowerCase();
-  const stealClaimEnv = stealClaimEnvRaw === "cas-mask" ||
-      stealClaimEnvRaw === "dekker"
-    ? stealClaimEnvRaw
-    : undefined;
+  // An unrecognised discipline is an error, not a fallback: `cas-mask` and
+  // typos used to select Dekker silently and run under the wrong name.
+  const stealClaimEnv = stealClaimEnvRaw === undefined || stealClaimEnvRaw === ""
+    ? undefined
+    : assertStealClaim(stealClaimEnvRaw, "KNITTING_STEAL_CLAIM");
   // Select the stealing claim discipline, preferring the explicit option.
-  const stealClaim = host?.stealClaim ?? stealClaimEnv ?? "dekker";
+  const stealClaim = host?.stealClaim === undefined
+    ? stealClaimEnv ?? DEFAULT_STEAL_CLAIM
+    : assertStealClaim(host.stealClaim, "host.stealClaim");
   const usingCompiledWorker = resolvedWorker?.runtime === "compiled";
   if (resolvedWorker?.compiled !== undefined && !usingCompiledWorker) {
     throw new Error(

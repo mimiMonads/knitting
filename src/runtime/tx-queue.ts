@@ -102,6 +102,7 @@ export function createHostTxQueue({
     resetPendingState,
   } = lock;
   let inUsed = 0 | 0;
+  let closedReason: string | undefined;
   const resetSignal = abortSignals?.resetSignal;
   const nowTime = now ?? p_now;
 
@@ -270,6 +271,13 @@ export function createHostTxQueue({
     inUsed = 0 | 0;
   };
 
+  /** Permanently reject new calls after an unrecoverable shared-queue failure. */
+  const close = (reason: string) => {
+    if (closedReason !== undefined) return;
+    closedReason = reason;
+    rejectAll(reason);
+  };
+
   const flushToWorker = () => flushPending();
 
   const enqueueKnown = (task: QueueTask) => {
@@ -277,6 +285,7 @@ export function createHostTxQueue({
   };
 
   return {
+    close,
     rejectAll,
     hasPendingFrames,
     txIdle,
@@ -295,6 +304,7 @@ export function createHostTxQueue({
         abortSignals !== undefined;
 
       return (rawArgs: RawArguments) => {
+        if (closedReason !== undefined) return Promise.reject(closedReason);
         if (inUsed === queue.length) {
           const newSize = inUsed + 32;
           let current = queue.length;

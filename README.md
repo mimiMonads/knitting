@@ -474,6 +474,10 @@ Common options you might tweak:
 | `permission`                      | Runtime permission policy for workers.                                                                                            |
 | `host.dispatcher`                 | Experimental host dispatcher topology: `"per-thread"` or `"serial-channel"`.                                                      |
 | `host.steal`                      | Shared-submit work stealing for compatible multi-worker thread/process pools; enabled by default. Set `false` to use private submit lanes. |
+| `host.stealRegionLanes`           | Submit lanes claimed per stealing handshake (a power of two). Smaller regions are fairer for expensive tasks; wider regions amortise arbitration for cheap ones. |
+| `host.stealClaim`                 | Claim discipline: `"ticket"` (default) or `"dekker"`. Also settable with `KNITTING_STEAL_CLAIM`; an unrecognised value is rejected.  |
+| `host.doorbell`                   | Wait for completion notifications instead of polling an empty return mailbox; enabled by default where supported. Set `false` to force polling. |
+| `host.nativeDoorbell`             | Opt into Node's native `uv_async_t` completion bridge for thread workers. Off by default; ignored when `host.doorbell` is `false`. |
 | `debug`                           | Enable diagnostics (`host`, `globals`, `signals`, `imports`, `lifecycle`) or use `KNITTING_DEBUG`.                                |
 | `source`                          | Worker source override for advanced runtimes.                                                                                     |
 
@@ -529,6 +533,63 @@ protocol limit also fall back. Set `host: { steal: false }` or
 `KNITTING_STEAL=0` to opt out for uniformly cheap, low-concurrency workloads
 where arbitration has nothing to rebalance. `host: { steal: true }` or
 `KNITTING_STEAL=1` forces it for an otherwise compatible pool.
+
+Two options tune the arbitration itself, and both only apply to a stealing pool:
+
+- `host.stealRegionLanes` is how many submit lanes one handshake claims (a power
+  of two). **A region is a batch**: a wide region amortises arbitration best for
+  cheap tasks, but it also lets one worker claim work the others could have run
+  in parallel. Set it to `1` (or a small value) when per-task cost dominates
+  arbitration cost. The default is the widest region the lane budget allows.
+- `host.stealClaim` selects the claim discipline: `"ticket"` (the default)
+  claims in publication order from one monotonic counter; `"dekker"` gives each
+  consumer its own intent slot and requires at least one region per consumer.
+  Set `KNITTING_STEAL_CLAIM=ticket` or `KNITTING_STEAL_CLAIM=dekker` to select
+  it from the environment; the explicit option wins. **An unrecognised value is
+  an error, not a fallback**: a typo, or a `cas-mask` setting left over from
+  when that discipline existed, fails at pool creation rather than quietly
+  running a discipline you did not choose.
+
+The ticket discipline uses a 64-bit claim head and a wrapping 32-bit
+publication tail. The head CAS validates the tail snapshot: at most 32 tickets
+can be pending, so unsigned subtraction recovers the distance across a tail wrap
+without ever recycling a claim identity. `stealRegionLanes` caps the number of
+tickets one claim takes, and its default width is unchanged from Dekker's.
+Claims are ordered, but workers may decode or complete later claims first.
+Ticket identities never wrap: the queue fails closed if a claim would exhaust
+the signed 64-bit sequence.
+
+Ticket is the default while it is under evaluation, so ordinary runs exercise
+it; `"dekker"` remains explicitly selectable and is unchanged. The two differ in
+how they behave after a fatal fault. Dekker releases the region and lets a peer
+finish the rest. **Ticket fails closed**: a fatal decoder or worker failure
+closes the shared queue, rejects outstanding calls, and rejects every future
+call, so that pool has to be shut down and replaced. Claimed work is not
+replayed, because a failed decoder may already have consumed payload state.
+Ordinary task promise rejections stay task-local under both.
+
+### Completion doorbells
+
+By default the host waits to be told a result is ready instead of repeatedly
+polling an empty return mailbox. `host.doorbell` is enabled wherever a wake path
+exists, and each runtime uses the one it has:
+
+- Node and Bun thread workers use `Atomics.waitAsync`.
+- Deno uses a thread-safe FFI callback, because its `waitAsync` does not wake an
+  idle event loop. It is skipped when FFI permission is unavailable.
+- Process workers use a process-local completion transport, since Atomics
+  waiters are per-isolate and cannot be rung from another process.
+- Anything unsupported or denied falls back to the portable polling path.
+
+`host.nativeDoorbell: true` additionally opts Node thread workers into the
+native `uv_async_t` bridge from the `knitting_doorbell` addon. It is off by
+default, does not apply to process workers, and is ignored entirely when
+`host.doorbell` is `false`.
+
+Set `host: { doorbell: false }` to force polling — useful for controlled
+comparisons, and for pools that oversubscribe the machine. A doorbell only makes
+progress when the host gets scheduled, so once workers occupy every core a wake
+has to preempt one.
 
 ### Useful tuning options
 
