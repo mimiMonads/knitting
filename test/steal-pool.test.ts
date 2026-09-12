@@ -510,6 +510,39 @@ test("dekker stays explicitly selectable", async () => {
   }
 });
 
+/**
+ * Exercise the explicitly selected Dekker path under real backlog and worker
+ * contention. Mixed task ids keep responses from being matched by shape, and
+ * string payloads exercise the arena rather than only the header word.
+ */
+for (const threads of [2, 4]) {
+  test(`dekker drains a saturated pool with ${threads} workers`, async () => {
+    const pool = createPool({
+      threads,
+      host: { steal: true, stealClaim: "dekker" },
+    })({ double, concat });
+    try {
+      const TOTAL = 400;
+      const numbers = Array.from(
+        { length: TOTAL },
+        (_, i) => pool.call.double(i),
+      );
+      const strings = Array.from(
+        { length: TOTAL },
+        (_, i) => pool.call.concat(`v${i}`),
+      );
+      const [doubled, joined] = await withTimeout(
+        Promise.all([Promise.all(numbers), Promise.all(strings)]),
+        20_000,
+      );
+      assert.deepEqual(doubled, Array.from({ length: TOTAL }, (_, i) => i * 2));
+      assert.deepEqual(joined, Array.from({ length: TOTAL }, (_, i) => `v${i}!`));
+    } finally {
+      await pool.shutdown();
+    }
+  });
+}
+
 test("a stealing pool with no claim selected runs on the ticket default", async () => {
   const previous = process.env.KNITTING_STEAL_CLAIM;
   delete process.env.KNITTING_STEAL_CLAIM;

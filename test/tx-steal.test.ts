@@ -6,6 +6,7 @@ import {
   lock2,
   LOCK_SECTOR_BYTE_LENGTH,
   LockBound,
+  type StealClaimDiscipline,
   TaskIndex,
 } from "../src/memory/lock.ts";
 import "../src/memory/payloadCodec.ts";
@@ -21,7 +22,11 @@ import { createHostTxQueue } from "../src/runtime/tx-queue.ts";
  * response may arrive on any lane and still settle the right promise. That is
  * the "stealer owns the response" property.
  */
-const buildStealingPool = (workers: number, regionLanes: number) => {
+const buildStealingPool = (
+  workers: number,
+  regionLanes: number,
+  stealClaim: StealClaimDiscipline,
+) => {
   const carpet = () =>
     createLockControlCarpet({
       signalBytes: 0,
@@ -44,11 +49,18 @@ const buildStealingPool = (workers: number, regionLanes: number) => {
     ...submitShared,
     consumers: workers,
     regionLanes,
+    stealClaim,
   });
   const workerSubmit = Array.from(
     { length: workers },
     (_, consumerId) =>
-      lock2({ ...submitShared, consumers: workers, consumerId, regionLanes }),
+      lock2({
+        ...submitShared,
+        consumers: workers,
+        consumerId,
+        regionLanes,
+        stealClaim,
+      }),
   );
 
   // One private return region per worker.
@@ -105,11 +117,16 @@ const buildStealingPool = (workers: number, regionLanes: number) => {
   return { queue, runWorker, stalled };
 };
 
+for (const claim of ["dekker", "ticket"] as const) {
 for (const [workers, regionLanes] of [[2, 8], [3, 8], [4, 4]]) {
   test(
-    `shared submit + per-lane returns settle by task id (${workers} workers, g=${regionLanes})`,
+    `${claim} shared submit + per-lane returns settle by task id (${workers} workers, g=${regionLanes})`,
     async () => {
-      const { queue, runWorker } = buildStealingPool(workers, regionLanes);
+      const { queue, runWorker } = buildStealingPool(
+        workers,
+        regionLanes,
+        claim,
+      );
       const TOTAL = 300;
 
       const pending: Promise<unknown>[] = [];
@@ -146,25 +163,30 @@ for (const [workers, regionLanes] of [[2, 8], [3, 8], [4, 4]]) {
     },
   );
 }
+}
 
 // Fixed priority makes juniors withdraw for seniors, so the question is whether
 // an endpoint that simply stops pulling can wedge the pool. It cannot: priority
-// only defers to a senior that is actually holding intent, not to an idle one.
+// only defers to a peer that is actually holding intent, not to an idle one.
+// Dekker priority follows global consumer ID, so stalled sets include seniors
+// as well as juniors; idle endpoints never publish intent that blocks peers.
 // A worker halted mid-claim is covered in lock-steal.test.ts: the host-owned
 // liveness mask makes its stale intent ineligible after confirmed termination.
+for (const claim of ["dekker", "ticket"] as const) {
 for (
   const [workers, regionLanes, stall] of [
     [4, 4, [0]],
     [4, 4, [0, 1]],
-    [3, 8, [0, 1]], // only the most-junior endpoint left alive
+    [3, 8, [0, 1]],
   ] as const
 ) {
   test(
-    `stalled endpoints [${stall.join(",")}] do not wedge ${workers} workers`,
+    `${claim} stalled endpoints [${stall.join(",")}] do not wedge ${workers} workers`,
     async () => {
       const { queue, runWorker, stalled } = buildStealingPool(
         workers,
         regionLanes,
+        claim,
       );
       for (const id of stall) stalled.add(id);
 
@@ -199,4 +221,5 @@ for (
       assert.equal(queue.txIdle(), true, "queue drained");
     },
   );
+}
 }

@@ -7,6 +7,7 @@ import {
   LOCK_SECTOR_BYTE_LENGTH,
   LockBound,
   makeTask,
+  type StealClaimDiscipline,
 } from "../src/memory/lock.ts";
 // Side-effect import: registers the payload codec before any lock2() call.
 import "../src/memory/payloadCodec.ts";
@@ -29,7 +30,12 @@ import "../src/memory/payloadCodec.ts";
 const PAYLOAD_CHARS = 2048;
 const ARENA_BYTES = 1 << 16;
 
-const runArena = (total: number, consumers: number, regionLanes: number) => {
+const runArena = (
+  total: number,
+  consumers: number,
+  regionLanes: number,
+  stealClaim: StealClaimDiscipline = "ticket",
+) => {
   const controlLayout = createLockControlCarpet({
     signalBytes: 0,
     abortBytes: 0,
@@ -46,11 +52,11 @@ const runArena = (total: number, consumers: number, regionLanes: number) => {
   };
   const steal = consumers > 1;
   const producer = steal
-    ? lock2({ ...shared, consumers, regionLanes })
+    ? lock2({ ...shared, consumers, regionLanes, stealClaim })
     : lock2({ ...shared });
   const endpoints = Array.from({ length: consumers }, (_, consumerId) =>
     steal
-      ? lock2({ ...shared, consumers, consumerId, regionLanes })
+      ? lock2({ ...shared, consumers, consumerId, regionLanes, stealClaim })
       : lock2({ ...shared }));
 
   // Raw lock2 instances have no owner to settle deferred payloads; these values
@@ -105,15 +111,19 @@ for (const total of [80, 400]) {
   });
 }
 
+// Exercise both ownership protocols: payload lifetimes must survive repeated
+// slot reuse and arena pressure regardless of which claimant drains a region.
+for (const claim of ["dekker", "ticket"] as const) {
 for (const [consumers, regionLanes] of [[2, 8], [3, 8], [4, 4]]) {
   test(
-    `stealing recycles a pressured payload arena (${consumers} consumers, g=${regionLanes})`,
+    `${claim} stealing recycles a pressured payload arena (${consumers} consumers, g=${regionLanes})`,
     () => {
-      const result = runArena(400, consumers, regionLanes);
+      const result = runArena(400, consumers, regionLanes, claim);
       assert.equal(result.published, 400, "producer did not drain the arena");
       assert.equal(result.drained, 400);
       assert.equal(result.duplicates, 0, "payload region was aliased");
       assert.equal(result.unique, 400, "payloads were lost");
     },
   );
+}
 }

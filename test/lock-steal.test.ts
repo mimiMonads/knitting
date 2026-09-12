@@ -15,6 +15,7 @@ import {
   STEAL_TICKET_FAILED,
   type StealClaimDiscipline,
   STEAL_WANT_SLOT_OFFSET_U32,
+  STEAL_LIVE_SLOT_OFFSET_U32,
 } from "../src/memory/lock.ts";
 import { toSharedBufferRegion } from "../src/common/shared-buffer-region.ts";
 // Side-effect import: registers the payload codec before any lock2() call.
@@ -129,6 +130,320 @@ test("stealing rejects a region layout with too few regions", () => {
   );
 });
 
+// Baseline Dekker fixtures: seniority is global consumer ID.
+const wantU32 = (consumer: number): number =>
+  consumer * HEADER_SLOT_STRIDE_U32 + LockBound.header +
+  STEAL_WANT_SLOT_OFFSET_U32;
+const liveU32 = LockBound.header + STEAL_LIVE_SLOT_OFFSET_U32;
+
+type TracedOp = { op: string; word: string };
+
+type AtomicView = { byteOffset: number; BYTES_PER_ELEMENT: number };
+
+/**
+ * Build endpoints whose shared-memory operations can be recorded.
+ *
+ * Cost and safety both live in operations that leave nothing behind: an intent
+ * published and cleared inside one call reads as zero either way, so counting
+ * is the only way to assert "no `WANT` was read" or "exactly two arbitration
+ * loads". `lock2` copies `Atomics.load`/`store` into locals when it is built,
+ * so the recorder has to be installed around construction; the global is
+ * restored immediately afterwards and only these endpoints keep the
+ * instrumented copies. `trace()` gates what is actually logged, and everything
+ * here is synchronous, so no unrelated test can observe the patch.
+ */
+const buildTracedStealLock = (
+  consumers: number,
+  regionLanes: number,
+  onOp?: (op: TracedOp) => void,
+) => {
+  const ops: TracedOp[] = [];
+  let recording = false;
+  const original = { load: Atomics.load, store: Atomics.store };
+  let headersByteOffset = 0;
+  let headersWords = 0;
+  const word = (view: AtomicView, index: number): string => {
+    const u32 = (view.byteOffset - headersByteOffset) / 4 + index;
+    if (view.byteOffset < headersByteOffset || u32 >= headersWords) {
+      return "bits";
+    }
+    if (u32 === liveU32) return "live";
+    for (let c = 0; c < consumers; c++) {
+      if (u32 === wantU32(c)) return `want${c}`;
+    }
+    return `word${u32}`;
+  };
+  const note = (op: string, view: AtomicView, index: number) => {
+    if (!recording) return;
+    const traced = { op, word: word(view, index) };
+    ops.push(traced);
+    // Fires *before* the operation completes, which is the only way a test can
+    // stand in for a peer that changes state mid-handshake.
+    if (onOp !== undefined) onOp(traced);
+  };
+
+  let built: ReturnType<typeof buildStealLock>;
+  try {
+    Atomics.load = ((view: AtomicView, index: number) => {
+      note("load", view, index);
+      return (original.load as unknown as (v: AtomicView, i: number) => number)(
+        view,
+        index,
+      );
+    }) as unknown as typeof Atomics.load;
+    Atomics.store = ((view: AtomicView, index: number, value: number) => {
+      note("store", view, index);
+      return (original.store as unknown as (
+        v: AtomicView,
+        i: number,
+        x: number,
+      ) => number)(view, index, value);
+    }) as unknown as typeof Atomics.store;
+    built = buildStealLock(consumers, regionLanes, "dekker");
+  } finally {
+    Atomics.load = original.load;
+    Atomics.store = original.store;
+  }
+  headersByteOffset = built.headers.byteOffset;
+  headersWords = built.headers.length;
+
+  return {
+    ...built,
+    trace: <T>(body: () => T): { result: T; ops: TracedOp[] } => {
+      ops.length = 0;
+      recording = true;
+      try {
+        return { result: body(), ops: [...ops] };
+      } finally {
+        recording = false;
+      }
+    },
+  };
+};
+
+/** Endpoints that run `onDecodeAt` once per decoded lane, before the decode. */
+const buildHookedStealLock = (
+  consumers: number,
+  regionLanes: number,
+  onDecodeAt: (consumerId: number, nth: number) => void,
+) => {
+  const controlLayout = createLockControlCarpet({
+    signalBytes: 0,
+    abortBytes: 0,
+    lockSectorBytes: LOCK_SECTOR_BYTE_LENGTH,
+    headerSlotStrideU32: HEADER_SLOT_STRIDE_U32,
+    slotCount: LockBound.slots,
+    headerLayout: "split",
+  });
+  const shared = {
+    LockBoundSector: controlLayout.lock.lockSector,
+    headers: controlLayout.lock.headers,
+    payload: new SharedArrayBuffer(1 << 16),
+    payloadSector: controlLayout.lock.payloadSector,
+  };
+  const headersRegion = toSharedBufferRegion(shared.headers);
+  const seen: number[] = Array.from({ length: consumers }, () => 0);
+  return {
+    shared,
+    producer: lock2({
+      ...shared,
+      consumers,
+      regionLanes,
+      stealClaim: "dekker",
+    }),
+    consumers: Array.from({ length: consumers }, (_, consumerId) =>
+      lock2({
+        ...shared,
+        consumers,
+        consumerId,
+        regionLanes,
+        stealClaim: "dekker",
+        recycleList: {
+          shiftNoClear: () => {
+            seen[consumerId] = seen[consumerId]! + 1;
+            onDecodeAt(consumerId, seen[consumerId]!);
+            return undefined;
+          },
+        } as never,
+      })),
+    headers: new Int32Array(
+      headersRegion.sab,
+      headersRegion.byteOffset,
+      headersRegion.byteLength >>> 2,
+    ),
+  };
+};
+
+/** The operations a call performed before it declared any intent. */
+const selectionOps = (ops: TracedOp[], self: number): TracedOp[] => {
+  const declared = ops.findIndex((op) =>
+    op.op === "store" && op.word === `want${self}`
+  );
+  return declared < 0 ? ops : ops.slice(0, declared);
+};
+
+const drainValues = (
+  endpoint: {
+    resolved: { toArray: () => { value: unknown }[]; clear: () => void };
+  },
+): unknown[] => {
+  const values = endpoint.resolved.toArray().map((task) => task.value);
+  endpoint.resolved.clear();
+  return values;
+};
+
+const publish = (
+  producer: { encode: (task: ReturnType<typeof makeTask>) => boolean },
+  count: number,
+  from = 0,
+) => {
+  for (let i = 0; i < count; i++) {
+    assert.equal(
+      producer.encode(makeValueTask(from + i)),
+      true,
+      `publish ${from + i}`,
+    );
+  }
+};
+
+test("a globally empty poll costs exactly the two arbitration loads", () => {
+  const { consumers: endpoints, trace } = buildTracedStealLock(3, 4);
+  const { result, ops } = trace(() => endpoints[1]!.decode());
+  assert.equal(result, false);
+  assert.deepEqual(ops, [
+    { op: "load", word: "bits" },
+    { op: "load", word: "bits" },
+  ]);
+});
+
+test("Dekker surveys every live peer before declaring intent", () => {
+  const built = buildTracedStealLock(4, 4);
+  publish(built.producer, 4);
+  const { result, ops } = built.trace(() => built.consumers[2]!.decode());
+  assert.equal(result, true);
+  assert.deepEqual(
+    selectionOps(ops, 2).filter((op) => op.word.startsWith("want")),
+    [0, 1, 3].map((id) => ({ op: "load", word: `want${id}` })),
+  );
+  assert.deepEqual(drainValues(built.consumers[2]!), [0, 1, 2, 3]);
+});
+
+test("Dekker rechecks global-ID seniors after declaring intent", () => {
+  let declared = false;
+  const built = buildTracedStealLock(3, 4, (op) => {
+    if (declared || op.op !== "store" || op.word !== "want2") return;
+    declared = true;
+    // A concurrent senior declares after selection, before our post-store scan.
+    Atomics.store(built.headers, wantU32(1), 1 << 7);
+  });
+  publish(built.producer, 4);
+  const { result, ops } = built.trace(() => built.consumers[2]!.decode());
+  assert.equal(result, false);
+  const declaration = ops.findIndex((op) =>
+    op.op === "store" && op.word === "want2"
+  );
+  assert.equal(declaration >= 0, true);
+  assert.deepEqual(
+    ops.slice(declaration + 1).filter((op) =>
+      op.op === "load" && op.word.startsWith("want")
+    ),
+    [0, 1].map((id) => ({ op: "load", word: `want${id}` })),
+  );
+  assert.equal(built.consumers[2]!.resolved.isEmpty, true);
+  assert.equal(Atomics.load(built.headers, wantU32(2)), 0);
+});
+
+for (const exit of ["release", "confirmed death"] as const) {
+  test(`Dekker waits past empty juniors until a distant junior's ${exit}`, () => {
+    let reads = 0;
+    const built = buildTracedStealLock(3, 4, (op) => {
+      if (op.op !== "load" || op.word !== "want2" || ++reads !== 4) return;
+      assert.equal(built.consumers[0]!.resolved.isEmpty, true);
+      if (exit === "release") Atomics.store(built.headers, wantU32(2), 0);
+      else built.producer.deactivateStealConsumer(2);
+    });
+    publish(built.producer, 4);
+    // Junior 1 is empty; junior 2 already holds the only pending region.
+    Atomics.store(built.headers, wantU32(2), 1 << 7);
+    const { result } = built.trace(() => built.consumers[0]!.decode());
+    assert.equal(result, true);
+    assert.equal(reads >= 4, true, "the senior actually waited");
+    assert.deepEqual(drainValues(built.consumers[0]!), [0, 1, 2, 3]);
+    assert.equal(Atomics.load(built.headers, wantU32(0)), 0);
+    assert.equal(
+      Atomics.load(built.headers, wantU32(2)),
+      exit === "release" ? 0 : 1 << 7,
+    );
+  });
+}
+
+for (const consumerId of [0, 1]) {
+  test(`a claim by consumer ${consumerId} decodes one snapshot`, () => {
+    let next = 100;
+    const built = buildHookedStealLock(2, 16, (id, nth) => {
+      if (id !== consumerId || nth !== 1) return;
+      // Region 1 still has free lanes, so this refill lands in the region the
+      // claim is holding right now.
+      for (let i = 0; i < 4; i++) {
+        assert.equal(built.producer.encode(makeValueTask(next++)), true);
+      }
+    });
+    publish(built.producer, 4);
+
+    assert.equal(built.consumers[consumerId]!.decode(), true);
+    assert.deepEqual(drainValues(built.consumers[consumerId]!), [0, 1, 2, 3]);
+    assert.equal(built.consumers[consumerId]!.decode(), true);
+    assert.deepEqual(
+      drainValues(built.consumers[consumerId]!),
+      [100, 101, 102, 103],
+    );
+  });
+}
+
+test("no new claimant enters a region while a claim is in progress", () => {
+  let attempts = 0;
+  const built = buildHookedStealLock(2, 16, (consumerId, nth) => {
+    // Consumer 0 holds the region. Its junior must not enter mid-decode.
+    if (consumerId !== 0 || nth !== 2) return;
+    attempts++;
+    assert.equal(built.consumers[1]!.decode(), false);
+    assert.equal(built.consumers[1]!.resolved.isEmpty, true);
+  });
+  publish(built.producer, 4);
+
+  assert.equal(built.consumers[0]!.decode(), true);
+  assert.equal(attempts, 1, "the junior really did try mid-claim");
+  assert.deepEqual(drainValues(built.consumers[0]!), [0, 1, 2, 3]);
+});
+
+test("a claim delivers binary and string payloads intact", () => {
+  const { producer, consumers: endpoints } = buildStealLock(2, 16, "dekker");
+  const values: unknown[] = [
+    "task-0",
+    new Uint8Array([1, 2, 3, 4]),
+    `task-${"x".repeat(2048)}`,
+    new Uint8Array([9, 8, 7]),
+  ];
+  for (const value of values) {
+    assert.equal(producer.encode(makeValueTask(value)), true);
+  }
+
+  assert.equal(endpoints[1]!.decode(), true);
+  const drained = drainValues(endpoints[1]!);
+  assert.equal(drained.length, values.length);
+  for (let i = 0; i < values.length; i++) {
+    const expected = values[i];
+    if (expected instanceof Uint8Array) {
+      assert.deepEqual(
+        Array.from(drained[i] as Uint8Array),
+        Array.from(expected),
+      );
+    } else {
+      assert.equal(drained[i], expected);
+    }
+  }
+});
+
 test("a terminated consumer's stale intent cannot block its region", () => {
   const { producer, consumers, headers } = buildStealLock(2, 8);
   assert.equal(producer.encode(makeValueTask(42)), true);
@@ -148,9 +463,11 @@ test("a terminated consumer's stale intent cannot block its region", () => {
 });
 
 test("single consumer keeps the classic decode path", () => {
-  const { producer, consumers } = buildStealLock(2, 8);
-  assert.equal(typeof producer.decode, "function");
-  assert.equal(consumers.length, 2);
+  const { producer, consumers } = buildStealLock(1, 8);
+  assert.equal(producer.encode(makeValueTask(42)), true);
+  assert.equal(consumers[0]!.decode(), true);
+  assert.deepEqual(drainValues(consumers[0]!), [42]);
+  assert.equal(consumers[0]!.decode(), false);
 });
 
 /**
