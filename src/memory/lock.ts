@@ -546,6 +546,7 @@ export const lock2 = ({
   stealClaim,
   notifyOnHostPublish,
   notifyHostPublish,
+  traceClaim,
 }: {
   headers?: SharedBufferSource;
   headerSlotStrideU32?: number;
@@ -585,6 +586,11 @@ export const lock2 = ({
   notifyOnHostPublish?: boolean;
   /** Runtime-native host wake used when Atomics.waitAsync cannot wake it. */
   notifyHostPublish?: () => void;
+  /**
+   * Debug sink for steal claims. Only consulted when `decode` is chosen, so an
+   * untraced lock returns the bare claim function; see {@link traceStealClaims}.
+   */
+  traceClaim?: (message: string) => void;
 }) => {
   // Layout within `lockSectorRegion`:
   // - hostBits starts at byte 0
@@ -1278,6 +1284,8 @@ export const lock2 = ({
       if (done !== 0) Atomics.xor(workerBits, 0, done);
       a_store(stealView, stealWantIndex[stealId]!, 0);
       stealCursor = stealHome;
+      // Maybe in the future
+      // stealCursor = (region + 1) % stealRegions;
     }
     return true;
   };
@@ -1345,6 +1353,73 @@ export const lock2 = ({
       return true;
     }
     return false;
+  };
+
+  /**
+   * Debug-only wrapper around a steal claim, for the `steal` namespace.
+   *
+   * It is selected once, when `decode` is chosen below, so an untraced lock
+   * hands out the bare claim function: no flag test, no extra load, no change
+   * to the claim path. Everything reported is read from outside the claim,
+   * before and after it, so the wrapper cannot perturb the protocol either.
+   *
+   * - `lanes`: in ticket order for `ticket`, ascending for `dekker`.
+   * - `head`: ticket head before and after. `peers` is how many tickets other
+   *   consumers took in between; 0 means `head` spans exactly this claim.
+   * - `region`/`home`: `dekker` only; `steal` marks a region off this
+   *   consumer's home.
+   * - `lost`: polls since the last claim that saw work and still came back
+   *   empty, i.e. a peer got there first.
+   */
+  const traceStealClaims = (
+    claim: () => boolean,
+    trace: (message: string) => void,
+  ) => {
+    let lost = 0;
+    return (): boolean => {
+      const before = LastWorker;
+      let head = 0n;
+      let visible = 0;
+      if (stealTicket) {
+        head = Atomics.load(stealTicketView!, stealTicketHead64);
+        if (head !== STEAL_TICKET_FAILED) {
+          visible = (a_load(stealTicketTailWord!, 0) -
+            Number(head & STEAL_TICKET_LOW_MASK)) >>> 0;
+        }
+      } else {
+        visible = (a_load(hostBits, 0) ^ a_load(workerBits, 0)) | 0;
+      }
+
+      if (!claim()) {
+        if (visible !== 0) lost++;
+        return false;
+      }
+
+      const taken = (LastWorker ^ before) | 0;
+      let count = 0;
+      for (let bits = taken; bits !== 0; bits &= bits - 1) count++;
+
+      let message: string;
+      if (stealTicket) {
+        const after = Atomics.load(stealTicketView!, stealTicketHead64);
+        const lanes: number[] = [];
+        for (let i = 0; i < count; i++) lanes.push(stealTicketSlots[i]!);
+        message = `claim count=${count} lanes=${lanes.join(",")}` +
+          ` head=${head}→${after} peers=${Number(after - head) - count}`;
+      } else {
+        const lanes: number[] = [];
+        for (let lane = 0; lane < LockBound.slots; lane++) {
+          if ((taken & (1 << lane)) !== 0) lanes.push(lane);
+        }
+        const region = (lanes[0]! / stealRegionLanes) | 0;
+        message = `claim count=${count} lanes=${lanes.join(",")}` +
+          ` region=${region} home=${stealHome}` +
+          (region === stealHome ? "" : " steal");
+      }
+      trace(`${message} lost=${lost}`);
+      lost = 0;
+      return true;
+    };
   };
 
   const resolveHost = ({
@@ -1613,10 +1688,14 @@ export const lock2 = ({
     encodeAll,
     publish,
     flushPending,
+    // Chosen once: an untraced lock gets the claim function itself.
     decode: stealEnabled
-      ? (stealTicket
-        ? decodeStealTicket
-        : decodeSteal)
+      ? (traceClaim === undefined
+        ? (stealTicket ? decodeStealTicket : decodeSteal)
+        : traceStealClaims(
+          stealTicket ? decodeStealTicket : decodeSteal,
+          traceClaim,
+        ))
       : decode,
     hasSpace,
     resolved,

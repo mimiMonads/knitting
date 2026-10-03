@@ -31,6 +31,9 @@ const buildStealLock = (
   consumers: number,
   regionLanes: number,
   stealClaim: StealClaimDiscipline = "dekker",
+  consumerOptions: (
+    consumerId: number,
+  ) => Partial<Parameters<typeof lock2>[0]> = () => ({}),
 ) => {
   const controlLayout = createLockControlCarpet({
     signalBytes: 0,
@@ -53,7 +56,14 @@ const buildStealLock = (
     consumers: Array.from(
       { length: consumers },
       (_, consumerId) =>
-        lock2({ ...shared, consumers, consumerId, regionLanes, stealClaim }),
+        lock2({
+          ...shared,
+          consumers,
+          consumerId,
+          regionLanes,
+          stealClaim,
+          ...consumerOptions(consumerId),
+        }),
     ),
     headers: new Int32Array(
       headersRegion.sab,
@@ -985,4 +995,107 @@ test("the default claim discipline is ticket", () => {
     () => lock2({ ...shared, consumers: 4, regionLanes: 32, stealClaim: "dekker" }),
     RangeError,
   );
+});
+
+// --- `steal` debug namespace ------------------------------------------------
+
+/** Runs `hook` inside the first lane decode of this consumer's next claim. */
+const midClaimHook = () => {
+  let hook: (() => void) | undefined;
+  return {
+    arm: (body: () => void) => {
+      hook = body;
+    },
+    recycleList: {
+      shiftNoClear: () => {
+        const body = hook;
+        hook = undefined;
+        body?.();
+        return undefined;
+      },
+    } as never,
+  };
+};
+
+test("an untraced steal lock hands out the bare claim function", () => {
+  // The zero-cost promise of the `steal` namespace: tracing is chosen when the
+  // lock is built, so without it `decode` is the claim itself, not a wrapper
+  // that tests a flag on every poll.
+  for (const claim of ["dekker", "ticket"] as const) {
+    const bare = claim === "ticket" ? "decodeStealTicket" : "decodeSteal";
+    const untraced = buildStealLock(2, 8, claim);
+    assert.equal(untraced.consumers[0]!.decode.name, bare);
+    const traced = buildStealLock(2, 8, claim, () => ({ traceClaim: () => {} }));
+    assert.notEqual(traced.consumers[0]!.decode.name, bare);
+  }
+});
+
+test("ticket trace reports the tickets it claimed and the peers in between", () => {
+  const lines: string[] = [];
+  const mid = midClaimHook();
+  const { producer, consumers } = buildStealLock(
+    2,
+    4,
+    "ticket",
+    (id) =>
+      id === 1
+        ? { traceClaim: (message) => lines.push(message), recycleList: mid.recycleList }
+        : {},
+  );
+
+  publish(producer, 3);
+  assert.equal(consumers[1]!.decode(), true);
+  const first = lines[0]!.match(
+    /^claim count=3 lanes=(\d+),(\d+),(\d+) head=0→3 peers=0 lost=0$/,
+  );
+  assert.ok(first, lines[0]);
+  assert.equal(new Set(first!.slice(1)).size, 3, "three distinct lanes");
+  drainValues(consumers[1]!);
+
+  // A peer claims the next batch after this consumer's CAS but before it reads
+  // the head again, so the head moves 3→11 while this claim owns only 4.
+  publish(producer, 8, 3);
+  mid.arm(() => assert.equal(consumers[0]!.decode(), true));
+  assert.equal(consumers[1]!.decode(), true);
+  assert.match(lines[1]!, /^claim count=4 lanes=[\d,]+ head=3→11 peers=4 lost=0$/);
+});
+
+test("Dekker trace marks off-home claims as steals and counts lost races", () => {
+  const lines: string[] = [];
+  const mid = midClaimHook();
+  const { producer, consumers } = buildStealLock(
+    2,
+    8,
+    "dekker",
+    (id) =>
+      id === 0
+        ? { recycleList: mid.recycleList }
+        : { traceClaim: (message) => lines.push(message) },
+  );
+
+  // Consumer 1 polls while senior consumer 0 holds the only pending region:
+  // work is visible, the poll comes back empty, and that is a lost race.
+  publish(producer, 4);
+  let peerPoll: boolean | undefined;
+  mid.arm(() => {
+    peerPoll = consumers[1]!.decode();
+  });
+  assert.equal(consumers[0]!.decode(), true);
+  assert.equal(peerPoll, false);
+  assert.equal(lines.length, 0, "a lost race is not a claim");
+  drainValues(consumers[0]!);
+
+  publish(producer, 1, 4);
+  assert.equal(consumers[1]!.decode(), true);
+  const line = lines[0]!.match(
+    /^claim count=1 lanes=(\d+) region=(\d+) home=2( steal)? lost=1$/,
+  );
+  assert.ok(line, lines[0]);
+  assert.equal(Number(line![2]), (Number(line![1]) / 8) | 0, "region of the lane");
+  assert.equal(line![3] === " steal", line![2] !== "2", "steal iff off home");
+
+  // The count resets once reported.
+  publish(producer, 1, 5);
+  assert.equal(consumers[1]!.decode(), true);
+  assert.match(lines[1]!, / lost=0$/);
 });

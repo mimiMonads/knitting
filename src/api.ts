@@ -94,12 +94,15 @@ const hasDebugNamespace = (
 
 const createHostDebug = (
   namespaces: ReadonlySet<string>,
+  epoch: number,
 ): HostDebug | undefined => {
   const enabled = (namespace: string): boolean =>
     hasDebugNamespace(namespaces, namespace);
   if (!enabled("host")) return undefined;
 
-  const base = performance.now();
+  // Same rebase the workers do (see debug/handle.ts), so host and worker lines
+  // share one zero.
+  const base = epoch - performance.timeOrigin;
   const tag = `host·${RUNTIME}`;
   const log = (message: string): void => {
     const elapsed = (performance.now() - base).toFixed(1);
@@ -446,8 +449,14 @@ export const createPool: CreatePoolFactory = ({
   let debugNamespaces: Set<string> | undefined;
   const getDebugNamespaces = (): Set<string> =>
     debugNamespaces ??= resolveDebugNamespaces(debug);
-  const hostDebug = debugRequested
-    ? createHostDebug(getDebugNamespaces())
+  // Absolute (Unix-epoch ms) zero for every debug clock in this pool. Raw
+  // `performance.now()` is relative to each thread/process's own time origin;
+  // `timeOrigin + now()` is not, so workers can rebase onto this value.
+  const debugEpoch = debugRequested
+    ? performance.timeOrigin + performance.now()
+    : undefined;
+  const hostDebug = debugEpoch !== undefined
+    ? createHostDebug(getDebugNamespaces(), debugEpoch)
     : undefined;
   const debugEnabled = (namespace: string): boolean =>
     debugRequested && hasDebugNamespace(getDebugNamespaces(), namespace);
@@ -488,6 +497,7 @@ export const createPool: CreatePoolFactory = ({
     return ({
       shutdown: mainThreadOnlyProxy,
       [Symbol.dispose]: () => {},
+      [Symbol.asyncDispose]: async () => {},
       call: mainThreadOnlyProxy,
     } as Pool<T>);
   }
@@ -775,6 +785,7 @@ export const createPool: CreatePoolFactory = ({
       at,
       thread,
       debug,
+      debugEpoch,
       hostDebug: hostDebug?.log,
       totalNumberOfThread,
       // Worker count without the inline lane. The inliner runs on the host
@@ -783,6 +794,7 @@ export const createPool: CreatePoolFactory = ({
       source,
       workerOptions: resolvedWorker,
       workerExecArgv: execArgv,
+      requestedExecArgv: workerExecArgv,
       host,
       payload,
       sharedBytesEnabled,
@@ -1202,6 +1214,7 @@ export const createPool: CreatePoolFactory = ({
   return {
     shutdown: shutdownWithDelay,
     [Symbol.dispose]: disposePool,
+    [Symbol.asyncDispose]: () => shutdownWithDelay(),
     call: Object.fromEntries(callEntries) as unknown as FunctionMapType<T>,
     // Only the shared submit queue has a single arena to build arguments in.
     sharedArgBytes: createHostArgAllocator(
@@ -1228,6 +1241,7 @@ const createSingleTaskPool = <
     call: pool.call[SINGLE_TASK_KEY] as SingleTaskPool<A, B, AS>["call"],
     shutdown: pool.shutdown,
     [Symbol.dispose]: pool[Symbol.dispose],
+    [Symbol.asyncDispose]: pool[Symbol.asyncDispose],
   };
 };
 

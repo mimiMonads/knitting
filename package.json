@@ -102,7 +102,12 @@
     "bun": ">=1.0.0"
   },
   "peerDependencies": {
-    "typescript": "^5.2.0"
+    "typescript": ">=5.2.0"
+  },
+  "peerDependenciesMeta": {
+    "typescript": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@types/bun": "latest",

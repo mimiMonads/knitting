@@ -1174,7 +1174,21 @@ const spawnNodeHostedProcessWorker = ({
     child.on("message", events.emitMessage);
     queueMicrotask(() => child.send?.(bootPayload));
   }
-  child.on("error", events.emitError);
+  child.on("error", (error: unknown) => {
+    if ((error as { code?: unknown })?.code !== "ENOENT") {
+      events.emitError(error);
+      return;
+    }
+    // A bare "spawn deno ENOENT" does not say which option chose the binary.
+    events.emitError(
+      new Error(
+        `process worker binary "${command}" was not found (spawn ENOENT). ` +
+          `Install ${processRuntime} or set worker.processRuntime to "node", ` +
+          `"deno" or "bun"; it defaults to "deno".`,
+        { cause: error },
+      ),
+    );
+  });
   let resolveExit: () => void = () => {};
   const exited = new Promise<void>((resolve) => {
     resolveExit = resolve;

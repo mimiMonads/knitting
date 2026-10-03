@@ -69,6 +69,30 @@ export const toWorkerCompatExecArgv = (
   return compat.length > 0 ? compat : undefined;
 };
 
+const droppedExecArgvWarnings = new Set<string>();
+
+/**
+ * Warn once per flag set when a `workerExecArgv` flag the caller asked for did
+ * not reach the worker thread, instead of dropping it silently.
+ */
+export const warnDroppedWorkerExecArgv = (
+  requested: string[] | undefined,
+  applied: string[] | undefined,
+): void => {
+  if (!requested || requested.length === 0) return;
+  const kept = new Set(applied ?? []);
+  const dropped = requested.filter((flag) => !kept.has(flag));
+  if (dropped.length === 0) return;
+  const key = dropped.join(" ");
+  if (droppedExecArgvWarnings.has(key)) return;
+  droppedExecArgvWarnings.add(key);
+  console.warn(
+    `knitting: workerExecArgv ${dropped.join(", ")} cannot be applied to a ` +
+      `worker thread and was dropped. V8 and process-wide flags must be ` +
+      `passed to the host process instead.`,
+  );
+};
+
 const isPlainRecord = (value: unknown): value is Record<string, unknown> => {
   if (value === null || typeof value !== "object") return false;
   const prototype = Object.getPrototypeOf(value);

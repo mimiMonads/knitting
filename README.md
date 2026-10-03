@@ -104,6 +104,9 @@ if (isMain) {
 }
 ```
 
+The examples use `using`, which Node.js 22 cannot parse: there, write
+`const pool = ...` and call `await pool.shutdown()` when you are done.
+
 Use the `isMain` guard when a module can be loaded by both the host and its
 workers. Export tasks at module scope so Knitting can find them, then create and
 use the pool only from the main program.
@@ -153,8 +156,8 @@ if (isMain) {
 ```
 
 `using` starts pool shutdown when the scope exits and does not wait for it. Use
-`await pool.shutdown()` when you need to wait for shutdown or pass a shutdown
-delay.
+`await using pool = ...` or `await pool.shutdown()` when you need to wait for
+shutdown; only `shutdown()` takes a shutdown delay.
 
 Deno 2+, Bun 1+, and Node.js 24+ parse `using` natively. Node.js 22 does not: it
 has `Symbol.dispose`, but the declaration itself is a `SyntaxError`, and Node's
@@ -478,7 +481,7 @@ Common options you might tweak:
 | `host.stealClaim`                 | Claim discipline: `"ticket"` (default) or `"dekker"`. Also settable with `KNITTING_STEAL_CLAIM`; an unrecognised value is rejected.  |
 | `host.doorbell`                   | Wait for completion notifications instead of polling an empty return mailbox; enabled by default where supported. Set `false` to force polling. |
 | `host.nativeDoorbell`             | Opt into Node's native `uv_async_t` completion bridge for thread workers. Off by default; ignored when `host.doorbell` is `false`. |
-| `debug`                           | Enable diagnostics (`host`, `globals`, `signals`, `imports`, `lifecycle`) or use `KNITTING_DEBUG`.                                |
+| `debug`                           | Enable diagnostics (`host`, `globals`, `signals`, `imports`, `lifecycle`, `steal`) or use `KNITTING_DEBUG`.                       |
 | `source`                          | Worker source override for advanced runtimes.                                                                                     |
 
 ### Worker bootstrap
@@ -943,6 +946,13 @@ Knitting aims to make the safer path the default:
 - Workers can be guarded with `worker.hardTimeoutMs`.
 - Shutdown can stop immediately or wait for submitted work with
   `worker.resolveAfterFinishingAll`.
+
+When Knitting itself rejects a call, the reason is a `KnittingError` with a
+`code`: `KNT_ERROR_0`–`KNT_ERROR_3` for an argument the host cannot encode, and
+`WORKER_STARTUP_FAILED`, `WORKER_CRASHED`, `WORKER_EXITED` or `THREAD_CLOSED`
+when the worker behind the call is gone. Calls to a dead worker reject at once
+instead of staying pending. A return value the worker cannot encode still
+rejects with the bare `KNT_ERROR_n` string.
 
 That said, workers still run code. If you treat tasks like plugins, keep
 permissions tight, keep named shared-memory names hard to guess, and avoid

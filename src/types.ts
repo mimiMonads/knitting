@@ -49,6 +49,12 @@ type WorkerData = {
   thread: number;
   totalNumberOfThread: number;
   debug?: DebugOptions;
+  /**
+   * Host's debug zero as `performance.timeOrigin + performance.now()` (Unix
+   * epoch ms), so worker debug clocks line up with the host's. Set only when
+   * debug is requested.
+   */
+  debugEpoch?: number;
   startAt: number;
   workerOptions?: WorkerSettings;
   at: number[];
@@ -316,6 +322,8 @@ type SingleTaskPool<
   shutdown: (delayMs?: number) => Promise<void>;
   /** Starts shutdown at scope exit. Use `shutdown()` when you must await it. */
   [Symbol.dispose]: () => void;
+  /** `await using` awaits worker teardown at scope exit. */
+  [Symbol.asyncDispose]: () => Promise<void>;
 };
 
 type Pool<T extends Record<string, TaskLike<any> | TaskFunctionLike>> = {
@@ -323,6 +331,8 @@ type Pool<T extends Record<string, TaskLike<any> | TaskFunctionLike>> = {
   shutdown: (delayMs?: number) => Promise<void>;
   /** Starts shutdown at scope exit. Use `shutdown()` when you must await it. */
   [Symbol.dispose]: () => void;
+  /** `await using` awaits worker teardown at scope exit. */
+  [Symbol.asyncDispose]: () => Promise<void>;
   /**
    * Typed task callers. Each call accepts the task input or a native Promise.
    * Thrown errors/rejections reject here as Error objects with cause chains.
@@ -378,8 +388,14 @@ type Balancer =
     strategy?: BalancerStrategy;
   };
 
-/** Debug namespaces for host setup, worker state, imports, globals, and lifecycle. */
-type DebugNamespace = "host" | "globals" | "signals" | "imports" | "lifecycle";
+/** Debug namespaces for host setup, worker state, imports, globals, lifecycle, and steal claims. */
+type DebugNamespace =
+  | "host"
+  | "globals"
+  | "signals"
+  | "imports"
+  | "lifecycle"
+  | "steal";
 
 type DebugFlags = { [Namespace in DebugNamespace]?: boolean };
 
@@ -597,14 +613,18 @@ type CreatePool = {
    */
   host?: DispatcherSettings;
   /**
-   * Extra Node.js execArgv flags for worker threads (e.g. ["--expose-gc"]).
+   * Extra Node.js execArgv flags for worker threads (e.g. ["--no-warnings"]).
    * Defaults to process.execArgv plus "--expose-gc" when allowed.
+   *
+   * Node rejects V8 and process-wide flags (`--expose-gc`,
+   * `--max-old-space-size`, ...) for a worker thread; a flag listed here that
+   * cannot be applied is dropped with a warning.
    */
   workerExecArgv?: string[];
   /**
    * Runtime permission protocol.
-   * Omit to use strict defaults with `allowImport: true`; worker console is
-   * quiet unless `permission: { console: true }`.
+   * Omit to use strict defaults with `allowImport: true`. `console` is
+   * accepted but not enforced: worker console output is always forwarded.
    *
    * Task code cannot terminate the host: process/Deno exit APIs are blocked.
    * Use `"strict"` (default for object mode) or `"unsafe"`.

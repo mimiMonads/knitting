@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "./_runner.ts";
-import { createPool } from "../knitting.ts";
+import { createPool, KnittingError } from "../knitting.ts";
 import { AbortSignalPoolExhausted } from "../src/shared/abortSignal.ts";
 import {
   abortA,
@@ -53,7 +53,9 @@ test("task API abortSignal tasks reject when pool shuts down", async () => {
 
   for (const entry of settled) {
     if (entry.status !== "rejected") continue;
-    assert.equal(String(entry.reason), "Thread closed");
+    assert.ok(entry.reason instanceof KnittingError);
+    assert.equal(entry.reason.code, "THREAD_CLOSED");
+    assert.equal(entry.reason.message, "Thread closed");
   }
 });
 

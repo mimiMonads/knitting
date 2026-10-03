@@ -22,6 +22,7 @@ import {
   terminateWorkerQuietly,
   toWorkerCompatExecArgv,
   toWorkerSafeExecArgv,
+  warnDroppedWorkerExecArgv,
 } from "./worker-common.ts";
 import {
   createSharedMemoryTransport,
@@ -35,6 +36,7 @@ import {
   hostDispatcherLoop,
 } from "./dispatcher.ts";
 import type { DenoCompletionDoorbell } from "./deno-doorbell.ts";
+import { KnittingError, type KnittingErrorCode } from "../error.ts";
 import { createNodeCompletionDoorbell } from "./node-doorbell.ts";
 import {
   DEFAULT_STEAL_CLAIM,
@@ -342,6 +344,7 @@ export const spawnWorkerContext = ({
   sab,
   thread,
   debug,
+  debugEpoch,
   hostDebug,
   totalNumberOfThread,
   workerCount,
@@ -349,6 +352,7 @@ export const spawnWorkerContext = ({
   at,
   workerOptions,
   workerExecArgv,
+  requestedExecArgv,
   permission,
   host,
   payload,
@@ -366,6 +370,7 @@ export const spawnWorkerContext = ({
   sab?: Sab;
   thread: number;
   debug?: DebugOptions;
+  debugEpoch?: number;
   hostDebug?: (message: string) => void;
   totalNumberOfThread: number;
   /**
@@ -378,6 +383,8 @@ export const spawnWorkerContext = ({
   source?: string;
   workerOptions?: WorkerSettings;
   workerExecArgv?: string[];
+  /** The caller's own `workerExecArgv`, before defaults and filtering. */
+  requestedExecArgv?: string[];
   permission?: WorkerData["permission"];
   host?: DispatcherSettings;
   payload?: PayloadBufferOptions;
@@ -701,6 +708,7 @@ export const spawnWorkerContext = ({
     at,
     thread,
     debug,
+    debugEpoch,
     workerOptions: resolvedWorkerOptions,
     totalNumberOfThread,
     startAt: signalBox.startAt,
@@ -758,8 +766,11 @@ export const spawnWorkerContext = ({
       permission,
     });
   } else if (HAS_NODE_WORKER_THREADS) {
+    // The flags the worker actually started with; each fallback narrows them.
+    let appliedExecArgv: string[] | undefined;
     try {
       worker = new WorkerCtor(workerUrl, withExecArgv) as RuntimeWorkerLike;
+      appliedExecArgv = withExecArgv.execArgv;
     } catch (error) {
       if (
         (error as { code?: string })?.code === "ERR_WORKER_INVALID_EXEC_ARGV"
@@ -771,6 +782,7 @@ export const spawnWorkerContext = ({
               workerUrl,
               { ...baseWorkerOptions, execArgv: fallbackExecArgv },
             ) as RuntimeWorkerLike;
+            appliedExecArgv = fallbackExecArgv;
           } catch (fallbackError) {
             if (
               (fallbackError as { code?: string })?.code ===
@@ -783,6 +795,7 @@ export const spawnWorkerContext = ({
                     workerUrl,
                     { ...baseWorkerOptions, execArgv: compatExecArgv },
                   ) as RuntimeWorkerLike;
+                  appliedExecArgv = compatExecArgv;
                 } catch {
                   worker = new WorkerCtor(
                     workerUrl,
@@ -809,6 +822,7 @@ export const spawnWorkerContext = ({
         throw error;
       }
     }
+    warnDroppedWorkerExecArgv(requestedExecArgv, appliedExecArgv);
   } else {
     worker = new WorkerCtor(
       workerUrl,
@@ -840,15 +854,25 @@ export const spawnWorkerContext = ({
       deactivateStealConsumer();
     }
   };
-  const markWorkerClosed = (reason: string): void => {
+  const markWorkerClosed = (
+    code: KnittingErrorCode,
+    reason: string,
+    cause?: unknown,
+  ): void => {
     if (closedReason) return;
     closedReason = reason;
-    if (stealPool?.stealClaim === "ticket") {
-      // A claimed ticket may be lost at any point between CAS and retirement.
-      // Reject the whole shared registry and prohibit task-id/slot reuse.
-      queue.close(reason);
+    const error = new KnittingError(code, reason, cause);
+    if (stealPool !== undefined && stealPool.stealClaim !== "ticket") {
+      // Dekker's shared queue outlives one consumer: the surviving workers
+      // keep claiming from it, so only the calls in flight are rejected.
+      rejectAll(error);
     } else {
-      rejectAll(reason);
+      // A lane's own queue has no other consumer, so a call accepted after
+      // this point would stay pending forever: close it and reject them all.
+      // Under ticket stealing a claimed ticket may be lost at any point
+      // between CAS and retirement, so the whole shared registry closes and
+      // task-id/slot reuse is prohibited.
+      queue.close(error);
     }
     channelHandler?.close();
   };
@@ -860,13 +884,14 @@ export const spawnWorkerContext = ({
     }
     if (!isWorkerFatalMessage(message)) return;
     markWorkerClosed(
+      "WORKER_STARTUP_FAILED",
       `Worker startup failed: ${message[WORKER_FATAL_MESSAGE_KEY]}`,
     );
     terminateFailedWorker();
   };
   const onWorkerError = (error: unknown) => {
     const message = String((error as { message?: unknown })?.message ?? error);
-    markWorkerClosed(`Worker crashed: ${message}`);
+    markWorkerClosed("WORKER_CRASHED", `Worker crashed: ${message}`, error);
     terminateFailedWorker();
   };
   const nodeWorker = worker as unknown as NodeWorkerLike;
@@ -878,11 +903,14 @@ export const spawnWorkerContext = ({
       nodeCompletionDoorbell?.close();
       if (closedReason !== undefined) return;
       if (stopRequested) {
-        markWorkerClosed("Thread closed");
+        markWorkerClosed("THREAD_CLOSED", "Thread closed");
         return;
       }
       const normalized = typeof code === "number" ? code : -1;
-      markWorkerClosed(`Worker exited with code ${normalized}`);
+      markWorkerClosed(
+        "WORKER_EXITED",
+        `Worker exited with code ${normalized}`,
+      );
     });
   } else {
     const eventWorker = worker as RuntimeWorkerLike & {
@@ -960,7 +988,7 @@ export const spawnWorkerContext = ({
     call,
     requestStop: requestWorkerStop,
     kills: async () => {
-      markWorkerClosed("Thread closed");
+      markWorkerClosed("THREAD_CLOSED", "Thread closed");
       // Process workers must exit before their shared memory is unmapped.
       const awaitExit = processWorkerMemory !== undefined;
       const termination = terminateWorkerQuietly(worker, awaitExit);

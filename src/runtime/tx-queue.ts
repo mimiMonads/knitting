@@ -102,7 +102,7 @@ export function createHostTxQueue({
     resetPendingState,
   } = lock;
   let inUsed = 0 | 0;
-  let closedReason: string | undefined;
+  let closedReason: unknown;
   const resetSignal = abortSignals?.resetSignal;
   const nowTime = now ?? p_now;
 
@@ -251,7 +251,7 @@ export function createHostTxQueue({
 
   const txIdle = () => getPendingFrameCount() === 0 && !hasActiveTasks();
 
-  const rejectAll = (reason: string) => {
+  const rejectAll = (reason: unknown) => {
     for (let index = 0; index < queue.length; index++) {
       const slot = queue[index];
       if (slot.reject !== PLACE_HOLDER) {
@@ -271,8 +271,8 @@ export function createHostTxQueue({
     inUsed = 0 | 0;
   };
 
-  /** Permanently reject new calls after an unrecoverable shared-queue failure. */
-  const close = (reason: string) => {
+  /** Reject everything in flight, and every later call, with `reason`. */
+  const close = (reason: unknown) => {
     if (closedReason !== undefined) return;
     closedReason = reason;
     rejectAll(reason);

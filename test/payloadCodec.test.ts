@@ -348,6 +348,38 @@ test("dynamic error uses dedicated error path and preserves allocation", () => {
   assertEquals(out.cause, { code: 7 });
 });
 
+test("error cause chain decodes back into Error objects", () => {
+  const { encode, decode } = makeCodec();
+  const task = makeTask();
+  const root = new RangeError("root");
+  const middle = new Error("middle", { cause: root });
+  // A plain object that only resembles an error stays a plain object.
+  (root as Error & { cause?: unknown }).cause = {
+    name: "NotAnError",
+    message: "plain",
+    code: 7,
+  };
+  task.value = new Error("top", { cause: middle });
+
+  assertEquals(encode(task, 0), true);
+  decode(task, 0);
+
+  const top = task.value as Error & { cause?: unknown };
+  const decodedMiddle = top.cause as Error & { cause?: unknown };
+  assertEquals(decodedMiddle instanceof Error, true);
+  assertEquals(decodedMiddle.message, "middle");
+  const decodedRoot = decodedMiddle.cause as Error & { cause?: unknown };
+  assertEquals(decodedRoot instanceof Error, true);
+  assertEquals(decodedRoot.name, "RangeError");
+  assertEquals(decodedRoot.message, "root");
+  assertEquals(decodedRoot.cause instanceof Error, false);
+  assertEquals(decodedRoot.cause, {
+    name: "NotAnError",
+    message: "plain",
+    code: 7,
+  });
+});
+
 test("dynamic payload exceeding maxPayloadBytes rejects before reservation", async () => {
   const capture = capturePromiseResult();
   const { encode, registry } = makeCodec(capture.onPromise, {

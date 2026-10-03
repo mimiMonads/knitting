@@ -35,6 +35,7 @@ import {
   installPerformanceNowGuard,
   installTerminationGuard,
   installUnhandledRejectionSilencer,
+  reportSilencedRejections,
   scrubWorkerDataSensitiveBuffers,
 } from "./safety/index.ts";
 import { signalAbortFactory } from "../shared/abortSignal.ts";
@@ -95,6 +96,7 @@ export const workerMainLoop = async (
 
   const {
     debug,
+    debugEpoch,
     sab,
     thread,
     startAt,
@@ -128,9 +130,21 @@ export const workerMainLoop = async (
         name: `w${thread}`,
         runtime: RUNTIME,
         namespaces: debugNamespaces,
+        epoch: debugEpoch,
       })
     )
     : undefined;
+  if (dbg?.enabled("lifecycle") === true) {
+    // Detached task promises reject silently otherwise (see the silencer).
+    reportSilencedRejections((reason) =>
+      dbg.log(
+        "lifecycle",
+        `unhandled rejection silenced: ${
+          reason instanceof Error ? reason.stack ?? reason.message : String(reason)
+        }`,
+      )
+    );
+  }
 
   // Andromeda cannot parse enums.
   const Comment = {
@@ -160,6 +174,10 @@ export const workerMainLoop = async (
     consumerId: steal?.consumerId,
     regionLanes: steal?.regionLanes,
     stealClaim: steal?.claim,
+    // Undefined unless `steal` is traced, so the claim path stays untouched.
+    traceClaim: steal !== undefined && dbg?.enabled("steal") === true
+      ? (message: string) => dbg.log("steal", message)
+      : undefined,
   });
   const notifyDenoHost = createDenoCompletionNotifier(denoCompletionDoorbell);
   const notifyNodeHost = createNodeCompletionNotifier(nodeCompletionDoorbell);

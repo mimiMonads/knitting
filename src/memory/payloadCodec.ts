@@ -137,7 +137,7 @@ const objectHasOwn = Object.prototype.hasOwnProperty;
 const arrayIsArray = Array.isArray;
 const objectPrototype = Object.prototype;
 const UNSUPPORTED_OBJECT_DETAIL =
-  "Unsupported object type. Allowed: plain object, array, Error, Date, Envelope, Buffer, ArrayBuffer, DataView, typed arrays, and registered external payloads. Serialize it yourself.";
+  "Unsupported object type. Allowed: plain object, array, Error, Date, Envelope, Buffer, ArrayBuffer, DataView, Uint8Array, Int32Array, Float64Array, BigInt64Array, BigUint64Array, and registered external payloads. Serialize it yourself.";
 const ENVELOPE_PAYLOAD_DETAIL =
   "Envelope payload must be an ArrayBuffer, SharedArrayBuffer, " +
   "ProcessSharedBuffer, or BufferReference.";
@@ -417,17 +417,25 @@ const toErrorPayload = (error: Error): ErrorPayload => {
   return payload;
 };
 
-const parseErrorPayload = (raw: string): Error => {
-  let parsed: unknown;
-  try {
-    parsed = parseJSON(raw);
-  } catch {
-    return new Error(raw);
+// The shape `toErrorCause` writes for an Error cause. A plain-object cause
+// with any other key is left as the object it was.
+const isErrorPayload = (value: unknown): value is ErrorPayload => {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
   }
-  if (parsed == null || typeof parsed !== "object") {
-    return new Error(String(parsed));
+  const payload = value as Record<string, unknown>;
+  if (typeof payload.name !== "string" || typeof payload.message !== "string") {
+    return false;
   }
-  const payload = parsed as Partial<ErrorPayload>;
+  for (const key in payload) {
+    if (
+      key !== "name" && key !== "message" && key !== "stack" && key !== "cause"
+    ) return false;
+  }
+  return true;
+};
+
+const reviveErrorPayload = (payload: Partial<ErrorPayload>): Error => {
   const err = new Error(
     typeof payload.message === "string" ? payload.message : "",
   );
@@ -441,9 +449,24 @@ const parseErrorPayload = (raw: string): Error => {
     }
   }
   if (objectHasOwn.call(payload as object, "cause")) {
-    (err as Error & { cause?: unknown }).cause = payload.cause;
+    (err as Error & { cause?: unknown }).cause = isErrorPayload(payload.cause)
+      ? reviveErrorPayload(payload.cause)
+      : payload.cause;
   }
   return err;
+};
+
+const parseErrorPayload = (raw: string): Error => {
+  let parsed: unknown;
+  try {
+    parsed = parseJSON(raw);
+  } catch {
+    return new Error(raw);
+  }
+  if (parsed == null || typeof parsed !== "object") {
+    return new Error(String(parsed));
+  }
+  return reviveErrorPayload(parsed as Partial<ErrorPayload>);
 };
 
 const decodeBigIntBinary = (bytes: Uint8Array) => {

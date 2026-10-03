@@ -4,10 +4,16 @@
  * baseline snapshot it takes exists when debug is off.
  *
  * Diagnostics go to stderr so they never corrupt a worker's stdout, and every
- * line is tagged with the worker id, runtime, and a clock relative to when this
- * worker's debug initialised. The clock is worker-local on purpose: a main-thread
- * timestamp can't be compared against `performance.now()` here because the time
- * origins differ across the thread/process boundary (it would read negative).
+ * line is tagged with the worker id, runtime, and a clock in milliseconds since
+ * the host's debug epoch, so host and worker lines interleave on one timeline.
+ *
+ * Raw `performance.now()` can't be compared across the thread/process boundary:
+ * bun and deno give each worker its own time origin, and a process worker's
+ * origin is its own process start. `performance.timeOrigin + performance.now()`
+ * is comparable (measured within a few µs on bun, node and deno, for both
+ * threads and processes), so the host sends that absolute value and each worker
+ * rebases onto it once. Staying in the local `now()` frame afterwards keeps
+ * full precision; the absolute sum alone only resolves ~0.24µs.
  */
 import {
   describeGlobalKey,
@@ -21,6 +27,11 @@ export type DebugInit = {
   readonly name: string;
   readonly runtime: string;
   readonly namespaces: ReadonlySet<string>;
+  /**
+   * Host debug epoch as `timeOrigin + now()`. When absent (debug enabled only
+   * inside the worker), the clock starts when this handle initialises.
+   */
+  readonly epoch?: number;
 };
 
 export type Debug = {
@@ -41,13 +52,15 @@ export type Debug = {
 };
 
 export const initDebug = (
-  { name, runtime, namespaces }: DebugInit,
+  { name, runtime, namespaces, epoch }: DebugInit,
 ): Debug => {
   const all = namespaces.has("*");
   const enabled = (namespace: string): boolean =>
     all || namespaces.has(namespace);
 
-  const base = performance.now();
+  const base = epoch === undefined
+    ? performance.now()
+    : epoch - performance.timeOrigin;
   const tag = `${name}·${runtime}`;
 
   const log = (namespace: string, message: string): void => {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "./_runner.ts";
-import { createPool } from "../knitting.ts";
+import { createPool, KnittingError } from "../knitting.ts";
 import { AbortSignalPoolExhausted } from "../src/shared/abortSignal.ts";
 import { RUNTIME } from "../src/common/runtime.ts";
 import { abortA, abortB, abortReturnsInput } from "./fixtures/abort_tasks.ts";
@@ -400,6 +400,31 @@ test("ticket worker failure rejects pending calls and permanently closes submiss
       later.every((r) => r.status === "rejected"),
       "calls routed through surviving workers must also reject",
     );
+  } finally {
+    await withTimeout(pool.shutdown());
+  }
+});
+
+test("single-worker failure rejects later calls instead of leaving them pending", async () => {
+  const { crashTicketWorker } = await import(
+    "./fixtures/ticket_failure_tasks.ts"
+  );
+  const pool = createPool({ threads: 1 })({ double, crashTicketWorker });
+  try {
+    assert.equal(await withTimeout(pool.call.double(2)), 4);
+    const [crashed] = await withTimeout(
+      Promise.allSettled([pool.call.crashTicketWorker()]),
+    );
+    assert.equal(crashed!.status, "rejected");
+    const later = await withTimeout(Promise.allSettled(
+      Array.from({ length: 4 }, (_, i) => pool.call.double(i)),
+    ));
+    for (const result of later) {
+      assert.equal(result.status, "rejected");
+      if (result.status !== "rejected") continue;
+      assert.ok(result.reason instanceof KnittingError);
+      assert.equal(result.reason.code, "WORKER_CRASHED");
+    }
   } finally {
     await withTimeout(pool.shutdown());
   }

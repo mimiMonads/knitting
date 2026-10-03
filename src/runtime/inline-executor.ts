@@ -5,6 +5,7 @@ import type {
   WorkerCall,
 } from "../types.ts";
 import { withResolvers } from "../common/with-resolvers.ts";
+import { KnittingError } from "../error.ts";
 import RingQueue from "../ipc/tools/ring-queue.ts";
 import { createRuntimeMessageChannel } from "../common/worker-runtime.ts";
 
@@ -344,7 +345,9 @@ export const createInlineExecutor = ({
       for (let index = 0; index < stateByIndex.length; index++) {
         if (stateByIndex[index] !== SlotStateMacro.Pending) continue;
         try {
-          deferredByIndex[index]?.reject("Thread closed");
+          deferredByIndex[index]?.reject(
+            new KnittingError("THREAD_CLOSED", "Thread closed"),
+          );
         } catch {
         }
       }

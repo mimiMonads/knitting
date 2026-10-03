@@ -215,15 +215,22 @@ test("startup import assertion throws when no imports are resolved", {
         ids: [5],
         listOfFunctions: [],
       });
-    }, /No imports were found\./);
+    }, /No imports were found\. Looked in: \.\/missing\.ts\./);
+    // Only the exports the worker could not find are named.
+    assert.throws(() => {
+      assertWorkerImportsResolved({
+        list: ["./tasks.ts"],
+        ids: [1, 2],
+        names: ["double", "twice"],
+        listOfFunctions: [{ name: "double" }],
+      });
+    }, /Missing task export\(s\): twice\. Looked in: \.\/tasks\.ts\./);
   } finally {
     console.log = originalLog;
   }
 
-  assert.equal(messages.length, 3);
-  assert.deepEqual(messages[0], ["./missing.ts"]);
-  assert.deepEqual(messages[1], [5]);
-  assert.deepEqual(messages[2], []);
+  // The failure is reported through the error, not printed to stdout.
+  assert.equal(messages.length, 0);
 });
 
 test("process guard probe covers direct install path", () => {
