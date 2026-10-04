@@ -83,7 +83,7 @@
     "release:npm": "npm run test:all && npm publish",
     "release:npm:dry-run": "npm publish --dry-run",
     "test": "npm run test:deno",
-    "test:deno": "deno test -A --ignore=test/runtime.node.test.ts --ignore=test/runtime.process.test.ts",
+    "test:deno": "deno test -A --ignore=test/runtime.node.test.ts --ignore=test/runtime.process.test.ts test",
     "test:node": "node --no-warnings --experimental-transform-types --test \"./test/*.test.ts\"",
     "test:node:26": "node --no-warnings --experimental-ffi test/node26-ffi.integration.mjs",
     "test:bun": "bun test",
