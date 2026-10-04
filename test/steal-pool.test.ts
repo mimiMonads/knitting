@@ -332,17 +332,20 @@ test("shutting a pool down stops its workers", {
     await pool.shutdown();
   }
 
-  // Every pool is gone, so nothing should be burning CPU. Abandoned workers
-  // accumulate across rounds: these twelve measured ~1.4 cores before the fix
-  // and ~0.03 after, so the threshold sits well clear of both.
-  const idleMs = 300;
+  // Bun does not wait for thread termination in shutdown(), so allow its
+  // termination callbacks and runtime cleanup to settle before sampling.
+  // Abandoned workers accumulate across rounds: these twelve measured ~1.4
+  // cores before the fix and ~0.03 after. Leave room for CI CPU noise while
+  // still detecting that sustained leak.
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const idleMs = 600;
   const before = cpuUsage();
   await new Promise((resolve) => setTimeout(resolve, idleMs));
   const delta = cpuUsage(before);
   const busyRatio = (delta.user + delta.system) / 1000 / idleMs;
 
   assert.ok(
-    busyRatio < 0.4,
+    busyRatio < 0.75,
     `${rounds * threads} workers from shut-down pools burned ${
       busyRatio.toFixed(2)
     } cores; shutdown left them running`,
