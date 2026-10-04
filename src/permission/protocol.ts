@@ -45,6 +45,7 @@ type PermissionPath = string | URL;
 type NodePermissionSettings = {
   allowWorker?: boolean;
   allowChildProcess?: boolean;
+  /** Allows task code to load Node native addons inside worker threads. */
   allowAddons?: boolean;
   allowFfi?: boolean;
   allowWasi?: boolean;
@@ -557,9 +558,14 @@ const resolveDenoLock = (
 
 const resolveNodePermissionActivationFlag = (): string => {
   try {
-    const raw = getNodeProcess()?.versions?.node;
-    const major = Number.parseInt(String(raw).split(".", 1)[0] ?? "", 10);
-    if (Number.isFinite(major) && major > 0 && major < 22) {
+    const version = String(getNodeProcess()?.versions?.node ?? "");
+    const [majorPart, minorPart] = version.split(".");
+    const major = Number.parseInt(majorPart ?? "", 10);
+    const minor = Number.parseInt(minorPart ?? "", 10);
+    const permissionIsStable = major > 23 ||
+      (major === 23 && minor >= 5) ||
+      (major === 22 && minor >= 13);
+    if (Number.isFinite(major) && major > 0 && !permissionIsStable) {
       return "--experimental-permission";
     }
   } catch {

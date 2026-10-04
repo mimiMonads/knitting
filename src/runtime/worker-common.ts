@@ -21,19 +21,24 @@ const execFlagKey = (flag: string): string => flag.split("=", 1)[0]!;
 const NODE_PERMISSION_EXEC_FLAGS = new Set<string>([
   "--permission",
   "--experimental-permission",
+  "--experimental-config-file",
+  "--experimental-default-config-file",
   "--allow-fs-read",
   "--allow-fs-write",
+  "--allow-fs-vfs",
   "--allow-worker",
   "--allow-child-process",
+  "--allow-env",
   "--allow-net",
   "--allow-addons",
   "--allow-ffi",
   "--allow-wasi",
+  "--allow-inspector",
+  "--allow-openssl-store",
 ]);
 const NODE_WORKER_SAFE_EXEC_FLAGS = new Set<string>([
   "--experimental-ffi",
   "--experimental-transform-types",
-  "--expose-gc",
   "--no-warnings",
   ...NODE_PERMISSION_EXEC_FLAGS,
 ]);
@@ -41,7 +46,7 @@ const NODE_WORKER_SAFE_EXEC_FLAGS = new Set<string>([
 const isNodeWorkerSafeExecFlag = (flag: string): boolean =>
   NODE_WORKER_SAFE_EXEC_FLAGS.has(execFlagKey(flag));
 
-const isNodePermissionExecFlag = (flag: string): boolean =>
+export const isNodePermissionExecFlag = (flag: string): boolean =>
   NODE_PERMISSION_EXEC_FLAGS.has(execFlagKey(flag));
 
 export const toWorkerSafeExecArgv = (
@@ -60,6 +65,7 @@ export const toWorkerSafeExecArgv = (
   return deduped;
 };
 
+/** Preserve process-worker runtime flags while replacing inherited permissions. */
 export const toWorkerCompatExecArgv = (
   flags: string[] | undefined,
 ): string[] | undefined => {

@@ -12,6 +12,7 @@ import {
   MAX_STEAL_CONSUMERS,
   spawnWorkerContext,
 } from "./runtime/pool.ts";
+import { isNodePermissionExecFlag } from "./runtime/worker-common.ts";
 import { ChannelHandler, hostDispatcherLoop } from "./runtime/dispatcher.ts";
 import { createDenoCompletionDoorbell } from "./runtime/deno-doorbell.ts";
 import { createSharedArrayBuffer, RUNTIME } from "./common/runtime.ts";
@@ -537,21 +538,8 @@ export const createPool: CreatePoolFactory = ({
   const nodeProcess = getNodeProcess();
 
   const allowedFlags = nodeProcess?.allowedNodeEnvironmentFlags ?? null;
-  const isNodePermissionFlag = (flag: string): boolean => {
-    const key = flag.split("=", 1)[0];
-    return key === "--permission" ||
-      key === "--experimental-permission" ||
-      key === "--allow-fs-read" ||
-      key === "--allow-fs-write" ||
-      key === "--allow-worker" ||
-      key === "--allow-child-process" ||
-      key === "--allow-net" ||
-      key === "--allow-addons" ||
-      key === "--allow-ffi" ||
-      key === "--allow-wasi";
-  };
   const stripNodePermissionFlags = (flags?: string[]) =>
-    flags?.filter((flag) => !isNodePermissionFlag(flag));
+    flags?.filter((flag) => !isNodePermissionExecFlag(flag));
   const dedupeFlags = (flags: string[]) => {
     const out: string[] = [];
     const seen = new Set<string>();
@@ -575,20 +563,11 @@ export const createPool: CreatePoolFactory = ({
     ? nodeProcess.execArgv
     : undefined;
   const defaultExecArgvCandidate = workerExecArgv ??
-    (inheritedExecArgv
-      ? (
-        allowedFlags?.has("--expose-gc") === true
-          ? (
-            inheritedExecArgv.includes("--expose-gc")
-              ? inheritedExecArgv
-              : [...inheritedExecArgv, "--expose-gc"]
-          )
-          : inheritedExecArgv
-      )
-      : undefined);
-  const defaultExecArgv = permissionProtocol?.unsafe === true
-    ? stripNodePermissionFlags(defaultExecArgvCandidate)
-    : defaultExecArgvCandidate;
+    inheritedExecArgv;
+  // Knitting resolves the worker's permission policy itself. Do not inherit
+  // the host's Node grants (or caller-supplied permission flags), which could
+  // broaden that policy when Node combines repeated --allow-* options.
+  const defaultExecArgv = stripNodePermissionFlags(defaultExecArgvCandidate);
   const combinedExecArgv = dedupeFlags([
     ...permissionExecArgv,
     ...(defaultExecArgv ?? []),
@@ -617,6 +596,22 @@ export const createPool: CreatePoolFactory = ({
     worker,
     callerHref,
   );
+  if (
+    RUNTIME === "node" &&
+    resolvedWorker?.runtime !== "process" &&
+    resolvedWorker?.runtime !== "compiled"
+  ) {
+    const missingPermissionFlags = permissionExecArgv.filter(
+      (flag) => isNodePermissionExecFlag(flag) && !execArgv?.includes(flag),
+    );
+    if (missingPermissionFlags.length > 0) {
+      throw new Error(
+        "Node cannot apply the resolved permission policy to this thread " +
+          `worker (unsupported flags: ${missingPermissionFlags.join(", ")}). ` +
+          "Refusing to start the worker without those permissions.",
+      );
+    }
+  }
   const dispatcherEnv = nodeProcess?.env?.KNITTING_DISPATCHER;
   const stealEnvRaw = nodeProcess?.env?.KNITTING_STEAL?.trim().toLowerCase();
   const stealEnv = stealEnvRaw === "1" || stealEnvRaw === "true"
@@ -828,12 +823,24 @@ export const createPool: CreatePoolFactory = ({
     // Round-robin wake keeps stealing at one notify per publish; any idle worker
     // can claim the region.
     let wakeCursor = 0;
+    let lastWoken = 0;
     const wakeOne = () => {
       const lanes = workers.length;
       if (lanes === 0) return;
-      const lane = wakeCursor;
+      const lane = lastWoken = wakeCursor;
       wakeCursor = wakeCursor + 1 < lanes ? wakeCursor + 1 : 0;
       workers[lane]!.laneWake?.();
+    };
+    // Any awake worker will claim what was just published, so a lost wake
+    // only strands work when every worker is parked. Ring the lane this pass
+    // already rang: one still waking up absorbs it, and a second lane would
+    // be one more thread woken per call.
+    const wakeIfAllParked = () => {
+      for (let lane = 0; lane < workers.length; lane++) {
+        const context = workers[lane] as { laneAwake?: () => boolean };
+        if (context.laneAwake?.() !== false) return;
+      }
+      workers[lastWoken]?.laneWake?.();
     };
 
     // The shared dispatcher drives one queue, so it needs signal words of its
@@ -853,6 +860,7 @@ export const createPool: CreatePoolFactory = ({
       channelHandler: channel,
       dispatcherOptions: host,
       notifySignal: wakeOne,
+      wakeAfterPass: wakeIfAllParked,
       crossProcess: resolvedWorker?.runtime === "process",
       nativeCompletionDoorbell: denoCompletionDoorbell !== undefined ||
         workers.some((context) =>

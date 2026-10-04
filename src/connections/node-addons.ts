@@ -69,6 +69,17 @@ export const formatNodeNativeAddonLoadError = (
     : `v${platformInfo.version}`;
   const target = `${platformInfo.platform}-${platformInfo.arch}`;
 
+  if (errors.some((error) => error.includes("ERR_DLOPEN_DISABLED"))) {
+    return (
+      `knitting: Node.js ${version} blocked loading native addon ${name} ` +
+      `because --allow-addons is not enabled. For a thread worker pool, ` +
+      `set permission.node.allowAddons to true; if the host itself runs ` +
+      `with --permission, start it with --allow-addons too. This permits ` +
+      `task code to load Node native addons; only enable it for trusted ` +
+      `tasks.${attempts}`
+    );
+  }
+
   if (abi === NODE_26_MODULE_ABI) {
     return (
       `knitting: Node.js 26 uses node:ffi instead of ABI-specific addons. ` +
@@ -155,7 +166,11 @@ export const loadNodeNativeAddon = <T>(
     try {
       return require(candidate) as T;
     } catch (error) {
-      errors.push(`${candidate}: ${String(error)}`);
+      const code = (error as { code?: unknown })?.code;
+      errors.push(
+        `${candidate}: ${typeof code === "string" ? `${code}: ` : ""}` +
+          String(error),
+      );
     }
   }
 

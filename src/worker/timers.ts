@@ -187,6 +187,14 @@ export const sleepUntilChanged = (
 
     a_store(rxStatus, 0, 0);
 
+    // The other half of the host's post-publish check: a publication that
+    // landed before rxStatus cleared is visible now, and one after it finds
+    // rxStatus clear and rings.
+    if (a_load(opView, at) !== value || tryProgress()) {
+      a_store(rxStatus, 0, 1);
+      return;
+    }
+
     if (nativeWaitU32 !== undefined) {
       nativeWaitU32(
         opView.buffer,

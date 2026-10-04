@@ -47,6 +47,8 @@ import {
 import { resolveDebugNamespaces } from "../debug/gate.ts";
 
 const WORKER_FATAL_MESSAGE_KEY = "__knittingWorkerFatal";
+// Park timeout while finished results wait for return slots (see the loop).
+const BLOCKED_RETURN_PARK_MS = 1;
 
 const reportWorkerStartupFatal = (error: unknown): void => {
   const message = String((error as { message?: unknown })?.message ?? error);
@@ -449,7 +451,13 @@ export const workerMainLoop = async (
           } while (txStatus[Comment.thisIsAHint] === 1);
           continue;
         }
-        _pauseUntil(wakeToken, spinMicroseconds, parkMs);
+        // Results that could not be written wait on the host freeing return
+        // slots, which rings no worker in particular: keep that park short.
+        _pauseUntil(
+          wakeToken,
+          spinMicroseconds,
+          _hasCompleted() ? Math.min(parkMs, BLOCKED_RETURN_PARK_MS) : parkMs,
+        );
         wakeToken = a_load(opView, 0);
       }
     }

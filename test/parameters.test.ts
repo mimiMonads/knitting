@@ -192,7 +192,10 @@ test("Envelope with BufferReference body round-trips through a thread worker", a
     return;
   }
 
-  const pool = createPool({ threads: 1 })({ invertEnvelope });
+  const pool = createPool({
+    threads: 1,
+    permission: { node: { allowAddons: true } },
+  })({ invertEnvelope });
   const input = new Envelope(
     { op: "invert" },
     new BufferReference(new Uint8Array([0, 64, 128, 255])),

@@ -534,7 +534,10 @@ type WorkerTimers = {
    */
   spinMicroseconds?: number;
   /**
-   * Atomics.wait timeout when parked (milliseconds).
+   * Atomics.wait timeout when parked (milliseconds). Defaults to 1000 for
+   * thread workers, which the host wakes on every publish, so the timeout is
+   * only a safety net; 1 for process workers, most of which only rediscover
+   * work when it expires.
    */
   parkMs?: number;
   /**
@@ -614,11 +617,13 @@ type CreatePool = {
   host?: DispatcherSettings;
   /**
    * Extra Node.js execArgv flags for worker threads (e.g. ["--no-warnings"]).
-   * Defaults to process.execArgv plus "--expose-gc" when allowed.
+   * Defaults to compatible flags from process.execArgv. Node permission flags
+   * are replaced by the resolved `permission` policy.
    *
    * Node rejects V8 and process-wide flags (`--expose-gc`,
-   * `--max-old-space-size`, ...) for a worker thread; a flag listed here that
-   * cannot be applied is dropped with a warning.
+   * `--max-old-space-size`, ...). Unsupported caller flags are dropped with a
+   * warning. Permission flags are never dropped to start an unpermissioned
+   * thread worker; pool creation fails if Node cannot apply them.
    */
   workerExecArgv?: string[];
   /**

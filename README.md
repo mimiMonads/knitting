@@ -588,6 +588,8 @@ exists, and each runtime uses the one it has:
 native `uv_async_t` bridge from the `knitting_doorbell` addon. It is off by
 default, does not apply to process workers, and is ignored entirely when
 `host.doorbell` is `false`.
+Node thread permissions must allow native addons for this bridge; otherwise
+Knitting uses the portable wake path.
 
 Set `host: { doorbell: false }` to force polling — useful for controlled
 comparisons, and for pools that oversubscribe the machine. A doorbell only makes
@@ -859,7 +861,8 @@ const pool = createPool({
 
 ## Permissions
 
-Knitting defaults to a strict worker permission policy:
+Knitting defaults to a strict worker permission policy where the selected
+runtime supports it:
 
 ```ts
 permission: { mode: "strict", allowImport: true }
@@ -917,16 +920,27 @@ backward compatible and produce a once-per-runtime warning.
 cannot be represented. When a wrapper or cross-runtime host hides the target
 Node version, Knitting uses the conservative Node 22/24 capability set.
 
-These compatibility checks currently cover process workers. Thread workers use
-the host runtime's worker behavior and should not be treated as a sandbox.
-Runtime permissions are guardrails, not the only security boundary for hostile
-code.
+These compatibility checks currently cover process workers. Node thread
+workers receive their resolved Node permission flags, and Knitting fails pool
+creation if Node cannot apply them. Deno thread workers inherit the creator's
+permissions because Knitting does not yet set Deno's worker-specific permission
+options, which are unstable and gated by `--unstable-worker-options`; Bun
+thread workers do not have a matching permission mechanism here.
+For cross-runtime permission enforcement, use a process worker with a runtime
+that supports the restrictions you need; Deno has the broadest coverage in the
+table above. Runtime permissions are guardrails, not the only security boundary
+for hostile code.
 
 The top-level `ffi` permission is the explicit cross-runtime native-code
 capability. On Node it enables both native addons and `node:ffi`; Node's
 `--allow-ffi` permission is currently unrestricted. The legacy/runtime-specific
 `node.allowAddons` and `node.allowFfi` switches are independent—enabling addons
-does not silently enable FFI.
+does not silently enable FFI. Node thread workers deny addon loading by default
+under the strict policy. Set `permission.node.allowAddons: true` when a task
+needs an addon-backed feature such as `ProcessSharedBuffer` or `BufferReference`
+on addon-backed Node versions. This lets task code load Node native addons
+generally, so use it only for trusted tasks. The optional native completion
+doorbell falls back to the portable wake path when addon loading is denied.
 
 Node process workers are a transport exception: Knitting needs `--allow-addons`
 on Node 22/24 or `--allow-ffi` on Node 26 to map their shared memory. Deno

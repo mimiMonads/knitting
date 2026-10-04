@@ -375,6 +375,29 @@ for (const topology of ["steal", "per-thread", "serial-channel"] as const) {
       await pool.shutdown();
     }
   });
+
+  // Saturated flow, not idle wakes: workers park and wake between batches
+  // while the host keeps publishing, which is where a ring decided before the
+  // publish (or a worker parked on its own unwritten results) went unseen.
+  test(`${topology} never waits out the park timeout under saturation`, async () => {
+    const pool = createPool({
+      threads: 4,
+      host: topology === "steal"
+        ? { steal: true }
+        : { steal: false, dispatcher: topology },
+      worker: { timers: { spinMicroseconds: 0, parkMs: 60_000 } },
+    })({ double });
+    try {
+      for (let batch = 0; batch < 40; batch++) {
+        const values = await withTimeout(Promise.all(
+          Array.from({ length: 512 }, (_, i) => pool.call.double(i)),
+        ));
+        assert.equal(values[511], 1022);
+      }
+    } finally {
+      await pool.shutdown();
+    }
+  });
 }
 
 test("ticket worker failure rejects pending calls and permanently closes submissions", async () => {
