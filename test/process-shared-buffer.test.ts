@@ -243,7 +243,10 @@ if (isNodeJsForPsbPool) {
       const shared = ProcessSharedBuffer.create(64, primitives);
       Atomics.store(shared.view(Int32Array), 0, 99);
 
-      const pool = createPool({ threads: 1 })({
+      const pool = createPool({
+        threads: 1,
+        permission: { node: { allowAddons: true } },
+      })({
         readInt32AtZero,
         writeSevenAndReadInt32,
       });

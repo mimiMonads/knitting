@@ -20,8 +20,9 @@ import {
   serializeWorkerBootstrapData,
   type SpawnedWorker,
   terminateWorkerQuietly,
-  toWorkerCompatExecArgv,
+  isNodePermissionExecFlag,
   toWorkerSafeExecArgv,
+  warnDroppedWorkerExecArgv,
 } from "./worker-common.ts";
 import {
   createSharedMemoryTransport,
@@ -35,8 +36,10 @@ import {
   hostDispatcherLoop,
 } from "./dispatcher.ts";
 import type { DenoCompletionDoorbell } from "./deno-doorbell.ts";
+import { KnittingError, type KnittingErrorCode } from "../error.ts";
 import { createNodeCompletionDoorbell } from "./node-doorbell.ts";
 import {
+  DEFAULT_STEAL_CLAIM,
   HEADER_SLOT_STRIDE_U32,
   lock2,
   LOCK_SECTOR_BYTE_LENGTH,
@@ -95,8 +98,12 @@ const WORKER_STOP_ACK_TIMEOUT_MS = 50;
 // before the host falls back to terminate().
 const WORKER_STOP_NEEDS_ACK = RUNTIME === "deno" || RUNTIME === "node";
 
-// Keep idle workers self-healing if an Atomics.notify wake is missed.
-const DEFAULT_WORKER_PARK_MS = 1;
+// The park timeout is only a safety net: the host wakes a parked thread worker
+// after every publish, so a long park costs no latency and idles at ~0 CPU.
+const DEFAULT_WORKER_PARK_MS = 1000;
+// A process worker can only be rung across processes by a Node host waking a
+// Node child; every other pairing rediscovers work on this timeout.
+const DEFAULT_PROCESS_WORKER_PARK_MS = 1;
 const SINGLE_WORKER_SPIN_US = 50;
 const DEFAULT_ABORT_SIGNAL_CAPACITY = 258;
 
@@ -116,7 +123,10 @@ const withDefaultWorkerTimers = (
   options: WorkerSettings | undefined,
   workerCount: number,
 ): WorkerSettings => {
-  const parkMs = options?.timers?.parkMs ?? DEFAULT_WORKER_PARK_MS;
+  const parkMs = options?.timers?.parkMs ??
+    (options?.runtime === "process"
+      ? DEFAULT_PROCESS_WORKER_PARK_MS
+      : DEFAULT_WORKER_PARK_MS);
   // `??` and not `||`: an explicit `spinMicroseconds: 0` is the whole point of
   // the multi-worker default and must not fall through to it.
   const spinMicroseconds = options?.timers?.spinMicroseconds ??
@@ -151,14 +161,18 @@ export const resolveStealRegionLanes = (consumers: number): number => {
   );
 };
 
-/** Return the widest region allowed by the selected claim discipline. */
+/**
+ * Return the widest region allowed by the selected claim discipline. Only
+ * Dekker needs a region per consumer; `ticket` has no regions at all and uses
+ * the width purely as a claim batch size.
+ */
 export const resolveMaxStealRegionLanes = (
   consumers: number,
-  stealClaim?: StealClaimDiscipline,
+  stealClaim: StealClaimDiscipline = DEFAULT_STEAL_CLAIM,
 ): number =>
-  stealClaim !== undefined && stealClaim !== "dekker"
-    ? LockBound.slots
-    : resolveStealRegionLanes(consumers);
+  stealClaim === "dekker"
+    ? resolveStealRegionLanes(consumers)
+    : LockBound.slots;
 
 /** Maximum claimants that leave the protocol's required spare region. */
 export const MAX_STEAL_CONSUMERS = LockBound.slots - 1;
@@ -221,7 +235,7 @@ export const createStealPoolBuffers = ({
       }),
     }) as LockBuffers;
 
-  // Keep the default width valid for Dekker; wider CAS-mask regions are explicit.
+  // Keep the default width valid for Dekker; wider regions are explicit.
   const maxLanes = resolveMaxStealRegionLanes(threads, stealClaim);
   const lanes = regionLanes === undefined
     ? resolveStealRegionLanes(threads)
@@ -337,6 +351,7 @@ export const spawnWorkerContext = ({
   sab,
   thread,
   debug,
+  debugEpoch,
   hostDebug,
   totalNumberOfThread,
   workerCount,
@@ -344,6 +359,7 @@ export const spawnWorkerContext = ({
   at,
   workerOptions,
   workerExecArgv,
+  requestedExecArgv,
   permission,
   host,
   payload,
@@ -361,6 +377,7 @@ export const spawnWorkerContext = ({
   sab?: Sab;
   thread: number;
   debug?: DebugOptions;
+  debugEpoch?: number;
   hostDebug?: (message: string) => void;
   totalNumberOfThread: number;
   /**
@@ -373,6 +390,8 @@ export const spawnWorkerContext = ({
   source?: string;
   workerOptions?: WorkerSettings;
   workerExecArgv?: string[];
+  /** The caller's own `workerExecArgv`, before defaults and filtering. */
+  requestedExecArgv?: string[];
   permission?: WorkerData["permission"];
   host?: DispatcherSettings;
   payload?: PayloadBufferOptions;
@@ -632,10 +651,24 @@ export const spawnWorkerContext = ({
   const ownsChannel = sharedChannelHandler === undefined &&
     stealPool === undefined;
   const ownChannel = sharedChannelHandler ?? new ChannelHandler();
+  const threadCanLoadNodeAddons = permission?.enabled !== true ||
+      permission.unsafe === true || permission.node.allowAddons === true;
+  const useNativeNodeDoorbell = RUNTIME === "node" &&
+    !useProcessWorkerRuntime && host?.doorbell !== false &&
+    host?.nativeDoorbell === true && threadCanLoadNodeAddons;
+  if (
+    RUNTIME === "node" && !useProcessWorkerRuntime &&
+    host?.doorbell !== false && host?.nativeDoorbell === true &&
+    !threadCanLoadNodeAddons
+  ) {
+    hostDebug?.(
+      "native Node doorbell disabled by worker permissions; using the " +
+        "portable wake path (set permission.node.allowAddons=true to enable)",
+    );
+  }
   // Create the Node doorbell before bootstrapping the worker.
   let nodeCompletionWake: (() => void) | undefined;
-  const nodeCompletionDoorbell = !useProcessWorkerRuntime &&
-      host?.doorbell !== false && host?.nativeDoorbell === true
+  const nodeCompletionDoorbell = useNativeNodeDoorbell
     ? createNodeCompletionDoorbell(() => nodeCompletionWake?.())
     : undefined;
   const canUseNodeCompletionDoorbell = nodeCompletionDoorbell !== undefined;
@@ -696,6 +729,7 @@ export const spawnWorkerContext = ({
     at,
     thread,
     debug,
+    debugEpoch,
     workerOptions: resolvedWorkerOptions,
     totalNumberOfThread,
     startAt: signalBox.startAt,
@@ -740,6 +774,11 @@ export const spawnWorkerContext = ({
   const withExecArgv = workerExecArgv && workerExecArgv.length > 0
     ? { ...baseWorkerOptions, execArgv: workerExecArgv }
     : baseWorkerOptions;
+  const requiredNodePermissionFlags = RUNTIME === "node" &&
+      permission?.enabled === true &&
+      permission.unsafe !== true
+    ? permission.node.flags.filter(isNodePermissionExecFlag)
+    : [];
   if (processWorkerMemory !== undefined) {
     worker = spawnProcessWorker({
       workerUrl,
@@ -754,55 +793,73 @@ export const spawnWorkerContext = ({
     });
   } else if (HAS_NODE_WORKER_THREADS) {
     try {
-      worker = new WorkerCtor(workerUrl, withExecArgv) as RuntimeWorkerLike;
-    } catch (error) {
-      if (
-        (error as { code?: string })?.code === "ERR_WORKER_INVALID_EXEC_ARGV"
-      ) {
-        const fallbackExecArgv = toWorkerSafeExecArgv(withExecArgv.execArgv);
-        if (fallbackExecArgv && fallbackExecArgv.length > 0) {
-          try {
-            worker = new WorkerCtor(
-              workerUrl,
-              { ...baseWorkerOptions, execArgv: fallbackExecArgv },
-            ) as RuntimeWorkerLike;
-          } catch (fallbackError) {
-            if (
-              (fallbackError as { code?: string })?.code ===
+      // The flags the worker actually started with.
+      let appliedExecArgv: string[] | undefined;
+      try {
+        worker = new WorkerCtor(workerUrl, withExecArgv) as RuntimeWorkerLike;
+        appliedExecArgv = withExecArgv.execArgv;
+      } catch (error) {
+        if (
+          (error as { code?: string })?.code === "ERR_WORKER_INVALID_EXEC_ARGV"
+        ) {
+          const fallbackExecArgv = toWorkerSafeExecArgv(withExecArgv.execArgv);
+          const missingPermissionFlags = requiredNodePermissionFlags.filter(
+            (flag) => !fallbackExecArgv?.includes(flag),
+          );
+          if (missingPermissionFlags.length > 0) {
+            throw new Error(
+              "Node rejected the permission flags required by Knitting's " +
+                `thread worker policy (${missingPermissionFlags.join(", ")}). ` +
+                "Refusing to retry without them.",
+            );
+          }
+          if (fallbackExecArgv && fallbackExecArgv.length > 0) {
+            try {
+              worker = new WorkerCtor(
+                workerUrl,
+                { ...baseWorkerOptions, execArgv: fallbackExecArgv },
+              ) as RuntimeWorkerLike;
+              appliedExecArgv = fallbackExecArgv;
+            } catch (fallbackError) {
+              if (requiredNodePermissionFlags.length > 0) {
+                throw new Error(
+                  "Node could not start a thread worker with Knitting's " +
+                    "permission policy. Refusing to start it without those " +
+                    `permissions. ${String(fallbackError)}`,
+                );
+              }
+              if (
+                (fallbackError as { code?: string })?.code ===
                 "ERR_WORKER_INVALID_EXEC_ARGV"
-            ) {
-              const compatExecArgv = toWorkerCompatExecArgv(fallbackExecArgv);
-              if (compatExecArgv && compatExecArgv.length > 0) {
-                try {
-                  worker = new WorkerCtor(
-                    workerUrl,
-                    { ...baseWorkerOptions, execArgv: compatExecArgv },
-                  ) as RuntimeWorkerLike;
-                } catch {
-                  worker = new WorkerCtor(
-                    workerUrl,
-                    baseWorkerOptions,
-                  ) as RuntimeWorkerLike;
-                }
-              } else {
+              ) {
                 worker = new WorkerCtor(
                   workerUrl,
                   baseWorkerOptions,
                 ) as RuntimeWorkerLike;
+              } else {
+                throw fallbackError;
               }
-            } else {
-              throw fallbackError;
             }
+          } else if (requiredNodePermissionFlags.length > 0) {
+            throw new Error(
+              "Node rejected the permission flags required by Knitting's " +
+                "thread worker policy. Refusing to start the worker without " +
+                "those permissions.",
+            );
+          } else {
+            worker = new WorkerCtor(
+              workerUrl,
+              baseWorkerOptions,
+            ) as RuntimeWorkerLike;
           }
         } else {
-          worker = new WorkerCtor(
-            workerUrl,
-            baseWorkerOptions,
-          ) as RuntimeWorkerLike;
+          throw error;
         }
-      } else {
-        throw error;
       }
+      warnDroppedWorkerExecArgv(requestedExecArgv, appliedExecArgv);
+    } catch (error) {
+      nodeCompletionDoorbell?.close();
+      throw error;
     }
   } else {
     worker = new WorkerCtor(
@@ -835,10 +892,26 @@ export const spawnWorkerContext = ({
       deactivateStealConsumer();
     }
   };
-  const markWorkerClosed = (reason: string): void => {
+  const markWorkerClosed = (
+    code: KnittingErrorCode,
+    reason: string,
+    cause?: unknown,
+  ): void => {
     if (closedReason) return;
     closedReason = reason;
-    rejectAll(reason);
+    const error = new KnittingError(code, reason, cause);
+    if (stealPool !== undefined && stealPool.stealClaim !== "ticket") {
+      // Dekker's shared queue outlives one consumer: the surviving workers
+      // keep claiming from it, so only the calls in flight are rejected.
+      rejectAll(error);
+    } else {
+      // A lane's own queue has no other consumer, so a call accepted after
+      // this point would stay pending forever: close it and reject them all.
+      // Under ticket stealing a claimed ticket may be lost at any point
+      // between CAS and retirement, so the whole shared registry closes and
+      // task-id/slot reuse is prohibited.
+      queue.close(error);
+    }
     channelHandler?.close();
   };
 
@@ -849,13 +922,14 @@ export const spawnWorkerContext = ({
     }
     if (!isWorkerFatalMessage(message)) return;
     markWorkerClosed(
+      "WORKER_STARTUP_FAILED",
       `Worker startup failed: ${message[WORKER_FATAL_MESSAGE_KEY]}`,
     );
     terminateFailedWorker();
   };
   const onWorkerError = (error: unknown) => {
     const message = String((error as { message?: unknown })?.message ?? error);
-    markWorkerClosed(`Worker crashed: ${message}`);
+    markWorkerClosed("WORKER_CRASHED", `Worker crashed: ${message}`, error);
     terminateFailedWorker();
   };
   const nodeWorker = worker as unknown as NodeWorkerLike;
@@ -867,11 +941,14 @@ export const spawnWorkerContext = ({
       nodeCompletionDoorbell?.close();
       if (closedReason !== undefined) return;
       if (stopRequested) {
-        markWorkerClosed("Thread closed");
+        markWorkerClosed("THREAD_CLOSED", "Thread closed");
         return;
       }
       const normalized = typeof code === "number" ? code : -1;
-      markWorkerClosed(`Worker exited with code ${normalized}`);
+      markWorkerClosed(
+        "WORKER_EXITED",
+        `Worker exited with code ${normalized}`,
+      );
     });
   } else {
     const eventWorker = worker as RuntimeWorkerLike & {
@@ -940,6 +1017,7 @@ export const spawnWorkerContext = ({
     processSharedMemoryBackings?: readonly ProcessSharedMemoryBacking[];
     dispatcherCheck?: DispatcherCheck;
     laneWake?: () => void;
+    laneAwake?: () => boolean;
     bindSend?: (fn: () => void) => void;
     bindCompletionWake?: (fn: () => void) => void;
     processCompletionDoorbell?: boolean;
@@ -949,7 +1027,7 @@ export const spawnWorkerContext = ({
     call,
     requestStop: requestWorkerStop,
     kills: async () => {
-      markWorkerClosed("Thread closed");
+      markWorkerClosed("THREAD_CLOSED", "Thread closed");
       // Process workers must exit before their shared memory is unmapped.
       const awaitExit = processWorkerMemory !== undefined;
       const termination = terminateWorkerQuietly(worker, awaitExit);
@@ -961,6 +1039,9 @@ export const spawnWorkerContext = ({
     dispatcherCheck,
     laneWake: sharedChannelHandler !== undefined || stealPool !== undefined
       ? laneWake
+      : undefined,
+    laneAwake: stealPool !== undefined
+      ? () => a_load(signalBox.rxStatus, 0) !== 0
       : undefined,
     bindSend: sharedChannelHandler !== undefined || stealPool !== undefined
       ? ((fn: () => void) => void (dispatchSend = fn))

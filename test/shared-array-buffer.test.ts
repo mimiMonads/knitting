@@ -26,7 +26,10 @@ test("SharedArrayBuffer is transported by reference to a thread worker", async (
   const sab = new SharedArrayBuffer(16);
   new Int32Array(sab).set([1, 2, 3, 4]);
 
-  const pool = createPool({ threads: 1 })({ sabSum });
+  const pool = createPool({
+    threads: 1,
+    permission: { node: { allowAddons: true } },
+  })({ sabSum });
   try {
     assert.equal(await pool.call.sabSum(sab), 10);
     assert.equal(sab.byteLength, 16);
@@ -41,7 +44,10 @@ test("worker writes through the shared buffer are visible on the host", async ()
   const sab = new SharedArrayBuffer(16);
   new Int32Array(sab).set([5, 0, 0, 0]);
 
-  const pool = createPool({ threads: 1 })({ sabIncrementFirst });
+  const pool = createPool({
+    threads: 1,
+    permission: { node: { allowAddons: true } },
+  })({ sabIncrementFirst });
   try {
     const updated = await pool.call.sabIncrementFirst(sab);
     assert.equal(updated, 105, "worker sees and mutates the shared bytes");
@@ -59,7 +65,10 @@ test("the worker borrows a pointer-alias over the shared bytes", async () => {
   if (!supported) return;
 
   const sab = new SharedArrayBuffer(8);
-  const pool = createPool({ threads: 1 })({ sabIsShared });
+  const pool = createPool({
+    threads: 1,
+    permission: { node: { allowAddons: true } },
+  })({ sabIsShared });
   try {
     // Worker gets a pointer alias; direct SAB co-ownership can crash on teardown.
     const isShared = await pool.call.sabIsShared(sab);
@@ -77,7 +86,10 @@ test("a returned shared buffer alias is still by reference", async () => {
   const hostView = new Int32Array(sab);
   hostView.set([10, 20, 30, 40]);
 
-  const pool = createPool({ threads: 1 })({ sabEcho });
+  const pool = createPool({
+    threads: 1,
+    permission: { node: { allowAddons: true } },
+  })({ sabEcho });
   try {
     const returned = await pool.call.sabEcho(sab);
     const returnedView = new Int32Array(returned);
@@ -101,7 +113,10 @@ test("each worker's returned SharedArrayBuffer survives token collisions", async
   // hands the first worker's bytes back for every later worker's payload.
   const threads = 4;
   const calls = 200;
-  const pool = createPool({ threads })({ sabWorkerStamp, sabOwnStamped });
+  const pool = createPool({
+    threads,
+    permission: { node: { allowAddons: true } },
+  })({ sabWorkerStamp, sabOwnStamped });
   try {
     const sweepWorkers = async (seen: Set<number>): Promise<Set<number>> => {
       await Promise.all(

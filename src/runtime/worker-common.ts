@@ -21,19 +21,24 @@ const execFlagKey = (flag: string): string => flag.split("=", 1)[0]!;
 const NODE_PERMISSION_EXEC_FLAGS = new Set<string>([
   "--permission",
   "--experimental-permission",
+  "--experimental-config-file",
+  "--experimental-default-config-file",
   "--allow-fs-read",
   "--allow-fs-write",
+  "--allow-fs-vfs",
   "--allow-worker",
   "--allow-child-process",
+  "--allow-env",
   "--allow-net",
   "--allow-addons",
   "--allow-ffi",
   "--allow-wasi",
+  "--allow-inspector",
+  "--allow-openssl-store",
 ]);
 const NODE_WORKER_SAFE_EXEC_FLAGS = new Set<string>([
   "--experimental-ffi",
   "--experimental-transform-types",
-  "--expose-gc",
   "--no-warnings",
   ...NODE_PERMISSION_EXEC_FLAGS,
 ]);
@@ -41,7 +46,7 @@ const NODE_WORKER_SAFE_EXEC_FLAGS = new Set<string>([
 const isNodeWorkerSafeExecFlag = (flag: string): boolean =>
   NODE_WORKER_SAFE_EXEC_FLAGS.has(execFlagKey(flag));
 
-const isNodePermissionExecFlag = (flag: string): boolean =>
+export const isNodePermissionExecFlag = (flag: string): boolean =>
   NODE_PERMISSION_EXEC_FLAGS.has(execFlagKey(flag));
 
 export const toWorkerSafeExecArgv = (
@@ -60,6 +65,7 @@ export const toWorkerSafeExecArgv = (
   return deduped;
 };
 
+/** Preserve process-worker runtime flags while replacing inherited permissions. */
 export const toWorkerCompatExecArgv = (
   flags: string[] | undefined,
 ): string[] | undefined => {
@@ -67,6 +73,30 @@ export const toWorkerCompatExecArgv = (
   if (!safe || safe.length === 0) return undefined;
   const compat = safe.filter((flag) => !isNodePermissionExecFlag(flag));
   return compat.length > 0 ? compat : undefined;
+};
+
+const droppedExecArgvWarnings = new Set<string>();
+
+/**
+ * Warn once per flag set when a `workerExecArgv` flag the caller asked for did
+ * not reach the worker thread, instead of dropping it silently.
+ */
+export const warnDroppedWorkerExecArgv = (
+  requested: string[] | undefined,
+  applied: string[] | undefined,
+): void => {
+  if (!requested || requested.length === 0) return;
+  const kept = new Set(applied ?? []);
+  const dropped = requested.filter((flag) => !kept.has(flag));
+  if (dropped.length === 0) return;
+  const key = dropped.join(" ");
+  if (droppedExecArgvWarnings.has(key)) return;
+  droppedExecArgvWarnings.add(key);
+  console.warn(
+    `knitting: workerExecArgv ${dropped.join(", ")} cannot be applied to a ` +
+      `worker thread and was dropped. V8 and process-wide flags must be ` +
+      `passed to the host process instead.`,
+  );
 };
 
 const isPlainRecord = (value: unknown): value is Record<string, unknown> => {

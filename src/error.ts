@@ -18,6 +18,30 @@ export const ErrorKnitting = {
 } as const;
 export type ErrorKnitting = typeof ErrorKnitting[keyof typeof ErrorKnitting];
 
+export type KnittingErrorCode =
+  | "KNT_ERROR_0"
+  | "KNT_ERROR_1"
+  | "KNT_ERROR_2"
+  | "KNT_ERROR_3"
+  | "THREAD_CLOSED"
+  | "WORKER_CRASHED"
+  | "WORKER_EXITED"
+  | "WORKER_STARTUP_FAILED";
+
+/**
+ * Rejection raised by Knitting itself rather than by task code. Branch on
+ * `code`; `message` keeps the human-readable text.
+ */
+export class KnittingError extends Error {
+  readonly code: KnittingErrorCode;
+
+  constructor(code: KnittingErrorCode, message: string, cause?: unknown) {
+    super(message, cause === undefined ? undefined : { cause });
+    this.name = "KnittingError";
+    this.code = code;
+  }
+}
+
 const reasonFrom = (
   task: Task,
   type: ErrorKnitting,
@@ -69,10 +93,13 @@ export const encoderError = ({
 
   if (!beginPromisePayload(task)) return false;
 
+  // Built here, not in the microtask, so the stack still names the caller.
+  const error = new KnittingError(`KNT_ERROR_${type}`, reason);
+
   queueMicrotask(() => {
     finishPromisePayload(task);
-    task.value = reason;
-    onPromise(task, true, reason);
+    task.value = error;
+    onPromise(task, true, error);
   });
 
   return false;

@@ -14,6 +14,11 @@ const Comment = {
   thisIsAHint: 0,
 } as const;
 
+// A full collection costs milliseconds. Run on every idle entry, it made each
+// sequential call ~1000x slower under --expose-gc; once a second keeps the
+// idle collection without paying it per call.
+const IDLE_GC_INTERVAL_MS = 1000;
+
 const maybeGc = (() => {
   type GcHost = {
     gc?: (() => void) | undefined;
@@ -23,8 +28,17 @@ const maybeGc = (() => {
   };
 
   const host = globalThis as GcHost;
-  const gc = typeof host.gc === "function"
-    ? (() => host.gc!()) as () => void
+  // Capture the function itself: the global is deleted below, so reading
+  // `host.gc` at call time would throw on the first idle pass.
+  const exposedGc = host.gc;
+  let lastGcAt = -Infinity;
+  const gc = typeof exposedGc === "function"
+    ? (() => {
+      const now = performance.now();
+      if (now - lastGcAt < IDLE_GC_INTERVAL_MS) return;
+      lastGcAt = now;
+      exposedGc();
+    }) as () => void
     : undefined;
 
   if (gc) {
@@ -154,7 +168,6 @@ export const sleepUntilChanged = (
   ) => {
     const until = p_now() + (spinMicroseconds / 1000);
 
-    maybeGc();
     let spinChecks = 0;
     while (true) {
       if (
@@ -168,9 +181,19 @@ export const sleepUntilChanged = (
       if ((spinChecks++ & 63) === 0 && p_now() >= until) break;
     }
 
+    // Collect only once the spin found nothing, then re-check before parking.
+    maybeGc();
     if (tryProgress()) return;
 
     a_store(rxStatus, 0, 0);
+
+    // The other half of the host's post-publish check: a publication that
+    // landed before rxStatus cleared is visible now, and one after it finds
+    // rxStatus clear and rings.
+    if (a_load(opView, at) !== value || tryProgress()) {
+      a_store(rxStatus, 0, 1);
+      return;
+    }
 
     if (nativeWaitU32 !== undefined) {
       nativeWaitU32(

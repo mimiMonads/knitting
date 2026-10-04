@@ -169,7 +169,10 @@ test("Envelope payload round-trips through worker calls", async () => {
 
 test("Envelope with SharedArrayBuffer body round-trips zero-copy through a thread worker", async () => {
   if (typeof SharedArrayBuffer !== "function") return;
-  const pool = createPool({ threads: 1 })({ bumpEnvelopeShared });
+  const pool = createPool({
+    threads: 1,
+    permission: { node: { allowAddons: true } },
+  })({ bumpEnvelopeShared });
   const sab = new SharedArrayBuffer(8);
   new Uint8Array(sab).set([5, 0, 0, 0, 0, 0, 0, 0]);
   const input = new Envelope({ tag: "img" }, sab);
@@ -192,7 +195,10 @@ test("Envelope with BufferReference body round-trips through a thread worker", a
     return;
   }
 
-  const pool = createPool({ threads: 1 })({ invertEnvelope });
+  const pool = createPool({
+    threads: 1,
+    permission: { node: { allowAddons: true } },
+  })({ invertEnvelope });
   const input = new Envelope(
     { op: "invert" },
     new BufferReference(new Uint8Array([0, 64, 128, 255])),

@@ -113,7 +113,10 @@ if (isMain) {
     primitives.unlinkSharedMemory?.(sharedName);
   }
 
-  const threadPool = createPool({ threads: 1 })({
+  const threadPool = createPool({
+    threads: 1,
+    permission: { node: { allowFfi: true } },
+  })({
     reverseBufferReference,
     sumBufferReference,
   });

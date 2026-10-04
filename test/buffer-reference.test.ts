@@ -221,7 +221,10 @@ test("BufferReference flows through a thread pool (move semantics)", async () =>
   if (!supported) return;
 
   const original = new Uint8Array([1, 2, 3, 4, 5]);
-  const pool = createPool({ threads: 1 })({ sumAndIncrement });
+  const pool = createPool({
+    threads: 1,
+    permission: { node: { allowAddons: true } },
+  })({ sumAndIncrement });
   const ref = new BufferReference(original);
 
   try {
@@ -240,7 +243,10 @@ test("worker-side materialized views are detached after task settlement", async 
   if (!supported) return;
 
   const original = new Uint8Array([1, 2, 3]);
-  const pool = createPool({ threads: 1 })({
+  const pool = createPool({
+    threads: 1,
+    permission: { node: { allowAddons: true } },
+  })({
     storeBorrowedViewAndReturnLength,
     storedBorrowedViewByteLength,
   });
@@ -259,7 +265,10 @@ test("worker-side materialized views are detached after task settlement", async 
 test("worker returns a BufferReference moved back to the host", async () => {
   if (!supported) return;
 
-  const pool = createPool({ threads: 1 })({ returnsBuffer });
+  const pool = createPool({
+    threads: 1,
+    permission: { node: { allowAddons: true } },
+  })({ returnsBuffer });
   let ref!: BufferReference;
   try {
     ref = await pool.call.returnsBuffer(5);
@@ -279,7 +288,10 @@ test("worker returns a BufferReference moved back to the host", async () => {
 test("BufferReference round-trips host -> worker -> host", async () => {
   if (!supported) return;
 
-  const pool = createPool({ threads: 1 })({ echoBufferPlusOne });
+  const pool = createPool({
+    threads: 1,
+    permission: { node: { allowAddons: true } },
+  })({ echoBufferPlusOne });
   try {
     const input = new Uint8Array([1, 2, 3, 4]);
     const out = await pool.call.echoBufferPlusOne(new BufferReference(input));

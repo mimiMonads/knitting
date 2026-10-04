@@ -552,3 +552,22 @@ test("a real return publication wakes a rearmed persistent atomic waiter", {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 });
+
+test("closing a shared queue rejects pending and future calls without reusing ids", async () => {
+  const { tx, seen } = makeQueue();
+  const call = tx.enqueue(0);
+  const pending = [call(1), call(2)];
+  const settled = Promise.allSettled(pending);
+  tx.close("ticket worker failed");
+  assert.deepEqual(await settled, [
+    { status: "rejected", reason: "ticket worker failed" },
+    { status: "rejected", reason: "ticket worker failed" },
+  ]);
+  tx.close("a second failure");
+  assert.deepEqual(await Promise.allSettled([call(3), tx.enqueue(1)(4)]), [
+    { status: "rejected", reason: "ticket worker failed" },
+    { status: "rejected", reason: "ticket worker failed" },
+  ]);
+  assert.equal(seen.length, 2, "closed queue must not publish again");
+  assert.equal(tx.txIdle(), true);
+});

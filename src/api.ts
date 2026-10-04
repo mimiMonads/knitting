@@ -12,6 +12,7 @@ import {
   MAX_STEAL_CONSUMERS,
   spawnWorkerContext,
 } from "./runtime/pool.ts";
+import { isNodePermissionExecFlag } from "./runtime/worker-common.ts";
 import { ChannelHandler, hostDispatcherLoop } from "./runtime/dispatcher.ts";
 import { createDenoCompletionDoorbell } from "./runtime/deno-doorbell.ts";
 import { createSharedArrayBuffer, RUNTIME } from "./common/runtime.ts";
@@ -32,6 +33,10 @@ import {
   readProcessWorkerNodeMajor,
   readProcessWorkerRuntime,
 } from "./runtime/process-worker.ts";
+import {
+  assertStealClaim,
+  DEFAULT_STEAL_CLAIM,
+} from "./memory/lock.ts";
 import { TRANSPORT_SIGNAL_BYTES } from "./ipc/transport/shared-memory.ts";
 import { inspectCompiledWorkerArtifact } from "./runtime/compiled-artifact.ts";
 
@@ -90,12 +95,15 @@ const hasDebugNamespace = (
 
 const createHostDebug = (
   namespaces: ReadonlySet<string>,
+  epoch: number,
 ): HostDebug | undefined => {
   const enabled = (namespace: string): boolean =>
     hasDebugNamespace(namespaces, namespace);
   if (!enabled("host")) return undefined;
 
-  const base = performance.now();
+  // Same rebase the workers do (see debug/handle.ts), so host and worker lines
+  // share one zero.
+  const base = epoch - performance.timeOrigin;
   const tag = `host·${RUNTIME}`;
   const log = (message: string): void => {
     const elapsed = (performance.now() - base).toFixed(1);
@@ -442,8 +450,14 @@ export const createPool: CreatePoolFactory = ({
   let debugNamespaces: Set<string> | undefined;
   const getDebugNamespaces = (): Set<string> =>
     debugNamespaces ??= resolveDebugNamespaces(debug);
-  const hostDebug = debugRequested
-    ? createHostDebug(getDebugNamespaces())
+  // Absolute (Unix-epoch ms) zero for every debug clock in this pool. Raw
+  // `performance.now()` is relative to each thread/process's own time origin;
+  // `timeOrigin + now()` is not, so workers can rebase onto this value.
+  const debugEpoch = debugRequested
+    ? performance.timeOrigin + performance.now()
+    : undefined;
+  const hostDebug = debugEpoch !== undefined
+    ? createHostDebug(getDebugNamespaces(), debugEpoch)
     : undefined;
   const debugEnabled = (namespace: string): boolean =>
     debugRequested && hasDebugNamespace(getDebugNamespaces(), namespace);
@@ -484,6 +498,7 @@ export const createPool: CreatePoolFactory = ({
     return ({
       shutdown: mainThreadOnlyProxy,
       [Symbol.dispose]: () => {},
+      [Symbol.asyncDispose]: async () => {},
       call: mainThreadOnlyProxy,
     } as Pool<T>);
   }
@@ -523,21 +538,8 @@ export const createPool: CreatePoolFactory = ({
   const nodeProcess = getNodeProcess();
 
   const allowedFlags = nodeProcess?.allowedNodeEnvironmentFlags ?? null;
-  const isNodePermissionFlag = (flag: string): boolean => {
-    const key = flag.split("=", 1)[0];
-    return key === "--permission" ||
-      key === "--experimental-permission" ||
-      key === "--allow-fs-read" ||
-      key === "--allow-fs-write" ||
-      key === "--allow-worker" ||
-      key === "--allow-child-process" ||
-      key === "--allow-net" ||
-      key === "--allow-addons" ||
-      key === "--allow-ffi" ||
-      key === "--allow-wasi";
-  };
   const stripNodePermissionFlags = (flags?: string[]) =>
-    flags?.filter((flag) => !isNodePermissionFlag(flag));
+    flags?.filter((flag) => !isNodePermissionExecFlag(flag));
   const dedupeFlags = (flags: string[]) => {
     const out: string[] = [];
     const seen = new Set<string>();
@@ -561,20 +563,11 @@ export const createPool: CreatePoolFactory = ({
     ? nodeProcess.execArgv
     : undefined;
   const defaultExecArgvCandidate = workerExecArgv ??
-    (inheritedExecArgv
-      ? (
-        allowedFlags?.has("--expose-gc") === true
-          ? (
-            inheritedExecArgv.includes("--expose-gc")
-              ? inheritedExecArgv
-              : [...inheritedExecArgv, "--expose-gc"]
-          )
-          : inheritedExecArgv
-      )
-      : undefined);
-  const defaultExecArgv = permissionProtocol?.unsafe === true
-    ? stripNodePermissionFlags(defaultExecArgvCandidate)
-    : defaultExecArgvCandidate;
+    inheritedExecArgv;
+  // Knitting resolves the worker's permission policy itself. Do not inherit
+  // the host's Node grants (or caller-supplied permission flags), which could
+  // broaden that policy when Node combines repeated --allow-* options.
+  const defaultExecArgv = stripNodePermissionFlags(defaultExecArgvCandidate);
   const combinedExecArgv = dedupeFlags([
     ...permissionExecArgv,
     ...(defaultExecArgv ?? []),
@@ -603,6 +596,22 @@ export const createPool: CreatePoolFactory = ({
     worker,
     callerHref,
   );
+  if (
+    RUNTIME === "node" &&
+    resolvedWorker?.runtime !== "process" &&
+    resolvedWorker?.runtime !== "compiled"
+  ) {
+    const missingPermissionFlags = permissionExecArgv.filter(
+      (flag) => isNodePermissionExecFlag(flag) && !execArgv?.includes(flag),
+    );
+    if (missingPermissionFlags.length > 0) {
+      throw new Error(
+        "Node cannot apply the resolved permission policy to this thread " +
+          `worker (unsupported flags: ${missingPermissionFlags.join(", ")}). ` +
+          "Refusing to start the worker without those permissions.",
+      );
+    }
+  }
   const dispatcherEnv = nodeProcess?.env?.KNITTING_DISPATCHER;
   const stealEnvRaw = nodeProcess?.env?.KNITTING_STEAL?.trim().toLowerCase();
   const stealEnv = stealEnvRaw === "1" || stealEnvRaw === "true"
@@ -619,12 +628,15 @@ export const createPool: CreatePoolFactory = ({
   const stealRequested = host?.steal ?? stealEnv ?? stealDefaultCompatible;
   const stealClaimEnvRaw = nodeProcess?.env?.KNITTING_STEAL_CLAIM?.trim()
     .toLowerCase();
-  const stealClaimEnv = stealClaimEnvRaw === "cas-mask" ||
-      stealClaimEnvRaw === "dekker"
-    ? stealClaimEnvRaw
-    : undefined;
+  // An unrecognised discipline is an error, not a fallback: `cas-mask` and
+  // typos used to select Dekker silently and run under the wrong name.
+  const stealClaimEnv = stealClaimEnvRaw === undefined || stealClaimEnvRaw === ""
+    ? undefined
+    : assertStealClaim(stealClaimEnvRaw, "KNITTING_STEAL_CLAIM");
   // Select the stealing claim discipline, preferring the explicit option.
-  const stealClaim = host?.stealClaim ?? stealClaimEnv ?? "dekker";
+  const stealClaim = host?.stealClaim === undefined
+    ? stealClaimEnv ?? DEFAULT_STEAL_CLAIM
+    : assertStealClaim(host.stealClaim, "host.stealClaim");
   const usingCompiledWorker = resolvedWorker?.runtime === "compiled";
   if (resolvedWorker?.compiled !== undefined && !usingCompiledWorker) {
     throw new Error(
@@ -768,6 +780,7 @@ export const createPool: CreatePoolFactory = ({
       at,
       thread,
       debug,
+      debugEpoch,
       hostDebug: hostDebug?.log,
       totalNumberOfThread,
       // Worker count without the inline lane. The inliner runs on the host
@@ -776,6 +789,7 @@ export const createPool: CreatePoolFactory = ({
       source,
       workerOptions: resolvedWorker,
       workerExecArgv: execArgv,
+      requestedExecArgv: workerExecArgv,
       host,
       payload,
       sharedBytesEnabled,
@@ -809,12 +823,24 @@ export const createPool: CreatePoolFactory = ({
     // Round-robin wake keeps stealing at one notify per publish; any idle worker
     // can claim the region.
     let wakeCursor = 0;
+    let lastWoken = 0;
     const wakeOne = () => {
       const lanes = workers.length;
       if (lanes === 0) return;
-      const lane = wakeCursor;
+      const lane = lastWoken = wakeCursor;
       wakeCursor = wakeCursor + 1 < lanes ? wakeCursor + 1 : 0;
       workers[lane]!.laneWake?.();
+    };
+    // Any awake worker will claim what was just published, so a lost wake
+    // only strands work when every worker is parked. Ring the lane this pass
+    // already rang: one still waking up absorbs it, and a second lane would
+    // be one more thread woken per call.
+    const wakeIfAllParked = () => {
+      for (let lane = 0; lane < workers.length; lane++) {
+        const context = workers[lane] as { laneAwake?: () => boolean };
+        if (context.laneAwake?.() !== false) return;
+      }
+      workers[lastWoken]?.laneWake?.();
     };
 
     // The shared dispatcher drives one queue, so it needs signal words of its
@@ -834,6 +860,7 @@ export const createPool: CreatePoolFactory = ({
       channelHandler: channel,
       dispatcherOptions: host,
       notifySignal: wakeOne,
+      wakeAfterPass: wakeIfAllParked,
       crossProcess: resolvedWorker?.runtime === "process",
       nativeCompletionDoorbell: denoCompletionDoorbell !== undefined ||
         workers.some((context) =>
@@ -1195,6 +1222,7 @@ export const createPool: CreatePoolFactory = ({
   return {
     shutdown: shutdownWithDelay,
     [Symbol.dispose]: disposePool,
+    [Symbol.asyncDispose]: () => shutdownWithDelay(),
     call: Object.fromEntries(callEntries) as unknown as FunctionMapType<T>,
     // Only the shared submit queue has a single arena to build arguments in.
     sharedArgBytes: createHostArgAllocator(
@@ -1221,6 +1249,7 @@ const createSingleTaskPool = <
     call: pool.call[SINGLE_TASK_KEY] as SingleTaskPool<A, B, AS>["call"],
     shutdown: pool.shutdown,
     [Symbol.dispose]: pool[Symbol.dispose],
+    [Symbol.asyncDispose]: pool[Symbol.asyncDispose],
   };
 };
 

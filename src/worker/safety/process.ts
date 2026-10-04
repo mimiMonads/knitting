@@ -90,6 +90,15 @@ export const installTerminationGuard = (): void => {
   proc.__knittingTerminationGuard = true;
 };
 
+let reportSilencedRejection: ((reason: unknown) => void) | undefined;
+
+/** Debug hook: see what the silencer below swallows. Unset by default. */
+export const reportSilencedRejections = (
+  report: ((reason: unknown) => void) | undefined,
+): void => {
+  reportSilencedRejection = report;
+};
+
 export const installUnhandledRejectionSilencer = (): void => {
   const proc = getNodeProcess() as NodeProcessWithUnhandledGuard | undefined;
   if (!proc || typeof proc.on !== "function") {
@@ -99,5 +108,7 @@ export const installUnhandledRejectionSilencer = (): void => {
   proc.__knittingUnhandledRejectionSilencer = true;
 
   // Worker task code may create detached promises; keep workers alive.
-  proc.on("unhandledRejection", () => {});
+  proc.on("unhandledRejection", (reason: unknown) => {
+    reportSilencedRejection?.(reason);
+  });
 };

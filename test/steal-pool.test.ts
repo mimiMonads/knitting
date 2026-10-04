@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "./_runner.ts";
-import { createPool } from "../knitting.ts";
+import { createPool, KnittingError } from "../knitting.ts";
 import { AbortSignalPoolExhausted } from "../src/shared/abortSignal.ts";
 import { RUNTIME } from "../src/common/runtime.ts";
 import { abortA, abortB, abortReturnsInput } from "./fixtures/abort_tasks.ts";
@@ -332,17 +332,20 @@ test("shutting a pool down stops its workers", {
     await pool.shutdown();
   }
 
-  // Every pool is gone, so nothing should be burning CPU. Abandoned workers
-  // accumulate across rounds: these twelve measured ~1.4 cores before the fix
-  // and ~0.03 after, so the threshold sits well clear of both.
-  const idleMs = 300;
+  // Bun does not wait for thread termination in shutdown(), so allow its
+  // termination callbacks and runtime cleanup to settle before sampling.
+  // Abandoned workers accumulate across rounds: these twelve measured ~1.4
+  // cores before the fix and ~0.03 after. Leave room for CI CPU noise while
+  // still detecting that sustained leak.
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  const idleMs = 600;
   const before = cpuUsage();
   await new Promise((resolve) => setTimeout(resolve, idleMs));
   const delta = cpuUsage(before);
   const busyRatio = (delta.user + delta.system) / 1000 / idleMs;
 
   assert.ok(
-    busyRatio < 0.4,
+    busyRatio < 0.75,
     `${rounds * threads} workers from shut-down pools burned ${
       busyRatio.toFixed(2)
     } cores; shutdown left them running`,
@@ -375,4 +378,238 @@ for (const topology of ["steal", "per-thread", "serial-channel"] as const) {
       await pool.shutdown();
     }
   });
+
+  // Saturated flow, not idle wakes: workers park and wake between batches
+  // while the host keeps publishing, which is where a ring decided before the
+  // publish (or a worker parked on its own unwritten results) went unseen.
+  test(`${topology} never waits out the park timeout under saturation`, async () => {
+    const pool = createPool({
+      threads: 4,
+      host: topology === "steal"
+        ? { steal: true }
+        : { steal: false, dispatcher: topology },
+      worker: { timers: { spinMicroseconds: 0, parkMs: 60_000 } },
+    })({ double });
+    try {
+      for (let batch = 0; batch < 40; batch++) {
+        const values = await withTimeout(Promise.all(
+          Array.from({ length: 512 }, (_, i) => pool.call.double(i)),
+        ));
+        assert.equal(values[511], 1022);
+      }
+    } finally {
+      await pool.shutdown();
+    }
+  });
 }
+
+test("ticket worker failure rejects pending calls and permanently closes submissions", async () => {
+  const { crashTicketWorker } = await import(
+    "./fixtures/ticket_failure_tasks.ts"
+  );
+  const pool = createPool({
+    threads: 2,
+    host: { steal: true, stealClaim: "ticket", stealRegionLanes: 1 },
+  })({ double, delayedEcho, crashTicketWorker });
+  try {
+    assert.equal(await withTimeout(pool.call.double(2)), 4);
+    const results = await withTimeout(Promise.allSettled([
+      pool.call.crashTicketWorker(),
+      ...Array.from({ length: 8 }, () => pool.call.delayedEcho(200)),
+    ]));
+    assert.equal(results[0]!.status, "rejected");
+    assert.ok(results.every((r) => r.status === "rejected"));
+    const later = await withTimeout(Promise.allSettled(
+      Array.from({ length: 40 }, (_, i) => pool.call.double(i)),
+    ));
+    assert.ok(
+      later.every((r) => r.status === "rejected"),
+      "calls routed through surviving workers must also reject",
+    );
+  } finally {
+    await withTimeout(pool.shutdown());
+  }
+});
+
+test("single-worker failure rejects later calls instead of leaving them pending", async () => {
+  const { crashTicketWorker } = await import(
+    "./fixtures/ticket_failure_tasks.ts"
+  );
+  const pool = createPool({ threads: 1 })({ double, crashTicketWorker });
+  try {
+    assert.equal(await withTimeout(pool.call.double(2)), 4);
+    const [crashed] = await withTimeout(
+      Promise.allSettled([pool.call.crashTicketWorker()]),
+    );
+    assert.equal(crashed!.status, "rejected");
+    const later = await withTimeout(Promise.allSettled(
+      Array.from({ length: 4 }, (_, i) => pool.call.double(i)),
+    ));
+    for (const result of later) {
+      assert.equal(result.status, "rejected");
+      if (result.status !== "rejected") continue;
+      assert.ok(result.reason instanceof KnittingError);
+      assert.equal(result.reason.code, "WORKER_CRASHED");
+    }
+  } finally {
+    await withTimeout(pool.shutdown());
+  }
+});
+
+test("ticket ordinary task rejection leaves the pool usable", async () => {
+  const { rejectTicketTask } = await import(
+    "./fixtures/ticket_failure_tasks.ts"
+  );
+  const pool = createPool({
+    threads: 2,
+    host: { steal: true, stealClaim: "ticket" },
+  })({ double, rejectTicketTask });
+  try {
+    const [outcome] = await withTimeout(
+      Promise.allSettled([pool.call.rejectTicketTask()]),
+    );
+    assert.equal(outcome!.status, "rejected");
+    assert.equal(await withTimeout(pool.call.double(7)), 14);
+  } finally {
+    await withTimeout(pool.shutdown());
+  }
+});
+
+test("ticket publication releases large payloads across repeated concurrent slot reuse", async () => {
+  const pool = createPool({
+    threads: 4,
+    host: { steal: true, stealClaim: "ticket", stealRegionLanes: 1 },
+  })({ double, concat });
+  try {
+    const inputs = Array.from(
+      { length: 1200 },
+      (_, i) => `${i}:` + "x".repeat(4096),
+    );
+    const results = await withTimeout(
+      Promise.all(inputs.map((value) => pool.call.concat(value))),
+    );
+    assert.deepEqual(results, inputs.map((value) => `${value}!`));
+    const numbers = await withTimeout(Promise.all(
+      Array.from({ length: 1200 }, (_, i) => pool.call.double(i)),
+    ));
+    assert.deepEqual(numbers, Array.from({ length: 1200 }, (_, i) => i * 2));
+  } finally {
+    await withTimeout(pool.shutdown());
+  }
+});
+
+/**
+ * Configuration that no longer exists must fail loudly. `cas-mask` was removed,
+ * and silently resolving it to Dekker would let a stale deployment or a typo
+ * run a discipline nobody selected.
+ */
+test("KNITTING_STEAL_CLAIM rejects a removed discipline", () => {
+  const previous = process.env.KNITTING_STEAL_CLAIM;
+  process.env.KNITTING_STEAL_CLAIM = "cas-mask";
+  try {
+    assert.throws(
+      () => createPool({ threads: 2, host: { steal: true } })({ double }),
+      (error: unknown) =>
+        error instanceof RangeError &&
+        error.message.includes("KNITTING_STEAL_CLAIM") &&
+        error.message.includes("cas-mask was removed"),
+    );
+  } finally {
+    if (previous === undefined) delete process.env.KNITTING_STEAL_CLAIM;
+    else process.env.KNITTING_STEAL_CLAIM = previous;
+  }
+});
+
+test("KNITTING_STEAL_CLAIM rejects a typo", () => {
+  const previous = process.env.KNITTING_STEAL_CLAIM;
+  process.env.KNITTING_STEAL_CLAIM = "tickett";
+  try {
+    assert.throws(
+      () => createPool({ threads: 2, host: { steal: true } })({ double }),
+      RangeError,
+    );
+  } finally {
+    if (previous === undefined) delete process.env.KNITTING_STEAL_CLAIM;
+    else process.env.KNITTING_STEAL_CLAIM = previous;
+  }
+});
+
+test("an unknown host.stealClaim is rejected", () => {
+  assert.throws(
+    () =>
+      createPool({
+        threads: 2,
+        host: { steal: true, stealClaim: "cas-mask" as never },
+      })({ double }),
+    (error: unknown) =>
+      error instanceof RangeError && error.message.includes("host.stealClaim"),
+  );
+});
+
+test("dekker stays explicitly selectable", async () => {
+  const pool = createPool({
+    threads: 2,
+    host: { steal: true, stealClaim: "dekker" },
+  })({ double });
+  try {
+    const out = await withTimeout(
+      Promise.all(Array.from({ length: 16 }, (_, i) => pool.call.double(i))),
+    );
+    assert.deepEqual(out, Array.from({ length: 16 }, (_, i) => i * 2));
+  } finally {
+    await pool.shutdown();
+  }
+});
+
+/**
+ * Exercise the explicitly selected Dekker path under real backlog and worker
+ * contention. Mixed task ids keep responses from being matched by shape, and
+ * string payloads exercise the arena rather than only the header word.
+ */
+for (const threads of [2, 4]) {
+  test(`dekker drains a saturated pool with ${threads} workers`, async () => {
+    const pool = createPool({
+      threads,
+      host: { steal: true, stealClaim: "dekker" },
+    })({ double, concat });
+    try {
+      const TOTAL = 400;
+      const numbers = Array.from(
+        { length: TOTAL },
+        (_, i) => pool.call.double(i),
+      );
+      const strings = Array.from(
+        { length: TOTAL },
+        (_, i) => pool.call.concat(`v${i}`),
+      );
+      const [doubled, joined] = await withTimeout(
+        Promise.all([Promise.all(numbers), Promise.all(strings)]),
+        20_000,
+      );
+      assert.deepEqual(doubled, Array.from({ length: TOTAL }, (_, i) => i * 2));
+      assert.deepEqual(joined, Array.from({ length: TOTAL }, (_, i) => `v${i}!`));
+    } finally {
+      await pool.shutdown();
+    }
+  });
+}
+
+test("a stealing pool with no claim selected runs on the ticket default", async () => {
+  const previous = process.env.KNITTING_STEAL_CLAIM;
+  delete process.env.KNITTING_STEAL_CLAIM;
+  // 32 lanes leaves a single region, which Dekker rejects for two consumers and
+  // ticket does not care about — so this only builds under the ticket default.
+  const pool = createPool({
+    threads: 2,
+    host: { steal: true, stealRegionLanes: 32 },
+  })({ double });
+  try {
+    const out = await withTimeout(
+      Promise.all(Array.from({ length: 16 }, (_, i) => pool.call.double(i))),
+    );
+    assert.deepEqual(out, Array.from({ length: 16 }, (_, i) => i * 2));
+  } finally {
+    await pool.shutdown();
+    if (previous !== undefined) process.env.KNITTING_STEAL_CLAIM = previous;
+  }
+});

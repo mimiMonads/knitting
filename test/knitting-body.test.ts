@@ -88,6 +88,7 @@ test("one task reads a body whichever way it travelled", async () => {
   });
   const pool = createPool({
     threads: 1,
+    permission: { node: { allowAddons: true } },
     worker: {
       bootstrap: {
         href: "./fixtures/knitting_body_bootstrap.ts",
@@ -133,6 +134,7 @@ test("a body shorter than it claimed still travels at its real length", async ()
   });
   const pool = createPool({
     threads: 1,
+    permission: { node: { allowAddons: true } },
     worker: {
       bootstrap: {
         href: "./fixtures/knitting_body_bootstrap.ts",
@@ -264,6 +266,7 @@ test("every transport stays readable until the handle is disposed", async () => 
   });
   const pool = createPool({
     threads: 1,
+    permission: { node: { allowAddons: true } },
     worker: {
       bootstrap: {
         href: "./fixtures/knitting_body_bootstrap.ts",

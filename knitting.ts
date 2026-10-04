@@ -9,6 +9,7 @@ import {
   task,
 } from "./src/api.ts";
 import { Envelope } from "./src/common/envelope.ts";
+import { KnittingError } from "./src/error.ts";
 import {
   isNumericArray,
   NumericArray,
@@ -20,6 +21,7 @@ export {
   importTask as importTask,
   isMain as isMain,
   isNumericArray as isNumericArray,
+  KnittingError as KnittingError,
   NumericArray as NumericArray,
   setModuleUrl as setModuleUrl,
   task as task,
@@ -29,6 +31,7 @@ export type {
   EnvelopeBody as EnvelopeBody,
   EnvelopeHeader as EnvelopeHeader,
 } from "./src/common/envelope.ts";
+export type { KnittingErrorCode } from "./src/error.ts";
 export type {
   CompiledWorkerCheck,
   CompiledWorkerOptions,

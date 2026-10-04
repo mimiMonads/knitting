@@ -49,9 +49,19 @@ export const assertWorkerImportsResolved = (
     listOfFunctions.length > 0 &&
     (names === undefined || listOfFunctions.length === names.length)
   ) return;
-  console.log(list);
-  console.log(ids);
-  if (names !== undefined) console.log(names);
-  console.log(listOfFunctions);
-  throw new Error("No imports were found.");
+  const found = new Set(
+    listOfFunctions.map((entry) => (entry as { name?: unknown })?.name),
+  );
+  const missing = (names ?? []).filter((name) => !found.has(name));
+  const tasks = missing.length > 0
+    ? ` Missing task export(s): ${missing.join(", ")}.`
+    : "";
+  const modules = list.length > 0 ? ` Looked in: ${list.join(", ")}.` : "";
+  throw new Error(
+    `No imports were found.${tasks}${modules}` +
+      " Workers re-import each listed module and look tasks up by export" +
+      " name: a bare function must be exported from the module that calls" +
+      " createPool, and a bundle that inlines task modules drops their" +
+      " exports.",
+  );
 };

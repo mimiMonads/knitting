@@ -9,6 +9,7 @@ test("experimental native completion doorbell completes thread-worker calls", {
 }, async () => {
   const pool = createPool({
     threads: 1,
+    permission: { node: { allowAddons: true } },
     host: {
       doorbell: true,
       nativeDoorbell: true,

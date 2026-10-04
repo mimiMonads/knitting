@@ -1,6 +1,7 @@
 export {
   installTerminationGuard,
   installUnhandledRejectionSilencer,
+  reportSilencedRejections,
 } from "./process.ts";
 export { installPerformanceNowGuard } from "./performance.ts";
 export { scrubWorkerDataSensitiveBuffers } from "./worker-data.ts";

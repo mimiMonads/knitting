@@ -35,6 +35,7 @@ export const hostDispatcherLoop = ({
   channelHandler,
   dispatcherOptions,
   notifySignal,
+  wakeAfterPass,
   crossProcess,
   nativeCompletionDoorbell,
   processCompletionDoorbell,
@@ -44,6 +45,11 @@ export const hostDispatcherLoop = ({
   channelHandler: ChannelHandler;
   dispatcherOptions?: DispatcherSettings;
   notifySignal?: () => void;
+  /**
+   * Runs at the end of every drain pass. Defaults to waking this lane's worker
+   * if it is parked; a shared queue supplies its own policy.
+   */
+  wakeAfterPass?: () => void;
   /** Workers live in other processes; disables only the atomic doorbell. */
   crossProcess?: boolean;
   /** A runtime-native completion ring that wakes the host event loop. */
@@ -51,14 +57,23 @@ export const hostDispatcherLoop = ({
   /** A process IPC completion doorbell that wakes the host event loop. */
   processCompletionDoorbell?: boolean;
 }) => {
+  const a_add = Atomics.add;
   const a_load = Atomics.load;
-  const a_store = Atomics.store;
   const a_notify = Atomics.notify;
   const canNotifySignal = opView.buffer instanceof SharedArrayBuffer;
   const wakeSignal = notifySignal ??
     (() => {
       if (canNotifySignal) a_notify(opView, 0, 1);
     });
+  // Bump rather than store a constant: the worker parks on the value it last
+  // read, so only a changed word makes a ring that lands before its wait count.
+  const wakeLane = () => {
+    a_add(opView, 0, 1);
+    wakeSignal();
+  };
+  const wakeIfParked = wakeAfterPass ?? (() => {
+    if (a_load(rxStatus, 0) === 0) wakeLane();
+  });
   const notify = () => channelHandler.notify();
   // Atomics waiters are process-local, so cross-process workers cannot use this
   // doorbell.
@@ -205,12 +220,10 @@ export const hostDispatcherLoop = ({
 
       txStatus[0] = 1;
 
-      // Wake a parked worker whenever its receive status is clear. Pending
-      // frames are not a reliable gate because the queue may have room.
-      if (a_load(rxStatus, 0) === 0) {
-        a_store(opView, 0, 1);
-        wakeSignal();
-      }
+      // Wake a parked worker whenever its receive status is clear, so it is
+      // up by the time the frames land. Pending frames are not a reliable gate
+      // because the queue may have room.
+      if (a_load(rxStatus, 0) === 0) wakeLane();
 
       // Only completed frames count as progress for backoff purposes.
       let completed = false;
@@ -226,6 +239,14 @@ export const hostDispatcherLoop = ({
           progressed = true;
         }
       }
+
+      // The ring above was decided before the frames flushed here existed, and
+      // calls publish straight from enqueue without passing through this loop.
+      // A worker that parked in between saw neither the frames nor a ring and
+      // slept out its whole parkMs. Publishing ends in a seq-cst store and the
+      // worker re-checks after clearing rxStatus, so re-reading rxStatus after
+      // the pass means either the worker sees the frames or this sees it parked.
+      wakeIfParked();
 
       txStatus[0] = 0;
 

@@ -49,6 +49,12 @@ type WorkerData = {
   thread: number;
   totalNumberOfThread: number;
   debug?: DebugOptions;
+  /**
+   * Host's debug zero as `performance.timeOrigin + performance.now()` (Unix
+   * epoch ms), so worker debug clocks line up with the host's. Set only when
+   * debug is requested.
+   */
+  debugEpoch?: number;
   startAt: number;
   workerOptions?: WorkerSettings;
   at: number[];
@@ -71,8 +77,8 @@ type WorkerData = {
     consumers: number;
     consumerId: number;
     regionLanes: number;
-    /** Region mutual-exclusion discipline; see `DispatcherSettings.stealClaim`. */
-    claim?: "dekker" | "cas-mask";
+    /** Claim discipline; see `DispatcherSettings.stealClaim`. */
+    claim?: "dekker" | "ticket";
   };
 };
 
@@ -316,6 +322,8 @@ type SingleTaskPool<
   shutdown: (delayMs?: number) => Promise<void>;
   /** Starts shutdown at scope exit. Use `shutdown()` when you must await it. */
   [Symbol.dispose]: () => void;
+  /** `await using` awaits worker teardown at scope exit. */
+  [Symbol.asyncDispose]: () => Promise<void>;
 };
 
 type Pool<T extends Record<string, TaskLike<any> | TaskFunctionLike>> = {
@@ -323,6 +331,8 @@ type Pool<T extends Record<string, TaskLike<any> | TaskFunctionLike>> = {
   shutdown: (delayMs?: number) => Promise<void>;
   /** Starts shutdown at scope exit. Use `shutdown()` when you must await it. */
   [Symbol.dispose]: () => void;
+  /** `await using` awaits worker teardown at scope exit. */
+  [Symbol.asyncDispose]: () => Promise<void>;
   /**
    * Typed task callers. Each call accepts the task input or a native Promise.
    * Thrown errors/rejections reject here as Error objects with cause chains.
@@ -378,8 +388,14 @@ type Balancer =
     strategy?: BalancerStrategy;
   };
 
-/** Debug namespaces for host setup, worker state, imports, globals, and lifecycle. */
-type DebugNamespace = "host" | "globals" | "signals" | "imports" | "lifecycle";
+/** Debug namespaces for host setup, worker state, imports, globals, lifecycle, and steal claims. */
+type DebugNamespace =
+  | "host"
+  | "globals"
+  | "signals"
+  | "imports"
+  | "lifecycle"
+  | "steal";
 
 type DebugFlags = { [Namespace in DebugNamespace]?: boolean };
 
@@ -518,7 +534,10 @@ type WorkerTimers = {
    */
   spinMicroseconds?: number;
   /**
-   * Atomics.wait timeout when parked (milliseconds).
+   * Atomics.wait timeout when parked (milliseconds). Defaults to 1000 for
+   * thread workers, which the host wakes on every publish, so the timeout is
+   * only a safety net; 1 for process workers, most of which only rediscover
+   * work when it expires.
    */
   parkMs?: number;
   /**
@@ -562,8 +581,13 @@ type DispatcherSettings = {
    * tasks; Dekker requires at least one spare region per live consumer.
    */
   stealRegionLanes?: number;
-  /** Region-claim discipline: per-consumer Dekker intents or a shared CAS mask. */
-  stealClaim?: "dekker" | "cas-mask";
+  /**
+   * Publication-ordered tickets (`"ticket"`, the default) or Dekker regions
+   * (`"dekker"`). Unrecognised values are rejected rather than defaulted, so a
+   * removed discipline such as `cas-mask` fails at pool creation. Ticket pools
+   * reject pending and future calls on worker failure.
+   */
+  stealClaim?: "dekker" | "ticket";
 };
 
 type CreatePool = {
@@ -592,14 +616,20 @@ type CreatePool = {
    */
   host?: DispatcherSettings;
   /**
-   * Extra Node.js execArgv flags for worker threads (e.g. ["--expose-gc"]).
-   * Defaults to process.execArgv plus "--expose-gc" when allowed.
+   * Extra Node.js execArgv flags for worker threads (e.g. ["--no-warnings"]).
+   * Defaults to compatible flags from process.execArgv. Node permission flags
+   * are replaced by the resolved `permission` policy.
+   *
+   * Node rejects V8 and process-wide flags (`--expose-gc`,
+   * `--max-old-space-size`, ...). Unsupported caller flags are dropped with a
+   * warning. Permission flags are never dropped to start an unpermissioned
+   * thread worker; pool creation fails if Node cannot apply them.
    */
   workerExecArgv?: string[];
   /**
    * Runtime permission protocol.
-   * Omit to use strict defaults with `allowImport: true`; worker console is
-   * quiet unless `permission: { console: true }`.
+   * Omit to use strict defaults with `allowImport: true`. `console` is
+   * accepted but not enforced: worker console output is always forwarded.
    *
    * Task code cannot terminate the host: process/Deno exit APIs are blocked.
    * Use `"strict"` (default for object mode) or `"unsafe"`.

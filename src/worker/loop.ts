@@ -35,6 +35,7 @@ import {
   installPerformanceNowGuard,
   installTerminationGuard,
   installUnhandledRejectionSilencer,
+  reportSilencedRejections,
   scrubWorkerDataSensitiveBuffers,
 } from "./safety/index.ts";
 import { signalAbortFactory } from "../shared/abortSignal.ts";
@@ -46,6 +47,8 @@ import {
 import { resolveDebugNamespaces } from "../debug/gate.ts";
 
 const WORKER_FATAL_MESSAGE_KEY = "__knittingWorkerFatal";
+// Park timeout while finished results wait for return slots (see the loop).
+const BLOCKED_RETURN_PARK_MS = 1;
 
 const reportWorkerStartupFatal = (error: unknown): void => {
   const message = String((error as { message?: unknown })?.message ?? error);
@@ -95,6 +98,7 @@ export const workerMainLoop = async (
 
   const {
     debug,
+    debugEpoch,
     sab,
     thread,
     startAt,
@@ -128,9 +132,21 @@ export const workerMainLoop = async (
         name: `w${thread}`,
         runtime: RUNTIME,
         namespaces: debugNamespaces,
+        epoch: debugEpoch,
       })
     )
     : undefined;
+  if (dbg?.enabled("lifecycle") === true) {
+    // Detached task promises reject silently otherwise (see the silencer).
+    reportSilencedRejections((reason) =>
+      dbg.log(
+        "lifecycle",
+        `unhandled rejection silenced: ${
+          reason instanceof Error ? reason.stack ?? reason.message : String(reason)
+        }`,
+      )
+    );
+  }
 
   // Andromeda cannot parse enums.
   const Comment = {
@@ -160,6 +176,10 @@ export const workerMainLoop = async (
     consumerId: steal?.consumerId,
     regionLanes: steal?.regionLanes,
     stealClaim: steal?.claim,
+    // Undefined unless `steal` is traced, so the claim path stays untouched.
+    traceClaim: steal !== undefined && dbg?.enabled("steal") === true
+      ? (message: string) => dbg.log("steal", message)
+      : undefined,
   });
   const notifyDenoHost = createDenoCompletionNotifier(denoCompletionDoorbell);
   const notifyNodeHost = createNodeCompletionNotifier(nodeCompletionDoorbell);
@@ -431,7 +451,13 @@ export const workerMainLoop = async (
           } while (txStatus[Comment.thisIsAHint] === 1);
           continue;
         }
-        _pauseUntil(wakeToken, spinMicroseconds, parkMs);
+        // Results that could not be written wait on the host freeing return
+        // slots, which rings no worker in particular: keep that park short.
+        _pauseUntil(
+          wakeToken,
+          spinMicroseconds,
+          _hasCompleted() ? Math.min(parkMs, BLOCKED_RETURN_PARK_MS) : parkMs,
+        );
         wakeToken = a_load(opView, 0);
       }
     }
