@@ -182,8 +182,10 @@ const runProbe = (
 
 const isPermissionDenied = (error: unknown): boolean => {
   const text = String(error);
+  // A thread worker's ERR_ACCESS_DENIED reaches the host as its message only.
   return text.includes("KNT_ERROR_PERMISSION_DENIED") ||
-    text.includes("ERR_ACCESS_DENIED");
+    text.includes("ERR_ACCESS_DENIED") ||
+    text.includes("Access to this API has been restricted");
 };
 
 const assertNotPermissionDenied = (error: unknown): void => {

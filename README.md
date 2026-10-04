@@ -937,10 +937,16 @@ capability. On Node it enables both native addons and `node:ffi`; Node's
 `node.allowAddons` and `node.allowFfi` switches are independent—enabling addons
 does not silently enable FFI. Node thread workers deny addon loading by default
 under the strict policy. Set `permission.node.allowAddons: true` when a task
-needs an addon-backed feature such as `ProcessSharedBuffer` or `BufferReference`
-on addon-backed Node versions. This lets task code load Node native addons
-generally, so use it only for trusted tasks. The optional native completion
-doorbell falls back to the portable wake path when addon loading is denied.
+needs an addon-backed feature on addon-backed Node versions: `SharedArrayBuffer`
+arguments, returns and `Envelope` bodies, `ProcessSharedBuffer`, and
+`BufferReference`. Node 26 maps the same pointers through `node:ffi`, so there
+the switch is `permission.node.allowFfi`; top-level `ffi: true` grants both.
+Without it a Node thread worker cannot map those pointers: the worker crashes
+and later calls on it fail. Either switch lets task code load native code
+generally, so use it only for trusted tasks. Two paths degrade instead of
+failing when addon loading is denied: large returns are copied rather than
+moved, and the optional native completion doorbell falls back to the portable
+wake path.
 
 Node process workers are a transport exception: Knitting needs `--allow-addons`
 on Node 22/24 or `--allow-ffi` on Node 26 to map their shared memory. Deno
@@ -1333,7 +1339,7 @@ ownership move on thread workers:
 
 | Runtime | Result ownership |
 | --- | --- |
-| Node 22/24 with the addon | The host co-owns the V8 backing store: zero byte copies. |
+| Node 22/24 with the addon | The host co-owns the V8 backing store: zero byte copies. Under the strict permission policy this needs `permission.node.allowAddons`; otherwise it takes the one-private-copy fallback. |
 | Deno and Bun | The host makes one private copy before the worker releases its pin. |
 | Older Node backend | The same one-private-copy fallback. |
 

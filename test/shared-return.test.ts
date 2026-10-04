@@ -160,7 +160,10 @@ test("shared-byte returns are disabled by default", async () => {
 
 test("a large thread return is moved to an owned host buffer by default", async () => {
   if (!supported || !supportsAutomaticMove()) return;
-  const pool = createPool({ threads: 1 })({
+  const pool = createPool({
+    threads: 1,
+    permission: { node: { allowAddons: true } },
+  })({
     returnAndKeepBytes,
     keptReturnByteLength,
   });
@@ -183,7 +186,10 @@ test("a large thread return is moved to an owned host buffer by default", async 
 
 test("a large thread ArrayBuffer return is moved by default", async () => {
   if (!supported || !supportsAutomaticMove()) return;
-  const pool = createPool({ threads: 1 })({
+  const pool = createPool({
+    threads: 1,
+    permission: { node: { allowAddons: true } },
+  })({
     returnAndKeepArrayBuffer,
     keptArrayBufferByteLength,
   });

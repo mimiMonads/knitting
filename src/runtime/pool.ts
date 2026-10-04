@@ -661,7 +661,7 @@ export const spawnWorkerContext = ({
     host?.doorbell !== false && host?.nativeDoorbell === true &&
     !threadCanLoadNodeAddons
   ) {
-    hostDebug?.log(
+    hostDebug?.(
       "native Node doorbell disabled by worker permissions; using the " +
         "portable wake path (set permission.node.allowAddons=true to enable)",
     );

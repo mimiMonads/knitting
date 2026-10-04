@@ -145,7 +145,10 @@ test("readBodyOrRefer's moved result round-trips through a thread worker", async
     assert.fail("the test body should take the BufferReference path");
   }
 
-  const pool = createPool({ threads: 1 })({ sumAndIncrement });
+  const pool = createPool({
+    threads: 1,
+    permission: { node: { allowAddons: true } },
+  })({ sumAndIncrement });
   try {
     let expected = 0;
     for (const byte of body) expected += byte;
