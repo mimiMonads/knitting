@@ -479,6 +479,7 @@ Common options you might tweak:
 | `host.steal`                      | Shared-submit work stealing for compatible multi-worker thread/process pools; enabled by default. Set `false` to use private submit lanes. |
 | `host.stealRegionLanes`           | Submit lanes claimed per stealing handshake (a power of two). Smaller regions are fairer for expensive tasks; wider regions amortise arbitration for cheap ones. |
 | `host.stealClaim`                 | Claim discipline: `"ticket"` (default) or `"dekker"`. Also settable with `KNITTING_STEAL_CLAIM`; an unrecognised value is rejected.  |
+| `host.stealSingleClaimMicroseconds` | Opt-in adaptive ticket claims for multi-worker pools. Try `20` to reduce mixed-workload p99 latency; default `0` disables adaptation. |
 | `host.doorbell`                   | Wait for completion notifications instead of polling an empty return mailbox; enabled by default where supported. Set `false` to force polling. |
 | `host.nativeDoorbell`             | Opt into Node's native `uv_async_t` completion bridge for thread workers. Off by default; ignored when `host.doorbell` is `false`. |
 | `debug`                           | Enable diagnostics (`host`, `globals`, `signals`, `imports`, `lifecycle`, `steal`) or use `KNITTING_DEBUG`.                       |
@@ -537,7 +538,7 @@ protocol limit also fall back. Set `host: { steal: false }` or
 where arbitration has nothing to rebalance. `host: { steal: true }` or
 `KNITTING_STEAL=1` forces it for an otherwise compatible pool.
 
-Two options tune the arbitration itself, and both only apply to a stealing pool:
+Three options tune the arbitration itself, and all only apply to a stealing pool:
 
 - `host.stealRegionLanes` is how many submit lanes one handshake claims (a power
   of two). **A region is a batch**: a wide region amortises arbitration best for
@@ -552,6 +553,22 @@ Two options tune the arbitration itself, and both only apply to a stealing pool:
   an error, not a fallback**: a typo, or a `cas-mask` setting left over from
   when that discipline existed, fails at pool creation rather than quietly
   running a discipline you did not choose.
+- `host.stealSingleClaimMicroseconds` makes the ticket batch adaptive. A claimed
+  batch runs to completion on the worker that claimed it, so a cheap task
+  claimed beside an expensive one waits behind it while a peer may be idle.
+  Each worker times the batches it runs (two clock reads per batch) and keeps a
+  slowly decaying peak of the mean task cost. While that peak is at or above
+  the threshold, the worker claims one ticket at a time; below it, it claims up
+  to `stealRegionLanes`, which keeps the batching that pays off for cheap
+  tasks. The default is `0` (disabled); try `20` µs for mixed workloads.
+  Single-worker pools and Dekker do not adapt. A ticket width of `1` skips
+  timing because it cannot shrink further. An invalid value (negative, `NaN`
+  or non-finite) is rejected when creating a stealing pool.
+
+**0.1.74 performance note:** Adaptive ticket claims can improve p99 latency
+in multi-worker mixed workloads. Uniform short tasks near the threshold can
+lose throughput at higher worker counts (about 4–7% with seven workers in
+local tests), so adaptation is opt-in and disabled by default.
 
 The ticket discipline uses a 64-bit claim head and a wrapping 32-bit
 publication tail. The head CAS validates the tail snapshot: at most 32 tickets

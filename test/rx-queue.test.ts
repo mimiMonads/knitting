@@ -276,3 +276,89 @@ test("worker queue drops original args once async work has been invoked", () => 
 
   pending.resolve(1);
 });
+
+const adaptiveQueue = (
+  options: { stealing: boolean; singleClaimAboveMs?: number },
+) => {
+  const resolved = new RingQueue<Task>();
+  const recyclecList = new RingQueue<Task>();
+  const limits: number[] = [];
+  let clock = 0;
+  let taskMs: number | number[] = 0;
+  let clockReads = 0;
+  const lock = {
+    decode: () => resolved.size !== 0,
+    resolved,
+    recyclecList,
+    setStealClaimLimit: (limit: number) => {
+      limits.push(limit);
+      return true;
+    },
+  };
+  const queue = createWorkerRxQueue({
+    listOfFunctions: [{
+      run: (value: unknown) => {
+        clock += Array.isArray(taskMs) ? taskMs[value as number]! : taskMs;
+        return value;
+      },
+    }],
+    lock,
+    returnLock: { encode: () => true },
+    now: () => {
+      clockReads++;
+      return clock;
+    },
+    ...options,
+  } as any);
+  const runBatch = (count: number, ms: number | number[]) => {
+    taskMs = ms;
+    for (let i = 0; i < count; i++) {
+      const slot = makeTask();
+      slot[TaskIndex.FunctionID] = 0;
+      slot.value = i;
+      resolved.push(slot);
+    }
+    assert.equal(queue.enqueueLock(), true);
+    assert.equal(queue.serviceBatchImmediate(), count);
+  };
+  return { queue, limits, runBatch, getClockReads: () => clockReads };
+};
+
+test("stealing worker claims singly while tasks are expensive, then batches again", () => {
+  const { queue, limits, runBatch } = adaptiveQueue({
+    stealing: true,
+    singleClaimAboveMs: 0.02,
+  });
+
+  runBatch(4, 0.001);
+  assert.deepEqual(limits, [], "1 µs tasks keep the configured batch");
+
+  // One expensive task in a batch of four still averages 2.5 ms.
+  runBatch(4, [0.001, 10, 0.001, 0.001]);
+  assert.deepEqual(limits, [1]);
+  assert.equal(queue.isClaimingSingle(), true);
+
+  // The cost peak decays per batch, so cheap batches right after it stay single.
+  for (let i = 0; i < 10; i++) runBatch(1, 0.001);
+  assert.deepEqual(limits, [1]);
+
+  for (let i = 0; i < 200 && limits.length === 1; i++) runBatch(1, 0.001);
+  assert.deepEqual(limits, [1, Infinity]);
+  assert.equal(queue.isClaimingSingle(), false);
+});
+
+test("private lanes and a zero threshold never change the claim width", () => {
+  for (
+    const options of [
+      { stealing: false, singleClaimAboveMs: 0.02 },
+      { stealing: true, singleClaimAboveMs: 0 },
+      { stealing: true },
+    ]
+  ) {
+    const { limits, runBatch, getClockReads } = adaptiveQueue(options);
+    runBatch(4, 5);
+    runBatch(4, 0.001);
+    assert.deepEqual(limits, [], JSON.stringify(options));
+    assert.equal(getClockReads(), 0, "disabled adaptation never reads the clock");
+  }
+});

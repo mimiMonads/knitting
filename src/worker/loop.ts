@@ -288,6 +288,11 @@ export const workerMainLoop = async (
     returnLock: returnLockState,
     hasAborted: abortSignals?.hasAborted,
     stealing: steal !== undefined,
+    // Only ticket batches wider than one can adapt their claim width.
+    singleClaimAboveMs: steal !== undefined && steal.claim !== "dekker" &&
+        steal.regionLanes > 1
+      ? (steal.singleClaimMicroseconds ?? 0) / 1000
+      : 0,
   });
   if (sharedReturn === true) installSharedReturn(returnLock.payload);
 

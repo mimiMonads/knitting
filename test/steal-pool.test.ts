@@ -3,6 +3,7 @@ import test from "./_runner.ts";
 import { createPool, KnittingError } from "../knitting.ts";
 import { AbortSignalPoolExhausted } from "../src/shared/abortSignal.ts";
 import { RUNTIME } from "../src/common/runtime.ts";
+import { resolveStealSingleClaimMicroseconds } from "../src/runtime/pool.ts";
 import { abortA, abortB, abortReturnsInput } from "./fixtures/abort_tasks.ts";
 import { concat, double } from "./fixtures/steal_tasks.ts";
 import { delayedEcho } from "./fixtures/loop_tasks.ts";
@@ -611,5 +612,44 @@ test("a stealing pool with no claim selected runs on the ticket default", async 
   } finally {
     await pool.shutdown();
     if (previous !== undefined) process.env.KNITTING_STEAL_CLAIM = previous;
+  }
+});
+
+test("adaptive ticket claims are opt-in and preserve explicit thresholds", () => {
+  assert.equal(resolveStealSingleClaimMicroseconds(undefined), 0);
+  for (const value of [0, 20, 100]) {
+    assert.equal(resolveStealSingleClaimMicroseconds(value), value);
+  }
+});
+
+test("opt-in adaptive claims complete calls across worker counts and fixed widths", async () => {
+  for (const [threads, stealRegionLanes] of [[1, 1], [4, 4], [4, 1]]) {
+    const pool = createPool({
+      threads,
+      host: { steal: true, stealRegionLanes, stealSingleClaimMicroseconds: 20 },
+    })({ double, delayedEcho });
+    try {
+      const values = await withTimeout(Promise.all(
+        Array.from({ length: 256 }, (_, i) => pool.call.double(i)),
+      ));
+      assert.deepEqual(values, Array.from({ length: 256 }, (_, i) => i * 2));
+      assert.equal(await withTimeout(pool.call.delayedEcho(1)), 1);
+    } finally {
+      await pool.shutdown();
+    }
+  }
+});
+
+test("host.stealSingleClaimMicroseconds rejects values that are not finite and >= 0", () => {
+  for (const value of [-1, Number.NaN, Number.POSITIVE_INFINITY]) {
+    assert.throws(
+      () =>
+        createPool({
+          threads: 2,
+          host: { steal: true, stealSingleClaimMicroseconds: value },
+        })({ double }),
+      RangeError,
+      String(value),
+    );
   }
 });

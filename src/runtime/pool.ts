@@ -177,12 +177,32 @@ export const resolveMaxStealRegionLanes = (
 /** Maximum claimants that leave the protocol's required spare region. */
 export const MAX_STEAL_CONSUMERS = LockBound.slots - 1;
 
+/**
+ * Disabled by default to preserve batched-claim throughput. Mixed workloads
+ * can opt in with a threshold such as 20 microseconds to reduce tail latency.
+ */
+export const DEFAULT_STEAL_SINGLE_CLAIM_US = 0;
+
+/** Validate `host.stealSingleClaimMicroseconds`; `0` turns adaptation off. */
+export const resolveStealSingleClaimMicroseconds = (
+  value: number | undefined,
+): number => {
+  if (value === undefined) return DEFAULT_STEAL_SINGLE_CLAIM_US;
+  if (!Number.isFinite(value) || value < 0) {
+    throw new RangeError(
+      `host.stealSingleClaimMicroseconds must be a finite number >= 0, got ${value}`,
+    );
+  }
+  return value;
+};
+
 export const createStealPoolBuffers = ({
   threads,
   payload,
   sharedArgs,
   regionLanes,
   stealClaim,
+  singleClaimMicroseconds,
   abortSignalCapacity,
   usesAbortSignal,
   processWorker,
@@ -193,6 +213,7 @@ export const createStealPoolBuffers = ({
   sharedArgs?: boolean;
   regionLanes?: number;
   stealClaim?: StealClaimDiscipline;
+  singleClaimMicroseconds?: number;
   abortSignalCapacity?: number;
   usesAbortSignal?: boolean;
   processWorker?: {
@@ -240,6 +261,9 @@ export const createStealPoolBuffers = ({
   const lanes = regionLanes === undefined
     ? resolveStealRegionLanes(threads)
     : Math.min(Math.max(1, regionLanes | 0), maxLanes);
+  const resolvedSingleClaimMicroseconds = resolveStealSingleClaimMicroseconds(
+    singleClaimMicroseconds,
+  );
 
   const resolvedAbortSignalCapacity = resolveAbortSignalCapacity(
     abortSignalCapacity,
@@ -337,6 +361,7 @@ export const createStealPoolBuffers = ({
     sharedQueue,
     regionLanes: lanes,
     stealClaim,
+    singleClaimMicroseconds: resolvedSingleClaimMicroseconds,
     processMemory,
     abortSignalSAB,
     abortSignalMax: processMemory?.abortSignalMax ??
@@ -422,6 +447,7 @@ export const spawnWorkerContext = ({
     consumerId: number;
     regionLanes: number;
     stealClaim?: StealClaimDiscipline;
+    singleClaimMicroseconds?: number;
     abortSignalSAB?: LockBuffers["headers"];
     abortSignalMax?: number;
     processMemory?: ProcessStealMemoryLayout;
@@ -759,6 +785,7 @@ export const spawnWorkerContext = ({
       consumerId: stealPool.consumerId,
       regionLanes: stealPool.regionLanes,
       claim: stealPool.stealClaim,
+      singleClaimMicroseconds: stealPool.singleClaimMicroseconds,
     },
   } as WorkerData;
   const baseWorkerOptions = {
