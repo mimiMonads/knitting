@@ -747,6 +747,7 @@ export const createPool: CreatePoolFactory = ({
       sharedArgs: sharedArgsEnabled,
       regionLanes: host?.stealRegionLanes,
       stealClaim,
+      singleClaimMicroseconds: host?.stealSingleClaimMicroseconds,
       abortSignalCapacity,
       usesAbortSignal,
       processWorker: resolvedWorker?.runtime === "process"
@@ -808,6 +809,7 @@ export const createPool: CreatePoolFactory = ({
         consumerId: thread,
         regionLanes: stealBuffers.regionLanes,
         stealClaim: stealBuffers.stealClaim,
+        singleClaimMicroseconds: stealBuffers.singleClaimMicroseconds,
         abortSignalSAB: stealBuffers.abortSignalSAB,
         abortSignalMax: stealBuffers.abortSignalMax,
         processMemory: stealBuffers.processMemory,
@@ -897,7 +899,9 @@ export const createPool: CreatePoolFactory = ({
     hostDebug?.log(
       `dispatcher=steal lanes=${workers.length} g=${
         stealBuffers!.regionLanes
-      } claim=${stealClaim}`,
+      } claim=${stealClaim} singleClaimUs=${
+        stealClaim === "ticket" ? stealBuffers!.singleClaimMicroseconds : "off"
+      }`,
     );
   }
 

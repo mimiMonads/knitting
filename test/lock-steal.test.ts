@@ -1099,3 +1099,34 @@ test("Dekker trace marks off-home claims as steals and counts lost races", () =>
   assert.equal(consumers[1]!.decode(), true);
   assert.match(lines[1]!, / lost=0$/);
 });
+
+/** A worker narrows its ticket claims while its tasks are expensive. */
+test("ticket setStealClaimLimit caps tickets per claim and restores the width", () => {
+  const { producer, consumers: endpoints } = buildStealLock(2, 8, "ticket");
+  for (let i = 0; i < 16; i++) {
+    assert.equal(producer.encode(makeValueTask(i)), true);
+  }
+  const endpoint = endpoints[0]!;
+  const claimOnce = () => {
+    assert.equal(endpoint.decode(), true);
+    const values = endpoint.resolved.toArray().map((task) => task.value as number);
+    endpoint.resolved.clear();
+    return values;
+  };
+
+  assert.equal(endpoint.setStealClaimLimit(1), true);
+  assert.deepEqual(claimOnce(), [0]);
+  assert.deepEqual(claimOnce(), [1]);
+  assert.equal(endpoint.setStealClaimLimit(Infinity), true);
+  assert.deepEqual(claimOnce(), [2, 3, 4, 5, 6, 7, 8, 9]);
+  // Out-of-range limits clamp to 1..regionLanes.
+  endpoint.setStealClaimLimit(0);
+  assert.deepEqual(claimOnce(), [10]);
+  endpoint.setStealClaimLimit(64);
+  assert.deepEqual(claimOnce(), [11, 12, 13, 14, 15]);
+});
+
+test("dekker ignores setStealClaimLimit; it always claims whole regions", () => {
+  const { consumers: endpoints } = buildStealLock(2, 8, "dekker");
+  assert.equal(endpoints[0]!.setStealClaimLimit(1), false);
+});

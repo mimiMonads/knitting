@@ -735,6 +735,12 @@ export const lock2 = ({
   /** A claimant drains at most one region's worth of tickets per CAS. */
   const stealTicketBatch = stealRegionLanes;
   const stealTicketSlots = new Int32Array(stealTicketBatch);
+  /**
+   * Tickets this consumer takes per CAS, `1..stealTicketBatch`. A worker lowers
+   * it while its tasks are expensive (see `setStealClaimLimit`), because a
+   * claimed batch runs to completion on the claimant.
+   */
+  let stealTicketClaimLimit = stealTicketBatch;
   const stealTicketPublish = stealEnabled && stealIsProducer && stealTicket;
   /** Producer-private shadow of the tail; the producer is its only writer. */
   let stealTicketTail = 0 | 0;
@@ -1308,7 +1314,7 @@ export const lock2 = ({
       // distances are stale snapshots; the 64-bit head is still the arbiter.
       if (available > LockBound.slots) continue;
 
-      const batch = Math.min(available, stealTicketBatch);
+      const batch = Math.min(available, stealTicketClaimLimit);
       const next = head + BigInt(batch);
       if (next > STEAL_TICKET_LIMIT) {
         Atomics.store(stealTicketView!, stealTicketHead64, STEAL_TICKET_FAILED);
@@ -1713,6 +1719,19 @@ export const lock2 = ({
     getPendingPromiseCount: () => pendingPromiseCount | 0,
     resetPendingState,
     deactivateStealConsumer,
+    /**
+     * Cap the tickets this consumer takes per claim, clamped to
+     * `1..regionLanes`; `Infinity` restores the full width. Only the `ticket`
+     * discipline batches by count; Dekker claims whole regions, so it reports
+     * `false` and ignores the limit.
+     */
+    setStealClaimLimit: (limit: number): boolean => {
+      if (!stealEnabled || !stealTicket) return false;
+      // A non-finite limit restores the configured width.
+      const wanted = Number.isFinite(limit) ? Math.floor(limit) : stealTicketBatch;
+      stealTicketClaimLimit = Math.max(1, Math.min(stealTicketBatch, wanted));
+      return true;
+    },
     takeDeferredCount: () => {
       const count = deferredCount | 0;
       deferredCount = 0 | 0;

@@ -79,6 +79,8 @@ type WorkerData = {
     regionLanes: number;
     /** Claim discipline; see `DispatcherSettings.stealClaim`. */
     claim?: "dekker" | "ticket";
+    /** See `DispatcherSettings.stealSingleClaimMicroseconds`; `0` disables. */
+    singleClaimMicroseconds?: number;
   };
 };
 
@@ -581,6 +583,15 @@ type DispatcherSettings = {
    * tasks; Dekker requires at least one spare region per live consumer.
    */
   stealRegionLanes?: number;
+  /**
+   * Ticket stealing only. When a worker's tasks average at least this many
+   * microseconds, it claims one task at a time instead of up to
+   * `stealRegionLanes`, so a cheap task is not stuck behind an expensive one in
+   * the same claimed batch while a peer is idle. Cheaper tasks keep batched
+   * claims, which amortise the claim cost. Default: 0 (disabled). Try 20 for
+   * mixed workloads where tail latency matters more than peak throughput.
+   */
+  stealSingleClaimMicroseconds?: number;
   /**
    * Publication-ordered tickets (`"ticket"`, the default) or Dekker regions
    * (`"dekker"`). Unrecognised values are rejected rather than defaulted, so a

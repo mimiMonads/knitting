@@ -28,10 +28,28 @@ type ArgumentsForCreateWorkerQueue = {
    * these tasks to this lane and batching them is a win.
    */
   stealing?: boolean;
+  /**
+   * Ticket stealing only: mean task cost, in milliseconds, at or above which
+   * this worker claims one task at a time. A claimed batch runs to completion
+   * here, so a cheap task claimed beside an expensive one waits behind it
+   * while a peer may be idle. Cheaper tasks keep the configured batch, which
+   * amortises the claim. `0` or unset always claims the configured batch.
+   */
+  singleClaimAboveMs?: number;
 };
 
 /** Tasks run per `serviceBatchImmediate` call before returning to the loop. */
 const SERVICE_BATCH_MAX = 32;
+
+/**
+ * Per-batch decay of the task-cost peak that drives single claims. At 0.9 a
+ * 5 ms task keeps single claims for about 50 cheap batches after it, so a
+ * workload with occasional heavy tasks does not flip back to batching between
+ * them.
+ */
+const CLAIM_COST_DECAY = 0.9;
+
+const p_now = performance.now.bind(performance);
 
 export type CreateWorkerRxQueue = ReturnType<typeof createWorkerRxQueue>;
 export const createWorkerRxQueue = (
@@ -43,6 +61,7 @@ export const createWorkerRxQueue = (
     hasAborted,
     now,
     stealing,
+    singleClaimAboveMs,
   }: ArgumentsForCreateWorkerQueue,
 ) => {
   const PLACE_HOLDER = (_?: unknown) => {
@@ -116,6 +135,28 @@ export const createWorkerRxQueue = (
   const { decode, resolved } = lock;
   const resolvedShift = () => resolved.shiftNoClear();
 
+  // Adaptive claim width. Cost is sampled once per serviced batch (two clock
+  // reads however many tasks ran) and kept as a decaying peak, so one
+  // expensive task holds single claims across the cheap batches after it.
+  // Async tasks count only their synchronous part, which is all a peer waits
+  // behind.
+  const setClaimLimit = lock.setStealClaimLimit;
+  const singleClaimMs = singleClaimAboveMs ?? 0;
+  const adaptClaims = stealing === true && singleClaimMs > 0 &&
+    typeof setClaimLimit === "function";
+  const clock = now ?? p_now;
+  let costPeakMs = 0;
+  let claimingSingle = false;
+  const adjustClaimLimit = (elapsedMs: number, processed: number) => {
+    const decayed = costPeakMs * CLAIM_COST_DECAY;
+    const cost = elapsedMs / processed;
+    costPeakMs = cost > decayed ? cost : decayed;
+    const single = costPeakMs >= singleClaimMs;
+    if (single === claimingSingle) return;
+    claimingSingle = single;
+    setClaimLimit!(single ? 1 : Infinity);
+  };
+
   const enqueueLock = () => {
     // Steal only when idle: leaving work unclaimed lets a free peer take it.
     if (stealing && toWork.size !== 0) return false;
@@ -183,6 +224,7 @@ export const createWorkerRxQueue = (
     },
     serviceBatchImmediate: () => {
       let processed = 0;
+      const startedAt = adaptClaims && toWork.size !== 0 ? clock() : 0;
 
       // Every trip back out to the dispatch loop costs a claim attempt and the
       // per-pass bookkeeping, so a low cap makes that scaffolding a per-task
@@ -216,6 +258,9 @@ export const createWorkerRxQueue = (
         if (pendingFrames.size !== 0) break;
       }
 
+      if (adaptClaims && processed !== 0) {
+        adjustClaimLimit(clock() - startedAt, processed);
+      }
       return processed;
     },
     enqueueLock,
@@ -223,5 +268,7 @@ export const createWorkerRxQueue = (
     releaseDeferredReturns,
     hasAwaiting: () => awaiting > 0,
     getAwaiting: () => awaiting,
+    /** Whether adaptive stealing currently claims one task at a time. */
+    isClaimingSingle: () => claimingSingle,
   };
 };
