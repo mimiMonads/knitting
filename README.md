@@ -69,6 +69,92 @@ cross-runtime shared memory.
 See [Platform and native support](#platform-and-native-support) for the prebuild
 matrix and the flags native features need.
 
+## Experimental Andromeda support
+
+Thread pools run on Andromeda 0.1.14 when the Knitting runtime is bundled into
+one ESM file. App and task modules can remain separate. Andromeda does not
+resolve npm packages directly, and importing Knitting's source graph directly
+currently hits a Nova module-loader assertion. Build the Knitting bundle with
+Bun:
+
+```bash
+bun build knitting.ts --target=browser --outfile=knitting.andromeda.js
+```
+
+Then import the bundle from your task module and provide its URL explicitly:
+
+```ts
+import { createPool, isMain, setModuleUrl, task } from "./knitting.andromeda.js";
+
+setModuleUrl(import.meta.url);
+export const add = task<[number, number], number>({
+  f: ([a, b]) => a + b,
+});
+
+if (isMain) {
+  const pool = createPool({ threads: 2 })({ add });
+  try {
+    console.log(await pool.call.add([20, 22]));
+  } finally {
+    await pool.shutdown();
+  }
+}
+```
+
+Run that entry with `andromeda run main.ts`. To make a fully bundled single-file
+app, bundle the entry too:
+
+```bash
+bun build main.ts --target=browser --outfile=app.andromeda.js
+andromeda run app.andromeda.js
+```
+
+This path supports thread workers. Process workers, `ProcessSharedBuffer`, and
+Knitting's per-worker `permission` options are not supported on Andromeda; the
+runtime controls worker access.
+
+Multi-worker pools on Andromeda use private submit lanes instead of work
+stealing. In a stealing pool on Andromeda, the host never sees completions as
+they arrive and finds them only when a 1-second fallback timer fires, so
+`threads: 2` ran slower than `threads: 1`. Private lanes are not affected and
+scale with worker count. `host: { steal: true }` still turns stealing on, for
+example to recheck it on a newer Andromeda. `KNITTING_STEAL` has no effect
+because Andromeda has no `process.env`.
+
+For a multi-file app, each module that defines tasks must set its own URL before
+calling `task()` or `importTask()`. The app entry must also set its URL before
+calling `createPool()`:
+
+```ts
+// tasks.ts
+import { setModuleUrl, task } from "./knitting.andromeda.js";
+import { addBias } from "./helpers.ts";
+
+setModuleUrl(import.meta.url);
+export const addWithBias = task<[number, number], number>({
+  f: ([value, bias]) => addBias(value, bias),
+});
+```
+
+```ts
+// main.ts
+import { createPool, isMain, setModuleUrl } from "./knitting.andromeda.js";
+import { addWithBias } from "./tasks.ts";
+
+setModuleUrl(import.meta.url);
+if (isMain) {
+  const pool = createPool({ threads: 2 })({ addWithBias });
+  try {
+    console.log(await pool.call.addWithBias([20, 22]));
+  } finally {
+    await pool.shutdown();
+  }
+}
+```
+
+Task modules, `importTask()` targets, and `worker.bootstrap` modules can use
+regular relative imports such as `./helpers.ts`.
+
 ## Install
 
 From npm:
@@ -476,7 +562,7 @@ Common options you might tweak:
 | `worker.processSharedMemory`      | Process-worker memory discovery: `"inherit"` by default on Node/Bun POSIX hosts, or `"named"` for wrappers/containers. Deno and Windows hosts use named mappings automatically. |
 | `permission`                      | Runtime permission policy for workers.                                                                                            |
 | `host.dispatcher`                 | Experimental host dispatcher topology: `"per-thread"` or `"serial-channel"`.                                                      |
-| `host.steal`                      | Shared-submit work stealing for compatible multi-worker thread/process pools; enabled by default. Set `false` to use private submit lanes. |
+| `host.steal`                      | Shared-submit work stealing for compatible multi-worker thread/process pools; enabled by default (off by default on Andromeda). Set `false` to use private submit lanes. |
 | `host.stealRegionLanes`           | Submit lanes claimed per stealing handshake (a power of two). Smaller regions are fairer for expensive tasks; wider regions amortise arbitration for cheap ones. |
 | `host.stealClaim`                 | Claim discipline: `"ticket"` (default) or `"dekker"`. Also settable with `KNITTING_STEAL_CLAIM`; an unrecognised value is rejected.  |
 | `host.stealSingleClaimMicroseconds` | Opt-in adaptive ticket claims for multi-worker pools. Try `20` to reduce mixed-workload p99 latency; default `0` disables adaptation. |
@@ -530,8 +616,9 @@ balancer explicitly preserves that private-lane topology unless
 
 Ordinary multi-worker thread and process pools use shared-submit work stealing
 by default. It is not used by one-worker pools, the inliner, compiled/Porffor
-workers, or pools with an explicit balancer/dispatcher, so those modes retain
-their existing transport. Process workers use one process-shared submit region
+workers, pools with an explicit balancer/dispatcher, or by default on Andromeda
+(see [Experimental Andromeda support](#experimental-andromeda-support)), so those
+modes retain their existing transport. Process workers use one process-shared submit region
 and one private return region per process. Pools above the current 31-claimant
 protocol limit also fall back. Set `host: { steal: false }` or
 `KNITTING_STEAL=0` to opt out for uniformly cheap, low-concurrency workloads

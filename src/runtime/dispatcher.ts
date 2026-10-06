@@ -77,7 +77,8 @@ export const hostDispatcherLoop = ({
   const notify = () => channelHandler.notify();
   // Atomics waiters are process-local, so cross-process workers cannot use this
   // doorbell.
-  const canUseAtomicDoorbell = (RUNTIME === "bun" || RUNTIME === "node") &&
+  const canUseAtomicDoorbell =
+    (RUNTIME === "bun" || RUNTIME === "node" || RUNTIME === "andromeda") &&
     typeof Atomics.waitAsync === "function";
   const canUseDoorbell = (dispatcherOptions?.doorbell ?? true) &&
     (

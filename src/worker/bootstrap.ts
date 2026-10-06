@@ -1,5 +1,5 @@
 import { RUNTIME } from "../common/runtime.ts";
-import { toModuleUrl } from "../common/module-url.ts";
+import { toImportSpecifier, toModuleUrl } from "../common/module-url.ts";
 import { ProcessSharedBuffer } from "../connections/process-shared-buffer.ts";
 import type { ProcessSharedBufferMetadata } from "../connections/process-shared-buffer.ts";
 import type { WorkerData } from "../types.ts";
@@ -91,10 +91,9 @@ export const runWorkerBootstrap = async ({
     throw new TypeError("worker.bootstrap must include a non-empty href");
   }
 
-  const module = await import(toModuleUrl(bootstrap.href)) as Record<
-    string,
-    unknown
-  >;
+  const module = await import(
+    toImportSpecifier(toModuleUrl(bootstrap.href))
+  ) as Record<string, unknown>;
   const name = bootstrap.name ?? DEFAULT_BOOTSTRAP_EXPORT_NAME;
   const selected = module[name];
   if (typeof selected !== "function") {
