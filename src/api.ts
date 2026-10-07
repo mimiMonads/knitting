@@ -538,7 +538,7 @@ export const createPool: CreatePoolFactory = ({
     ? undefined
     : {
       mode: "strict" as const,
-      allowImport: true,
+      allowImport: true as const,
     };
   const permissionProtocol = resolvePermissionProtocol({
     permission: permission ?? defaultPermission,
