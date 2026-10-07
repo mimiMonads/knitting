@@ -355,7 +355,35 @@ group("lock", () => {
   });
 });
 
+// Compare equal batch sizes as well as full queues. These cycles include queue
+// refill and payload work, so divide by the batch size for per-task cost.
+// Use --slots-only for width comparisons, --default-only for the original path.
+// Skip wide fixture construction too when checking the default's JIT profile.
+if (!process.argv.includes("--default-only")) group("lock slots", () => {
+  for (const [slots, batch] of [[32, 1], [64, 1], [32, 32], [64, 32], [64, 64]] as const) {
+    for (const payload of ["number", "static string", "dynamic string"] as const) {
+      const queue = new RingQueue<Task>(batch);
+      const lane = lock2({ slots });
+      const tasks = Array.from({ length: batch }, (_, i) => makeNumberTask(i));
+      const values = tasks.map((_, i) => payload === "number"
+        ? i
+        : payload === "static string" ? `slot-${i}` : `${i}:` + "x".repeat(1024));
+      bench(`${slots} slots, cycle (${batch}), ${payload}`, () => {
+        for (let i = 0; i < batch; i++) {
+          tasks[i]!.value = values[i];
+          queue.push(tasks[i]!);
+        }
+        lane.encodeManyFrom(queue);
+        lane.decode();
+        while (!lane.resolved.isEmpty) lane.recyclecList.push(lane.resolved.shiftNoClear()!);
+      });
+    }
+  }
+});
+
 await mitataRun({
   format,
   print,
+  filter: process.argv.includes("--slots-only") ? / slots, cycle/
+    : process.argv.includes("--default-only") ? /^(?!.* slots, cycle)/ : /.*/,
 });

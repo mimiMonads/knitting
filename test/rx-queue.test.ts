@@ -12,6 +12,36 @@ import {
 import { createWorkerRxQueue } from "../src/worker/rx-queue.ts";
 import { withResolvers } from "../src/common/with-resolvers.ts";
 
+test("wide return finalizers wait for upper-half acknowledgements", () => {
+  const resolved = new RingQueue<Task>();
+  const recyclecList = new RingQueue<Task>();
+  const hostBits = new Int32Array(new SharedArrayBuffer(8));
+  const workerBits = new Int32Array(new SharedArrayBuffer(8));
+  let released = 0;
+  const queue = createWorkerRxQueue({
+    listOfFunctions: [{ run: (value: unknown) => value }],
+    lock: { decode: () => true, resolved, recyclecList },
+    returnLock: {
+      hostBits, workerBits,
+      encode: (slot: Task) => {
+        slot.finalize = () => released++;
+        Atomics.store(hostBits, 1, 1 << 31);
+        return true;
+      },
+    },
+  } as any);
+  const slot = makeTask();
+  slot.value = 42;
+  resolved.push(slot);
+  assert(queue.enqueueLock());
+  assert.equal(queue.serviceBatchImmediate(), 1);
+  queue.drainReturnReleases();
+  assert.equal(released, 0);
+  Atomics.store(workerBits, 1, hostBits[1]!);
+  queue.drainReturnReleases();
+  assert.equal(released, 1);
+});
+
 test("worker queue async settle handles encode backpressure without unhandledRejection", async () => {
   const resolved = new RingQueue<Task>();
   const recyclecList = new RingQueue<Task>();

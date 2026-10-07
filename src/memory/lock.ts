@@ -1,4 +1,5 @@
 import RingQueue from "../ipc/tools/ring-queue.ts";
+import { createLock64 } from "./lock64.ts";
 // Avoid a static lock <-> codec import cycle; Andromeda cannot handle it.
 // The codec registers its factories before any lock is built.
 type EncodePayloadFactory = typeof import("./payloadCodec.ts").encodePayload;
@@ -113,6 +114,12 @@ export const LockBound = {
   header: 0,
 } as const;
 export type LockBound = typeof LockBound[keyof typeof LockBound];
+
+export type LockSlotCount = 32 | 64;
+export const assertLockSlotCount = (value: unknown, source: string): LockSlotCount => {
+  if (value === 32 || value === 64) return value;
+  throw new RangeError(`${source} must be 32 or 64; got ${JSON.stringify(value)}`);
+};
 
 export const LOCK_CACHE_LINE_BYTES = 64;
 export const LOCK_SECTOR_BYTES = 256;
@@ -322,7 +329,7 @@ export type TaskFlag = typeof TaskFlag[keyof typeof TaskFlag];
 // - hostBits at byte 0
 // - workerBits at byte 64
 // A slot is free when both words agree on that bit (XOR = 0), and in use when
-// they differ (XOR = 1). The 32-bit mask supports up to 32 concurrent slots.
+// they differ (XOR = 1). Wide mode uses the adjacent word on each same line.
 export const LOCK_WORD_BYTES = Int32Array.BYTES_PER_ELEMENT;
 export const LOCK_HOST_BITS_OFFSET_BYTES = LockBound.paddingLock;
 export const LOCK_WORKER_BITS_OFFSET_BYTES = LOCK_CACHE_LINE_BYTES;
@@ -370,7 +377,7 @@ export const DOORBELL_ARMED_SLOT_OFFSET_U32 = STEAL_LIVE_SLOT_OFFSET_U32 + 1;
 /**
  * Non-wrapping 64-bit claim head for the `ticket` discipline. The producer
  * publishes only the low 32 bits of the tail. A successful head CAS validates
- * the snapshot: with that head unchanged, at most 32 tickets can be pending,
+ * the snapshot: with that head unchanged, at most slotCount tickets can be pending,
  * so unsigned subtraction recovers the exact distance even across tail wrap.
  * Head and tail occupy different slots' header lines (slots 0 and 1).
  */
@@ -404,6 +411,7 @@ export const HEADER_U32_LENGTH = LockBound.header +
   (HEADER_SLOT_STRIDE_U32 * LockBound.slots);
 export const HEADER_BYTE_LENGTH = HEADER_U32_LENGTH *
   Uint32Array.BYTES_PER_ELEMENT;
+export const HEADER64_BYTE_LENGTH = HEADER_SLOT_STRIDE_BYTES * 64;
 
 let INDEX_ID = 0;
 const INIT_VAL = PayloadSignal.UNREACHABLE;
@@ -527,6 +535,7 @@ export type WaitAsyncResult = {
 };
 
 export const lock2 = ({
+  slots = LockBound.slots,
   headers,
   headerSlotStrideU32,
   LockBoundSector,
@@ -548,6 +557,8 @@ export const lock2 = ({
   notifyHostPublish,
   traceClaim,
 }: {
+  /** Queue lanes; both endpoints must select the same width. Default: 32. */
+  slots?: LockSlotCount;
   headers?: SharedBufferSource;
   headerSlotStrideU32?: number;
   LockBoundSector?: SharedBufferSource;
@@ -592,6 +603,8 @@ export const lock2 = ({
    */
   traceClaim?: (message: string) => void;
 }) => {
+  const slotCount = assertLockSlotCount(slots, "lock.slots");
+  const wide = slotCount === 64;
   // Layout within `lockSectorRegion`:
   // - hostBits starts at byte 0
   // - workerBits starts at byte 64
@@ -610,16 +623,16 @@ export const lock2 = ({
   const hostBits = new Int32Array(
     LockBoundSAB,
     lockSectorRegion.byteOffset + LOCK_HOST_BITS_OFFSET_BYTES,
-    1,
+    wide ? 2 : 1,
   );
   const workerBits = new Int32Array(
     LockBoundSAB,
     lockSectorRegion.byteOffset + LOCK_WORKER_BITS_OFFSET_BYTES,
-    1,
+    wide ? 2 : 1,
   );
 
   const headersRegion = toSharedBufferRegion(
-    headers ?? createWasmSharedArrayBuffer(HEADER_BYTE_LENGTH),
+    headers ?? createWasmSharedArrayBuffer(wide ? HEADER64_BYTE_LENGTH : HEADER_BYTE_LENGTH),
   );
 
   const headersBuffer = new Uint32Array(
@@ -628,6 +641,10 @@ export const lock2 = ({
     headersRegion.byteLength >>> 2,
   );
   const headersSlotStride = headerSlotStrideU32 ?? HEADER_SLOT_STRIDE_U32;
+  if (wide && headersRegion.byteLength <
+    ((slotCount - 1) * headersSlotStride + HEADER_SLOT_STRIDE_U32) * 4) {
+    throw new RangeError(`headers must have space for ${slotCount} slots`);
+  }
   // The first task cache line has four unused control words after the task
   // header. Keep the doorbell arm bit in one of those words so the host and
   // worker lock instances can share it without allocating another SAB.
@@ -666,7 +683,7 @@ export const lock2 = ({
   const stealIsProducer = consumerId === undefined;
   const stealId = (consumerId ?? 0) | 0;
   const stealRegionLanes = (regionLanes ?? 8) | 0;
-  const stealRegions = (LockBound.slots / stealRegionLanes) | 0;
+  const stealRegions = (slotCount / stealRegionLanes) | 0;
   // Validate before use: an unrecognised value must not degrade to Dekker.
   const stealClaimResolved = stealClaim === undefined
     ? DEFAULT_STEAL_CLAIM
@@ -674,13 +691,20 @@ export const lock2 = ({
   const stealTicket = stealClaimResolved === "ticket";
 
   if (stealEnabled) {
+    // Liveness and Dekker intent remain 32-bit; doubling queue capacity does
+    // not widen the claimant bitmap. Wide Dekker regions have at least 2 lanes.
+    if (stealConsumers > 32) throw new RangeError("consumers must be <= 32");
     if (stealTicket && headersSlotStride % 2 !== 0) {
       throw new RangeError("ticket headers must have an 8-byte aligned slot stride");
     }
     if (
-      stealRegionLanes < 1 || (stealRegionLanes & (stealRegionLanes - 1)) !== 0
+      stealRegionLanes < 1 || stealRegionLanes > slotCount ||
+      (stealRegionLanes & (stealRegionLanes - 1)) !== 0
     ) {
       throw new RangeError("regionLanes must be a power of two");
+    }
+    if (!stealTicket && stealRegions > 32) {
+      throw new RangeError("64-slot Dekker locks need regionLanes >= 2");
     }
     // Dekker requires at least one region per consumer.
     if (!stealTicket && stealRegions < stealConsumers) {
@@ -727,8 +751,9 @@ export const lock2 = ({
     )
     : undefined;
   const stealTicketHead64 = stealTicketHeadIndex >>> 1;
-  const stealTicketOrderIndex = new Int32Array(LockBound.slots);
-  for (let slot = 0; slot < LockBound.slots; slot++) {
+  const ticketRingMask = slotCount - 1;
+  const stealTicketOrderIndex = new Int32Array(slotCount);
+  for (let slot = 0; slot < slotCount; slot++) {
     stealTicketOrderIndex[slot] = (slot * headersSlotStride) +
       LockBound.header + STEAL_TICKET_ORDER_SLOT_OFFSET_U32;
   }
@@ -744,7 +769,7 @@ export const lock2 = ({
   const stealTicketPublish = stealEnabled && stealIsProducer && stealTicket;
   /** Producer-private shadow of the tail; the producer is its only writer. */
   let stealTicketTail = 0 | 0;
-  /** At most 32 tickets can be staged, so equality is safe across uint32 wrap. */
+  /** At most slotCount tickets can be staged; equality is safe across uint32 wrap. */
   let stealTicketPublishedTail = 0 | 0;
   const stealAllLiveMask = stealConsumers === 32
     ? -1
@@ -774,6 +799,7 @@ export const lock2 = ({
   }
 
   const encodeTask = registeredEncodePayload({
+    slots: slotCount,
     payload: {
       sab: payloadSAB,
       config: resolvedPayloadConfig,
@@ -800,6 +826,7 @@ export const lock2 = ({
     },
   });
   const decodeTask = registeredDecodePayload({
+    slots: slotCount,
     payload: {
       sab: payloadSAB,
       config: resolvedPayloadConfig,
@@ -882,7 +909,7 @@ export const lock2 = ({
     return selectedSlotBit;
   };
 
-  const encodeManyFrom = (
+  const encodeManyFrom32 = (
     list: RingQueue<Task>,
   ): number => {
     let state = ensureSenderStateHasFree((LastLocal ^ workerShadow) | 0);
@@ -927,7 +954,7 @@ export const lock2 = ({
     }
   };
 
-  const encodeManyTrackedFrom = (list: RingQueue<Task>): number => {
+  const encodeManyTrackedFrom32 = (list: RingQueue<Task>): number => {
     let state = ensureSenderStateHasFree((LastLocal ^ workerShadow) | 0);
     let encoded = 0 | 0;
     deferredCount = 0 | 0;
@@ -1044,7 +1071,7 @@ export const lock2 = ({
     }
   };
 
-  const encodeTracked = (
+  const encodeTracked32 = (
     task: Task,
     state: number = (LastLocal ^ workerShadow) | 0,
   ): boolean => {
@@ -1087,7 +1114,7 @@ export const lock2 = ({
       // together. Ticket consumers acquire the tail before reading a lane;
       // unlike region consumers, they never arbitrate through hostBits.
       stealView[
-        stealTicketOrderIndex[stealTicketTail & STEAL_TICKET_RING_MASK]!
+        stealTicketOrderIndex[stealTicketTail & ticketRingMask]!
       ] = at;
       stealTicketTail = (stealTicketTail + 1) | 0;
       if (shouldNotifyHostPublish) {
@@ -1186,14 +1213,19 @@ export const lock2 = ({
   /** Decode one region using the Dekker claim protocol. */
   const decodeSteal = (): boolean => {
     // workerBits includes retired lanes under stealing.
-    const pending = (a_load(hostBits, 0) ^ a_load(workerBits, 0)) | 0;
-    if (pending === 0) return false;
+    const pendingWords = wideLock?.loadPending();
+    const pending = pendingWords === undefined
+      ? (a_load(hostBits, 0) ^ a_load(workerBits, 0)) | 0
+      : pendingWords[0]!;
+    const pendingHigh = pendingWords?.[1] ?? 0;
+    if ((pending | pendingHigh) === 0) return false;
 
     let pendingRegions = 0 | 0;
     if (stealRegions === 1) pendingRegions = 1;
     else {
       for (let r = 0; r < stealRegions; r++) {
-        if ((pending & stealLaneMask(r)) !== 0) pendingRegions |= 1 << r;
+        const word = r * stealRegionLanes < 32 ? pending : pendingHigh;
+        if ((word & stealLaneMask(r)) !== 0) pendingRegions |= 1 << r;
       }
     }
 
@@ -1259,8 +1291,10 @@ export const lock2 = ({
     }
 
     // No control word is read again until all selected slots are decoded.
-    const take = ((a_load(hostBits, 0) ^ a_load(workerBits, 0)) &
-      stealLaneMask(region)) | 0;
+    const regionWord = (region * stealRegionLanes) >>> 5;
+    const take = ((wideLock === undefined
+      ? a_load(hostBits, 0) ^ a_load(workerBits, 0)
+      : wideLock.loadPending()[regionWord]!) & stealLaneMask(region)) | 0;
     if (take === 0) {
       a_store(stealView, stealWantIndex[stealId]!, 0);
       return false;
@@ -1286,8 +1320,12 @@ export const lock2 = ({
       }
     } finally {
       // Publish the ACK before clearing intent.
-      LastWorker = (LastWorker ^ done) | 0;
-      if (done !== 0) Atomics.xor(workerBits, 0, done);
+      if (wideLock !== undefined) {
+        wideLock.retireSteal(regionWord === 0 ? done : 0, regionWord === 1 ? done : 0);
+      } else {
+        LastWorker = (LastWorker ^ done) | 0;
+        if (done !== 0) Atomics.xor(workerBits, 0, done);
+      }
       a_store(stealView, stealWantIndex[stealId]!, 0);
       stealCursor = stealHome;
       // Maybe in the future
@@ -1310,9 +1348,9 @@ export const lock2 = ({
       const lowHead = Number(head & STEAL_TICKET_LOW_MASK);
       const available = (a_load(stealTicketTailWord!, 0) - lowHead) >>> 0;
       if (available === 0) return false;
-      // A valid head has at most 32 published tickets ahead of it. Larger
+      // A valid head has at most slotCount published tickets ahead of it. Larger
       // distances are stale snapshots; the 64-bit head is still the arbiter.
-      if (available > LockBound.slots) continue;
+      if (available > slotCount) continue;
 
       const batch = Math.min(available, stealTicketClaimLimit);
       const next = head + BigInt(batch);
@@ -1320,15 +1358,15 @@ export const lock2 = ({
         Atomics.store(stealTicketView!, stealTicketHead64, STEAL_TICKET_FAILED);
         throw new RangeError("ticket queue exhausted its 64-bit sequence");
       }
-      const ringHead = lowHead & STEAL_TICKET_RING_MASK;
-      // Read the lane ids *before* the CAS. Cell `head & 31` cannot be refilled
+      const ringHead = lowHead & ticketRingMask;
+      // Read the lane ids *before* the CAS. Cell `head & ticketRingMask` cannot be refilled
       // while the head still sits at `head` (refilling it needs a free slot,
       // which needs a retire, which needs a claim), but once the CAS moves the
       // head past a ticket the producer may reuse that cell immediately.
       for (let i = 0; i < batch; i++) {
         stealTicketSlots[i] = stealView[
-          stealTicketOrderIndex[(ringHead + i) & STEAL_TICKET_RING_MASK]!
-        ]! & STEAL_TICKET_RING_MASK;
+          stealTicketOrderIndex[(ringHead + i) & ticketRingMask]!
+        ]! & ticketRingMask;
       }
 
       if (
@@ -1340,12 +1378,21 @@ export const lock2 = ({
         ) !== head
       ) continue;
 
-      let done = 0 | 0;
+      let done = 0 | 0, doneHigh = 0 | 0;
       try {
-        for (let i = 0; i < batch; i++) {
-          const at = stealTicketSlots[i]!;
-          decodeAt(at);
-          done = (done ^ (1 << at)) | 0;
+        if (wideLock === undefined) {
+          for (let i = 0; i < batch; i++) {
+            const at = stealTicketSlots[i]!;
+            decodeAt(at);
+            done = (done ^ (1 << at)) | 0;
+          }
+        } else {
+          for (let i = 0; i < batch; i++) {
+            const at = stealTicketSlots[i]!;
+            decodeAt(at);
+            if (at < 32) done = (done ^ (1 << at)) | 0;
+            else doneHigh = (doneHigh ^ (1 << (at - 32))) | 0;
+          }
         }
       } catch (error) {
         // Decoding may already have consumed payload state. Replaying the
@@ -1353,8 +1400,11 @@ export const lock2 = ({
         Atomics.store(stealTicketView!, stealTicketHead64, STEAL_TICKET_FAILED);
         throw error;
       } finally {
-        LastWorker = (LastWorker ^ done) | 0;
-        if (done !== 0) Atomics.xor(workerBits, 0, done);
+        if (wideLock !== undefined) wideLock.retireSteal(done, doneHigh);
+        else {
+          LastWorker = (LastWorker ^ done) | 0;
+          if (done !== 0) Atomics.xor(workerBits, 0, done);
+        }
       }
       return true;
     }
@@ -1383,7 +1433,8 @@ export const lock2 = ({
   ) => {
     let lost = 0;
     return (): boolean => {
-      const before = LastWorker;
+      const before = wideLock?.ack[0] ?? LastWorker;
+      const beforeHigh = wideLock?.ack[1] ?? 0;
       let head = 0n;
       let visible = 0;
       if (stealTicket) {
@@ -1393,7 +1444,12 @@ export const lock2 = ({
             Number(head & STEAL_TICKET_LOW_MASK)) >>> 0;
         }
       } else {
-        visible = (a_load(hostBits, 0) ^ a_load(workerBits, 0)) | 0;
+        if (wideLock === undefined) {
+          visible = (a_load(hostBits, 0) ^ a_load(workerBits, 0)) | 0;
+        } else {
+          const words = wideLock.loadPending();
+          visible = words[0]! | words[1]!;
+        }
       }
 
       if (!claim()) {
@@ -1401,9 +1457,11 @@ export const lock2 = ({
         return false;
       }
 
-      const taken = (LastWorker ^ before) | 0;
+      const taken = ((wideLock?.ack[0] ?? LastWorker) ^ before) | 0;
+      const takenHigh = ((wideLock?.ack[1] ?? 0) ^ beforeHigh) | 0;
       let count = 0;
       for (let bits = taken; bits !== 0; bits &= bits - 1) count++;
+      for (let bits = takenHigh; bits !== 0; bits &= bits - 1) count++;
 
       let message: string;
       if (stealTicket) {
@@ -1414,8 +1472,8 @@ export const lock2 = ({
           ` head=${head}→${after} peers=${Number(after - head) - count}`;
       } else {
         const lanes: number[] = [];
-        for (let lane = 0; lane < LockBound.slots; lane++) {
-          if ((taken & (1 << lane)) !== 0) lanes.push(lane);
+        for (let lane = 0; lane < slotCount; lane++) {
+          if (((lane < 32 ? taken : takenHigh) & (1 << lane)) !== 0) lanes.push(lane);
         }
         const region = (lanes[0]! / stealRegionLanes) | 0;
         message = `claim count=${count} lanes=${lanes.join(",")}` +
@@ -1435,6 +1493,19 @@ export const lock2 = ({
     activeRejectPlaceholder,
   }: ResolveHostOptions) => {
     const getTask = takeTask({ queue });
+    if (wideLock !== undefined) {
+      const canSettle = activeRejectPlaceholder !== undefined && onResolved
+        ? (task: Task) => task.reject !== activeRejectPlaceholder
+        : shouldSettle ?? (() => true);
+      return wideLock.makeDrain((at) => {
+        const task = getTask(at);
+        decodeTask(task, at);
+        if (canSettle(task)) {
+          settleTask(task);
+          onResolved?.(task);
+        }
+      }, true);
+    }
     let lastResolved = 32;
 
     if (activeRejectPlaceholder !== undefined && onResolved) {
@@ -1590,12 +1661,9 @@ export const lock2 = ({
     }
     a_store(doorbellArmed, 0, DOORBELL_ARMED);
     try {
-      const wait = a_waitAsync(
-        hostBits,
-        0,
-        LastWorker | 0,
-        timeoutMs,
-      ) as WaitAsyncResult;
+      const wait = (wideLock === undefined
+        ? a_waitAsync(hostBits, 0, LastWorker | 0, timeoutMs)
+        : a_waitAsync(wideLock.host64, 0, wideLock.ack64[0]!, timeoutMs)) as WaitAsyncResult;
       if (!wait.async) a_store(doorbellArmed, 0, DOORBELL_OFF);
       return wait;
     } catch {
@@ -1615,7 +1683,9 @@ export const lock2 = ({
    */
   const armHostNotifier = (): boolean => {
     a_store(doorbellArmed, 0, DOORBELL_ARMED);
-    if (a_load(hostBits, 0) === (LastWorker | 0)) return true;
+    if (wideLock === undefined
+      ? a_load(hostBits, 0) === (LastWorker | 0)
+      : wideLock.isCaughtUp()) return true;
     a_store(doorbellArmed, 0, DOORBELL_OFF);
     return false;
   };
@@ -1640,6 +1710,65 @@ export const lock2 = ({
 
     return true;
   };
+
+  const deferTask = (task: Task): boolean => {
+    if (!isPromisePayloadPending(task)) return false;
+    deferredCount = (deferredCount + 1) | 0;
+    trackDeferredTask(task);
+    return true;
+  };
+  const wideLock = wide ? createLock64({
+    hostBits,
+    workerBits,
+    headers: headersBuffer,
+    stride: headersSlotStride,
+    taskOffset: slotBaseU32,
+    encodeTask,
+    decodeAt,
+    onPublish: shouldNotifyHostPublish ? notifyHostPublication : undefined,
+    stageTicket: stealTicketPublish ? (at) => {
+      stealView[stealTicketOrderIndex[stealTicketTail & ticketRingMask]!] = at;
+      stealTicketTail = (stealTicketTail + 1) | 0;
+    } : undefined,
+    atomicTicketPublication: shouldNotifyHostPublish,
+  }) : undefined;
+  const encodeWide = (task: Task, state?: number): boolean => {
+    try {
+      return wideLock!.encode(task, state);
+    } finally {
+      flushTicketTail();
+    }
+  };
+  // Select queue width once. The proven narrow loops and publish fast path
+  // retain their original bit operations and do not test the mode per task.
+  const encodeManyFrom = wideLock === undefined ? encodeManyFrom32 :
+    (list: RingQueue<Task>): number => {
+      try {
+        return wideLock.encodeMany(list);
+      } finally {
+        flushTicketTail();
+      }
+    };
+  const encodeManyTrackedFrom = wideLock === undefined ? encodeManyTrackedFrom32 :
+    (list: RingQueue<Task>): number => {
+      deferredCount = 0;
+      try {
+        return wideLock.encodeMany(list, deferTask);
+      } finally {
+        flushTicketTail();
+      }
+    };
+  const encodeTracked = wideLock === undefined ? encodeTracked32 :
+    (task: Task): boolean => {
+      deferredCount = 0;
+      try {
+        if (wideLock.encode(task)) return true;
+        deferTask(task);
+        return false;
+      } finally {
+        flushTicketTail();
+      }
+    };
 
   const publish = (task: Task): boolean => {
     if (encodeTracked(task)) return true;
@@ -1689,7 +1818,7 @@ export const lock2 = ({
 
   return {
     enlist,
-    encode,
+    encode: wideLock === undefined ? encode : encodeWide,
     encodeManyFrom,
     encodeAll,
     publish,
@@ -1702,8 +1831,8 @@ export const lock2 = ({
           stealTicket ? decodeStealTicket : decodeSteal,
           traceClaim,
         ))
-      : decode,
-    hasSpace,
+      : wideLock?.decode ?? decode,
+    hasSpace: wideLock?.hasSpace ?? hasSpace,
     resolved,
     hostBits,
     workerBits,

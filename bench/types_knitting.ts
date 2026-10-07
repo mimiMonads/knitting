@@ -27,6 +27,7 @@ if (isMain) {
   const doorbellMode = process.env.TYPES_DOORBELL;
   const { call, shutdown } = createPool({
     threads: 1,
+    host: { "slots" : 64} ,
     ...(doorbellMode === "off" ? { host: { doorbell: false } } : {}),
   })({
     echo,

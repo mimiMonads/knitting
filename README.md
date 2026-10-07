@@ -562,6 +562,7 @@ Common options you might tweak:
 | `worker.processSharedMemory`      | Process-worker memory discovery: `"inherit"` by default on Node/Bun POSIX hosts, or `"named"` for wrappers/containers. Deno and Windows hosts use named mappings automatically. |
 | `permission`                      | Runtime permission policy for workers.                                                                                            |
 | `host.dispatcher`                 | Experimental host dispatcher topology: `"per-thread"` or `"serial-channel"`.                                                      |
+| `host.slots`                      | Task slots per request and return lane: `32` (default) or `64`. Wide mode uses the second word in the existing lock cache lines. |
 | `host.steal`                      | Shared-submit work stealing for compatible multi-worker thread/process pools; enabled by default (off by default on Andromeda). Set `false` to use private submit lanes. |
 | `host.stealRegionLanes`           | Submit lanes claimed per stealing handshake (a power of two). Smaller regions are fairer for expensive tasks; wider regions amortise arbitration for cheap ones. |
 | `host.stealClaim`                 | Claim discipline: `"ticket"` (default) or `"dekker"`. Also settable with `KNITTING_STEAL_CLAIM`; an unrecognised value is rejected.  |
@@ -657,8 +658,18 @@ in multi-worker mixed workloads. Uniform short tasks near the threshold can
 lose throughput at higher worker counts (about 4–7% with seven workers in
 local tests), so adaptation is opt-in and disabled by default.
 
+Set `host: { slots: 64 }` to double each request and return lane's task capacity.
+Thread and JavaScript process workers use the same 256-byte lock sector; only
+the per-slot headers double in size. Wide queues acquire a 64-bit snapshot and
+select lanes using two 32-bit words and `Math.clz32`, with no BigInt bit math.
+The sender refreshes its receiver shadow only after both cached halves run out
+of free slots. Ticket claims can take up to 64 lanes; wide Dekker regions need
+at least two lanes because their region-intent mask remains 32-bit. The pool's
+limit of 31 stealing workers is unchanged. Compiled workers retain their
+existing transport and do not accept host settings.
+
 The ticket discipline uses a 64-bit claim head and a wrapping 32-bit
-publication tail. The head CAS validates the tail snapshot: at most 32 tickets
+publication tail. The head CAS validates the tail snapshot: at most `host.slots` tickets
 can be pending, so unsigned subtraction recovers the distance across a tail wrap
 without ever recycling a claim identity. `stealRegionLanes` caps the number of
 tickets one claim takes, and its default width is unchanged from Dekker's.

@@ -369,10 +369,12 @@ export const createSharedDynamicBufferIO = ({
 
 // Static payload words are stored in eight-byte units.
 export const createSharedStaticBufferIO = ({
+  slots = LockBound.slots,
   headersBuffer,
   slotStrideU32,
   textCompat,
 }: {
+  slots?: number;
   headersBuffer: SharedArrayBuffer | Uint32Array;
   slotStrideU32?: number;
   textCompat?: SharedBufferTextCompat;
@@ -403,8 +405,8 @@ export const createSharedStaticBufferIO = ({
       baseU32: LockBound.header,
     });
 
-  const slotByteOffsets = new Uint32Array(LockBound.slots);
-  for (let i = 0; i < LockBound.slots; i++) {
+  const slotByteOffsets = new Uint32Array(slots);
+  for (let i = 0; i < slots; i++) {
     slotByteOffsets[i] = slotStartBytes(i) - baseByteOffset;
   }
 
@@ -417,8 +419,8 @@ export const createSharedStaticBufferIO = ({
     baseByteOffset,
     (buffer.byteLength - baseByteOffset) >>> 2,
   );
-  const slotU32Offsets = new Uint32Array(LockBound.slots);
-  for (let i = 0; i < LockBound.slots; i++) {
+  const slotU32Offsets = new Uint32Array(slots);
+  for (let i = 0; i < slots; i++) {
     slotU32Offsets[i] = slotByteOffsets[i]! >>> 2;
   }
 
@@ -445,8 +447,8 @@ export const createSharedStaticBufferIO = ({
     (start | 0) >= 0 && (start + length) <= writableBytes;
 
   // Reuse one fixed view per slot; writes no longer allocate a subarray.
-  const slotUtf8Targets: Uint8Array[] = new Array(LockBound.slots);
-  for (let i = 0; i < LockBound.slots; i++) {
+  const slotUtf8Targets: Uint8Array[] = new Array(slots);
+  for (let i = 0; i < slots; i++) {
     const start = slotByteOffsets[i]!;
     slotUtf8Targets[i] = baseU8.subarray(start, start + writableBytes);
   }
