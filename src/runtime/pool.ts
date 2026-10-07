@@ -770,7 +770,8 @@ export const spawnWorkerContext = ({
         canUseProcessCompletionDoorbell ||
         canUseNodeCompletionDoorbell ||
         (!useProcessWorkerRuntime &&
-          (RUNTIME === "bun" || RUNTIME === "node") &&
+          (RUNTIME === "bun" || RUNTIME === "node" ||
+            RUNTIME === "andromeda") &&
           typeof Atomics.waitAsync === "function")
       ),
     processCompletionDoorbell: canUseProcessCompletionDoorbell,
@@ -1025,7 +1026,11 @@ export const spawnWorkerContext = ({
     if (stopView === undefined) return true;
     try {
       Atomics.store(stopView, 0, WORKER_STOP.requested);
-      laneWake();
+      // Shutdown must invalidate the worker's current wait token even if it
+      // is between checking rxStatus and entering Atomics.wait. laneWake()
+      // skips the token bump while the worker still appears awake, which can
+      // otherwise leave a just-starting Andromeda worker parked after stop.
+      a_add(signalBox.opView, 0, 1);
       notifySignal?.();
     } catch {
       return false;

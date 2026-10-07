@@ -5,7 +5,7 @@ import {
 } from "./common/task-source.ts";
 import { DEBUG_ENABLED, resolveDebugNamespaces } from "./debug/gate.ts";
 import { genTaskID, stableTaskID } from "./common/task-source.ts";
-import { toModuleUrl } from "./common/module-url.ts";
+import { toImportSpecifier, toModuleUrl } from "./common/module-url.ts";
 import { endpointSymbol } from "./common/task-symbol.ts";
 import {
   createStealPoolBuffers,
@@ -184,7 +184,8 @@ export { endpointSymbol as endpointSymbol };
 /**
  * Declare the task module's URL for runtimes without stack traces (e.g.
  * Andromeda) that can't auto-discover the caller. Call once at module top
- * level, before defining tasks:
+ * level, before defining tasks. When an Andromeda app imports tasks from other
+ * files, also call it in the entry module before `createPool()`:
  *
  * ```ts
  * import { setModuleUrl, task } from "knitting";
@@ -527,11 +528,20 @@ export const createPool: CreatePoolFactory = ({
   const usingInliner = typeof inliner === "object" && inliner != null;
   const totalNumberOfThread = (threads ?? 1) +
     (usingInliner ? 1 : 0);
+  if (RUNTIME === "andromeda" && permission !== undefined) {
+    throw new Error(
+      "Knitting worker permissions are not configurable in Andromeda; " +
+        "the runtime controls worker access.",
+    );
+  }
+  const defaultPermission = RUNTIME === "andromeda"
+    ? undefined
+    : {
+      mode: "strict" as const,
+      allowImport: true as const,
+    };
   const permissionProtocol = resolvePermissionProtocol({
-    permission: permission ?? {
-      mode: "strict",
-      allowImport: true,
-    },
+    permission: permission ?? defaultPermission,
     modules: list,
   });
   const permissionExecArgv = toRuntimePermissionFlags(permissionProtocol);
@@ -623,7 +633,12 @@ export const createPool: CreatePoolFactory = ({
   // explicit options take precedence over the environment.
   const dispatcherExplicitlySelected = host?.dispatcher !== undefined ||
     dispatcherEnv === "serial-channel" || dispatcherEnv === "per-thread";
-  const stealDefaultCompatible = balancer === undefined &&
+  // Not on Andromeda: there a stealing pool's completions never ring the host
+  // doorbell, so every wait runs out DOORBELL_WATCHDOG_MS (1s) and threads=2
+  // is slower than threads=1. Private lanes are unaffected. `host.steal: true`
+  // still opts in, to retest once the cause is found.
+  const stealDefaultCompatible = RUNTIME !== "andromeda" &&
+    balancer === undefined &&
     !dispatcherExplicitlySelected && (threads ?? 1) <= MAX_STEAL_CONSUMERS;
   const stealRequested = host?.steal ?? stealEnv ?? stealDefaultCompatible;
   const stealClaimEnvRaw = nodeProcess?.env?.KNITTING_STEAL_CLAIM?.trim()
@@ -1314,7 +1329,7 @@ const createImportedTaskFn = <
   const loadFn = async (): Promise<(...args: unknown[]) => unknown> => {
     if (cachedFn) return cachedFn;
     if (!cachedLoad) {
-      cachedLoad = import(href).then((module) => {
+      cachedLoad = import(toImportSpecifier(href)).then((module) => {
         const record = module as Record<string, unknown>;
         const selected = exportName === DEFAULT_IMPORT_EXPORT_NAME
           ? record.default

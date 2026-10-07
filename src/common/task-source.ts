@@ -106,7 +106,8 @@ const isInternalFrame = (frame: StackFrameInfo): boolean =>
 // `new Error().stack` is undefined). When set, caller discovery skips stack
 // inspection and attributes every task here. Set via
 // `setModuleUrl(import.meta.url)`, which runs in both host and worker copies so
-// both agree on the path.
+// both agree on the path. Andromeda apps with imported task modules also set it
+// in the entry module before `createPool()`.
 let moduleUrlOverride: string | undefined;
 
 export const setModuleUrl = (url: string | undefined): void => {

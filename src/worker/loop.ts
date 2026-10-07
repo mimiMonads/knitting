@@ -412,6 +412,9 @@ export const workerMainLoop = async (
       port1.close?.();
       port2.close?.();
     } catch {}
+    if (IS_ANDROMEDA) {
+      (globalThis as { close?: () => void }).close?.();
+    }
   };
 
   const loop = () => {
