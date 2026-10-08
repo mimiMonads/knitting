@@ -113,6 +113,7 @@ if (isMain) {
     : "safe host-side copy";
 
   using pool = createPool({
+    permission: { node: { allowAddons: true } },
     threads: 1,
     payload: {
       payloadMaxByteLength: 64 * 1024 * 1024,

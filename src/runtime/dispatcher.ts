@@ -90,6 +90,12 @@ export const hostDispatcherLoop = ({
   let doorbellArmed = false;
   let doorbellEpoch = 0 | 0;
   const DOORBELL_WATCHDOG_MS = 1000;
+  let doorbellWatchdog: ReturnType<typeof setTimeout> | undefined;
+  const clearDoorbellWatchdog = () => {
+    if (doorbellWatchdog === undefined) return;
+    clearTimeout(doorbellWatchdog);
+    doorbellWatchdog = undefined;
+  };
   let stallCount = 0 | 0;
   const requestedStallFreeLoops = dispatcherOptions?.stallFreeLoops;
   let stallFreeLoops = requestedStallFreeLoops !== undefined
@@ -108,6 +114,7 @@ export const hostDispatcherLoop = ({
 
   const cancelDoorbell = () => {
     if (!doorbellArmed) return;
+    clearDoorbellWatchdog();
     doorbellEpoch = (doorbellEpoch + 1) | 0;
     doorbellArmed = false;
     setCompletionWaiterArmed(false);
@@ -126,6 +133,7 @@ export const hostDispatcherLoop = ({
     const wake = (direct = false) => {
       if (!doorbellArmed || doorbellEpoch !== token || woke) return;
       woke = true;
+      clearDoorbellWatchdog();
       doorbellArmed = false;
       doorbellEpoch = (doorbellEpoch + 1) | 0;
       setCompletionWaiterArmed(false);
@@ -164,6 +172,20 @@ export const hostDispatcherLoop = ({
       supported = usable;
       // The arm itself drains the completion it just observed.
       if (usable && !armed) wake(true);
+      else if (usable) {
+        // A waitAsync arm carries its own timeout; a ring does not, so one that
+        // never arrives would park the host for good. Bun on Windows can leave
+        // a child's process.send unwritten, and every call behind it hung.
+        // Unref'd: live workers keep the host up, and a pool that has shut
+        // down must not wait out the timer.
+        doorbellWatchdog = setTimeout(() => wake(), DOORBELL_WATCHDOG_MS);
+        if (typeof doorbellWatchdog === "number") {
+          (globalThis as { Deno?: { unrefTimer?: (id: number) => void } }).Deno
+            ?.unrefTimer?.(doorbellWatchdog);
+        } else {
+          (doorbellWatchdog as { unref?: () => void }).unref?.();
+        }
+      }
     } else {
       try {
         supported = waitForCompletion(wake, DOORBELL_WATCHDOG_MS);

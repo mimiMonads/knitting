@@ -119,9 +119,12 @@ const createDeferred = <T>() => {
   return { promise, resolve, reject };
 };
 
+// Each probe is a fresh node process that strips types for the whole graph on
+// the host and again in its worker: ~1.4s idle, past 4s while the suite runs
+// other files in parallel on a 4-core box.
 const runProbe = (
   scriptPath: string,
-  timeoutMs = 4_000,
+  timeoutMs = 8_000,
   command = NODE_BIN,
   args = NODE_CHILD_ARGS,
 ): Promise<ChildResult> =>
@@ -442,7 +445,7 @@ test("node:test host debug emits setup path map", {
 }, async () => {
   const result = await runProbe(
     hostDebugProbePath,
-    4_000,
+    undefined,
     HOST_DEBUG_CHILD_BIN,
     HOST_DEBUG_CHILD_ARGS,
   );

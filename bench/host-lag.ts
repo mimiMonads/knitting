@@ -47,7 +47,7 @@ const pool = createPool({
 })({ mixed });
 
 const quantile = (sorted: number[], q: number) => {
-  if (sorted.length === 0) return 0;
+  if (sorted.length === 0) return null;
   const at = Math.min(sorted.length - 1, Math.floor(q * sorted.length));
   return sorted[at]!;
 };
@@ -58,7 +58,7 @@ const summarise = (values: number[]) => {
     n: sorted.length,
     p50: quantile(sorted, 0.5),
     p99: quantile(sorted, 0.99),
-    max: sorted.length === 0 ? 0 : sorted[sorted.length - 1]!,
+    max: sorted.length === 0 ? null : sorted[sorted.length - 1]!,
   };
 };
 
@@ -89,10 +89,11 @@ if (isMain) {
   });
 
   let stop = false;
+  let probeTimeout: ReturnType<typeof setTimeout> | undefined;
   const probeTimer = () => {
     if (stop) return;
     const expected = performance.now() + PROBE_MS;
-    setTimeout(() => {
+    probeTimeout = setTimeout(() => {
       if (stop) return;
       if (recording) timerLag.push(performance.now() - expected);
       if (!socketPending) {
@@ -160,6 +161,7 @@ if (isMain) {
     if (issued === completed) resolve();
   });
   stop = true;
+  clearTimeout(probeTimeout);
   client.end();
   server.close();
 

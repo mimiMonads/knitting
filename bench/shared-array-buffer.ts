@@ -34,6 +34,7 @@ let sink = 0;
 
 if (isMain) {
   const pool = createPool({
+    permission: { node: { allowAddons: true } },
     threads: 1,
     payload: {
       payloadInitialBytes: PAYLOAD_INITIAL_BYTES,

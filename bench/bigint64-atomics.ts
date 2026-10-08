@@ -450,21 +450,44 @@ const main = () => {
     rows.push(int32, candidate);
   }
 
-  console.log(`Runtime: ${runtimeLabel}`);
-  console.log(
-    `Cache-line allocation: ${CACHE_LINE_BYTES} bytes; ${SAMPLE_COUNT} medians after ${WARMUP_COUNT} warmups; ${ITERATIONS.toLocaleString("en-US")} operations/sample.`,
-  );
-  console.log("");
-  const caseWidth = Math.max("Case".length, ...rows.map((row) => row.name.length));
-  console.log(`${"Case".padEnd(caseWidth)}  ns/op    vs Int32`);
-  console.log(`${"-".repeat(caseWidth)}  -----------------`);
-  for (const row of rows) {
+  if (process.argv.includes("--json")) {
+    console.log(JSON.stringify(
+      {
+        benchmark: "bigint64-atomics",
+        runtime: runtimeLabel,
+        iterations: ITERATIONS,
+        warmup: WARMUP_COUNT,
+        samples: SAMPLE_COUNT,
+        rows,
+      },
+      null,
+      2,
+    ));
+  } else {
+    console.log(`Runtime: ${runtimeLabel}`);
     console.log(
-      `${row.name.padEnd(caseWidth)}  ${format(row.nsPerOperation).padStart(7)}  ${format(row.relativeToInt32, 2).padStart(7)}x`,
+      `Cache-line allocation: ${CACHE_LINE_BYTES} bytes; ${SAMPLE_COUNT} medians after ${WARMUP_COUNT} warmups; ${
+        ITERATIONS.toLocaleString("en-US")
+      } operations/sample.`,
     );
+    console.log("");
+    const caseWidth = Math.max(
+      "Case".length,
+      ...rows.map((row) => row.name.length),
+    );
+    console.log(`${"Case".padEnd(caseWidth)}  ns/op    vs Int32`);
+    console.log(`${"-".repeat(caseWidth)}  -----------------`);
+    for (const row of rows) {
+      console.log(
+        `${row.name.padEnd(caseWidth)}  ${
+          format(row.nsPerOperation).padStart(7)
+        }  ${format(row.relativeToInt32, 2).padStart(7)}x`,
+      );
+    }
   }
 
-  (globalThis as { __bigint64AtomicsBenchSink?: typeof sink }).__bigint64AtomicsBenchSink = sink;
+  (globalThis as { __bigint64AtomicsBenchSink?: typeof sink })
+    .__bigint64AtomicsBenchSink = sink;
 };
 
 main();
