@@ -78,6 +78,10 @@ test("worker loop progresses across async work and idle periods", async () => {
   })({ addOne, delayedEcho });
 
   try {
+    // Boot the worker first: spawn and module import would land inside the
+    // 2s case budget, which a loaded box can spend on boot alone.
+    assertEquals(await withTimeout(call.addOne(0), 10_000), 1);
+
     const batch1 = [
       call.addOne(1),
       call.addOne(2),

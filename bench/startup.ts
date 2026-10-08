@@ -484,6 +484,7 @@ const main = async () => {
       null,
       2,
     ));
+    if (results.length === 0) exit(1);
     return;
   }
 

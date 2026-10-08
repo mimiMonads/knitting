@@ -1,7 +1,7 @@
 /** Probe Windows park and process-doorbell behavior outside the test suite. */
 import { createPool } from "../knitting.ts";
 import { RUNTIME } from "../src/common/runtime.ts";
-import { double } from "../test/fixtures/steal_tasks.ts";
+import { delayedSyncDouble, double } from "../test/fixtures/steal_tasks.ts";
 
 const nodeProcess = (globalThis as typeof globalThis & {
   process?: {
@@ -19,7 +19,9 @@ let failures = 0;
 
 const report = (ok: boolean, name: string, detail: string): void => {
   if (!ok) failures++;
-  console.log(`${ok ? "ok  " : "FAIL"}  ${name}${detail ? ` -- ${detail}` : ""}`);
+  console.log(
+    `${ok ? "ok  " : "FAIL"}  ${name}${detail ? ` -- ${detail}` : ""}`,
+  );
 };
 
 const note = (name: string, detail: string): void => {
@@ -38,7 +40,10 @@ const probeShortWaitBurnsCpu = (): void => {
     typeof Atomics.wait !== "function" ||
     typeof SharedArrayBuffer !== "function"
   ) {
-    note("probe: short Atomics.wait", "no Atomics.wait or SharedArrayBuffer here");
+    note(
+      "probe: short Atomics.wait",
+      "no Atomics.wait or SharedArrayBuffer here",
+    );
     return;
   }
   if (typeof cpuUsage !== "function") {
@@ -108,9 +113,11 @@ const probeBlockedChildIpc = async (): Promise<void> => {
     const ringAt = await new Promise<number>((resolve) => {
       const startedAt = performance.now();
       let settled = false;
+      let deadline: ReturnType<typeof setTimeout> | undefined;
       const finish = (value: number) => {
         if (settled) return;
         settled = true;
+        clearTimeout(deadline);
         resolve(value);
       };
       const child = bun.spawn!({
@@ -122,7 +129,7 @@ const probeBlockedChildIpc = async (): Promise<void> => {
           if (message?.ring === true) finish(performance.now() - startedAt);
         },
       }) as { kill?: () => void };
-      setTimeout(() => {
+      deadline = setTimeout(() => {
         finish(Number.POSITIVE_INFINITY);
         child.kill?.();
       }, BLOCK_MS * 3);
@@ -153,7 +160,9 @@ const checkIdlePoolDoesNotSpin = async (): Promise<void> => {
   const idleMs = 400;
   const pool = createPool({ threads, host: { steal: true } })({ double });
   try {
-    await Promise.all(Array.from({ length: 50 }, (_, i) => pool.call.double(i)));
+    await Promise.all(
+      Array.from({ length: 50 }, (_, i) => pool.call.double(i)),
+    );
 
     const before = cpuUsage();
     await new Promise((resolve) => setTimeout(resolve, idleMs));
@@ -173,9 +182,9 @@ const checkIdlePoolDoesNotSpin = async (): Promise<void> => {
 };
 
 /**
- * Sequential process-worker calls. The host arms its doorbell between calls,
- * so a completion the worker cannot ring shows up here as a call that never
- * settles -- and it only bites from the second call on.
+ * Warmed synchronous calls must complete before the 1s host watchdog. Startup
+ * has a separate budget, and 20ms of work lets the host arm before publication.
+ * A missing worker yield must fail even when the watchdog rescues the result.
  */
 const checkProcessWorkerCallsSettle = async (): Promise<void> => {
   if (RUNTIME !== "node" && RUNTIME !== "deno" && RUNTIME !== "bun") {
@@ -184,26 +193,50 @@ const checkProcessWorkerCallsSettle = async (): Promise<void> => {
   }
 
   const calls = 12;
-  const perCallTimeoutMs = 4000;
+  const perCallTimeoutMs = 750;
   const pool = createPool({
     threads: 1,
+    host: { doorbell: true, stallFreeLoops: 0 },
     worker: { runtime: "process", processRuntime: RUNTIME },
-  })({ double });
+  })({ double, delayedSyncDouble });
 
-  try {
-    for (let i = 1; i <= calls; i++) {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const result = await Promise.race([
-        pool.call.double(i),
+  const callWithDeadline = async (
+    call: Promise<number>,
+    ms: number,
+    label: string,
+  ) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        call,
         new Promise<never>((_, reject) => {
           timer = setTimeout(
-            () => reject(new Error(`call ${i}/${calls} never settled`)),
-            perCallTimeoutMs,
+            () => reject(new Error(`${label} exceeded ${ms}ms`)),
+            ms,
           );
         }),
-      ]).finally(() => {
-        if (timer !== undefined) clearTimeout(timer);
-      });
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  try {
+    const boot = await callWithDeadline(
+      pool.call.double(0),
+      4_000,
+      "worker boot",
+    );
+    if (boot !== 0) throw new Error(`boot returned ${boot}`);
+    let maxMs = 0;
+    for (let i = 1; i <= calls; i++) {
+      const started = performance.now();
+      const result = await callWithDeadline(
+        pool.call.delayedSyncDouble(i),
+        perCallTimeoutMs,
+        `call ${i}/${calls}`,
+      );
+      maxMs = Math.max(maxMs, performance.now() - started);
 
       if (result !== i * 2) {
         report(
@@ -217,7 +250,9 @@ const checkProcessWorkerCallsSettle = async (): Promise<void> => {
     report(
       true,
       "check: process worker calls settle",
-      `${calls}/${calls} sequential calls`,
+      `${calls}/${calls} warmed calls before watchdog; max=${
+        maxMs.toFixed(1)
+      }ms`,
     );
   } catch (error) {
     report(

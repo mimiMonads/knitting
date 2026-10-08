@@ -111,6 +111,8 @@ export const createWorkerRxQueue = (
     // is a non-inlined call an order of magnitude dearer than a plain read;
     // the peer's word still needs the atomic.
     if ((returnHostBits[0]! ^ a_load(returnWorkerBits, 0)) !== 0) return;
+    if (returnHostBits.length === 2 &&
+      (returnHostBits[1]! ^ a_load(returnWorkerBits, 1)) !== 0) return;
     releaseDeferredReturns();
   };
   const runByIndex = listOfFunctions.reduce((acc, fixed, idx) => {

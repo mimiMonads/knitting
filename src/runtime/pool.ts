@@ -40,12 +40,15 @@ import { KnittingError, type KnittingErrorCode } from "../error.ts";
 import { createNodeCompletionDoorbell } from "./node-doorbell.ts";
 import {
   DEFAULT_STEAL_CLAIM,
+  assertLockSlotCount,
   HEADER_SLOT_STRIDE_U32,
   lock2,
   LOCK_SECTOR_BYTE_LENGTH,
   LockBound,
+  type LockSlotCount,
   type StealClaimDiscipline,
   type Task,
+  TASK_FUNCTION_META_VALUE_MASK,
 } from "../memory/lock.ts";
 // Registers the payload codec before any lock is built.
 import "../memory/payloadCodec.ts";
@@ -113,8 +116,16 @@ const sanitizePositiveInteger = (value: number | undefined) => {
   return parsed > 0 ? parsed : undefined;
 };
 
-const resolveAbortSignalCapacity = (value: number | undefined): number =>
-  sanitizePositiveInteger(value) ?? DEFAULT_ABORT_SIGNAL_CAPACITY;
+const resolveAbortSignalCapacity = (value: number | undefined): number => {
+  const capacity = sanitizePositiveInteger(value) ?? DEFAULT_ABORT_SIGNAL_CAPACITY;
+  // Task.FunctionID's upper 16 bits carry signal + 1; zero means no signal.
+  // Keep every allocated identity representable rather than masking it into
+  // another task's signal or the no-signal marker.
+  if (capacity > TASK_FUNCTION_META_VALUE_MASK) {
+    throw new RangeError(`abortSignalCapacity must be <= ${TASK_FUNCTION_META_VALUE_MASK}`);
+  }
+  return capacity;
+};
 
 const abortSignalByteLength = (capacity: number): number =>
   Math.max(1, Math.ceil(capacity / 32)) * Uint32Array.BYTES_PER_ELEMENT;
@@ -152,12 +163,15 @@ const withFixedPayloadConfig = (
 });
 
 /** Build the shared submit and private return buffers for a stealing pool. */
-export const resolveStealRegionLanes = (consumers: number): number => {
-  for (let lanes = LockBound.slots; lanes >= 1; lanes >>= 1) {
-    if (LockBound.slots / lanes >= consumers + 1) return lanes;
+export const resolveStealRegionLanes = (
+  consumers: number,
+  slots: LockSlotCount = LockBound.slots,
+): number => {
+  for (let lanes = slots; lanes >= (slots === 64 ? 2 : 1); lanes >>= 1) {
+    if (slots / lanes >= consumers + 1) return lanes;
   }
   throw new RangeError(
-    `${consumers} stealing workers need more than ${LockBound.slots} lanes`,
+    `${consumers} stealing workers need more than ${slots} lanes`,
   );
 };
 
@@ -169,10 +183,11 @@ export const resolveStealRegionLanes = (consumers: number): number => {
 export const resolveMaxStealRegionLanes = (
   consumers: number,
   stealClaim: StealClaimDiscipline = DEFAULT_STEAL_CLAIM,
+  slots: LockSlotCount = LockBound.slots,
 ): number =>
   stealClaim === "dekker"
-    ? resolveStealRegionLanes(consumers)
-    : LockBound.slots;
+    ? resolveStealRegionLanes(consumers, slots)
+    : slots;
 
 /** Maximum claimants that leave the protocol's required spare region. */
 export const MAX_STEAL_CONSUMERS = LockBound.slots - 1;
@@ -198,6 +213,7 @@ export const resolveStealSingleClaimMicroseconds = (
 
 export const createStealPoolBuffers = ({
   threads,
+  slots = LockBound.slots,
   payload,
   sharedArgs,
   regionLanes,
@@ -208,6 +224,7 @@ export const createStealPoolBuffers = ({
   processWorker,
 }: {
   threads: number;
+  slots?: LockSlotCount;
   payload?: PayloadBufferOptions;
   /** Hand large arguments to workers as borrowed regions. See `unsafe.SharedArgs`. */
   sharedArgs?: boolean;
@@ -221,6 +238,7 @@ export const createStealPoolBuffers = ({
     sharedMemory: ResolvedProcessSharedMemorySettings;
   };
 }) => {
+  const slotCount = assertLockSlotCount(slots, "host.slots");
   const basePayloadConfig = resolvePayloadBufferOptions({ options: payload });
   const payloadConfig = processWorker === undefined
     ? basePayloadConfig
@@ -239,7 +257,7 @@ export const createStealPoolBuffers = ({
       abortBytes: 0,
       lockSectorBytes: LOCK_SECTOR_BYTE_LENGTH,
       headerSlotStrideU32: HEADER_SLOT_STRIDE_U32,
-      slotCount: LockBound.slots,
+      slotCount,
       headerLayout: "split",
     });
 
@@ -249,6 +267,7 @@ export const createStealPoolBuffers = ({
   ): LockBuffers =>
     ({
       ...half,
+      slots: slotCount,
       payload: payloadSab,
       textCompat: probeLockBufferTextCompat({
         headers: half.headers,
@@ -257,10 +276,13 @@ export const createStealPoolBuffers = ({
     }) as LockBuffers;
 
   // Keep the default width valid for Dekker; wider regions are explicit.
-  const maxLanes = resolveMaxStealRegionLanes(threads, stealClaim);
+  const maxLanes = resolveMaxStealRegionLanes(threads, stealClaim, slotCount);
   const lanes = regionLanes === undefined
-    ? resolveStealRegionLanes(threads)
+    ? resolveStealRegionLanes(threads, slotCount)
     : Math.min(Math.max(1, regionLanes | 0), maxLanes);
+  if (slotCount === 64 && stealClaim === "dekker" && lanes < 2) {
+    throw new RangeError("64-slot Dekker locks need stealRegionLanes >= 2");
+  }
   const resolvedSingleClaimMicroseconds = resolveStealSingleClaimMicroseconds(
     singleClaimMicroseconds,
   );
@@ -271,6 +293,7 @@ export const createStealPoolBuffers = ({
   const processMemory: ProcessStealMemoryLayout | undefined =
     processWorker === undefined ? undefined : createProcessStealMemoryLayout({
       threads,
+      slots: slotCount,
       signalBytes: processWorker.signalBytes,
       abortBytes: usesAbortSignal === true
         ? abortSignalByteLength(resolvedAbortSignalCapacity)
@@ -292,6 +315,7 @@ export const createStealPoolBuffers = ({
       processMemory.workers[0]!.lockPayload,
     );
   const hostSubmitLock = lock2({
+    slots: slotCount,
     headers: submitBuffers.headers,
     headerSlotStrideU32: submitBuffers.headerSlotStrideU32,
     LockBoundSector: submitBuffers.lockSector,
@@ -319,6 +343,7 @@ export const createStealPoolBuffers = ({
       );
     returnBuffers.push(buffers);
     hostReturnLocks.push(lock2({
+      slots: slotCount,
       headers: buffers.headers,
       headerSlotStrideU32: buffers.headerSlotStrideU32,
       LockBoundSector: buffers.lockSector,
@@ -514,6 +539,7 @@ export const spawnWorkerContext = ({
     abortSignalCapacity,
   );
   const requestedSignalBytes = sanitizeBytes(sab?.size);
+  const slotCount = assertLockSlotCount(host?.slots ?? LockBound.slots, "host.slots");
   const externalSignalSab = sab?.sharedSab;
   if (useProcessWorkerRuntime && externalSignalSab != null) {
     throw new Error(
@@ -533,6 +559,7 @@ export const spawnWorkerContext = ({
     ? undefined
     : stealProcessMemory === undefined
     ? createProcessWorkerMemoryLayout({
+      slots: slotCount,
       signalBytes,
       abortBytes,
       payloadBytes: resolvedPayloadConfig.payloadMaxByteLength,
@@ -570,7 +597,7 @@ export const spawnWorkerContext = ({
       abortBytes,
       lockSectorBytes: LOCK_SECTOR_BYTE_LENGTH,
       headerSlotStrideU32: HEADER_SLOT_STRIDE_U32,
-      slotCount: LockBound.slots,
+      slotCount,
       headerLayout: "split",
       createBuffer: createControlBuffer,
     });
@@ -581,6 +608,7 @@ export const spawnWorkerContext = ({
   const lockPayload = processWorkerMemory?.lockPayload ?? makePayloadBuffer();
   const lockBuffers: LockBuffers = stealPool?.submitBuffers ?? {
     ...controlLayout.lock,
+    slots: slotCount,
     payload: lockPayload,
     textCompat: probeLockBufferTextCompat({
       headers: controlLayout.lock.headers,
@@ -591,6 +619,7 @@ export const spawnWorkerContext = ({
     makePayloadBuffer();
   const returnLockBuffers: LockBuffers = stealPool?.returnBuffers ?? {
     ...controlLayout.returnLock,
+    slots: slotCount,
     payload: returnPayload,
     textCompat: probeLockBufferTextCompat({
       headers: controlLayout.returnLock.headers,
@@ -599,6 +628,7 @@ export const spawnWorkerContext = ({
   };
 
   const lock = stealPool?.hostSubmitLock ?? lock2({
+    slots: lockBuffers.slots,
     headers: lockBuffers.headers,
     headerSlotStrideU32: lockBuffers.headerSlotStrideU32,
     LockBoundSector: lockBuffers.lockSector,
@@ -609,6 +639,7 @@ export const spawnWorkerContext = ({
     processBoundary: useProcessWorkerRuntime,
   });
   const returnLock = stealPool?.hostReturnLock ?? lock2({
+    slots: returnLockBuffers.slots,
     headers: returnLockBuffers.headers,
     headerSlotStrideU32: returnLockBuffers.headerSlotStrideU32,
     LockBoundSector: returnLockBuffers.lockSector,

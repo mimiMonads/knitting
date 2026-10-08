@@ -482,10 +482,11 @@ const initStaticIO = (
   headersBuffer: Uint32Array,
   headerSlotStrideU32?: number,
   textCompat?: LockBufferTextCompat["headers"],
+  slots: number = LockBound.slots,
 ) => {
   const slotStride = headerSlotStrideU32 ?? HEADER_SLOT_STRIDE_U32;
   const requiredBytes = getStridedRegionSpanBytes({
-    slotCount: LockBound.slots,
+    slotCount: slots,
     slotStrideU32: slotStride,
     slotLengthU32: HEADER_STATIC_PAYLOAD_U32,
     baseU32: LockBound.header,
@@ -495,6 +496,7 @@ const initStaticIO = (
   }
 
   return createSharedStaticBufferIO({
+    slots,
     headersBuffer,
     slotStrideU32: slotStride,
     textCompat,
@@ -505,8 +507,9 @@ const requireStaticIO = (
   headersBuffer: Uint32Array,
   headerSlotStrideU32?: number,
   textCompat?: LockBufferTextCompat["headers"],
+  slots: number = LockBound.slots,
 ) => {
-  const staticIO = initStaticIO(headersBuffer, headerSlotStrideU32, textCompat);
+  const staticIO = initStaticIO(headersBuffer, headerSlotStrideU32, textCompat, slots);
   if (staticIO === null) {
     throw new RangeError("headersBuffer is too small for static payload IO");
   }
@@ -519,6 +522,7 @@ const requireStaticIO = (
  */
 
 export const encodePayload = ({
+  slots = LockBound.slots,
   lockSector,
   payload,
   sab,
@@ -531,6 +535,7 @@ export const encodePayload = ({
   sharedReturn = false,
   moveReturn = false,
 }: {
+  slots?: number;
   lockSector?: SharedBufferSource;
   payload?: {
     sab?: SharedBufferSource;
@@ -612,6 +617,7 @@ export const encodePayload = ({
     headersBuffer,
     headerSlotStrideU32,
     textCompat?.headers,
+    slots,
   );
   const dynamicLimitError = (
     task: Task,
@@ -2044,6 +2050,7 @@ export const encodePayload = ({
 };
 
 export const decodePayload = ({
+  slots = LockBound.slots,
   lockSector,
   payload,
   sab,
@@ -2054,6 +2061,7 @@ export const decodePayload = ({
   host,
   processBoundary = false,
 }: {
+  slots?: number;
   lockSector?: SharedBufferSource;
   payload?: {
     sab?: SharedBufferSource;
@@ -2117,6 +2125,7 @@ export const decodePayload = ({
     headersBuffer,
     headerSlotStrideU32,
     textCompat?.headers,
+    slots,
   );
   // Reusable scratch for the ProcessSharedBuffer raw-word decode. Safe to share:
   // decode is single-consumer and not re-entrant, and the words are consumed

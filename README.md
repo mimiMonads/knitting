@@ -69,92 +69,6 @@ cross-runtime shared memory.
 See [Platform and native support](#platform-and-native-support) for the prebuild
 matrix and the flags native features need.
 
-## Experimental Andromeda support
-
-Thread pools run on Andromeda 0.1.14 when the Knitting runtime is bundled into
-one ESM file. App and task modules can remain separate. Andromeda does not
-resolve npm packages directly, and importing Knitting's source graph directly
-currently hits a Nova module-loader assertion. Build the Knitting bundle with
-Bun:
-
-```bash
-bun build knitting.ts --target=browser --outfile=knitting.andromeda.js
-```
-
-Then import the bundle from your task module and provide its URL explicitly:
-
-```ts
-import { createPool, isMain, setModuleUrl, task } from "./knitting.andromeda.js";
-
-setModuleUrl(import.meta.url);
-export const add = task<[number, number], number>({
-  f: ([a, b]) => a + b,
-});
-
-if (isMain) {
-  const pool = createPool({ threads: 2 })({ add });
-  try {
-    console.log(await pool.call.add([20, 22]));
-  } finally {
-    await pool.shutdown();
-  }
-}
-```
-
-Run that entry with `andromeda run main.ts`. To make a fully bundled single-file
-app, bundle the entry too:
-
-```bash
-bun build main.ts --target=browser --outfile=app.andromeda.js
-andromeda run app.andromeda.js
-```
-
-This path supports thread workers. Process workers, `ProcessSharedBuffer`, and
-Knitting's per-worker `permission` options are not supported on Andromeda; the
-runtime controls worker access.
-
-Multi-worker pools on Andromeda use private submit lanes instead of work
-stealing. In a stealing pool on Andromeda, the host never sees completions as
-they arrive and finds them only when a 1-second fallback timer fires, so
-`threads: 2` ran slower than `threads: 1`. Private lanes are not affected and
-scale with worker count. `host: { steal: true }` still turns stealing on, for
-example to recheck it on a newer Andromeda. `KNITTING_STEAL` has no effect
-because Andromeda has no `process.env`.
-
-For a multi-file app, each module that defines tasks must set its own URL before
-calling `task()` or `importTask()`. The app entry must also set its URL before
-calling `createPool()`:
-
-```ts
-// tasks.ts
-import { setModuleUrl, task } from "./knitting.andromeda.js";
-import { addBias } from "./helpers.ts";
-
-setModuleUrl(import.meta.url);
-export const addWithBias = task<[number, number], number>({
-  f: ([value, bias]) => addBias(value, bias),
-});
-```
-
-```ts
-// main.ts
-import { createPool, isMain, setModuleUrl } from "./knitting.andromeda.js";
-import { addWithBias } from "./tasks.ts";
-
-setModuleUrl(import.meta.url);
-if (isMain) {
-  const pool = createPool({ threads: 2 })({ addWithBias });
-  try {
-    console.log(await pool.call.addWithBias([20, 22]));
-  } finally {
-    await pool.shutdown();
-  }
-}
-```
-
-Task modules, `importTask()` targets, and `worker.bootstrap` modules can use
-regular relative imports such as `./helpers.ts`.
-
 ## Install
 
 From npm:
@@ -562,6 +476,7 @@ Common options you might tweak:
 | `worker.processSharedMemory`      | Process-worker memory discovery: `"inherit"` by default on Node/Bun POSIX hosts, or `"named"` for wrappers/containers. Deno and Windows hosts use named mappings automatically. |
 | `permission`                      | Runtime permission policy for workers.                                                                                            |
 | `host.dispatcher`                 | Experimental host dispatcher topology: `"per-thread"` or `"serial-channel"`.                                                      |
+| `host.slots`                      | Task slots per request and return lane: `32` (default) or `64`. Wide mode uses the second word in the existing lock cache lines. |
 | `host.steal`                      | Shared-submit work stealing for compatible multi-worker thread/process pools; enabled by default (off by default on Andromeda). Set `false` to use private submit lanes. |
 | `host.stealRegionLanes`           | Submit lanes claimed per stealing handshake (a power of two). Smaller regions are fairer for expensive tasks; wider regions amortise arbitration for cheap ones. |
 | `host.stealClaim`                 | Claim discipline: `"ticket"` (default) or `"dekker"`. Also settable with `KNITTING_STEAL_CLAIM`; an unrecognised value is rejected.  |
@@ -657,8 +572,18 @@ in multi-worker mixed workloads. Uniform short tasks near the threshold can
 lose throughput at higher worker counts (about 4–7% with seven workers in
 local tests), so adaptation is opt-in and disabled by default.
 
+Set `host: { slots: 64 }` to double each request and return lane's task capacity.
+Thread and JavaScript process workers use the same 256-byte lock sector; only
+the per-slot headers double in size. Wide queues acquire a 64-bit snapshot and
+select lanes using two 32-bit words and `Math.clz32`, with no BigInt bit math.
+The sender refreshes its receiver shadow only after both cached halves run out
+of free slots. Ticket claims can take up to 64 lanes; wide Dekker regions need
+at least two lanes because their region-intent mask remains 32-bit. The pool's
+limit of 31 stealing workers is unchanged. Compiled workers retain their
+existing transport and do not accept host settings.
+
 The ticket discipline uses a 64-bit claim head and a wrapping 32-bit
-publication tail. The head CAS validates the tail snapshot: at most 32 tickets
+publication tail. The head CAS validates the tail snapshot: at most `host.slots` tickets
 can be pending, so unsigned subtraction recovers the distance across a tail wrap
 without ever recycling a claim identity. `stealRegionLanes` caps the number of
 tickets one claim takes, and its default width is unchanged from Dekker's.
@@ -1661,6 +1586,69 @@ bun run build:native
 
 For Deno projects with permissions enabled, allow FFI when using process workers
 or `ProcessSharedBuffer`.
+
+## Experimental Andromeda support
+
+Knitting can run thread pools on [Andromeda](https://tryandromeda.dev) 0.1.14,
+using the same self-contained file as the browser build. Andromeda doesn't
+resolve package names, so install the package as usual and import that file by
+path:
+
+```ts
+import {
+  createPool,
+  isMain,
+  setModuleUrl,
+  task,
+} from "./node_modules/knitting/knitting.browser.js";
+
+setModuleUrl(import.meta.url);
+
+export const add = task<[number, number], number>({
+  f: ([a, b]) => a + b,
+});
+
+const main = async () => {
+  const pool = createPool({ threads: 2 })({ add });
+  try {
+    console.log(await pool.call.add([20, 22]));
+  } finally {
+    await pool.shutdown();
+  }
+};
+
+if (isMain) main();
+```
+
+```bash
+andromeda run main.ts
+```
+
+A few things to keep in mind:
+
+- Call `setModuleUrl(import.meta.url)` at the top of every module that defines
+  tasks, and in the entry that creates the pool. Andromeda has no stack traces,
+  so Knitting can't work out the module URL on its own.
+- Keep pool calls inside an `async` function. A top-level `await` can hang or
+  crash Andromeda 0.1.14.
+- Import `knitting.browser.js` rather than the main entry or a CDN URL: the main
+  entry trips a module-loader bug, and Andromeda workers can't load scripts over
+  HTTP.
+- Only thread workers are supported. Process workers, `ProcessSharedBuffer`, and
+  the `permission` option are not; Andromeda decides what workers can access.
+- Work stealing is off by default, because a stealing pool only notices
+  finished calls when a 1-second fallback timer fires. `host: { steal: true }`
+  turns it back on. Environment variables such as `KNITTING_STEAL` are ignored,
+  since there is no `process.env`.
+
+Task modules, `importTask()` targets, and `worker.bootstrap` modules can import
+other files with ordinary relative paths. A single-module app can also be
+bundled into one file:
+
+```bash
+bun build main.ts --target=browser --outfile=app.andromeda.js
+andromeda run app.andromeda.js
+```
 
 ## Benchmarks
 

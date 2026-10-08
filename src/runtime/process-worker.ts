@@ -391,12 +391,14 @@ const makeProcessWorkerMemoryName = (
 };
 
 export const createProcessWorkerMemoryLayout = ({
+  slots = LockBound.slots,
   signalBytes,
   abortBytes,
   payloadBytes,
   thread,
   sharedMemory,
 }: {
+  slots?: 32 | 64;
   signalBytes: number;
   abortBytes: number;
   payloadBytes: number;
@@ -416,7 +418,7 @@ export const createProcessWorkerMemoryLayout = ({
   const requestHeadersSlice = carpet.take(
     "requestHeaders",
     getHeaderBlockByteLength({
-      slotCount: LockBound.slots,
+      slotCount: slots,
       slotStrideU32: HEADER_SLOT_STRIDE_U32,
       alignTo: 64,
     }),
@@ -424,7 +426,7 @@ export const createProcessWorkerMemoryLayout = ({
   const returnHeadersSlice = carpet.take(
     "returnHeaders",
     getHeaderBlockByteLength({
-      slotCount: LockBound.slots,
+      slotCount: slots,
       slotStrideU32: HEADER_SLOT_STRIDE_U32,
       alignTo: 64,
     }),
@@ -493,6 +495,7 @@ export const createProcessWorkerMemoryLayout = ({
 };
 
 export const createProcessStealMemoryLayout = ({
+  slots = LockBound.slots,
   threads,
   signalBytes,
   abortBytes,
@@ -500,6 +503,7 @@ export const createProcessStealMemoryLayout = ({
   payloadBytes,
   sharedMemory,
 }: {
+  slots?: 32 | 64;
   threads: number;
   signalBytes: number;
   abortBytes: number;
@@ -519,7 +523,7 @@ export const createProcessStealMemoryLayout = ({
   const requestHeadersSlice = carpet.take(
     "requestHeaders",
     getHeaderBlockByteLength({
-      slotCount: LockBound.slots,
+      slotCount: slots,
       slotStrideU32: HEADER_SLOT_STRIDE_U32,
       alignTo: 64,
     }),
@@ -536,7 +540,7 @@ export const createProcessStealMemoryLayout = ({
     returnHeaders: carpet.take(
       `returnHeaders-${thread}`,
       getHeaderBlockByteLength({
-        slotCount: LockBound.slots,
+        slotCount: slots,
         slotStrideU32: HEADER_SLOT_STRIDE_U32,
         alignTo: 64,
       }),

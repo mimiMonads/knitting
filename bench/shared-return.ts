@@ -28,6 +28,11 @@ const g = globalThis as typeof globalThis & {
 const env = (name: string): string | undefined =>
   g.Deno?.env.get(name) ?? g.process?.env?.[name];
 
+const outputJson = process.argv.includes("--json");
+const log = (...args: unknown[]) => {
+  if (!outputJson) console.log(...args);
+};
+
 const nowNs = (): number => {
   const hrtime = g.process?.hrtime?.bigint;
   return hrtime ? Number(hrtime()) : globalThis.performance.now() * 1e6;
@@ -109,11 +114,26 @@ const pct = (sorted: number[], p: number): number =>
   sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * p))]!;
 
 if (isMain) {
+  const rows: Array<Record<string, unknown>> = [];
+  if (
+    !Number.isSafeInteger(ROUNDS) || ROUNDS < 1 ||
+    !Number.isSafeInteger(WARMUP_ROUNDS) || WARMUP_ROUNDS < 0
+  ) {
+    throw new Error("round counts must be integers: rounds >= 1, warmup >= 0");
+  }
+  if (!["set", "fill"].includes(WORKLOAD)) {
+    throw new Error("WORKLOAD must be set or fill");
+  }
+
   const threadList = (env("SAB_THREADS") ?? "1,4").split(",")
     .map((entry) => Number(entry.trim()))
     .filter((entry) => Number.isInteger(entry) && entry > 0);
 
-  console.log(
+  if (threadList.length === 0) {
+    throw new Error("SAB_THREADS must contain positive integers");
+  }
+
+  log(
     `runtime: ${runtimeName()}   ${BATCH} in flight, ${ROUNDS} timed rounds, ` +
       `workload=${WORKLOAD}`,
   );
@@ -122,25 +142,25 @@ if (isMain) {
     const tasks = { plainReturn, sharedReturn, sharedNoFillReturn, refReturn };
     // Both pools stay alive and alternate every round, so drift lands on both.
     const rawPool = createPool({
+      permission: { node: { allowAddons: true } },
       threads,
       unsafe: { SharedBytes: false },
     })(tasks);
     const sharedPool = createPool({
+      permission: { node: { allowAddons: true } },
       threads,
       unsafe: { SharedBytes: true },
     })(tasks);
     const mismatches = new Map<string, number>();
 
-    console.log(`\n=== threads: ${threads} ===`);
-    console.log(
+    log(`\n=== threads: ${threads} ===`);
+    log(
       `${"size".padEnd(8)}${"raw".padStart(11)}${"shared".padStart(11)}` +
-        `${"nofill".padStart(11)}${
-          "bufref".padStart(11)
-        }` +
-        `${"sh/raw".padStart(9)}${"nf/raw".padStart(8)}` +
-        `${"ref/raw".padStart(9)}`,
+        `${"nofill".padStart(11)}${"bufref".padStart(11)}` +
+        `${"raw/sh".padStart(9)}${"raw/nf".padStart(8)}` +
+        `${"raw/ref".padStart(9)}`,
     );
-    console.log("-".repeat(78));
+    log("-".repeat(78));
 
     try {
       for (const bytes of SIZES) {
@@ -154,7 +174,8 @@ if (isMain) {
 
         let stamp = 1;
         for (let round = 0; round < WARMUP_ROUNDS + ROUNDS; round++) {
-          for (const [name, call] of variants) {
+          for (let offset = 0; offset < variants.length; offset++) {
+            const [name, call] = variants[(round + offset) % variants.length]!;
             const jobs = new Array<Promise<unknown>>(BATCH);
             const stamps = new Array<number>(BATCH);
             const start = nowNs();
@@ -188,9 +209,22 @@ if (isMain) {
         const sorted = new Map(
           [...samples].map(([n, l]) => [n, [...l].sort((a, b) => a - b)]),
         );
+        rows.push({
+          threads,
+          inflight: BATCH,
+          bytes,
+          variants: Object.fromEntries(
+            [...sorted].map(([name, samples]) => [name, {
+              samples: samples.length,
+              p10_ns_per_op: pct(samples, 0.1),
+              p50_ns_per_op: pct(samples, 0.5),
+              p90_ns_per_op: pct(samples, 0.9),
+            }]),
+          ),
+        });
         const med = (n: string) => pct(sorted.get(n)!, 0.5);
         const raw = med("raw");
-        console.log(
+        log(
           `${fmtBytes(bytes).padEnd(8)}${fmtNs(raw).padStart(11)}` +
             `${fmtNs(med("shared")).padStart(11)}` +
             `${fmtNs(med("nofill")).padStart(11)}` +
@@ -203,12 +237,10 @@ if (isMain) {
           const l = sorted.get(n)!;
           return `${fmtNs(pct(l, 0.1))}..${fmtNs(pct(l, 0.9))}`;
         };
-        console.log(
+        log(
           `        p10..p90  raw [${spread("raw")}]  shared [${
             spread("shared")
-          }]  nofill [${
-            spread("nofill")
-          }]  bufref [${spread("bufref")}]`,
+          }]  nofill [${spread("nofill")}]  bufref [${spread("bufref")}]`,
         );
       }
     } finally {
@@ -216,11 +248,27 @@ if (isMain) {
       await sharedPool.shutdown();
     }
     if (mismatches.size > 0) {
-      console.log(
-        `!! payload mismatches: ${
-          [...mismatches].map(([n, c]) => `${n}=${c}`).join(" ")
+      throw new Error(
+        `payload mismatches: ${
+          [...mismatches].map(([name, count]) => `${name}=${count}`).join(" ")
         }`,
       );
     }
+  }
+  if (outputJson) {
+    console.log(JSON.stringify(
+      {
+        benchmark: "shared-return",
+        runtime: runtimeName(),
+        workload: WORKLOAD,
+        warmup: WARMUP_ROUNDS,
+        rounds: ROUNDS,
+        metric:
+          "batch wall time divided by inflight; excludes host validation and release",
+        rows,
+      },
+      null,
+      2,
+    ));
   }
 }

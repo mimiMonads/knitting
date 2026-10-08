@@ -248,10 +248,12 @@ test("process worker pools use shared-submit stealing by default", {
 
 const runProcessStealSmoke = async (
   processRuntime: "bun" | "deno" | "node",
+  slots: 32 | 64 = 32,
+  threads = 3,
 ) => {
   const pool = createPool({
-    threads: 3,
-    host: { steal: true },
+    threads,
+    host: { steal: true, slots },
     worker: {
       runtime: "process",
       processRuntime,
@@ -319,6 +321,19 @@ test("Node process workers steal a shared submit queue", {
   if (!hasProcessRuntime("node")) return;
   await runProcessStealSmoke("node");
 });
+
+for (const processRuntime of ["bun", "deno", "node"] as const) {
+  for (const threads of [1, 3]) {
+    test(`64-slot ${processRuntime} process queues complete (${threads} workers)`, {
+      concurrency: false,
+      skip: processRuntimeTestSkip,
+      timeout: TEST_TIMEOUT_MS,
+    }, async () => {
+      if (!hasProcessRuntime(processRuntime)) return;
+      await runProcessStealSmoke(processRuntime, 64, threads);
+    });
+  }
+}
 
 /**
  * Stealing puts every claimant on one abort bitmap carved from the same

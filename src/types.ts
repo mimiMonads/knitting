@@ -92,6 +92,7 @@ type UnsafeOptions = {
 };
 
 type LockBuffers = {
+  slots?: 32 | 64;
   headers: SharedBufferSource;
   headerSlotStrideU32?: number;
   lockSector: SharedBufferSource;
@@ -550,6 +551,8 @@ type WorkerTimers = {
 };
 
 type DispatcherSettings = {
+  /** Task slots per request and return lane. Default: 32; 64 uses both halves. */
+  slots?: 32 | 64;
   /** Number of immediate notify loops before backoff starts. */
   stallFreeLoops?: number;
   /**
@@ -619,7 +622,7 @@ type CreatePool = {
   unsafe?: UnsafeOptions;
   /**
    * Abort-aware signal pool capacity.
-   * Defaults to `258`.
+   * Defaults to `258`; maximum `65535` because task signal IDs use 16 bits.
    */
   abortSignalCapacity?: number;
   /**

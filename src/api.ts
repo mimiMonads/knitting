@@ -35,6 +35,7 @@ import {
 } from "./runtime/process-worker.ts";
 import {
   assertStealClaim,
+  assertLockSlotCount,
   DEFAULT_STEAL_CLAIM,
 } from "./memory/lock.ts";
 import { TRANSPORT_SIGNAL_BYTES } from "./ipc/transport/shared-memory.ts";
@@ -652,6 +653,7 @@ export const createPool: CreatePoolFactory = ({
   const stealClaim = host?.stealClaim === undefined
     ? stealClaimEnv ?? DEFAULT_STEAL_CLAIM
     : assertStealClaim(host.stealClaim, "host.stealClaim");
+  const slots = assertLockSlotCount(host?.slots ?? 32, "host.slots");
   const usingCompiledWorker = resolvedWorker?.runtime === "compiled";
   if (resolvedWorker?.compiled !== undefined && !usingCompiledWorker) {
     throw new Error(
@@ -758,6 +760,7 @@ export const createPool: CreatePoolFactory = ({
   const stealBuffers = useSteal
     ? createStealPoolBuffers({
       threads: threads ?? 1,
+      slots,
       payload,
       sharedArgs: sharedArgsEnabled,
       regionLanes: host?.stealRegionLanes,

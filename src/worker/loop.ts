@@ -162,6 +162,7 @@ export const workerMainLoop = async (
   });
 
   const lockState = lock2({
+    slots: lock.slots,
     headers: lock.headers,
     headerSlotStrideU32: lock.headerSlotStrideU32,
     LockBoundSector: lock.lockSector,
@@ -198,6 +199,7 @@ export const workerMainLoop = async (
     }
     : () => processParentPort.postMessage(PROCESS_COMPLETION_DOORBELL);
   const returnLockState = lock2({
+    slots: returnLock.slots,
     headers: returnLock.headers,
     headerSlotStrideU32: returnLock.headerSlotStrideU32,
     LockBoundSector: returnLock.lockSector,

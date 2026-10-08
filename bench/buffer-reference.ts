@@ -60,17 +60,9 @@ export const returnCopy = task<number, Uint8Array>({
   f: (size) => new Uint8Array(size),
 });
 
-const timeAvgMs = async (
-  iterations: number,
-  run: () => Promise<unknown>,
-): Promise<number> => {
-  const t0 = performance.now();
-  for (let i = 0; i < iterations; i++) await run();
-  return (performance.now() - t0) / iterations;
-};
-
 if (isMain) {
   using pool = createPool({
+    permission: { node: { allowAddons: true } },
     threads: 1,
     payload: {
       payloadMaxByteLength: 64 * 1024 * 1024,
@@ -139,8 +131,20 @@ if (isMain) {
         await rawRun();
       }
 
-      const refMs = await timeAvgMs(ITERATIONS, refRun);
-      const rawMs = await timeAvgMs(ITERATIONS, rawRun);
+      const totals = [0, 0];
+      const variants = [refRun, rawRun];
+      for (let round = 0; round < ITERATIONS; round++) {
+        // Give both variants the first position equally; separate timed blocks
+        // would consistently charge scheduling/GC drift to the raw variant.
+        for (let offset = 0; offset < variants.length; offset++) {
+          const index = (round + offset) % variants.length;
+          const started = performance.now();
+          await variants[index]!();
+          totals[index]! += performance.now() - started;
+        }
+      }
+      const refMs = totals[0]! / ITERATIONS;
+      const rawMs = totals[1]! / ITERATIONS;
       results.push({ size, refMs, rawMs });
     }
 

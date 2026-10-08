@@ -1,6 +1,6 @@
 {
   "name": "knitting",
-  "version": "0.1.74",
+  "version": "0.1.75",
   "description": "Shared-memory IPC runtime for Node.js, Deno, and Bun.",
   "license": "Apache-2.0",
   "repository": {
@@ -100,14 +100,6 @@
     "node": ">=22.0.0",
     "deno": ">=2.0.0",
     "bun": ">=1.0.0"
-  },
-  "peerDependencies": {
-    "typescript": ">=5.2.0"
-  },
-  "peerDependenciesMeta": {
-    "typescript": {
-      "optional": true
-    }
   },
   "devDependencies": {
     "@types/bun": "latest",
