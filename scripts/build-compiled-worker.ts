@@ -5,6 +5,8 @@ import {
   chmodSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
+  readFileSync,
   renameSync,
   rmSync,
   statSync,
@@ -12,6 +14,7 @@ import {
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
+import { createHash } from "node:crypto";
 
 type Options = {
   modulePath: string;
@@ -27,6 +30,9 @@ const taskShim = resolve(here, "compiled-worker/task-shim.ts");
 const repositoryEntry = resolve(here, "../knitting.ts");
 const PORFFOR_REPOSITORY = "https://github.com/CanadaHonk/porffor.git";
 const PORFFOR_REVISION = "747d551844750fc5ed32cf88cdf0b3854aee267e";
+// Keep in sync with src/runtime/compiled-artifact.ts. This Bun script ships
+// without the runtime's TypeScript sources in the npm package.
+const COMPILED_WORKER_FORMAT_VERSION = 2;
 
 const usage = (): never => {
   console.error(
@@ -60,7 +66,9 @@ const readOptions = (): Options => {
   }
   for (const name of tasks) {
     if (!/^[$A-Z_a-z][$\w]*$/.test(name) && name !== "default") {
-      throw new Error("Compiled task name is not an export identifier: " + name);
+      throw new Error(
+        "Compiled task name is not an export identifier: " + name,
+      );
     }
   }
   return {
@@ -126,10 +134,15 @@ const installCompiler = (): string => {
     ],
     ["git", "-C", temporary, "checkout", "--quiet", "--detach", "FETCH_HEAD"],
   ];
-  console.error("Knitting: downloading the pinned Porffor compiler (first run only)");
+  console.error(
+    "Knitting: downloading the pinned Porffor compiler (first run only)",
+  );
   try {
     for (const command of commands) {
-      const result = Bun.spawnSync(command, { stdout: "inherit", stderr: "inherit" });
+      const result = Bun.spawnSync(command, {
+        stdout: "inherit",
+        stderr: "inherit",
+      });
       if (result.exitCode !== 0) {
         throw new Error(command[0] + " exited with code " + result.exitCode);
       }
@@ -190,87 +203,135 @@ const resolvesToKnitting = (specifier: string, resolveDir: string): boolean => {
 const run = async (): Promise<void> => {
   const options = readOptions();
   const outputDirectory = dirname(options.outputPath);
-  const workDirectory = join(outputDirectory, ".knitting-compiled");
+  mkdirSync(outputDirectory, { recursive: true });
+  const workDirectory = mkdtempSync(
+    join(outputDirectory, ".knitting-compiled-"),
+  );
   const entryPath = join(workDirectory, "entry.ts");
   const bundlePath = join(workDirectory, "worker.bundle.js");
   mkdirSync(workDirectory, { recursive: true });
-  mkdirSync(dirname(options.manifestPath), { recursive: true });
-  await Bun.write(entryPath, makeEntry(options.modulePath, options.tasks));
+  try {
+    mkdirSync(dirname(options.manifestPath), { recursive: true });
+    await Bun.write(entryPath, makeEntry(options.modulePath, options.tasks));
+    const inputs = new Map<string, string>();
+    // Include the build recipe as well as the exact bytes given to the bundler.
+    inputs.set(
+      fileURLToPath(import.meta.url),
+      createHash("sha256")
+        .update(readFileSync(fileURLToPath(import.meta.url))).digest("hex"),
+    );
 
-  const build = await Bun.build({
-    entrypoints: [entryPath],
-    format: "esm",
-    target: "browser",
-    minify: { syntax: true, whitespace: false, identifiers: false },
-    plugins: [{
-      name: "knitting-compiled-worker-api",
-      setup(builder) {
-        builder.onResolve({ filter: /.*/ }, (args) =>
-          resolvesToKnitting(args.path, args.resolveDir)
-            ? { path: taskShim }
-            : undefined
-        );
-      },
-    }],
-  });
-  if (!build.success || build.outputs[0] === undefined) {
-    for (const log of build.logs) console.error(log);
-    throw new Error("Bun could not bundle the compiled worker");
-  }
-  await Bun.write(bundlePath, build.outputs[0]);
+    const build = await Bun.build({
+      entrypoints: [entryPath],
+      format: "esm",
+      target: "browser",
+      minify: { syntax: true, whitespace: false, identifiers: false },
+      plugins: [{
+        name: "knitting-compiled-worker-api",
+        setup(builder) {
+          builder.onLoad({ filter: /.*/, namespace: "file" }, async (args) => {
+            const contents = new Uint8Array(
+              await Bun.file(args.path).arrayBuffer(),
+            );
+            if (args.path !== entryPath) {
+              inputs.set(
+                args.path,
+                createHash("sha256").update(contents)
+                  .digest("hex"),
+              );
+            }
+            return { contents, loader: args.loader };
+          });
+          builder.onResolve(
+            { filter: /.*/ },
+            (args) =>
+              resolvesToKnitting(args.path, args.resolveDir)
+                ? { path: taskShim }
+                : undefined,
+          );
+        },
+      }],
+    });
+    if (!build.success || build.outputs[0] === undefined) {
+      for (const log of build.logs) console.error(log);
+      throw new Error("Bun could not bundle the compiled worker");
+    }
+    await Bun.write(bundlePath, build.outputs[0]);
 
-  const porf = resolveCompiler(options);
-  const versionResult = Bun.spawnSync([porf, "--version"], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  const version = new TextDecoder().decode(versionResult.stdout).trim();
-  console.error("Knitting: compiling " + relative(process.cwd(), options.modulePath));
-  const compilerEnvironment = { ...process.env };
-  if (process.platform === "linux" && compilerEnvironment.CC === undefined) {
-    compilerEnvironment.CC = "cc -Wno-stringop-overflow";
-  }
-  const compile = Bun.spawnSync([
-    porf,
-    "native",
-    "--module",
-    "--quiet",
-    "-O3",
-    "--flto=auto",
-    bundlePath,
-    "-o",
-    options.outputPath,
-  ], {
-    stdout: "inherit",
-    stderr: "inherit",
-    env: compilerEnvironment,
-  });
-  if (compile.exitCode !== 0) {
-    throw new Error("Porffor exited with code " + compile.exitCode);
-  }
-  chmodSync(options.outputPath, 0o755);
+    const porf = resolveCompiler(options);
+    const versionResult = Bun.spawnSync([porf, "--version"], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const version = new TextDecoder().decode(versionResult.stdout).trim();
+    console.error(
+      "Knitting: compiling " + relative(process.cwd(), options.modulePath),
+    );
+    const compilerEnvironment = { ...process.env };
+    if (process.platform === "linux" && compilerEnvironment.CC === undefined) {
+      compilerEnvironment.CC = "cc -Wno-stringop-overflow";
+    }
+    const compile = Bun.spawnSync([
+      porf,
+      "native",
+      "--module",
+      "--quiet",
+      "-O3",
+      "--flto=auto",
+      bundlePath,
+      "-o",
+      options.outputPath,
+    ], {
+      stdout: "inherit",
+      stderr: "inherit",
+      env: compilerEnvironment,
+    });
+    if (compile.exitCode !== 0) {
+      throw new Error("Porffor exited with code " + compile.exitCode);
+    }
+    chmodSync(options.outputPath, 0o755);
 
-  await Bun.write(
-    options.manifestPath,
-    JSON.stringify({
-      format: "knitting-compiled-worker",
-      version: 1,
-      protocol: "knitting-json-v1",
-      compiler: { name: "porffor", version },
-      target: { platform: process.platform, arch: process.arch },
-      source: relative(outputDirectory, options.modulePath).replaceAll("\\", "/"),
-      sourceMtimeMs: statSync(options.modulePath).mtimeMs,
-      capabilities: {
-        input: "json",
-        output: "json",
-        async: false,
-        abortSignal: true,
-        binaryValues: true,
-      },
-      tasks: options.tasks.map((exportName, index) => ({ index, exportName })),
-    }, null, 2) + "\n",
-  );
-  rmSync(workDirectory, { recursive: true, force: true });
+    await Bun.write(
+      options.manifestPath,
+      JSON.stringify(
+        {
+          format: "knitting-compiled-worker",
+          version: COMPILED_WORKER_FORMAT_VERSION,
+          protocol: "knitting-json-v1",
+          compiler: { name: "porffor", version },
+          target: { platform: process.platform, arch: process.arch },
+          source: relative(outputDirectory, options.modulePath).replaceAll(
+            "\\",
+            "/",
+          ),
+          sourceMtimeMs: statSync(options.modulePath).mtimeMs,
+          inputs: [...inputs].sort(([a], [b]) => a.localeCompare(b)).map((
+            [path, sha256],
+          ) => ({
+            source: relative(outputDirectory, path).split(/[\\/]/).map(
+              encodeURIComponent,
+            ).join("/"),
+            sha256,
+          })),
+          capabilities: {
+            input: "json",
+            output: "json",
+            async: false,
+            abortSignal: true,
+            binaryValues: true,
+          },
+          tasks: options.tasks.map((exportName, index) => ({
+            index,
+            exportName,
+          })),
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+  } finally {
+    rmSync(workDirectory, { recursive: true, force: true });
+  }
 };
 
 await run();

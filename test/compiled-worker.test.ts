@@ -1,10 +1,29 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { checkCompiledWorker, createPool } from "../knitting.ts";
 import { addOne } from "./fixtures/loop_tasks.ts";
 import test from "./_runner.ts";
+import { createHash } from "node:crypto";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { spawn } from "node:child_process";
+import {
+  COMPILED_WORKER_FORMAT_VERSION,
+  inspectCompiledWorkerArtifact,
+} from "../src/runtime/compiled-artifact.ts";
+
+const fingerprint = (source: string) => ({
+  source,
+  sha256: createHash("sha256").update(readFileSync(fileURLToPath(source)))
+    .digest("hex"),
+});
 
 const runtimeTarget = (): { platform: string; arch: string } => {
   const runtime = globalThis as typeof globalThis & {
@@ -81,11 +100,12 @@ test("compiled/Porffor workers keep their transport under the stealing default",
       artifact + ".json",
       JSON.stringify({
         format: "knitting-compiled-worker",
-        version: 1,
+        version: COMPILED_WORKER_FORMAT_VERSION,
         protocol: "knitting-number-v1",
         compiler: { name: "fixture", version: "1" },
         target: runtimeTarget(),
         source: addOne.importedFrom,
+        inputs: [fingerprint(addOne.importedFrom)],
         tasks: [{ index: 0, exportName: "addOne" }],
       }),
     );
@@ -147,11 +167,12 @@ test("compiled JSON workers round-trip objects and primitives", async () => {
       artifact + ".json",
       JSON.stringify({
         format: "knitting-compiled-worker",
-        version: 1,
+        version: COMPILED_WORKER_FORMAT_VERSION,
         protocol: "knitting-json-v1",
         compiler: { name: "fixture", version: "1" },
         target: runtimeTarget(),
         source: addOne.importedFrom,
+        inputs: [fingerprint(addOne.importedFrom)],
         tasks: [{ index: 0, exportName: "echo" }],
       }),
     );
@@ -169,6 +190,9 @@ test("compiled JSON workers round-trip objects and primitives", async () => {
         null,
         [1, "two", false],
         { id: 7, nested: { ready: true } },
+        JSON.parse(
+          '{"__proto__":{"marker":123},"constructor":7,"nested":{"__proto__":null}}',
+        ),
       ];
       for (const value of values) {
         assert.deepEqual(await pool.call.echo(value as never), value);
@@ -228,11 +252,12 @@ test("compiled worker checks detect a stale task module", () => {
       artifact + ".json",
       JSON.stringify({
         format: "knitting-compiled-worker",
-        version: 1,
+        version: COMPILED_WORKER_FORMAT_VERSION,
         protocol: "knitting-number-v1",
         compiler: { name: "fixture", version: "1" },
         target: runtimeTarget(),
         source: addOne.importedFrom,
+        inputs: [fingerprint(addOne.importedFrom)],
         sourceMtimeMs: 0,
         tasks: [{ index: 0, exportName: "addOne" }],
       }),
@@ -275,4 +300,123 @@ test("processRuntime porffor rejects conflicting runtimes", () => {
       })({ addOne }),
     /requires worker.runtime to be compiled or omitted/,
   );
+});
+
+test("compiled workers reject changed dependency contents without timestamp metadata", () => {
+  if (runtimeTarget().platform === "win32") return;
+  const dir = mkdtempSync(join(tmpdir(), "knitting-compiled-inputs-"));
+  const artifact = join(dir, "tasks.knt");
+  const source = join(dir, "tasks.ts");
+  const helper = join(dir, "helper.ts");
+  try {
+    writeFileSync(source, "export const echo = (n: number) => n;");
+    writeFileSync(helper, "export const delta = 1;");
+    writeFileSync(artifact, fakeCompiledWorker);
+    chmodSync(artifact, 0o755);
+    const sourceHref = pathToFileURL(source).href;
+    const helperHref = pathToFileURL(helper).href;
+    const manifest = {
+      format: "knitting-compiled-worker",
+      version: COMPILED_WORKER_FORMAT_VERSION,
+      protocol: "knitting-json-v1",
+      compiler: "fixture",
+      target: runtimeTarget(),
+      source: sourceHref,
+      inputs: [fingerprint(sourceHref), fingerprint(helperHref)],
+      tasks: [{ index: 0, exportName: "echo" }],
+    };
+    const check = () =>
+      inspectCompiledWorkerArtifact({
+        source: sourceHref,
+        options: { artifact },
+      });
+    writeFileSync(artifact + ".json", JSON.stringify(manifest));
+    assert.equal(check().compiled, true);
+    writeFileSync(helper, "export const delta = 2;");
+    assert.match(check().reason!, /compiled input changed/);
+    writeFileSync(helper, "export const delta = 1;");
+    assert.equal(check().compiled, true);
+    rmSync(helper);
+    assert.match(check().reason!, /compiled input is unavailable/);
+    manifest.inputs = [];
+    writeFileSync(artifact + ".json", JSON.stringify(manifest));
+    assert.match(check().reason!, /no input fingerprints/);
+    manifest.version = 1;
+    writeFileSync(artifact + ".json", JSON.stringify(manifest));
+    assert.match(check().reason!, /unsupported manifest format/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("compiled child stdin failure rejects calls without crashing the host", {
+  timeout: 10_000,
+}, async () => {
+  if (runtimeTarget().platform === "win32") return;
+  const dir = mkdtempSync(join(tmpdir(), "knitting-compiled-pipe-"));
+  const artifact = join(dir, "closed-input.knt");
+  const probe = join(dir, "probe.mjs");
+  try {
+    // Keep stdout/process alive after closing stdin so the stream error, rather
+    // than the exit handler, is what rejects the queued writes.
+    writeFileSync(
+      artifact,
+      "#!/usr/bin/env node\nrequire('node:fs').closeSync(0); setTimeout(() => {}, 500);\n",
+    );
+    chmodSync(artifact, 0o755);
+    writeFileSync(
+      artifact + ".json",
+      JSON.stringify({
+        format: "knitting-compiled-worker",
+        version: COMPILED_WORKER_FORMAT_VERSION,
+        protocol: "knitting-json-v1",
+        compiler: "fixture",
+        target: runtimeTarget(),
+        source: addOne.importedFrom,
+        inputs: [fingerprint(addOne.importedFrom)],
+        tasks: [{ index: 0, exportName: "echo" }],
+      }),
+    );
+    writeFileSync(
+      probe,
+      `
+      import { spawnCompiledWorkerContext } from ${
+        JSON.stringify(
+          new URL("../src/runtime/compiled-worker.ts", import.meta.url).href,
+        )
+      };
+      const context = spawnCompiledWorkerContext({
+        list: [${JSON.stringify(addOne.importedFrom)}], names: ['echo'],
+        workerOptions: { compiled: { artifact: ${
+        JSON.stringify(artifact)
+      }, build: false } },
+      });
+      const call = context.call({fnNumber: 0});
+      try {
+        const results = await Promise.allSettled(Array.from({length: 20}, () => call('x'.repeat(128 * 1024))));
+        if (results.some(result => result.status !== 'rejected')) throw new Error('Expected all writes to reject');
+      } finally { await context.kills(); }
+    `,
+    );
+    const child = spawn("node", [
+      "--no-warnings",
+      "--experimental-transform-types",
+      probe,
+    ], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => stderr += chunk);
+    const code = await new Promise<number | null>((resolve, reject) => {
+      // Deno's node:child_process declarations omit inherited EventEmitter methods.
+      const events = child as unknown as {
+        on: (event: string, listener: (...args: any[]) => void) => void;
+      };
+      events.on("error", reject);
+      events.on("exit", resolve);
+    });
+    assert.equal(code, 0, stderr);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

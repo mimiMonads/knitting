@@ -1,8 +1,8 @@
 import { getNodeBuiltinModule, getNodeProcess } from "../common/node-compat.ts";
 import {
-  ProcessSharedBuffer,
   getDefaultProcessSharedBufferPrimitives,
   isProcessSharedBufferValue,
+  ProcessSharedBuffer,
 } from "../connections/process-shared-buffer.ts";
 import { withResolvers } from "../common/with-resolvers.ts";
 import {
@@ -16,6 +16,7 @@ import {
   COMPILED_WORKER_JSON_PROTOCOL,
   inspectCompiledWorkerArtifact,
 } from "./compiled-artifact.ts";
+import { CompiledResponseFrames } from "./compiled-frames.ts";
 import { buildCompiledWorkerArtifact } from "./compiled-builder.ts";
 
 /** Matches the `abortSignalCapacity` default documented on pool options. */
@@ -31,8 +32,12 @@ const NUMBER_ARGUMENT_OFFSET = 8;
 const EMPTY_PAYLOAD = new Uint8Array(0);
 
 type NodeWritable = {
-  end: (callback?: () => void) => void;
-  write: (data: Uint8Array) => boolean;
+  end: (callback: (error?: Error | null) => void) => void;
+  write: (
+    data: Uint8Array,
+    callback: (error?: Error | null) => void,
+  ) => boolean;
+  on: (event: "error", listener: (error: unknown) => void) => void;
 };
 
 type NodeReadable = {
@@ -108,17 +113,21 @@ const spawnNodeProcess = (
   let errorListener: (error: unknown) => void = () => {};
   child.stdout.on("data", (data) => dataListener(data));
   child.on("error", (error) => errorListener(error));
+  // Pipe errors belong to the stream, not the ChildProcess. Always consume
+  // them, including errors emitted after a write callback has rejected.
+  child.stdin.on("error", (error) => errorListener(error));
   const exited = new Promise<number>((resolve) => {
     child.on("exit", (code: number | null) => resolve(code ?? -1));
   });
 
   return {
-    write: async (data) => {
-      child.stdin.write(data);
-    },
+    write: (data) =>
+      new Promise<void>((resolve, reject) => {
+        child.stdin.write(data, (error) => error ? reject(error) : resolve());
+      }),
     closeInput: () =>
-      new Promise<void>((resolve) => {
-        child.stdin.end(resolve);
+      new Promise<void>((resolve, reject) => {
+        child.stdin.end((error) => error ? reject(error) : resolve());
       }),
     kill: () => void child.kill("SIGTERM"),
     exited,
@@ -298,7 +307,27 @@ const rawBytes = (value: ArrayBuffer | ArrayBufferView): Uint8Array =>
 // overflow the argument list.
 const BASE64_CHUNK = 0x8000;
 
+const nodeBuffer = getNodeBuiltinModule<{
+  Buffer: {
+    from: {
+      (
+        buffer: ArrayBufferLike,
+        offset: number,
+        length: number,
+      ): Uint8Array & { toString: (encoding: "base64") => string };
+      (text: string, encoding: "latin1"): Uint8Array;
+    };
+  };
+}>("node:buffer")?.Buffer;
+const nativeBase64 = Uint8Array as typeof Uint8Array & {
+  fromBase64?: (text: string) => Uint8Array;
+};
+
 const toBase64 = (bytes: Uint8Array): string => {
+  if (nodeBuffer !== undefined) {
+    return nodeBuffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+      .toString("base64");
+  }
   let latin1 = "";
   for (let at = 0; at < bytes.length; at += BASE64_CHUNK) {
     latin1 += String.fromCharCode(...bytes.subarray(at, at + BASE64_CHUNK));
@@ -309,6 +338,14 @@ const toBase64 = (bytes: Uint8Array): string => {
 const fromBase64 = (text: unknown): Uint8Array => {
   if (typeof text !== "string") {
     throw new TypeError("Compiled binary value is not base64 text");
+  }
+  if (nativeBase64.fromBase64 !== undefined) {
+    return nativeBase64.fromBase64(text);
+  }
+  // atob preserves strict validation; Buffer's Base64 decoder alone silently
+  // skips malformed characters. Copy to an exact-size, unpooled ArrayBuffer.
+  if (nodeBuffer !== undefined) {
+    return new Uint8Array(nodeBuffer.from(atob(text), "latin1"));
   }
   return Uint8Array.from(atob(text), (character) => character.charCodeAt(0));
 };
@@ -386,8 +423,10 @@ const encodeCompiledValue = (
     if (prototype !== Object.prototype && prototype !== null) {
       throw new TypeError("Compiled workers only accept plain objects");
     }
-    const record: Record<string, unknown> = {};
-    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    const record: Record<string, unknown> = Object.create(null);
+    for (
+      const [key, entry] of Object.entries(value as Record<string, unknown>)
+    ) {
       if (key === COMPILED_VALUE_TAG) {
         throw new TypeError(
           "Compiled workers reserve the " + COMPILED_VALUE_TAG + " key",
@@ -395,7 +434,11 @@ const encodeCompiledValue = (
       }
       record[key] = encodeCompiledValue(entry, ancestors);
     }
-    encoded = record;
+    // Porffor's JSON.parse also invokes the __proto__ setter. Carry objects
+    // with that own key as entries, so no parser sees it as a property name.
+    encoded = Object.hasOwn(record, "__proto__")
+      ? { [COMPILED_VALUE_TAG]: "object", entries: Object.entries(record) }
+      : record;
   }
   ancestors.delete(value);
   return encoded;
@@ -406,6 +449,27 @@ const decodeCompiledValue = (value: unknown): unknown => {
   if (value === null || typeof value !== "object") return value;
   const record = value as Record<string, unknown>;
   const tag = record[COMPILED_VALUE_TAG];
+  if (tag === "object") {
+    if (!Array.isArray(record.entries)) {
+      throw new TypeError("Compiled object entries are invalid");
+    }
+    const decoded: Record<string, unknown> = {};
+    for (const entry of record.entries) {
+      if (
+        !Array.isArray(entry) || entry.length !== 2 ||
+        typeof entry[0] !== "string"
+      ) {
+        throw new TypeError("Compiled object entry is invalid");
+      }
+      Object.defineProperty(decoded, entry[0], {
+        value: decodeCompiledValue(entry[1]),
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    }
+    return decoded;
+  }
   if (typeof tag === "string") {
     const bytes = fromBase64(record.data);
     if (tag === ARRAY_BUFFER_TAG) return bytes.buffer;
@@ -421,7 +485,15 @@ const decodeCompiledValue = (value: unknown): unknown => {
   }
   const decoded: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(record)) {
-    decoded[key] = decodeCompiledValue(entry);
+    const value = decodeCompiledValue(entry);
+    if (key === "__proto__") {
+      Object.defineProperty(decoded, key, {
+        value,
+        enumerable: true,
+        configurable: true,
+        writable: true,
+      });
+    } else decoded[key] = value;
   }
   return decoded;
 };
@@ -439,8 +511,10 @@ const asciiJson = (value: unknown): string | undefined => {
       }
     }
   }
-  return serialized?.replace(/[^\x00-\x7f]/g, (character) =>
-    "\\u" + character.charCodeAt(0).toString(16).padStart(4, "0")
+  return serialized?.replace(
+    /[^\x00-\x7f]/g,
+    (character) =>
+      "\\u" + character.charCodeAt(0).toString(16).padStart(4, "0"),
   );
 };
 
@@ -528,7 +602,8 @@ export const spawnCompiledWorkerContext = ({
     ? JSON_HEADER_BYTES
     : NUMBER_FRAME_BYTES;
   const pending: PendingCall[] = [];
-  let responseBytes = new Uint8Array(0);
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
   let closing = false;
   let closedReason: string | undefined;
   let writeTail = Promise.resolve();
@@ -543,52 +618,44 @@ export const spawnCompiledWorkerContext = ({
   };
 
   native.onError(fail);
-  native.onData((chunk) => {
-    const merged = new Uint8Array(responseBytes.byteLength + chunk.byteLength);
-    merged.set(responseBytes);
-    merged.set(chunk, responseBytes.byteLength);
-    let offset = 0;
-    while (true) {
-      const headerLength = jsonProtocol ? 8 : 16;
-      if (offset + headerLength > merged.byteLength) break;
-      const header = new DataView(
-        merged.buffer,
-        merged.byteOffset + offset,
-        headerLength,
-      );
-      const payloadLength = jsonProtocol ? header.getUint32(4, true) : 8;
-      if (payloadLength > 64 * 1024 * 1024) {
-        fail("Compiled worker returned an oversized response");
-        native.kill();
-        return;
-      }
-      const frameLength = jsonProtocol ? headerLength + payloadLength : 16;
-      if (offset + frameLength > merged.byteLength) break;
+  const responses = new CompiledResponseFrames(
+    jsonProtocol,
+    MAX_PAYLOAD_BYTES,
+    (status, bytes) => {
       const pendingCall = pending.shift();
       if (pendingCall === undefined) {
-        fail("Compiled worker returned an unexpected response");
-        native.kill();
-        return;
+        throw new Error("Compiled worker returned an unexpected response");
       }
-      const status = header.getInt32(0, true);
       if (status !== 0) {
         pendingCall.reject(responseError(status, pendingCall.taskName));
       } else if (jsonProtocol) {
         try {
-          const bytes = merged.subarray(offset + 8, offset + frameLength);
-          const decoded = JSON.parse(new TextDecoder().decode(bytes));
-          pendingCall.resolve(decodeCompiledValue(decoded));
+          pendingCall.resolve(
+            decodeCompiledValue(JSON.parse(decoder.decode(bytes))),
+          );
         } catch (error) {
           pendingCall.reject(
-            new Error("Compiled worker returned invalid JSON", { cause: error }),
+            new Error("Compiled worker returned invalid JSON", {
+              cause: error,
+            }),
           );
         }
       } else {
-        pendingCall.resolve(header.getFloat64(8, true));
+        pendingCall.resolve(
+          new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+            .getFloat64(0, true),
+        );
       }
-      offset += frameLength;
+    },
+  );
+  native.onData((chunk) => {
+    if (closedReason !== undefined) return;
+    try {
+      responses.push(chunk);
+    } catch (error) {
+      fail(error);
+      native.kill();
     }
-    responseBytes = merged.slice(offset);
   });
   void native.exited.then((code) => {
     if (!closing || code !== 0) {
@@ -625,7 +692,7 @@ export const spawnCompiledWorkerContext = ({
           " only accepts JSON-compatible values",
       );
     }
-    const payload = new TextEncoder().encode(serialized);
+    const payload = encoder.encode(serialized);
     if (payload.byteLength > MAX_PAYLOAD_BYTES) {
       throw new RangeError("Compiled worker input is too large");
     }
@@ -717,7 +784,7 @@ export const spawnCompiledWorkerContext = ({
       const hadPendingCalls = pending.length > 0;
       rejectPending(new Error("Compiled worker is shutting down"));
       closePromise = (async () => {
-        if (hadPendingCalls) {
+        if (hadPendingCalls || closedReason !== undefined) {
           native.kill();
           await native.exited;
           closedReason ??= "Compiled worker is shut down";

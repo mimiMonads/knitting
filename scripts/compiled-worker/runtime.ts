@@ -36,6 +36,15 @@ static i32 knit_json_read_exact(void* output, i32 length) {
   return 1;
 }
 
+static i32 knit_base64_sextet(i32 code) {
+  if (code >= 65 && code <= 90) return code - 65;
+  if (code >= 97 && code <= 122) return code - 71;
+  if (code >= 48 && code <= 57) return code + 4;
+  if (code == 43) return 62;
+  if (code == 47) return 63;
+  return 0;
+}
+
 static i32 knit_json_request_length = 0;
 static i32 knit_json_abort_signal = -1;
 
@@ -226,7 +235,9 @@ mapped = knit_map_named_shm(
   (i32)hint.val,
   (i32)size.val
 );`;
-  if (mapped < 0) throw new Error("Compiled ProcessSharedBuffer mapping failed");
+  if (mapped < 0) {
+    throw new Error("Compiled ProcessSharedBuffer mapping failed");
+  }
   return mapped;
 };
 
@@ -272,50 +283,28 @@ const processSharedView = (
   return view;
 };
 
-/*
- * Base64 keeps binary values inside the ASCII request budget at four characters
- * per three bytes. A JSON array of decimal bytes costs up to four characters
- * per single byte, so a buffer barely over 250 KiB could not fit in a frame at
- * all. Both halves map sextets to character codes arithmetically, so neither
- * needs to index into an alphabet string: 0-25 are A-Z, 26-51 a-z, 52-61 0-9,
- * then + and /. Unknown codes, padding included, contribute no bits.
- */
-const base64Code = (sextet: number): number =>
-  sextet < 26
-    ? 65 + sextet
-    : sextet < 52
-    ? 71 + sextet
-    : sextet < 62
-    ? sextet - 4
-    : sextet === 62
-    ? 43
-    : 47;
-
-const base64Sextet = (code: number): number => {
-  if (code >= 65 && code <= 90) return code - 65;
-  if (code >= 97 && code <= 122) return code - 71;
-  if (code >= 48 && code <= 57) return code + 4;
-  if (code === 43) return 62;
-  if (code === 47) return 63;
-  return 0;
-};
-
+/* Binary values stay inside JSON as Base64. Fill a preallocated ASCII string
+ * once rather than repeatedly copying an ever-growing string per quartet. */
 const toBase64 = (view: Uint8Array): string => {
-  let text = "";
-  for (let at = 0; at < view.length; at += 3) {
-    const remaining = view.length - at;
-    const word = (view[at]! << 16) |
-      (remaining > 1 ? view[at + 1]! << 8 : 0) |
-      (remaining > 2 ? view[at + 2]! : 0);
-    text += String.fromCharCode(
-      base64Code((word >> 18) & 63),
-      base64Code((word >> 12) & 63),
-    );
-    text += remaining > 1
-      ? String.fromCharCode(base64Code((word >> 6) & 63))
-      : "=";
-    text += remaining > 2 ? String.fromCharCode(base64Code(word & 63)) : "=";
-  }
+  const text = " ".repeat(Math.ceil(view.length / 3) * 4);
+  const pointer = dataPointerOf(view);
+  const length = view.length;
+  Porffor.c`
+const char* alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const u8* bytes = (u8*)(MEM + (i32)pointer.val);
+u8* destination = (u8*)(MEM + (i32)text.val + 4);
+i32 count = (i32)length.val;
+for (i32 at = 0, out = 0; at < count; at += 3, out += 4) {
+  i32 remaining = count - at;
+  u32 word = ((u32)bytes[at] << 16)
+    | (remaining > 1 ? (u32)bytes[at + 1] << 8 : 0)
+    | (remaining > 2 ? bytes[at + 2] : 0);
+  destination[out] = alphabet[(word >> 18) & 63];
+  destination[out + 1] = alphabet[(word >> 12) & 63];
+  destination[out + 2] = remaining > 1 ? alphabet[(word >> 6) & 63] : '=';
+  destination[out + 3] = remaining > 2 ? alphabet[word & 63] : '=';
+}
+`;
   return text;
 };
 
@@ -325,16 +314,26 @@ const fromBase64 = (text: string): Uint8Array => {
     padding++;
   }
   const bytes = new Uint8Array((text.length >> 2) * 3 - padding);
-  let at = 0;
-  for (let index = 0; index + 3 < text.length; index += 4) {
-    const word = (base64Sextet(text.charCodeAt(index)) << 18) |
-      (base64Sextet(text.charCodeAt(index + 1)) << 12) |
-      (base64Sextet(text.charCodeAt(index + 2)) << 6) |
-      base64Sextet(text.charCodeAt(index + 3));
-    bytes[at++] = (word >> 16) & 255;
-    if (at < bytes.length) bytes[at++] = (word >> 8) & 255;
-    if (at < bytes.length) bytes[at++] = word & 255;
-  }
+  const pointer = dataPointerOf(bytes);
+  const length = text.length;
+  const capacity = bytes.length;
+  Porffor.c`
+/* Strings use either one-byte or UTF-16 storage. Base64 is ASCII in both;
+   Porffor marks the one-byte representation with the high type bit. */
+const u8* characters = (u8*)(MEM + (i32)text.val + 4);
+i32 stride = ((i32)text.type & 0x80) ? 1 : 2;
+u8* destination = (u8*)(MEM + (i32)pointer.val);
+i32 out = 0;
+for (i32 at = 0; at + 3 < (i32)length.val; at += 4) {
+  u32 word = ((u32)knit_base64_sextet(characters[at * stride]) << 18)
+    | ((u32)knit_base64_sextet(characters[(at + 1) * stride]) << 12)
+    | ((u32)knit_base64_sextet(characters[(at + 2) * stride]) << 6)
+    | (u32)knit_base64_sextet(characters[(at + 3) * stride]);
+  destination[out++] = (word >> 16) & 255;
+  if (out < (i32)capacity.val) destination[out++] = (word >> 8) & 255;
+  if (out < (i32)capacity.val) destination[out++] = word & 255;
+}
+`;
   return bytes;
 };
 
@@ -349,6 +348,19 @@ const decodeWireValue = (value: unknown): unknown => {
   const record = value as Record<string, unknown>;
   const tag = record["$knitting"];
   if (typeof tag === "string") {
+    if (tag === "object") {
+      const entries = record.entries as unknown[][];
+      const object: Record<string, unknown> = Object.create(null);
+      for (let index = 0; index < entries.length; index++) {
+        Object.defineProperty(object, entries[index]![0] as string, {
+          value: decodeWireValue(entries[index]![1]),
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
+      }
+      return object;
+    }
     if (tag === "process-shared") {
       return processSharedView(
         record.name as string,
@@ -406,9 +418,20 @@ const encodeWireValue = (value: unknown): unknown => {
   }
   if (Array.isArray(value)) return value.map(encodeWireValue);
   if (value !== null && typeof value === "object") {
-    const out: Record<string, unknown> = {};
+    const out: Record<string, unknown> = Object.create(null);
     for (const key of Object.keys(value as Record<string, unknown>)) {
-      out[key] = encodeWireValue((value as Record<string, unknown>)[key]);
+      const entry = encodeWireValue((value as Record<string, unknown>)[key]);
+      if (key === "__proto__") {
+        Object.defineProperty(out, key, {
+          value: entry,
+          enumerable: true,
+          configurable: true,
+          writable: true,
+        });
+      } else out[key] = entry;
+    }
+    if (Object.hasOwn(out, "__proto__")) {
+      return { $knitting: "object", entries: Object.entries(out) };
     }
     return out;
   }
@@ -416,6 +439,20 @@ const encodeWireValue = (value: unknown): unknown => {
 };
 
 const decodeUtf8 = (length: number): string => {
+  // The host escapes non-ASCII code units. Copy that common case into one
+  // bytestring allocation; retain UTF-8 decoding for other protocol clients.
+  let ascii: i32 = 1;
+  Porffor.c`
+for (i32 at = 0; at < (i32)length.val; at++) {
+  if (((u8*)MEM)[(i32)inputPointer.val + at] >= 128) { ascii = 0; break; }
+}
+`;
+  if (ascii !== 0) {
+    const asciiText = " ".repeat(length);
+    Porffor
+      .c`memcpy(MEM + (i32)asciiText.val + 4, MEM + (i32)inputPointer.val, (i32)length.val);`;
+    return asciiText;
+  }
   let text = "";
   let index = 0;
   while (index < length) {

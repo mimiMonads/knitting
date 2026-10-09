@@ -1,15 +1,24 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   getDefaultProcessSharedBufferPrimitives,
   ProcessSharedBuffer,
 } from "../src/connections/process-shared-buffer.ts";
 import { spawnCompiledWorkerContext } from "../src/runtime/compiled-worker.ts";
 import test from "./_runner.ts";
+import { getNodeBuiltinModule } from "../src/common/node-compat.ts";
+import { inspectCompiledWorkerArtifact } from "../src/runtime/compiled-artifact.ts";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 const builder = join(here, "..", "scripts", "build-compiled-worker.ts");
@@ -31,7 +40,9 @@ const findPorffor = (): string | undefined => {
       .filter((entry) => entry.startsWith("porffor-"))
       .map((entry) => join(cache, entry, "porf"))
     : [];
-  for (const candidate of [process.env.PORF, process.env.PORFFOR_MAIN, "porf"]) {
+  for (
+    const candidate of [process.env.PORF, process.env.PORFFOR_MAIN, "porf"]
+  ) {
     if (candidate !== undefined && speaksPorffor(candidate)) return candidate;
   }
   return cached.find(speaksPorffor);
@@ -63,7 +74,11 @@ const compile = (fixture: string, tasks: string[]): string => {
   return artifact;
 };
 
-const openWorker = (fixture: string, names: string[], usesAbortSignal = false) => {
+const openWorker = (
+  fixture: string,
+  names: string[],
+  usesAbortSignal = false,
+) => {
   const context = spawnCompiledWorkerContext({
     list: [join(here, "fixtures", fixture + ".ts")],
     names,
@@ -103,6 +118,7 @@ test("compiled workers round-trip binary values and shared buffers", {
     "readSharedBytes",
     "sharedByteLength",
     "readClock",
+    "echoObject",
   ];
   const { context, call } = openWorker("compiled_special_tasks", names);
   const primitives = getDefaultProcessSharedBufferPrimitives();
@@ -113,6 +129,22 @@ test("compiled workers round-trip binary values and shared buffers", {
   );
 
   try {
+    const object = JSON.parse(
+      '{"__proto__":{"marker":123},"constructor":7,"nested":{"__proto__":null},"text":"Héllo"}',
+    );
+    assert.deepEqual(await call("echoObject", object), object);
+    for (const length of [0, 1, 2, 4, 5, 7]) {
+      const bytes = new Uint8Array(length).fill(254);
+      assert.deepEqual(
+        await call("incrementBytes", bytes),
+        new Uint8Array(length).fill(255),
+      );
+    }
+    const backing = new Uint8Array([99, 1, 2, 3, 88]);
+    assert.deepEqual(
+      await call("incrementBytes", backing.subarray(1, 4)),
+      new Uint8Array([2, 3, 4]),
+    );
     assert.deepEqual(
       await call("incrementBytes", new Uint8Array([1, 2, 3])),
       new Uint8Array([2, 3, 4]),
@@ -144,7 +176,10 @@ test("compiled workers round-trip binary values and shared buffers", {
     const echoed = await call("incrementBytes", large) as Uint8Array;
     assert.equal(echoed.length, large.length);
     assert.equal(echoed[0], 1);
-    assert.equal(echoed[large.length - 1], (large[large.length - 1]! + 1) & 0xff);
+    assert.equal(
+      echoed[large.length - 1],
+      (large[large.length - 1]! + 1) & 0xff,
+    );
 
     shared.bytes().set([7, 11, 0, 0, 3, 5]);
     assert.equal(await call("readSharedBytes", shared.subbuffer(0, 2)), 18);
@@ -188,6 +223,93 @@ test("compiled workers observe aborts and shut down gracefully", {
     await context.kills!();
   }
 });
+
+test(
+  "compiled build fingerprints transitive imports and invalidates their contents",
+  {
+    skip,
+    timeout: 120_000,
+  },
+  async () => {
+    const dir = mkdtempSync(join(tmpdir(), "knitting-compiled-dependencies-"));
+    const source = join(dir, "tasks.ts");
+    const helper = join(dir, "helper.ts");
+    const artifact = join(dir, "tasks.knt");
+    try {
+      writeFileSync(
+        source,
+        "import { delta } from './helper.ts'; export const compute = (n: number) => n + delta;",
+      );
+      writeFileSync(helper, "export const delta = 1;");
+      const build = spawnSync("bun", [
+        builder,
+        "--module",
+        source,
+        "--out",
+        artifact,
+        "--tasks",
+        "compute",
+        "--porf",
+        porffor!,
+      ], { encoding: "utf8" });
+      assert.equal(build.status, 0, build.stderr);
+      const check = () =>
+        inspectCompiledWorkerArtifact({
+          source,
+          options: { artifact },
+          requiredTasks: ["compute"],
+        });
+      assert.equal(check().compiled, true, check().reason);
+      const manifest = JSON.parse(readFileSync(artifact + ".json", "utf8"));
+      assert.ok(
+        manifest.inputs.some((input: { source: string }) =>
+          input.source === "helper.ts"
+        ),
+      );
+      writeFileSync(helper, "export const delta = 100;");
+      assert.match(check().reason!, /compiled input changed: helper.ts/);
+      assert.throws(() =>
+        spawnCompiledWorkerContext({
+          list: [pathToFileURL(source).href],
+          names: ["compute"],
+          workerOptions: { compiled: { artifact, build: false } } as never,
+        }), /compiled input changed/);
+      const automatic =
+        getNodeBuiltinModule("node:child_process") !== undefined;
+      if (!automatic) {
+        const rebuild = spawnSync("bun", [
+          builder,
+          "--module",
+          source,
+          "--out",
+          artifact,
+          "--tasks",
+          "compute",
+          "--porf",
+          porffor!,
+        ], { encoding: "utf8" });
+        assert.equal(rebuild.status, 0, rebuild.stderr);
+      }
+      const context = spawnCompiledWorkerContext({
+        list: [pathToFileURL(source).href],
+        names: ["compute"],
+        workerOptions: {
+          compiled: { artifact, compiler: porffor!, build: automatic },
+        } as never,
+      });
+      try {
+        assert.equal(
+          await context.call({ fnNumber: 0 } as never)(41 as never),
+          141,
+        );
+      } finally {
+        await context.kills!();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
 
 test("compiled worker end-to-end fixtures clean up", { skip }, () => {
   if (outputDirectory !== undefined) {

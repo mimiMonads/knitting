@@ -804,8 +804,11 @@ const pool = createPool({
 The extension is .knt rather than .out because it identifies a Knitting worker
 artifact; executability is never inferred from the suffix alone. Knitting also
 requires the sidecar to match the protocol version, current platform and
-architecture, source module, source timestamp, and requested task names before
-spawning it. `checkCompiledWorker(...)` remains a read-only way to inspect that
+architecture, source module, source timestamp, requested task names, and SHA-256
+fingerprints of bundled inputs before spawning it. The fingerprints include local
+imports, package dependencies, the worker runtime, and the build script. Editing
+an imported helper invalidates the artifact even when its timestamp is preserved.
+Version 1 manifests need a rebuild; with `build: false`, rebuild them ahead of time. `checkCompiledWorker(...)` remains a read-only way to inspect that
 state without building or executing anything.
 
 Automatic builds use Porffor main from `worker.compiled.compiler`,

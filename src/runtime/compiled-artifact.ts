@@ -1,9 +1,10 @@
 import { getNodeBuiltinModule, getNodeProcess } from "../common/node-compat.ts";
 import { toModuleUrl } from "../common/module-url.ts";
+import { createHash } from "node:crypto";
 import type { CompiledWorkerCheck, CompiledWorkerOptions } from "../types.ts";
 
 export const COMPILED_WORKER_FORMAT = "knitting-compiled-worker";
-export const COMPILED_WORKER_FORMAT_VERSION = 1;
+export const COMPILED_WORKER_FORMAT_VERSION = 2;
 export const COMPILED_WORKER_PROTOCOL = "knitting-number-v1";
 export const COMPILED_WORKER_JSON_PROTOCOL = "knitting-json-v1";
 export const COMPILED_WORKER_EXTENSION = ".knt";
@@ -21,6 +22,7 @@ type CompiledWorkerManifest = {
   target: { platform: string; arch: string };
   source: string;
   sourceMtimeMs?: number;
+  inputs: { source: string; sha256: string }[];
   tasks: CompiledWorkerTask[];
 };
 
@@ -31,7 +33,10 @@ export type ArtifactInspection = CompiledWorkerCheck & {
 };
 
 type FsModule = {
-  readFileSync: (path: string, encoding: "utf8") => string;
+  readFileSync: {
+    (path: string, encoding: "utf8"): string;
+    (path: string): Uint8Array;
+  };
   statSync: (path: string) => {
     isFile: () => boolean;
     mode: number;
@@ -46,6 +51,7 @@ type UrlModule = {
 type DenoLike = {
   build?: { os?: string; arch?: string };
   readTextFileSync?: (path: string) => string;
+  readFileSync?: (path: string) => Uint8Array;
   statSync?: (path: string) => {
     isFile: boolean;
     mode: number | null;
@@ -129,6 +135,13 @@ const readTextFile = (path: string): string => {
   const fs = getNodeBuiltinModule<FsModule>("node:fs");
   if (fs !== undefined) return fs.readFileSync(path, "utf8");
   if (deno?.readTextFileSync !== undefined) return deno.readTextFileSync(path);
+  throw new Error("Synchronous filesystem access is unavailable");
+};
+
+const readBinaryFile = (path: string): Uint8Array => {
+  const fs = getNodeBuiltinModule<FsModule>("node:fs");
+  if (fs !== undefined) return fs.readFileSync(path);
+  if (deno?.readFileSync !== undefined) return deno.readFileSync(path);
   throw new Error("Synchronous filesystem access is unavailable");
 };
 
@@ -308,6 +321,61 @@ export const inspectCompiledWorkerArtifact = ({
       ...details,
       tasks: [...taskNames],
       reason: "manifest was built for a different task module",
+    };
+  }
+  if (
+    !Array.isArray(workerManifest.inputs) || workerManifest.inputs.length === 0
+  ) {
+    return {
+      ...base,
+      ...details,
+      reason: "manifest has no input fingerprints",
+    };
+  }
+  const inputSources = new Set<string>();
+  for (const input of workerManifest.inputs) {
+    if (
+      typeof input?.source !== "string" || input.source.length === 0 ||
+      typeof input.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(input.sha256)
+    ) {
+      return {
+        ...base,
+        ...details,
+        reason: "manifest input fingerprints are invalid",
+      };
+    }
+    try {
+      const href = resolveHref(input.source, artifactHref);
+      if (inputSources.has(href)) {
+        return {
+          ...base,
+          ...details,
+          reason: "manifest has duplicate input fingerprints",
+        };
+      }
+      inputSources.add(href);
+      const digest = createHash("sha256").update(readBinaryFile(filePath(href)))
+        .digest("hex");
+      if (digest !== input.sha256) {
+        return {
+          ...base,
+          ...details,
+          reason: "compiled input changed: " + input.source,
+        };
+      }
+    } catch {
+      return {
+        ...base,
+        ...details,
+        reason: "compiled input is unavailable: " + input.source,
+      };
+    }
+  }
+  if (!inputSources.has(sourceHref)) {
+    return {
+      ...base,
+      ...details,
+      reason: "manifest does not fingerprint the task module",
     };
   }
   if (Number.isFinite(workerManifest.sourceMtimeMs)) {
