@@ -60,6 +60,14 @@ probe on an otherwise quiet Windows machine to validate the Bun yield fix.
 
 ## Payload comparisons
 
+`native/large-strings.ts` is a Node/Deno/Bun large-text experiment comparing ordinary
+strings, fresh/reused shared UTF-8, moved UTF-8, and native external/copied
+strings, including an ordinary-string adapter with actual codec framing and
+transport holds. Build its separate C++ addons before running it. See
+[large-strings.md](large-strings.md) for commands, ownership rules, and measured
+results. `native/run-large-strings.mjs` repeats the three-runtime comparison at
+1 KiB, 64 KiB, and 1 MiB. It does not add a public `StringReference` API.
+
 `buffer-reference.ts`, `shared-return.ts`,
 `shared-return-vs-buffer-reference.ts`, and `buffer-reference-send.ts` rotate
 variant order to distribute scheduling and GC drift. The batch harnesses report
@@ -104,3 +112,10 @@ particular, allocation microbenchmarks that only consume `.byteLength` do not
 establish the cost of touching every page, and local lock microbenchmarks do not
 establish cross-core contention cost. An accepted benchmark result still needs
 its workload and units checked against the claim it is used to support.
+
+
+`native/string-reference-roundtrip.ts` exercises the public
+`knitting/experimental` `StringReference` in both directions, comparing primitive
+string echoes, shared clones and worker-created replacement references. See
+[string-reference-roundtrip.md](string-reference-roundtrip.md) for the results,
+lifetime checks and reproducible commands.

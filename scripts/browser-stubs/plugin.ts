@@ -21,6 +21,7 @@ const stubDirectory = resolve(import.meta.dirname ?? ".");
 const root = resolve(stubDirectory, "..", "..");
 
 const stubbed: Record<string, string> = {
+  "src/connections/string-reference.ts": "string-reference.ts",
   "src/connections/buffer-reference.ts": "buffer-reference.ts",
   "src/connections/buffer-reference-native.ts": "buffer-reference-native.ts",
   "src/connections/process-shared-buffer.ts": "process-shared-buffer.ts",

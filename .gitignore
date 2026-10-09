@@ -83,6 +83,8 @@ build/Release
 /shared-memory.d.ts
 /shared-memory.js
 /unsafe.d.ts
+/experimental.js
+/experimental.d.ts
 /unsafe.js
 /utils.d.ts
 /utils.js

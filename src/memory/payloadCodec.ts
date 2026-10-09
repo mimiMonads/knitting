@@ -1,4 +1,9 @@
 import {
+  StringReference,
+  STRING_REFERENCE_CODEC_ID,
+  isStringReferenceValue,
+} from "../connections/string-reference.ts";
+import {
   attachPayloadTransportFinalizer,
   beginPromisePayload,
   finishPromisePayload,
@@ -149,14 +154,15 @@ const DYNAMIC_PAYLOAD_LIMIT_DETAIL = "Dynamic payload exceeds maxPayloadBytes.";
 const DYNAMIC_PAYLOAD_CAPACITY_DETAIL =
   "Dynamic payload buffer capacity exceeded.";
 const PROCESS_BOUNDARY_POINTER_PAYLOAD_DETAIL =
-  "SharedArrayBuffer and BufferReference are process-local pointer payloads " +
+  "SharedArrayBuffer, BufferReference and StringReference are process-local pointer payloads " +
   "and cannot cross a process-worker boundary; use ProcessSharedBuffer instead.";
 const RESERVED_EXTERNAL_PAYLOAD_DETAIL =
   "Reserved Knitting external payload codec cannot be forged.";
 
 const isProcessLocalPointerCodec = (codecId: string): boolean =>
   codecId === SHARED_ARRAY_BUFFER_CODEC_ID ||
-  codecId === BUFFER_REFERENCE_CODEC_ID;
+  codecId === BUFFER_REFERENCE_CODEC_ID ||
+  codecId === STRING_REFERENCE_CODEC_ID;
 
 const isReservedExternalPayloadCodec = (codecId: string): boolean =>
   isProcessLocalPointerCodec(codecId) ||
@@ -210,6 +216,9 @@ const isExternalPayloadLike = (value: object): value is ExternalPayloadLike =>
 const readTrustedExternalPayloadMetadata = (
   value: ExternalPayloadLike,
 ): unknown => {
+  if (isStringReferenceValue(value)) {
+    return StringReference.prototype.toMetadata.call(value);
+  }
   if (isBufferReferenceValue(value)) {
     return BufferReference.prototype.toMetadata.call(value);
   }
@@ -1833,6 +1842,7 @@ export const encodePayload = ({
           }
 
           if (
+            isStringReferenceValue(objectValue) ||
             isBufferReferenceValue(objectValue) ||
             isProcessSharedBufferValue(objectValue)
           ) {

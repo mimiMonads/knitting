@@ -5,6 +5,7 @@ const roots = [
   "knitting.d.ts",
   "process-shared-buffer.d.ts",
   "shared-memory.d.ts",
+  "experimental.d.ts",
   "unsafe.d.ts",
   "utils.d.ts",
   "src",

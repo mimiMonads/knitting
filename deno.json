@@ -8,7 +8,8 @@
     "./process-shared-buffer": "./process-shared-buffer.ts",
     "./shared-memory": "./shared-memory.ts",
     "./unsafe": "./unsafe.ts",
-    "./utils": "./utils.ts"
+    "./utils": "./utils.ts",
+    "./experimental": "./experimental.ts"
   },
   "license": "Apache-2.0",
   "publish": {
@@ -23,7 +24,8 @@
       "./process-shared-buffer.ts",
       "./shared-memory.ts",
       "./unsafe.ts",
-      "./utils.ts"
+      "./utils.ts",
+      "./experimental.ts"
     ]
   }
 }

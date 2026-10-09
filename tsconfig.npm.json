@@ -17,6 +17,7 @@
     "shared-memory.ts",
     "unsafe.ts",
     "utils.ts",
-    "src/**/*.ts"
+    "src/**/*.ts",
+    "experimental.ts"
   ]
 }

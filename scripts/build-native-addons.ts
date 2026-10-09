@@ -223,6 +223,11 @@ const extraLdFlags = splitFlags(Bun.env.LDFLAGS);
 
 const addons = [
   {
+    name: "knitting_string_reference",
+    source: "src/knitting_string_reference.cc",
+    output: "build/Release/knitting_string_reference.node",
+  },
+  {
     name: "knitting_shared_memory",
     source: "src/knitting_shared_memory.cc",
     output: "build/Release/knitting_shared_memory.node",

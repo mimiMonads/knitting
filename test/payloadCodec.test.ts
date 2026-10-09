@@ -35,6 +35,7 @@ import { register } from "../src/memory/regionRegistry.ts";
 import { withResolvers } from "../src/common/with-resolvers.ts";
 import type { PayloadBufferOptions } from "../src/memory/payload-config.ts";
 import { BufferReference } from "../unsafe.ts";
+import { StringReference } from "../experimental.ts";
 
 const align64 = (n: number) => (n + 63) & ~63;
 const textEncoder = new TextEncoder();
@@ -630,6 +631,26 @@ test("process-boundary codec preserves ProcessSharedBuffer payloads", () => {
   );
 });
 
+test("process-boundary encoder rejects genuine StringReference payloads", () => {
+  let reference: StringReference;
+  try {
+    reference = new StringReference("process-local");
+  } catch {
+    return;
+  }
+  try {
+    const { encode } = makeCodec(undefined, { encodeProcessBoundary: true });
+    const task = makeTask();
+    task.value = reference;
+    assert.throws(
+      () => encode(task, 0),
+      /cannot cross a process-worker boundary.*ProcessSharedBuffer/i,
+    );
+  } finally {
+    reference.release();
+  }
+});
+
 test("process-boundary encoder rejects process-local pointer payloads", () => {
   if (typeof SharedArrayBuffer === "function") {
     const { encode } = makeCodec(undefined, {
@@ -693,6 +714,7 @@ test("reserved pointer codec objects reject before decode", async () => {
     const codecId of [
       "knitting.sharedArrayBuffer",
       "knitting.bufferReference",
+      "knitting.stringReference",
     ]
   ) {
     const capture = capturePromiseResult();
@@ -750,6 +772,9 @@ test("reserved external payload codecs reject forged top-level values", async ()
       codecId: "knitting.bufferReference",
       numericSymbol: bufferReferenceNumericTransfer,
       numericWords: [0, 0, 1, 0, 0, 8, 1, 0],
+    },
+    {
+      codecId: "knitting.stringReference",
     },
     {
       codecId: "knitting.processSharedBuffer",

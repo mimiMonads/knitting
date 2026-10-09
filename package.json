@@ -39,6 +39,10 @@
     "./utils": {
       "types": "./utils.d.ts",
       "default": "./utils.js"
+    },
+    "./experimental": {
+      "types": "./experimental.d.ts",
+      "default": "./experimental.js"
     }
   },
   "files": [
@@ -66,7 +70,9 @@
     "unsafe.d.ts",
     "unsafe.js",
     "utils.d.ts",
-    "utils.js"
+    "utils.js",
+    "experimental.js",
+    "experimental.d.ts"
   ],
   "scripts": {
     "clean": "bun run scripts/clean-generated.ts",

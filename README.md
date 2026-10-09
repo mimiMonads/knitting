@@ -336,6 +336,8 @@ Worker calls can carry the following values across the shared-memory transport:
 - `ProcessSharedBuffer`.
 - `BufferReference` from `knitting/unsafe` for experimental zero-copy buffers to
   thread workers (same process only; see below).
+- `StringReference` from `knitting/experimental` for immutable native string
+  storage shared with thread workers in Node, Deno, and Bun (same process only).
 - `Envelope` for a JSON header plus a binary body (`ArrayBuffer`,
   `SharedArrayBuffer`, `ProcessSharedBuffer`, or `BufferReference`).
 - `Error`, `Date`, and global symbols created with `Symbol.for(...)`.
@@ -1709,3 +1711,68 @@ For a file-by-file orientation, see [map.md](./map.md).
 ## License
 
 Apache-2.0
+
+### Experimental StringReference
+
+`knitting/experimental` exports `StringReference`, the string counterpart to
+`BufferReference`. Construction copies the original string
+into immutable native storage, using one byte per ASCII code unit and two bytes
+per code unit for other text; `clone()` and thread transport share that storage
+through C++ `shared_ptr`. The original JavaScript string remains usable.
+
+```ts
+import { createPool, isMain, task } from "knitting";
+import { StringReference } from "knitting/experimental";
+
+export const echoText = task<StringReference, StringReference>({
+  f: (input) => {
+    try {
+      console.log(input.toString().length);
+      return input.clone();
+    } finally {
+      input.release();
+    }
+  },
+});
+
+if (isMain) {
+  const pool = createPool({
+    threads: 1,
+    permission: { node: { allowAddons: true } },
+  })({ echoText });
+  // For Deno/Bun, use permission: { ffi: true } instead.
+  const input = new StringReference("🧶".repeat(262144));
+  try {
+    const output = await pool.call.echoText(input);
+    try { console.log(output.toString() === input.toString()); }
+    finally { output.release(); }
+  } finally {
+    input.release();
+    await pool.shutdown();
+  }
+}
+```
+
+Enable only the permission appropriate to your runtime: Node uses
+`node: { allowAddons: true }`; Deno and Bun use `ffi: true`. Build native assets
+with `npm run build:native` when the addon is not prebuilt for your platform.
+
+`length` counts UTF-16 code units and `byteLength` counts native character bytes
+(excluding the terminator): `length` for ASCII, `length * 2` otherwise.
+Empty strings, NULs and lone surrogates are preserved.
+`toString()` caches a materialized JavaScript string. Node and Bun can adopt
+external storage; Deno 2.7.4 copies when materializing. Other versions may differ.
+
+Call `release()` or use `Symbol.dispose` when finished. Released wrappers reject
+further reads and clones; existing clones and previously materialized strings
+remain valid, even after their producing worker shuts down. In-flight transport
+holds defer native release. Garbage collection and native environment cleanup
+provide backstops for owners that were not explicitly released. Release inputs
+received by workers; return a separate clone when returning the same contents.
+
+References are supported as top-level thread task inputs and outputs, within one
+process and runtime. They cannot cross process-worker boundaries or serve as
+binary `Envelope` bodies. Native allocations currently have a limit of 32 Mi
+UTF-16 code units per string. Ordinary strings keep their existing behavior.
+See the [round-trip benchmark](bench/string-reference-roundtrip.md) for measured
+results at 1 KiB, 64 KiB and 1 MiB.
