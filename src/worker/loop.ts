@@ -274,6 +274,10 @@ export const workerMainLoop = async (
       maxSignals: abortSignalMax,
     })
     : undefined;
+  // Process workers boot from JSON, which turns `Infinity` into `null`; read
+  // either as unlimited instead of a limit no task can fit under.
+  const maxAwaitingTasks = workerOptions?.maxAwaitingTasks ??
+    Number.POSITIVE_INFINITY;
 
   const {
     enqueueLock,
@@ -290,6 +294,8 @@ export const workerMainLoop = async (
     returnLock: returnLockState,
     hasAborted: abortSignals?.hasAborted,
     stealing: steal !== undefined,
+    maxAwaitingTasks,
+    onSlotFree: () => wakeFromBackoff(),
     // Only ticket batches wider than one can adapt their claim width.
     singleClaimAboveMs: steal !== undefined && steal.claim !== "dekker" &&
         steal.regionLanes > 1
@@ -324,6 +330,8 @@ export const workerMainLoop = async (
   const port2 = channel.port2;
   const post2 = (message: unknown) => port2.postMessage(message);
   let isInMacro = false;
+  // Only the awaiting backoff schedules with a delay, so a pending timer is it.
+  let backoffTimer: ReturnType<typeof setTimeout> | undefined;
   let awaitingSpins = 0;
   let lastAwaiting = 0;
   const MAX_AWAITING_MS = 10;
@@ -348,10 +356,19 @@ export const workerMainLoop = async (
       return;
     }
     if (typeof setTimeout === "function") {
-      setTimeout(loop, delayMs);
+      backoffTimer = setTimeout(loop, delayMs);
       return;
     }
     post2(null);
+  };
+
+  /** Run the loop now rather than when the pending backoff timer fires. */
+  const wakeFromBackoff = () => {
+    if (backoffTimer === undefined) return;
+    clearTimeout(backoffTimer);
+    backoffTimer = undefined;
+    isInMacro = false;
+    scheduleTimer(0);
   };
 
   const traceSignals = dbg?.enabled("signals") === true;
@@ -421,6 +438,7 @@ export const workerMainLoop = async (
 
   const loop = () => {
     isInMacro = false;
+    backoffTimer = undefined;
     // Recompute progress on every pass so idle workers can park.
     let progressed = true;
     let awaiting = 0;

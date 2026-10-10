@@ -474,6 +474,17 @@ type CompiledWorkerCheck = {
 type WorkerSettings = {
   resolveAfterFinishingAll?: true;
   /**
+   * Maximum number of unresolved async tasks each worker runs at once; unset
+   * is unlimited. Under stealing, a worker at this limit leaves queued work in
+   * the shared region and claims only as many tasks as it can start, so the
+   * continuations of in-flight tasks cannot pile up on one worker.
+   *
+   * A task that waits on another task, or on a long-lived event such as an
+   * abort, holds its slot until it settles: with every slot held that way,
+   * queued tasks cannot start.
+   */
+  maxAwaitingTasks?: number;
+  /**
    * Privileged async worker hook that runs once before task modules import.
    * Use it to shape the worker environment before user task code loads.
    */

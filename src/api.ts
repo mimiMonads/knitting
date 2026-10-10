@@ -269,6 +269,16 @@ const resolveWorkerSettings = (
     }
     : worker;
   const bootstrap = resolved.bootstrap;
+  if (
+    resolved.maxAwaitingTasks !== undefined &&
+    !(Number.isInteger(resolved.maxAwaitingTasks) &&
+      resolved.maxAwaitingTasks >= 1) &&
+    resolved.maxAwaitingTasks !== Number.POSITIVE_INFINITY
+  ) {
+    throw new TypeError(
+      "worker.maxAwaitingTasks must be a positive integer or Infinity",
+    );
+  }
   if (bootstrap !== undefined) {
     const name = bootstrap.name ?? DEFAULT_IMPORT_EXPORT_NAME;
     if (typeof bootstrap.href !== "string" || bootstrap.href.length === 0) {
@@ -684,6 +694,9 @@ export const createPool: CreatePoolFactory = ({
     }
     if (resolvedWorker.resolveAfterFinishingAll !== undefined) {
       unsupported.push("worker.resolveAfterFinishingAll");
+    }
+    if (resolvedWorker.maxAwaitingTasks !== undefined) {
+      unsupported.push("worker.maxAwaitingTasks");
     }
     if (listOfFunctions.some((fn) => fn.timeout !== undefined)) {
       unsupported.push("task timeout");
