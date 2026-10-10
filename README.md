@@ -292,7 +292,8 @@ if (isMain) {
 
 `href` can be a local relative path like `"./worker-tasks.ts"`, an absolute file
 path, or a URL. Relative paths are resolved from the module that calls
-`importTask()`.
+`importTask()`. Each worker imports the module on the task's first call; after
+that, it calls the export directly, so a synchronous export stays synchronous.
 
 When workers import files, keep the pool's permission settings in mind. The
 default strict mode allows task imports, but custom permission policies can
@@ -642,11 +643,10 @@ hold a slot, so the cap does not affect them.
   way, queued tasks cannot start.
 
 **Details.** The value must be a positive integer, or `Infinity` (the same as
-unset). Tasks registered with `importTask` are wrapped in an async function, so
-even a synchronous export holds a slot briefly. Under a cap, cheap imported
-tasks therefore pay a scheduling hop each, which measured up to about 45% of
-throughput on Bun with `1`. Pools with private lanes respect the cap, but the
-host has already assigned their tasks to lanes, so it limits concurrency without
+unset). A task registered with `importTask` holds a slot on its first call in
+each worker, while its module loads; after that, a synchronous export is called
+directly and holds none. Pools with private lanes respect the cap, but the host
+has already assigned their tasks to lanes, so it limits concurrency without
 rebalancing. Dekker claims take whole regions regardless of free slots.
 Compiled workers do not support the option.
 

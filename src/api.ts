@@ -1364,10 +1364,12 @@ const createImportedTaskFn = <
     return cachedLoad;
   };
 
-  return (async (...args: unknown[]) => {
-    const fn = await loadFn();
-    return fn(...args);
-  }) as TaskFn<A, B, AS>;
+  // Once loaded, call straight through: a sync export then returns a plain
+  // value, so it never waits on a promise or holds a `maxAwaitingTasks` slot.
+  return ((...args: unknown[]) =>
+    cachedFn !== undefined
+      ? cachedFn(...args)
+      : loadFn().then((fn) => fn(...args))) as TaskFn<A, B, AS>;
 };
 
 /**
