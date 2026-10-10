@@ -36,6 +36,21 @@ type ArgumentsForCreateWorkerQueue = {
    * amortises the claim. `0` or unset always claims the configured batch.
    */
   singleClaimAboveMs?: number;
+  /**
+   * Unresolved async tasks this worker may run at once. Under stealing, a
+   * worker at this limit claims nothing, so queued work stays in the shared
+   * region for an idle peer, and below it claims at most its free slots so no
+   * claimed task waits privately behind one in flight. The adaptive
+   * single-claim policy takes precedence over that claim width when enabled.
+   * Unset runs every claimed task immediately at the configured claim width.
+   */
+  maxAwaitingTasks?: number;
+  /**
+   * Called when a settle drops `awaiting` below `maxAwaitingTasks`. The loop
+   * polls on a backoff timer while tasks are in flight, so without a nudge a
+   * freed slot can sit unused for most of that timer.
+   */
+  onSlotFree?: () => void;
 };
 
 /** Tasks run per `serviceBatchImmediate` call before returning to the loop. */
@@ -62,6 +77,8 @@ export const createWorkerRxQueue = (
     now,
     stealing,
     singleClaimAboveMs,
+    maxAwaitingTasks = Number.POSITIVE_INFINITY,
+    onSlotFree,
   }: ArgumentsForCreateWorkerQueue,
 ) => {
   const PLACE_HOLDER = (_?: unknown) => {
@@ -140,13 +157,16 @@ export const createWorkerRxQueue = (
   // Adaptive claim width. Cost is sampled once per serviced batch (two clock
   // reads however many tasks ran) and kept as a decaying peak, so one
   // expensive task holds single claims across the cheap batches after it.
-  // Async tasks count only their synchronous part, which is all a peer waits
-  // behind.
+  // Async tasks count only their synchronous part. Their continuations also
+  // run here and are not sampled, so CPU-heavy work after an `await` is what
+  // `maxAwaitingTasks` exists for.
   const setClaimLimit = lock.setStealClaimLimit;
   const singleClaimMs = singleClaimAboveMs ?? 0;
   const adaptClaims = stealing === true && singleClaimMs > 0 &&
     typeof setClaimLimit === "function";
   const clock = now ?? p_now;
+  const limitClaims = stealing === true && !adaptClaims &&
+    Number.isFinite(maxAwaitingTasks) && typeof setClaimLimit === "function";
   let costPeakMs = 0;
   let claimingSingle = false;
   const adjustClaimLimit = (elapsedMs: number, processed: number) => {
@@ -161,7 +181,14 @@ export const createWorkerRxQueue = (
 
   const enqueueLock = () => {
     // Steal only when idle: leaving work unclaimed lets a free peer take it.
-    if (stealing && toWork.size !== 0) return false;
+    // In-flight async tasks count as busy. They leave `toWork` when they start,
+    // so without this a worker whose tasks are all awaiting looks idle and
+    // drains the shared region on every pass, then runs every continuation.
+    if (stealing && (toWork.size !== 0 || awaiting >= maxAwaitingTasks)) {
+      return false;
+    }
+    // Claim no more than this worker can start, so nothing waits privately.
+    if (limitClaims) setClaimLimit!(maxAwaitingTasks - awaiting);
     if (!decode()) return false;
 
     let task = resolvedShift();
@@ -197,7 +224,9 @@ export const createWorkerRxQueue = (
   ) => {
     runTaskFinalizers(slot);
     slot.value = value;
-    if (wasAwaited && awaiting > 0) awaiting--;
+    if (wasAwaited && awaiting > 0) {
+      if (awaiting-- === maxAwaitingTasks) onSlotFree?.();
+    }
     const shouldReject = isError ||
       slot[IDX_FLAGS] === FLAG_REJECT;
     if (!sendReturn(slot, shouldReject)) pendingPush(slot);
@@ -225,6 +254,8 @@ export const createWorkerRxQueue = (
       return wrote;
     },
     serviceBatchImmediate: () => {
+      // At the async limit, claimed tasks wait in `toWork` for a free slot.
+      if (awaiting >= maxAwaitingTasks) return 0;
       let processed = 0;
       const startedAt = adaptClaims && toWork.size !== 0 ? clock() : 0;
 
@@ -249,6 +280,12 @@ export const createWorkerRxQueue = (
               (value) => settleNow(slot, false, value, true),
               (err) => settleNow(slot, true, err, true),
             );
+            // Only an async task can fill the last slot, so the limit check
+            // lives here and sync tasks never pay for it.
+            if (awaiting >= maxAwaitingTasks) {
+              ++processed;
+              break;
+            }
           } else {
             settleNow(slot, false, result, false);
           }

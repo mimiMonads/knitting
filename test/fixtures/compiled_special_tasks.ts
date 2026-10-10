@@ -47,3 +47,7 @@ export const readClock = task({
   abortSignal: true,
   f: (_value: number, signal) => signal.now() > 0,
 });
+
+export const echoObject = task({
+  f: (value: Record<string, unknown>) => value,
+});

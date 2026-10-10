@@ -292,7 +292,8 @@ if (isMain) {
 
 `href` can be a local relative path like `"./worker-tasks.ts"`, an absolute file
 path, or a URL. Relative paths are resolved from the module that calls
-`importTask()`.
+`importTask()`. Each worker imports the module on the task's first call; after
+that, it calls the export directly, so a synchronous export stays synchronous.
 
 When workers import files, keep the pool's permission settings in mind. The
 default strict mode allows task imports, but custom permission policies can
@@ -469,6 +470,7 @@ Common options you might tweak:
 | `payload`                         | Shared payload-buffer settings: `mode`, `payloadInitialBytes`, `payloadMaxByteLength`, and `maxPayloadBytes`.                     |
 | `abortSignalCapacity`             | Number of shared abort slots available to abort-aware calls.                                                                      |
 | `worker.resolveAfterFinishingAll` | Let submitted calls finish before shutdown resolves.                                                                              |
+| `worker.maxAwaitingTasks`         | Cap unresolved async tasks per worker (unset: unlimited). Try `2` for bundlers, minifiers and other tasks that await something and then do heavy CPU work; see [below](#bundlers-minifiers-and-other-await-then-compute-tasks). |
 | `worker.bootstrap`                | Privileged async hook imported and awaited before task modules load.                                                              |
 | `worker.hardTimeoutMs`            | Force pool shutdown when a task exceeds this many milliseconds.                                                                   |
 | `worker.runtime`                  | Choose `"thread"`, `"process"`, or experimental `"compiled"` workers.                                                             |
@@ -571,6 +573,82 @@ Three options tune the arbitration itself, and all only apply to a stealing pool
 in multi-worker mixed workloads. Uniform short tasks near the threshold can
 lose throughput at higher worker counts (about 4–7% with seven workers in
 local tests), so adaptation is opt-in and disabled by default.
+
+#### Bundlers, minifiers and other await-then-compute tasks
+
+Set `worker.maxAwaitingTasks` when a task awaits something first and then does
+heavy CPU work on the worker. Typical cases:
+
+- **Bundlers and minifiers:** `await esbuild.transform(...)`, then Terser, SWC
+  or Lightning CSS work on the result.
+- **Compilers and transpilers:** await reading the source, then a Babel,
+  TypeScript or Markdown transform.
+- **Image, PDF and media pipelines:** await a fetch or file read, then decode,
+  resize or encode in JavaScript or Wasm.
+- **Server-side rendering:** await data, then render a large page.
+- **Parsers and validators:** await a request body or stream, then parse or
+  validate a large JSON, XML or CSV document.
+
+```ts
+import { transform } from "esbuild";
+import { minify } from "terser";
+import { createPool, isMain } from "knitting";
+
+// esbuild transforms in its own process; Terser then runs on this worker.
+export const build = async (source: string) => {
+  const { code } = await transform(source, { loader: "ts" });
+  return (await minify(code)).code ?? "";
+};
+
+if (isMain) {
+  using pool = createPool({
+    threads: 4,
+    // esbuild spawns its own binary, which Node thread workers must be allowed
+    // to do. Bun and Deno thread workers follow the host's own permissions.
+    permission: { mode: "strict", allowImport: true, run: true },
+    worker: { maxAwaitingTasks: 2 },
+  })({ build });
+
+  const sources = ["export const a: number = 1 + 2;"];
+  const minified = await Promise.all(
+    sources.map((source) => pool.call.build(source)),
+  );
+  console.log(minified);
+}
+```
+
+**Why it helps.** An async task leaves its worker's run queue at its first
+`await`, and the code after that `await` always runs on the worker that started
+the task. Without a cap, a stealing worker whose tasks are all waiting looks
+idle and keeps claiming, so the first workers to wake can start a whole batch
+within a few milliseconds. Each of them then runs the CPU-heavy halves one after
+another while its peers sit idle. With a cap, a worker that is full leaves
+queued tasks in the shared queue for a peer, and each claim takes only as many
+tasks as the worker has free slots.
+
+**Choosing the value.** Start with `2`. It lets a worker overlap one task's
+wait with another task's CPU work, which `1` cannot do. `3` came out close to
+`2` in local tests, so measure before going higher. In a local 4-worker test
+where each task awaited a 20 ms timer and then computed for 25 ms, a batch took
+370–520 ms uncapped (depending on which worker woke first), about 363 ms with
+`1`, about 281 ms with `2` and about 287 ms with `3`. Synchronous tasks never
+hold a slot, so the cap does not affect them.
+
+**When to leave it unset:**
+
+- **I/O-only tasks** (proxies, database calls, fetches): there, the awaits are
+  the concurrency, and a cap only queues them.
+- **Tasks that wait on other tasks or on long-lived events** such as an abort
+  signal: each holds its slot until it settles, and with every slot held that
+  way, queued tasks cannot start.
+
+**Details.** The value must be a positive integer, or `Infinity` (the same as
+unset). A task registered with `importTask` holds a slot on its first call in
+each worker, while its module loads; after that, a synchronous export is called
+directly and holds none. Pools with private lanes respect the cap, but the host
+has already assigned their tasks to lanes, so it limits concurrency without
+rebalancing. Dekker claims take whole regions regardless of free slots.
+Compiled workers do not support the option.
 
 Set `host: { slots: 64 }` to double each request and return lane's task capacity.
 Thread and JavaScript process workers use the same 256-byte lock sector; only
@@ -804,8 +882,11 @@ const pool = createPool({
 The extension is .knt rather than .out because it identifies a Knitting worker
 artifact; executability is never inferred from the suffix alone. Knitting also
 requires the sidecar to match the protocol version, current platform and
-architecture, source module, source timestamp, and requested task names before
-spawning it. `checkCompiledWorker(...)` remains a read-only way to inspect that
+architecture, source module, source timestamp, requested task names, and SHA-256
+fingerprints of bundled inputs before spawning it. The fingerprints include local
+imports, package dependencies, the worker runtime, and the build script. Editing
+an imported helper invalidates the artifact even when its timestamp is preserved.
+Version 1 manifests need a rebuild; with `build: false`, rebuild them ahead of time. `checkCompiledWorker(...)` remains a read-only way to inspect that
 state without building or executing anything.
 
 Automatic builds use Porffor main from `worker.compiled.compiler`,

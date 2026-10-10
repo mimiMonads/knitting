@@ -9,6 +9,11 @@ export const addOneViaImportTask = importTask<number, number>({
   name: "addOne",
 });
 
+export const failViaImportTask = importTask<string, never>({
+  href: "./imported_functions.ts",
+  name: "fail",
+});
+
 export const reportIsMain = task<void, boolean>({
   f: () => isMain,
 });

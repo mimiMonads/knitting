@@ -5,7 +5,7 @@ import { AbortSignalPoolExhausted } from "../src/shared/abortSignal.ts";
 import { RUNTIME } from "../src/common/runtime.ts";
 import { resolveStealSingleClaimMicroseconds } from "../src/runtime/pool.ts";
 import { abortA, abortB, abortReturnsInput } from "./fixtures/abort_tasks.ts";
-import { concat, double } from "./fixtures/steal_tasks.ts";
+import { awaitThenSpin, concat, double } from "./fixtures/steal_tasks.ts";
 import { delayedEcho } from "./fixtures/loop_tasks.ts";
 
 const withTimeout = async <T>(promise: Promise<T>, ms = 5_000): Promise<T> => {
@@ -649,6 +649,40 @@ test("host.stealSingleClaimMicroseconds rejects values that are not finite and >
           host: { steal: true, stealSingleClaimMicroseconds: value },
         })({ double }),
       RangeError,
+      String(value),
+    );
+  }
+});
+
+test("maxAwaitingTasks keeps awaiting work from piling onto one stealing worker", async () => {
+  const threads = 4;
+  const pool = createPool({ threads, worker: { maxAwaitingTasks: 1 } })({
+    awaitThenSpin,
+  });
+  try {
+    // Warm every worker so a slow start cannot skew the split.
+    await withTimeout(Promise.all(
+      Array.from({ length: threads * 4 }, () => pool.call.awaitThenSpin(1)),
+    ));
+    const tags = await withTimeout(Promise.all(
+      Array.from({ length: 32 }, () => pool.call.awaitThenSpin(5)),
+    ));
+    const counts = new Map<number, number>();
+    for (const tag of tags) counts.set(tag, (counts.get(tag) ?? 0) + 1);
+    const split = [...counts.values()].sort((a, b) => b - a);
+    assert.equal(counts.size, threads, `every worker runs part of the batch: ${split}`);
+    // Without the in-flight check one worker started 16-20 of these 32.
+    assert.ok(split[0]! <= 12, `no worker hoards the batch: ${split}`);
+  } finally {
+    await pool.shutdown();
+  }
+});
+
+test("worker.maxAwaitingTasks rejects values that are not positive integers", () => {
+  for (const value of [0, -1, 1.5, Number.NaN]) {
+    assert.throws(
+      () => createPool({ threads: 2, worker: { maxAwaitingTasks: value } })({ double }),
+      TypeError,
       String(value),
     );
   }

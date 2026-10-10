@@ -392,3 +392,122 @@ test("private lanes and a zero threshold never change the claim width", () => {
     assert.equal(getClockReads(), 0, "disabled adaptation never reads the clock");
   }
 });
+
+/** An async-task queue whose tasks stay in flight until released. */
+const inFlightQueue = (options: Record<string, unknown>) => {
+  const resolved = new RingQueue<Task>();
+  const recyclecList = new RingQueue<Task>();
+  const limits: number[] = [];
+  const release: Array<() => void> = [];
+  let decodes = 0;
+  const queue = createWorkerRxQueue({
+    listOfFunctions: [{
+      run: () => new Promise<void>((resolve) => release.push(resolve)),
+    }],
+    lock: {
+      decode: () => {
+        decodes++;
+        return resolved.size !== 0;
+      },
+      resolved,
+      recyclecList,
+      setStealClaimLimit: (limit: number) => {
+        limits.push(limit);
+        return true;
+      },
+    },
+    returnLock: { encode: () => true },
+    ...options,
+  } as any);
+  const publish = (count: number) => {
+    for (let i = 0; i < count; i++) {
+      const slot = makeTask();
+      slot[TaskIndex.FunctionID] = 0;
+      resolved.push(slot);
+    }
+  };
+  // Settling runs in promise reactions; a macrotask hop lets them finish.
+  const settleOne = async () => {
+    release.shift()!();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+  return { queue, limits, publish, settleOne, getDecodes: () => decodes };
+};
+
+test("a worker runs no more async tasks than maxAwaitingTasks", async () => {
+  const { queue, publish, settleOne } = inFlightQueue({ maxAwaitingTasks: 2 });
+  publish(3);
+  assert.equal(queue.enqueueLock(), true);
+  assert.equal(queue.serviceBatchImmediate(), 2);
+  assert.equal(queue.getAwaiting(), 2);
+  assert.equal(queue.serviceBatchImmediate(), 0, "the third waits for a free slot");
+  await settleOne();
+  assert.equal(queue.getAwaiting(), 1);
+  assert.equal(queue.serviceBatchImmediate(), 1);
+});
+
+test("a stealing worker at its async limit leaves queued work for its peers", async () => {
+  const { queue, publish, settleOne, getDecodes } = inFlightQueue({
+    stealing: true,
+    maxAwaitingTasks: 1,
+  });
+  publish(1);
+  assert.equal(queue.enqueueLock(), true);
+  assert.equal(queue.serviceBatchImmediate(), 1);
+  publish(1);
+  // Nothing is left in `toWork`, but the in-flight task still occupies it.
+  assert.equal(queue.enqueueLock(), false);
+  assert.equal(getDecodes(), 1, "no claim attempt while at the limit");
+  await settleOne();
+  assert.equal(queue.enqueueLock(), true);
+  assert.equal(getDecodes(), 2);
+});
+
+test("capacity-limited claims ask only for free async slots", async () => {
+  const { queue, limits, publish, settleOne } = inFlightQueue({
+    stealing: true,
+    maxAwaitingTasks: 3,
+  });
+  publish(1);
+  assert.equal(queue.enqueueLock(), true);
+  assert.equal(queue.serviceBatchImmediate(), 1);
+  publish(1);
+  assert.equal(queue.enqueueLock(), true);
+  assert.equal(queue.serviceBatchImmediate(), 1);
+  assert.deepEqual(limits, [3, 2]);
+  await settleOne();
+  queue.enqueueLock();
+  assert.deepEqual(limits, [3, 2, 2]);
+});
+
+test("claim width stays put without a limit or without stealing", () => {
+  for (
+    const options of [
+      { stealing: true },
+      { stealing: false, maxAwaitingTasks: 2 },
+    ]
+  ) {
+    const { queue, limits, publish } = inFlightQueue(options);
+    publish(2);
+    queue.enqueueLock();
+    queue.serviceBatchImmediate();
+    queue.enqueueLock();
+    assert.deepEqual(limits, [], JSON.stringify(options));
+  }
+});
+
+test("only a settle that leaves maxAwaitingTasks reports a free slot", async () => {
+  for (const [maxAwaitingTasks, expected] of [[2, 1], [undefined, 0]] as const) {
+    let freed = 0;
+    const { queue, publish, settleOne } = inFlightQueue({
+      maxAwaitingTasks,
+      onSlotFree: () => freed++,
+    });
+    publish(2);
+    queue.enqueueLock();
+    assert.equal(queue.serviceBatchImmediate(), 2);
+    await settleOne();
+    await settleOne();
+    assert.equal(freed, expected, `maxAwaitingTasks=${maxAwaitingTasks}`);
+  }
+});

@@ -269,6 +269,16 @@ const resolveWorkerSettings = (
     }
     : worker;
   const bootstrap = resolved.bootstrap;
+  if (
+    resolved.maxAwaitingTasks !== undefined &&
+    !(Number.isInteger(resolved.maxAwaitingTasks) &&
+      resolved.maxAwaitingTasks >= 1) &&
+    resolved.maxAwaitingTasks !== Number.POSITIVE_INFINITY
+  ) {
+    throw new TypeError(
+      "worker.maxAwaitingTasks must be a positive integer or Infinity",
+    );
+  }
   if (bootstrap !== undefined) {
     const name = bootstrap.name ?? DEFAULT_IMPORT_EXPORT_NAME;
     if (typeof bootstrap.href !== "string" || bootstrap.href.length === 0) {
@@ -684,6 +694,9 @@ export const createPool: CreatePoolFactory = ({
     }
     if (resolvedWorker.resolveAfterFinishingAll !== undefined) {
       unsupported.push("worker.resolveAfterFinishingAll");
+    }
+    if (resolvedWorker.maxAwaitingTasks !== undefined) {
+      unsupported.push("worker.maxAwaitingTasks");
     }
     if (listOfFunctions.some((fn) => fn.timeout !== undefined)) {
       unsupported.push("task timeout");
@@ -1351,10 +1364,12 @@ const createImportedTaskFn = <
     return cachedLoad;
   };
 
-  return (async (...args: unknown[]) => {
-    const fn = await loadFn();
-    return fn(...args);
-  }) as TaskFn<A, B, AS>;
+  // Once loaded, call straight through: a sync export then returns a plain
+  // value, so it never waits on a promise or holds a `maxAwaitingTasks` slot.
+  return ((...args: unknown[]) =>
+    cachedFn !== undefined
+      ? cachedFn(...args)
+      : loadFn().then((fn) => fn(...args))) as TaskFn<A, B, AS>;
 };
 
 /**

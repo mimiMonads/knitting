@@ -322,6 +322,40 @@ test("Node process workers steal a shared submit queue", {
   await runProcessStealSmoke("node");
 });
 
+test("process workers read maxAwaitingTasks: Infinity as unlimited", {
+  concurrency: false,
+  skip: processRuntimeTestSkip,
+  timeout: TEST_TIMEOUT_MS,
+}, async () => {
+  if (!hasProcessRuntime("node")) return;
+  // The boot payload crosses as JSON, which turns `Infinity` into `null`.
+  const pool = createPool({
+    threads: 2,
+    worker: {
+      runtime: "process",
+      processRuntime: "node",
+      maxAwaitingTasks: Number.POSITIVE_INFINITY,
+    },
+  })({ double });
+
+  let testError: unknown;
+  try {
+    assert.equal(
+      await withTimeout("unlimited process worker call", pool.call.double(21)),
+      42,
+    );
+  } catch (error) {
+    testError = error;
+    throw error;
+  } finally {
+    await shutdownWithTimeout(
+      "unlimited process worker shutdown",
+      pool.shutdown(),
+      testError,
+    );
+  }
+});
+
 for (const processRuntime of ["bun", "deno", "node"] as const) {
   for (const threads of [1, 3]) {
     test(`64-slot ${processRuntime} process queues complete (${threads} workers)`, {

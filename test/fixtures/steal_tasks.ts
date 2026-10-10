@@ -11,3 +11,19 @@ export const delayedSyncDouble = task<number, number>({
   },
 });
 export const concat = task<string, string>({ f: (value) => `${value}!` });
+
+// Each worker loads this module once, so the value names the worker that ran a
+// task without relying on a runtime-specific thread id.
+const workerTag = Math.random();
+/**
+ * Waits on work outside the worker, then spins on it: the shape of a build
+ * step that awaits a child process and then runs a synchronous minifier.
+ */
+export const awaitThenSpin = task<number, number>({
+  f: async (spinMs) => {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const until = performance.now() + spinMs;
+    while (performance.now() < until) {}
+    return workerTag;
+  },
+});
