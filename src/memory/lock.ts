@@ -1849,6 +1849,20 @@ export const lock2 = ({
     resetPendingState,
     deactivateStealConsumer,
     /**
+     * Published tickets nobody has claimed yet, `0..slotCount`; 0 without the
+     * `ticket` discipline. Two loads and no claim, so it is safe to poll. Work
+     * the host has not published yet (region full) is not counted.
+     */
+    stealBacklog: (): number => {
+      if (!stealEnabled || !stealTicket) return 0;
+      const head = Atomics.load(stealTicketView!, stealTicketHead64);
+      if (head === STEAL_TICKET_FAILED) return 0;
+      const available = (a_load(stealTicketTailWord!, 0) -
+        Number(head & STEAL_TICKET_LOW_MASK)) >>> 0;
+      // A stale head snapshot can put the distance past the region: unknown.
+      return available > slotCount ? 0 : available;
+    },
+    /**
      * Cap the tickets this consumer takes per claim, clamped to
      * `1..regionLanes`; `Infinity` restores the full width. Only the `ticket`
      * discipline batches by count; Dekker claims whole regions, so it reports

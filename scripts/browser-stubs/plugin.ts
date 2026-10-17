@@ -30,6 +30,7 @@ const stubbed: Record<string, string> = {
   "src/runtime/node-doorbell.ts": "node-doorbell.ts",
   "src/runtime/process-worker.ts": "process-worker.ts",
   "src/worker/process-worker-bootstrap.ts": "process-worker-bootstrap.ts",
+  "src/worker/thread-cpu-clock.ts": "thread-cpu-clock.ts",
 };
 
 const stubs = new Map(

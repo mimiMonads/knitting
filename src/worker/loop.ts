@@ -11,6 +11,8 @@ import { isLockBufferTextCompat } from "../common/shared-buffer-text.ts";
 import { createDenoCompletionNotifier } from "../runtime/deno-doorbell.ts";
 import { createNodeCompletionNotifier } from "../runtime/node-doorbell.ts";
 import { createWorkerRxQueue } from "./rx-queue.ts";
+import { createUnravelController, createUnravelShared } from "./unravel.ts";
+import { createUnravelOwnership } from "./unravel-ownership.ts";
 import { installSharedReturn } from "./shared-return.ts";
 import {
   createSharedMemoryTransport,
@@ -120,6 +122,7 @@ export const workerMainLoop = async (
     names,
     at,
     steal,
+    unravelShared,
   } = startupData as WorkerData;
 
   scrubWorkerDataSensitiveBuffers(startupData);
@@ -278,6 +281,15 @@ export const workerMainLoop = async (
   // either as unlimited instead of a limit no task can fit under.
   const maxAwaitingTasks = workerOptions?.maxAwaitingTasks ??
     Number.POSITIVE_INFINITY;
+  const autoAwaiting = maxAwaitingTasks === "auto"
+    ? createUnravelController({
+      options: workerOptions?.unravel,
+      shared: unravelShared === undefined ? undefined : createUnravelShared(unravelShared, thread),
+      onUpdate: dbg?.enabled("unravel") === true
+        ? (sample) => dbg.log("unravel", JSON.stringify(sample))
+        : undefined,
+    })
+    : undefined;
 
   const {
     enqueueLock,
@@ -285,6 +297,8 @@ export const workerMainLoop = async (
     hasCompleted,
     writeBatch,
     getAwaiting,
+    getAwaitingLimit,
+    coldGrow,
     drainReturnReleases,
     releaseDeferredReturns,
   } = createWorkerRxQueue({
@@ -294,7 +308,10 @@ export const workerMainLoop = async (
     returnLock: returnLockState,
     hasAborted: abortSignals?.hasAborted,
     stealing: steal !== undefined,
-    maxAwaitingTasks,
+    maxAwaitingTasks: autoAwaiting?.getLimit() ?? (maxAwaitingTasks as number),
+    autoAwaiting,
+    ownership: steal?.awaitingCounts === undefined ? undefined :
+      createUnravelOwnership(steal.awaitingCounts, steal.consumerId),
     onSlotFree: () => wakeFromBackoff(),
     // Only ticket batches wider than one can adapt their claim width.
     singleClaimAboveMs: steal !== undefined && steal.claim !== "dekker" &&
@@ -362,8 +379,26 @@ export const workerMainLoop = async (
     post2(null);
   };
 
+  // Under "auto" a freed slot refills between ready timer callbacks. Waiting
+  // for setImmediate lets a whole cohort of continuations drain before any
+  // replacement starts its wait, turning capped concurrency into waves.
+  // Coalesced microtask passes per dispatcher turn are bounded, so
+  // immediate-promise chains cannot starve timers, stop or abort handling.
+  const REFILL_PASSES = 32;
+  let refillQueued = false;
+  let refillBudget = REFILL_PASSES;
   /** Run the loop now rather than when the pending backoff timer fires. */
   const wakeFromBackoff = () => {
+    if (autoAwaiting !== undefined && refillBudget > 0 && !refillQueued) {
+      refillQueued = true;
+      queueMicrotask(() => {
+        refillQueued = false;
+        if (stopView[0] !== WORKER_STOP.running || refillBudget <= 0) return;
+        --refillBudget;
+        pump();
+        _serviceBatchImmediate();
+      });
+    }
     if (backoffTimer === undefined) return;
     clearTimeout(backoffTimer);
     backoffTimer = undefined;
@@ -437,6 +472,7 @@ export const workerMainLoop = async (
   };
 
   const loop = () => {
+    refillBudget = REFILL_PASSES;
     isInMacro = false;
     backoffTimer = undefined;
     // Recompute progress on every pass so idle workers can park.
@@ -444,6 +480,7 @@ export const workerMainLoop = async (
     let awaiting = 0;
     while (true) {
       if (stopView[0] !== WORKER_STOP.running) return stopLoop();
+      const passBusy = autoAwaiting?.start();
 
       progressed = pump();
 
@@ -457,7 +494,27 @@ export const workerMainLoop = async (
         if (progressed || awaiting !== lastAwaiting) awaitingSpins = 0;
         lastAwaiting = awaiting;
         awaitingSpins++;
-        const delay = Math.min(MAX_AWAITING_MS, Math.max(0, awaitingSpins - 1));
+        let delay = Math.min(MAX_AWAITING_MS, Math.max(0, awaitingSpins - 1));
+        if (autoAwaiting !== undefined) {
+          // An idle dispatcher pass is not task CPU.
+          if (!progressed) autoAwaiting.exclude(passBusy!);
+          // At the cap with queued work, keep checking at the timer floor so
+          // the cold slow start and warm idle probes can grow the cap.
+          const cold = coldGrow(totalNumberOfThread);
+          if (cold === "grew") {
+            awaitingSpins = 0;
+            scheduleTimer(0);
+            return;
+          }
+          if (cold === "waiting") {
+            scheduleTimer(progressed ? 0 : 1);
+            return;
+          }
+          // At the cap no poll can admit work, and a settle that frees a slot
+          // wakes the loop directly. Poll only for stop requests then, unless
+          // finished results are waiting for return space.
+          if (awaiting >= getAwaitingLimit() && !_hasCompleted()) delay = MAX_AWAITING_MS;
+        }
         scheduleTimer(delay);
         return;
       }

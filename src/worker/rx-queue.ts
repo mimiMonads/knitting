@@ -10,6 +10,8 @@ import {
 import type { WorkerComposedWithKey } from "./task-loader.ts";
 import { composeWorkerRunner } from "./composable-runners.ts";
 import type { WorkerSettings } from "../types.ts";
+import type { AdmissionController } from "./unravel.ts";
+import type { UnravelOwnership } from "./unravel-ownership.ts";
 
 type ArgumentsForCreateWorkerQueue = {
   listOfFunctions: WorkerComposedWithKey[];
@@ -46,9 +48,17 @@ type ArgumentsForCreateWorkerQueue = {
    */
   maxAwaitingTasks?: number;
   /**
-   * Called when a settle drops `awaiting` below `maxAwaitingTasks`. The loop
-   * polls on a backoff timer while tasks are in flight, so without a nudge a
-   * freed slot can sit unused for most of that timer.
+   * maxAwaitingTasks: "auto": the per-worker controller that owns the limit.
+   * Absent on the fixed/default path, which reads no clocks.
+   */
+  autoAwaiting?: AdmissionController;
+  /** Stealing pools under "auto": this worker's published async population. */
+  ownership?: UnravelOwnership;
+  /**
+   * Called when a settle drops `awaiting` below `maxAwaitingTasks`, and under
+   * "auto" on every settle that leaves a free slot. The loop polls on a
+   * backoff timer while tasks are in flight, so without a nudge a freed slot
+   * can sit unused for most of that timer.
    */
   onSlotFree?: () => void;
 };
@@ -78,6 +88,8 @@ export const createWorkerRxQueue = (
     stealing,
     singleClaimAboveMs,
     maxAwaitingTasks = Number.POSITIVE_INFINITY,
+    autoAwaiting,
+    ownership,
     onSlotFree,
   }: ArgumentsForCreateWorkerQueue,
 ) => {
@@ -86,6 +98,7 @@ export const createWorkerRxQueue = (
   };
 
   let awaiting = 0;
+  let awaitingLimit = autoAwaiting?.getLimit() ?? maxAwaitingTasks;
 
   const jobs = listOfFunctions.reduce((acc, fixed) => (
     acc.push(fixed.run), acc
@@ -161,12 +174,13 @@ export const createWorkerRxQueue = (
   // run here and are not sampled, so CPU-heavy work after an `await` is what
   // `maxAwaitingTasks` exists for.
   const setClaimLimit = lock.setStealClaimLimit;
+  const stealBacklog = lock.stealBacklog;
   const singleClaimMs = singleClaimAboveMs ?? 0;
   const adaptClaims = stealing === true && singleClaimMs > 0 &&
     typeof setClaimLimit === "function";
   const clock = now ?? p_now;
   const limitClaims = stealing === true && !adaptClaims &&
-    Number.isFinite(maxAwaitingTasks) && typeof setClaimLimit === "function";
+    Number.isFinite(awaitingLimit) && typeof setClaimLimit === "function";
   let costPeakMs = 0;
   let claimingSingle = false;
   const adjustClaimLimit = (elapsedMs: number, processed: number) => {
@@ -184,11 +198,11 @@ export const createWorkerRxQueue = (
     // In-flight async tasks count as busy. They leave `toWork` when they start,
     // so without this a worker whose tasks are all awaiting looks idle and
     // drains the shared region on every pass, then runs every continuation.
-    if (stealing && (toWork.size !== 0 || awaiting >= maxAwaitingTasks)) {
+    if (stealing && (toWork.size !== 0 || awaiting >= awaitingLimit)) {
       return false;
     }
     // Claim no more than this worker can start, so nothing waits privately.
-    if (limitClaims) setClaimLimit!(maxAwaitingTasks - awaiting);
+    if (limitClaims) setClaimLimit!(awaitingLimit - awaiting);
     if (!decode()) return false;
 
     let task = resolvedShift();
@@ -221,15 +235,27 @@ export const createWorkerRxQueue = (
     isError: boolean,
     value: unknown,
     wasAwaited: boolean,
+    token?: number,
   ) => {
     runTaskFinalizers(slot);
     slot.value = value;
     if (wasAwaited && awaiting > 0) {
-      if (awaiting-- === maxAwaitingTasks) onSlotFree?.();
+      if (autoAwaiting === undefined) {
+        if (awaiting-- === maxAwaitingTasks) onSlotFree?.();
+      } else {
+        --awaiting;
+        ownership?.publish(awaiting);
+        awaitingLimit = autoAwaiting.settle(awaiting, token);
+        // Automatic admission refills on every settle that leaves a free slot.
+        if (awaiting < awaitingLimit) onSlotFree?.();
+      }
     }
     const shouldReject = isError ||
       slot[IDX_FLAGS] === FLAG_REJECT;
+    // Return writes are not task CPU.
+    const returnBusy = autoAwaiting?.start();
     if (!sendReturn(slot, shouldReject)) pendingPush(slot);
+    if (returnBusy !== undefined) autoAwaiting!.exclude(returnBusy);
   };
 
   const writeOne = () => {
@@ -255,7 +281,7 @@ export const createWorkerRxQueue = (
     },
     serviceBatchImmediate: () => {
       // At the async limit, claimed tasks wait in `toWork` for a free slot.
-      if (awaiting >= maxAwaitingTasks) return 0;
+      if (awaiting >= awaitingLimit) return 0;
       let processed = 0;
       const startedAt = adaptClaims && toWork.size !== 0 ? clock() : 0;
 
@@ -267,29 +293,34 @@ export const createWorkerRxQueue = (
       // flush it rather than pile up more finished work.
       while (processed < SERVICE_BATCH_MAX && toWork.size !== 0) {
         const slot = toWorkShift()!;
+        const startedBusy = autoAwaiting?.start();
 
         try {
           const fnIndex = slot[TaskIndex.FunctionID] & FUNCTION_ID_MASK;
           const result = runByIndex[fnIndex]!(slot);
           slot[IDX_FLAGS] = 0;
           if (result instanceof Promise) {
+            const token = autoAwaiting?.asyncStarted();
             slot.value = null;
             awaiting++;
+            ownership?.publish(awaiting);
 
             result.then(
-              (value) => settleNow(slot, false, value, true),
-              (err) => settleNow(slot, true, err, true),
+              (value) => settleNow(slot, false, value, true, token),
+              (err) => settleNow(slot, true, err, true, token),
             );
             // Only an async task can fill the last slot, so the limit check
             // lives here and sync tasks never pay for it.
-            if (awaiting >= maxAwaitingTasks) {
+            if (awaiting >= awaitingLimit) {
               ++processed;
               break;
             }
           } else {
+            if (startedBusy !== undefined) autoAwaiting!.exclude(startedBusy);
             settleNow(slot, false, result, false);
           }
         } catch (err) {
+          if (startedBusy !== undefined) autoAwaiting!.exclude(startedBusy);
           settleNow(slot, true, err, false);
         }
 
@@ -307,6 +338,25 @@ export const createWorkerRxQueue = (
     releaseDeferredReturns,
     hasAwaiting: () => awaiting > 0,
     getAwaiting: () => awaiting,
+    getAwaitingLimit: () => awaitingLimit,
+    /**
+     * Under "auto", at the cap: offer the visible queue to the controller.
+     * Stealing workers also count published, unclaimed tickets and divide by
+     * the pool; private lanes see only their own queue. "waiting" keeps the
+     * loop polling while work is queued.
+     */
+    coldGrow: (workers: number): "grew" | "waiting" | "none" => {
+      if (autoAwaiting === undefined || awaiting < awaitingLimit || !autoAwaiting.canProbe()) {
+        return "none";
+      }
+      const backlog = toWork.size + (stealing === true ? stealBacklog?.() ?? 0 : 0);
+      const totalOwned = backlog > 0 ? ownership?.total() : undefined;
+      if (autoAwaiting.coldGrow(backlog, stealing === true ? workers : 1, totalOwned)) {
+        awaitingLimit = autoAwaiting.getLimit();
+        return "grew";
+      }
+      return backlog > 0 ? "waiting" : "none";
+    },
     /** Whether adaptive stealing currently claims one task at a time. */
     isClaimingSingle: () => claimingSingle,
   };

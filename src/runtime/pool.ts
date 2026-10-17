@@ -419,6 +419,7 @@ export const spawnWorkerContext = ({
   sharedChannelHandler,
   denoCompletionDoorbell,
   stealPool,
+  unravelShared,
 }: {
   list: string[];
   ids: number[];
@@ -455,6 +456,8 @@ export const spawnWorkerContext = ({
   sharedChannelHandler?: ChannelHandler;
   /** Deno-only native callback shared by every thread worker in this pool. */
   denoCompletionDoorbell?: DenoCompletionDoorbell;
+  /** maxAwaitingTasks: "auto" pool-wide cold clock and estimates. */
+  unravelShared?: SharedArrayBuffer;
   /**
    * Work-stealing wiring. When present the submit region, both host-side locks
    * and the pending registry are owned by `createPool` and shared: every worker
@@ -473,6 +476,7 @@ export const spawnWorkerContext = ({
     regionLanes: number;
     stealClaim?: StealClaimDiscipline;
     singleClaimMicroseconds?: number;
+    awaitingCounts?: SharedArrayBuffer;
     abortSignalSAB?: LockBuffers["headers"];
     abortSignalMax?: number;
     processMemory?: ProcessStealMemoryLayout;
@@ -818,7 +822,9 @@ export const spawnWorkerContext = ({
       regionLanes: stealPool.regionLanes,
       claim: stealPool.stealClaim,
       singleClaimMicroseconds: stealPool.singleClaimMicroseconds,
+      awaitingCounts: stealPool.awaitingCounts,
     },
+    unravelShared,
   } as WorkerData;
   const baseWorkerOptions = {
     //@ts-ignore Reason
