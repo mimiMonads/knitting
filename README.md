@@ -470,7 +470,8 @@ Common options you might tweak:
 | `payload`                         | Shared payload-buffer settings: `mode`, `payloadInitialBytes`, `payloadMaxByteLength`, and `maxPayloadBytes`.                     |
 | `abortSignalCapacity`             | Number of shared abort slots available to abort-aware calls.                                                                      |
 | `worker.resolveAfterFinishingAll` | Let submitted calls finish before shutdown resolves.                                                                              |
-| `worker.maxAwaitingTasks`         | Cap unresolved async tasks per worker (unset: unlimited). Try `2` for bundlers, minifiers and other tasks that await something and then do heavy CPU work; see [below](#bundlers-minifiers-and-other-await-then-compute-tasks). |
+| `worker.maxAwaitingTasks`         | Cap unresolved async tasks per worker (unset: unlimited). Try `2` for bundlers, minifiers and other tasks that await something and then do heavy CPU work, or experimental `"auto"` on Node/Bun thread workers; see [below](#bundlers-minifiers-and-other-await-then-compute-tasks). |
+| `worker.unravel`                  | Options for `maxAwaitingTasks: "auto"`: `initialTasks` (`2`), `minTasks` (`1`), `maxTasks` (`256`), `growth` (`2`), `tickMs` (`1`), `epsilon` (`0.01`), `ceiling` and `floor` (`true`). |
 | `worker.bootstrap`                | Privileged async hook imported and awaited before task modules load.                                                              |
 | `worker.hardTimeoutMs`            | Force pool shutdown when a task exceeds this many milliseconds.                                                                   |
 | `worker.runtime`                  | Choose `"thread"`, `"process"`, or experimental `"compiled"` workers.                                                             |
@@ -642,8 +643,65 @@ hold a slot, so the cap does not affect them.
   signal: each holds its slot until it settles, and with every slot held that
   way, queued tasks cannot start.
 
-**Details.** The value must be a positive integer, or `Infinity` (the same as
-unset). A task registered with `importTask` holds a slot on its first call in
+**Experimental automatic cap.** On Node and Bun thread workers, `"auto"` lets
+each worker size its own cap:
+
+```ts
+worker: {
+  maxAwaitingTasks: "auto",
+  unravel: { initialTasks: 2, maxTasks: 256 },
+}
+```
+
+A worker's cap follows its share of the pool's async work: the queued tasks
+plus the tasks every worker already holds, divided by the number of workers.
+Three rules shape it:
+
+- **Slow start.** Until the first awaited task settles anywhere in the pool,
+  the cap starts at `initialTasks` and multiplies by `growth` every `tickMs`
+  since the pool's first async start. `growth: 0` admits the share at once.
+- **Ceiling.** Once the pool has a measurement, the cap is at most the
+  Erlang-B capacity K for the pool's wait-to-CPU ratio W/C at idle
+  probability `epsilon`. `ceiling: false` removes it.
+- **Floor.** When continuations are cheap, the cap may rise to floor(W/C),
+  even above the share. `floor: false` removes it.
+
+W and C are moving averages over settled tasks, shared across the pool. A
+worker cannot see when an awaited value became ready, so W is a lower bound:
+the time from a task's start to the last moment its worker was idle before
+the task settled. When that reads low and the ceiling binds, a worker that
+sits idle at its cap with queued work doubles a probe allowance for each
+`tickMs` of idle time, up to the share. The allowance resets when the worker
+drains. C is the worker's busy time per settled task, excluding synchronous
+tasks. Under `"auto"`, every async settle that frees a slot refills it in a
+microtask, between ready continuations, rather than on the next timer turn.
+
+`maxTasks` (1–65536) is an independent per-worker ceiling and always wins;
+`minTasks` is a per-worker minimum. When the cap falls, tasks already started
+run to completion. Each worker splits its time into busy and idle with a
+fine-grained clock: event-loop active time on Node, and the thread CPU clock
+on Bun. On Linux, Bun reads it with `clock_gettime` through `bun:ffi`,
+because `process.threadCpuUsage()` only advances on scheduler ticks there,
+and counts time spent waiting for a CPU (from oversubscription or container
+CPU limits) as busy rather than idle; on macOS it uses
+`process.threadCpuUsage()`. Process workers, compiled workers, Deno, and
+runtimes without such a clock (such as Bun on Windows) reject `"auto"`
+rather than falling back to another policy. Tasks with a configured `timeout` are rejected too: a
+timeout settles its wrapper while the underlying work keeps running, which
+would free its slot early. Handwritten timeout races have the same problem
+and cannot be detected. Set `debug: { unravel: true }` to log each cap change
+on stderr, and keep it off when timing a workload.
+
+In local benchmarks (one laptop, Node 24), `"auto"` finished repeated
+long-wait bursts about a quarter faster than sizing by the share alone, and
+came within several percent of it on single bursts. It did worse on
+open-loop load whose wait times shift, where the low W estimate holds the cap
+down until the probe recovers. On a single burst of long waits it was about
+1.3× slower than no cap at all. Compare it with a fixed cap on your own
+workload.
+
+**Details.** The value must be a positive integer, `Infinity` (the same as
+unset), or `"auto"`. A task registered with `importTask` holds a slot on its first call in
 each worker, while its module loads; after that, a synchronous export is called
 directly and holds none. Pools with private lanes respect the cap, but the host
 has already assigned their tasks to lanes, so it limits concurrency without

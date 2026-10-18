@@ -68,6 +68,10 @@ type WorkerData = {
   notifyOnHostPublish?: boolean;
   /** Process-local IPC channel can carry coalesced completion doorbells. */
   processCompletionDoorbell?: boolean;
+  /** Host can wake an awaiting process worker over IPC. */
+  processAsyncPark?: boolean;
+  /** Host has a native notifier matching the process worker's blocking wait. */
+  processNativeWait?: boolean;
   /** Process-local Deno callback pointer for waking the host completion pump. */
   denoCompletionDoorbell?: bigint;
   /** Process-local Node uv_async handle for waking the host completion pump. */
@@ -81,7 +85,11 @@ type WorkerData = {
     claim?: "dekker" | "ticket";
     /** See `DispatcherSettings.stealSingleClaimMicroseconds`; `0` disables. */
     singleClaimMicroseconds?: number;
+    /** maxAwaitingTasks: "auto" only: owner-written per-worker async populations. */
+    awaitingCounts?: SharedArrayBuffer;
   };
+  /** maxAwaitingTasks: "auto" only: the pool-wide cold clock and W/C estimates. */
+  unravelShared?: SharedArrayBuffer;
 };
 
 type UnsafeOptions = {
@@ -391,13 +399,14 @@ type Balancer =
     strategy?: BalancerStrategy;
   };
 
-/** Debug namespaces for host setup, worker state, imports, globals, lifecycle, and steal claims. */
+/** Debug namespaces for host setup, worker state, imports, globals, lifecycle, automatic admission, and steal claims. */
 type DebugNamespace =
   | "host"
   | "globals"
   | "signals"
   | "imports"
   | "lifecycle"
+  | "unravel"
   | "steal";
 
 type DebugFlags = { [Namespace in DebugNamespace]?: boolean };
@@ -471,6 +480,35 @@ type CompiledWorkerCheck = {
   tasks?: readonly string[];
 };
 
+/**
+ * Options for maxAwaitingTasks: "auto". A per-worker cap under the population
+ * share, with a cold slow start on a pool-wide clock, an Erlang-B ceiling
+ * K(W/C) once warm, and a floor(W/C) allowance above the share when
+ * continuations are cheap.
+ */
+type UnravelOptions = {
+  /** Independent per-worker resource ceiling, 1–65536; default 256. */
+  maxTasks?: number;
+  /** Per-worker minimum, 1–maxTasks; default 1. */
+  minTasks?: number;
+  /** Cold starting cap, minTasks–maxTasks; default 2 clamped to those bounds. */
+  initialTasks?: number;
+  /**
+   * Cold cap multiplier per tick of pool-wide time without an awaited
+   * settle; an integer of at least 2, default 2. 0 disables the slow start
+   * and admits the population share at once.
+   */
+  growth?: number;
+  /** Cold growth period and cumulative idle time per warm probe, in ms; default 1. */
+  tickMs?: number;
+  /** Erlang-B model idle-probability target; default .01. */
+  epsilon?: number;
+  /** Cap the share at K(W/C) once warm; default true. */
+  ceiling?: boolean;
+  /** Allow floor(W/C) above the share once warm; default true. */
+  floor?: boolean;
+};
+
 type WorkerSettings = {
   resolveAfterFinishingAll?: true;
   /**
@@ -482,8 +520,19 @@ type WorkerSettings = {
    * A task that waits on another task, or on a long-lived event such as an
    * abort, holds its slot until it settles: with every slot held that way,
    * queued tasks cannot start.
+   *
+   * "auto" (experimental) sizes the cap per worker; see `unravel`.
    */
-  maxAwaitingTasks?: number;
+  maxAwaitingTasks?: number | "auto";
+  /**
+   * Experimental automatic admission for maxAwaitingTasks: "auto". Requires
+   * Node/Bun thread workers with a fine-grained busy clock (on Bun:
+   * clock_gettime through bun:ffi on Linux, threadCpuUsage() on macOS). It estimates
+   * wait-to-CPU (W/C) pool-wide from each worker's idle and busy time, and
+   * refills on every async settle. Configured task timeouts are unsupported:
+   * timeout wrappers may settle before the underlying execution finishes.
+   */
+  unravel?: UnravelOptions;
   /**
    * Privileged async worker hook that runs once before task modules import.
    * Use it to shape the worker environment before user task code loads.
@@ -548,10 +597,13 @@ type WorkerTimers = {
    */
   spinMicroseconds?: number;
   /**
-   * Atomics.wait timeout when parked (milliseconds). Defaults to 1000 for
-   * thread workers, which the host wakes on every publish, so the timeout is
-   * only a safety net; 1 for process workers, most of which only rediscover
-   * work when it expires.
+   * Idle park timeout in milliseconds. Defaults to 1000 for thread workers
+   * and Node-hosted Node process workers; 1 for other process workers.
+   * Process workers with a timeout above 1 use up to 50 short wait attempts
+   * after progress before returning to this timeout.
+   * Node process workers use native cross-process wakes when both sides can
+   * load the addon; otherwise they poll at intervals capped at 1ms. Plain
+   * Node on Windows also caps native waits at 1ms.
    */
   parkMs?: number;
   /**
@@ -722,6 +774,7 @@ export type {
   WorkerData as WorkerData,
   WorkerInvoke as WorkerInvoke,
   WorkerSettings as WorkerSettings,
+  UnravelOptions as UnravelOptions,
   WorkerTimers as WorkerTimers,
 };
 // A value re-export and a type-only re-export from the *same* module in one file

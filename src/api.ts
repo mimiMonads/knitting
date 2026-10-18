@@ -16,6 +16,7 @@ import { isNodePermissionExecFlag } from "./runtime/worker-common.ts";
 import { ChannelHandler, hostDispatcherLoop } from "./runtime/dispatcher.ts";
 import { createDenoCompletionDoorbell } from "./runtime/deno-doorbell.ts";
 import { createSharedArrayBuffer, RUNTIME } from "./common/runtime.ts";
+import { UNRAVEL_OWNERSHIP_STRIDE } from "./worker/unravel-ownership.ts";
 import {
   RUNTIME_IS_MAIN_THREAD,
   RUNTIME_POOL_DEPTH,
@@ -28,6 +29,7 @@ import {
   toRuntimePermissionFlags,
 } from "./permission/index.ts";
 import { getNodeProcess } from "./common/node-compat.ts";
+import { hasWorkerCpuClock, resolveUnravelOptions, unravelSharedBytes } from "./worker/unravel.ts";
 import {
   readProcessSharedMemorySettings,
   readProcessWorkerNodeMajor,
@@ -271,13 +273,28 @@ const resolveWorkerSettings = (
   const bootstrap = resolved.bootstrap;
   if (
     resolved.maxAwaitingTasks !== undefined &&
+    resolved.maxAwaitingTasks !== "auto" &&
     !(Number.isInteger(resolved.maxAwaitingTasks) &&
       resolved.maxAwaitingTasks >= 1) &&
     resolved.maxAwaitingTasks !== Number.POSITIVE_INFINITY
   ) {
     throw new TypeError(
-      "worker.maxAwaitingTasks must be a positive integer or Infinity",
+      'worker.maxAwaitingTasks must be a positive integer, Infinity, or "auto"',
     );
+  }
+  if (resolved.unravel !== undefined && resolved.maxAwaitingTasks !== "auto") {
+    throw new TypeError('worker.unravel requires worker.maxAwaitingTasks: "auto"');
+  }
+  if (resolved.maxAwaitingTasks === "auto") {
+    resolveUnravelOptions(resolved.unravel);
+    // Idle time is wall time minus a busy clock: event-loop active time on
+    // Node, thread CPU on Bun (see workerCpuClock). Workers share this
+    // thread's runtime and kernel, so its clock check holds for them.
+    if ((RUNTIME !== "node" && RUNTIME !== "bun") ||
+      (resolved.runtime !== undefined && resolved.runtime !== "thread") ||
+      !hasWorkerCpuClock()) {
+      throw new Error('worker.maxAwaitingTasks: "auto" requires Node/Bun thread workers with a fine-grained thread CPU clock');
+    }
   }
   if (bootstrap !== undefined) {
     const name = bootstrap.name ?? DEFAULT_IMPORT_EXPORT_NAME;
@@ -617,6 +634,13 @@ export const createPool: CreatePoolFactory = ({
     worker,
     callerHref,
   );
+  if (resolvedWorker?.maxAwaitingTasks === "auto" &&
+    listOfFunctions.some((fn) => fn.timeout !== undefined)) {
+    throw new Error(
+      'worker automatic admission does not support task timeouts: ' +
+        'a timeout can settle its wrapper before the underlying task finishes',
+    );
+  }
   if (
     RUNTIME === "node" &&
     resolvedWorker?.runtime !== "process" &&
@@ -789,6 +813,13 @@ export const createPool: CreatePoolFactory = ({
         : undefined,
     })
     : undefined;
+  const autoAwaiting = resolvedWorker?.maxAwaitingTasks === "auto";
+  const awaitingCounts = useSteal && autoAwaiting
+    ? createSharedArrayBuffer((threads ?? 1) * UNRAVEL_OWNERSHIP_STRIDE * 4)
+    : undefined;
+  const unravelShared = autoAwaiting
+    ? createSharedArrayBuffer(unravelSharedBytes(threads ?? 1))
+    : undefined;
   const serialChannel = !usingCompiledWorker && !useSteal &&
     dispatcher === "serial-channel";
   // The serial topology relies on channel delivery to run each lane check.
@@ -830,6 +861,7 @@ export const createPool: CreatePoolFactory = ({
       permission: permissionProtocol,
       sharedChannelHandler: serialDispatcherChannel,
       denoCompletionDoorbell,
+      unravelShared,
       stealPool: stealBuffers === undefined ? undefined : {
         submitBuffers: stealBuffers.submitBuffers,
         returnBuffers: stealBuffers.returnBuffers[thread]!,
@@ -841,6 +873,7 @@ export const createPool: CreatePoolFactory = ({
         regionLanes: stealBuffers.regionLanes,
         stealClaim: stealBuffers.stealClaim,
         singleClaimMicroseconds: stealBuffers.singleClaimMicroseconds,
+        awaitingCounts,
         abortSignalSAB: stealBuffers.abortSignalSAB,
         abortSignalMax: stealBuffers.abortSignalMax,
         processMemory: stealBuffers.processMemory,
@@ -857,24 +890,58 @@ export const createPool: CreatePoolFactory = ({
     // can claim the region.
     let wakeCursor = 0;
     let lastWoken = 0;
-    const wakeOne = () => {
+    let asyncWorkers = 0;
+    const wakeAwaitingPeer = () => {
+      const lanes = workers.length;
+      for (let step = 0; step < lanes; step++) {
+        const lane = (wakeCursor + step) % lanes;
+        const context = workers[lane] as {
+          laneClaimable?: () => boolean;
+          laneAwake?: () => boolean;
+        };
+        const claimable = context.laneClaimable?.() ??
+          context.laneAwake?.() === false;
+        if (!claimable) continue;
+        lastWoken = lane;
+        wakeCursor = lane + 1 < lanes ? lane + 1 : 0;
+        workers[lane]!.laneWake?.();
+        return;
+      }
+    };
+    const wakeSyncOne = () => {
       const lanes = workers.length;
       if (lanes === 0) return;
       const lane = lastWoken = wakeCursor;
       wakeCursor = wakeCursor + 1 < lanes ? wakeCursor + 1 : 0;
       workers[lane]!.laneWake?.();
     };
+    let wakeOne = wakeSyncOne;
     // Any awake worker will claim what was just published, so a lost wake
     // only strands work when every worker is parked. Ring the lane this pass
     // already rang: one still waking up absorbs it, and a second lane would
     // be one more thread woken per call.
-    const wakeIfAllParked = () => {
+    const wakeSyncIfAllParked = () => {
       for (let lane = 0; lane < workers.length; lane++) {
         const context = workers[lane] as { laneAwake?: () => boolean };
         if (context.laneAwake?.() !== false) return;
       }
       workers[lastWoken]?.laneWake?.();
     };
+
+    let wakeAfterPass = wakeSyncIfAllParked;
+    for (const worker of workers) {
+      const context = worker as {
+        bindAsyncState?: (fn: (active: boolean) => void) => void;
+        bindAsyncWake?: (fn: () => void) => void;
+      };
+      context.bindAsyncState?.((active) => {
+        asyncWorkers += active ? 1 : -1;
+        wakeOne = asyncWorkers > 0 ? wakeAwaitingPeer : wakeSyncOne;
+        wakeAfterPass = asyncWorkers > 0 ? wakeAwaitingPeer : wakeSyncIfAllParked;
+        if (active) wakeOne();
+      });
+      context.bindAsyncWake?.(wakeAwaitingPeer);
+    }
 
     // The shared dispatcher drives one queue, so it needs signal words of its
     // own rather than any single lane's; waking is delegated to `wakeOne`.
@@ -892,8 +959,8 @@ export const createPool: CreatePoolFactory = ({
       queue,
       channelHandler: channel,
       dispatcherOptions: host,
-      notifySignal: wakeOne,
-      wakeAfterPass: wakeIfAllParked,
+      notifySignal: () => wakeOne(),
+      wakeAfterPass: () => wakeAfterPass(),
       crossProcess: resolvedWorker?.runtime === "process",
       nativeCompletionDoorbell: denoCompletionDoorbell !== undefined ||
         workers.some((context) =>
@@ -995,12 +1062,25 @@ export const createPool: CreatePoolFactory = ({
 
     channel.open(runSerialChecks);
     workers.forEach((context, lane) => {
-      const wake = context.laneWake!;
-      context.bindSend!(() => {
-        markActive(lane);
-        scheduleSerialCheck();
-        wake();
-      });
+      const bindState = (context as {
+        bindAsyncState?: (fn: (active: boolean) => void) => void;
+      }).bindAsyncState;
+      if (bindState !== undefined) {
+        let wake = context.laneWake!;
+        bindState(() => { wake = context.laneWake!; });
+        context.bindSend!(() => {
+          markActive(lane);
+          scheduleSerialCheck();
+          wake();
+        });
+      } else {
+        const wake = context.laneWake!;
+        context.bindSend!(() => {
+          markActive(lane);
+          scheduleSerialCheck();
+          wake();
+        });
+      }
     });
     hostDebug?.log(`dispatcher=serial-channel lanes=${checks.length}`);
   } else {

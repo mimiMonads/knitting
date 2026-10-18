@@ -71,9 +71,10 @@ export const hostDispatcherLoop = ({
     a_add(opView, 0, 1);
     wakeSignal();
   };
-  const wakeIfParked = wakeAfterPass ?? (() => {
+  const defaultWakeIfParked = () => {
     if (a_load(rxStatus, 0) === 0) wakeLane();
-  });
+  };
+  let wakeIfParked = wakeAfterPass ?? defaultWakeIfParked;
   const notify = () => channelHandler.notify();
   // Atomics waiters are process-local, so cross-process workers cannot use this
   // doorbell.
@@ -339,7 +340,13 @@ export const hostDispatcherLoop = ({
     }, delay);
   };
 
-  return { check, wakeCompletion };
+  return {
+    check,
+    wakeCompletion,
+    setWakeAfterPass: (wake?: () => void) => {
+      wakeIfParked = wake ?? defaultWakeIfParked;
+    },
+  };
 };
 
 type CheckWithState = (() => void) & {

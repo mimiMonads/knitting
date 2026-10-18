@@ -24,6 +24,7 @@ import {
   toWorkerCompatExecArgv,
 } from "./worker-common.ts";
 import {
+  PROCESS_WORKER_ASYNC_DISCONNECTED,
   RUNTIME_POOL_DEPTH,
   RUNTIME_POOL_DEPTH_ENV,
   RUNTIME_PROCESS_WORKER_BOOT_ENV,
@@ -124,7 +125,10 @@ type BunRuntimeLike = {
 
 type NodeChildProcessLike = {
   kill: (signal?: string | number) => unknown;
-  send?: (message: unknown) => void;
+  send?: (
+    message: unknown,
+    callback?: (error: Error | null) => void,
+  ) => boolean;
   unref?: () => unknown;
   on: (event: string, listener: (...args: unknown[]) => void) => void;
 };
@@ -1003,9 +1007,9 @@ export const createProcessWorkerNativeSignalNotifier = ({
 };
 
 /**
- * Whether this host/child pair has the Node-compatible IPC channel that the
- * process completion-doorbell prototype uses. Deno process workers currently
- * boot through environment data and do not have that channel.
+ * Whether this host/child pair has a Node-compatible IPC channel for boot,
+ * completion notifications and async dispatch wakes. Wrappers retain the
+ * environment boot and polling fallback.
  */
 export const processWorkerUsesIpc = ({
   processRuntime,
@@ -1016,11 +1020,7 @@ export const processWorkerUsesIpc = ({
 }): boolean => {
   if (processRuntime === undefined || commandPrefix !== undefined) return false;
 
-  if (RUNTIME === "node") {
-    return processRuntime === "node" || processRuntime === "bun";
-  }
-
-  return RUNTIME === "bun" && processRuntime === "bun";
+  return RUNTIME === "node" || RUNTIME === "bun" || RUNTIME === "deno";
 };
 
 const createProcessWorkerEventHub = () => {
@@ -1141,11 +1141,12 @@ const spawnNodeHostedProcessWorker = ({
   }
 
   const events = createProcessWorkerEventHub();
-  const useIpcBoot = (processRuntime === "bun" || processRuntime === "node") &&
-    commandPrefix === undefined;
+  const useIpcBoot = processWorkerUsesIpc({ processRuntime, commandPrefix });
   const [command, ...args] = processWorkerCommand({
     processRuntime,
     workerUrl,
+    bun: (globalThis as typeof globalThis & { Bun?: BunRuntimeLike }).Bun,
+    deno: getDenoRuntime(),
     commandPrefix,
     permission,
   });
@@ -1176,6 +1177,9 @@ const spawnNodeHostedProcessWorker = ({
 
   if (useIpcBoot) {
     child.on("message", events.emitMessage);
+    // The child falls back to timer dispatch after losing IPC. Drop the
+    // host's cached async-presence flag as well, restoring normal selection.
+    child.on("disconnect", () => events.emitMessage(PROCESS_WORKER_ASYNC_DISCONNECTED));
     queueMicrotask(() => child.send?.(bootPayload));
   }
   child.on("error", (error: unknown) => {
@@ -1211,6 +1215,20 @@ const spawnNodeHostedProcessWorker = ({
       return exited;
     },
     unref: () => child.unref?.(),
+    // false means backpressure too: the message is already queued. Only a
+    // callback error (or throw) means delivery failed; use the normal worker
+    // failure path so accepted calls cannot remain stranded after a lost ring.
+    postMessage: useIpcBoot
+      ? (message: unknown) => {
+        try {
+          child.send!(message, (error) => {
+            if (error) events.emitError(error);
+          });
+        } catch (error) {
+          events.emitError(error);
+        }
+      }
+      : undefined,
     on: events.on,
   };
 };
@@ -1319,6 +1337,11 @@ export const spawnProcessWorker = (
     permission?: WorkerData["permission"];
   },
 ): SpawnedWorker & NodeWorkerLike => {
+  // All three runtimes implement node:child_process IPC. Use the same send,
+  // disconnect and failure protocol so async parks have identical semantics.
+  if (processWorkerUsesIpc(options)) {
+    return spawnNodeHostedProcessWorker(options);
+  }
   switch (RUNTIME) {
     case "bun":
       return spawnBunHostedProcessWorker(options);

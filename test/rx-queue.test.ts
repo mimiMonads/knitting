@@ -11,6 +11,7 @@ import {
 } from "../src/memory/lock.ts";
 import { createWorkerRxQueue } from "../src/worker/rx-queue.ts";
 import { withResolvers } from "../src/common/with-resolvers.ts";
+import { createUnravelController } from "../src/worker/unravel.ts";
 
 test("wide return finalizers wait for upper-half acknowledgements", () => {
   const resolved = new RingQueue<Task>();
@@ -510,4 +511,138 @@ test("only a settle that leaves maxAwaitingTasks reports a free slot", async () 
     await settleOne();
     assert.equal(freed, expected, `maxAwaitingTasks=${maxAwaitingTasks}`);
   }
+});
+
+test("automatic admission excludes async synchronous prefixes while another promise is pending", async () => {
+  let wall = 0, busy = 0;
+  const controller = createUnravelController({ now: () => wall, busy: () => busy });
+  const releases: Array<() => void> = [];
+  const { queue, publish } = inFlightQueue({
+    autoAwaiting: controller,
+    listOfFunctions: [{
+      run: () => {
+        wall += 100;
+        busy += 100;
+        return new Promise<void>((resolve) => releases.push(resolve));
+      },
+    }],
+  });
+  publish(2);
+  queue.enqueueLock();
+  assert.equal(queue.serviceBatchImmediate(), 2);
+  assert.equal(queue.getAwaiting(), 2);
+  wall += 10;
+  controller.start();
+  wall += 2;
+  busy += 2;
+  releases.shift()!();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(controller.estimate()!.cpu, 2, "only continuation CPU is counted");
+  releases.shift()!();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+});
+
+/** A stand-in "auto" controller whose limit is fixed at start and at settle. */
+const autoMock = (limit: number, settled: number, overrides: Record<string, unknown> = {}) => ({
+  getLimit: () => limit,
+  start: () => 0,
+  asyncStarted: () => 0,
+  exclude: () => {},
+  canProbe: () => true,
+  coldGrow: () => false,
+  settle: () => settled,
+  ...overrides,
+});
+
+test("a falling automatic cap wakes only when ownership falls below the current limit", async () => {
+  let freed = 0;
+  const { queue, publish, settleOne } = inFlightQueue({
+    stealing: true,
+    autoAwaiting: autoMock(3, 1),
+    onSlotFree: () => freed++,
+  });
+  publish(3);
+  queue.enqueueLock();
+  assert.equal(queue.serviceBatchImmediate(), 3);
+  await settleOne();
+  assert.equal(queue.getAwaitingLimit(), 1);
+  assert.equal(freed, 0);
+  assert.equal(queue.enqueueLock(), false);
+  await settleOne();
+  assert.equal(freed, 0);
+  await settleOne();
+  assert.equal(freed, 1);
+});
+
+test("a rising automatic cap changes claim width and nudges the worker", async () => {
+  let freed = 0;
+  const { queue, limits, publish, settleOne } = inFlightQueue({
+    stealing: true,
+    autoAwaiting: autoMock(2, 8),
+    onSlotFree: () => freed++,
+  });
+  publish(2);
+  queue.enqueueLock();
+  assert.equal(queue.serviceBatchImmediate(), 2);
+  await settleOne();
+  assert.equal(queue.getAwaitingLimit(), 8);
+  assert.equal(freed, 1);
+  queue.enqueueLock();
+  assert.deepEqual(limits, [2, 7]);
+});
+
+test("automatic admission refills on any settle below its cap; a fixed cap only when leaving it", async () => {
+  for (const auto of [false, true]) {
+    let freed = 0;
+    const { queue, publish, settleOne } = inFlightQueue({
+      maxAwaitingTasks: 8,
+      autoAwaiting: auto ? autoMock(8, 8) : undefined,
+      onSlotFree: () => freed++,
+    });
+    publish(1);
+    queue.enqueueLock();
+    queue.serviceBatchImmediate();
+    await settleOne();
+    assert.equal(freed, auto ? 1 : 0, `auto=${auto}`);
+  }
+});
+
+test("an automatic cap offers queued work and pool ownership to its controller only at the cap", () => {
+  const offers: unknown[][] = [];
+  let limit = 2, grow = false;
+  const { queue, publish } = inFlightQueue({
+    autoAwaiting: autoMock(2, 2, {
+      getLimit: () => limit,
+      coldGrow: (...args: unknown[]) => {
+        offers.push(args);
+        if (grow) limit = 4;
+        return grow;
+      },
+    }),
+    ownership: { publish: () => {}, total: () => 5 },
+  });
+  assert.equal(queue.coldGrow(4), "none", "below the cap there is nothing to offer");
+  publish(3);
+  queue.enqueueLock();
+  assert.equal(queue.serviceBatchImmediate(), 2);
+  // A private lane sees only its own queue and divides it by one worker.
+  assert.equal(queue.coldGrow(4), "waiting");
+  grow = true;
+  assert.equal(queue.coldGrow(4), "grew");
+  assert.deepEqual(offers, [[1, 1, 5], [1, 1, 5]]);
+  assert.equal(queue.getAwaitingLimit(), 4);
+  assert.equal(queue.serviceBatchImmediate(), 1);
+  assert.equal(queue.coldGrow(4), "none", "below the grown cap");
+});
+
+test("the default async admission path does not read a timing clock", async () => {
+  const { queue, publish, settleOne } = inFlightQueue({
+    now: () => { throw new Error("default admission must not sample time"); },
+  });
+  publish(2);
+  queue.enqueueLock();
+  assert.equal(queue.serviceBatchImmediate(), 2);
+  await settleOne();
+  await settleOne();
+  assert.equal(queue.getAwaiting(), 0);
 });

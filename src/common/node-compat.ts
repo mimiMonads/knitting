@@ -5,7 +5,9 @@ export type NodeProcessLike = {
     node?: string;
   };
   pid?: number;
+  threadCpuUsage?: () => { user: number; system: number };
   platform?: string;
+  arch?: string;
   allowedNodeEnvironmentFlags?: ReadonlySet<string>;
   execArgv?: string[];
   execPath?: string;

@@ -71,6 +71,11 @@ import {
 import {
   HAS_NODE_WORKER_THREADS,
   isProcessCompletionDoorbell,
+  PROCESS_WORKER_WAKE,
+  PROCESS_WORKER_ASYNC_ACTIVE,
+  PROCESS_WORKER_ASYNC_IDLE,
+  PROCESS_WORKER_ASYNC_BLOCKED,
+  PROCESS_WORKER_ASYNC_DISCONNECTED,
   RUNTIME_WORKER,
   type RuntimeWorkerLike,
 } from "../common/worker-runtime.ts";
@@ -134,8 +139,11 @@ const withDefaultWorkerTimers = (
   options: WorkerSettings | undefined,
   workerCount: number,
 ): WorkerSettings => {
+  // Node→Node children are rung by the futex addon. If either side cannot load
+  // it, the child polls instead and that wait still clamps to 1ms.
   const parkMs = options?.timers?.parkMs ??
-    (options?.runtime === "process"
+    (options?.runtime === "process" &&
+        !(RUNTIME === "node" && readProcessWorkerRuntime(options) === "node")
       ? DEFAULT_PROCESS_WORKER_PARK_MS
       : DEFAULT_WORKER_PARK_MS);
   // `??` and not `||`: an explicit `spinMicroseconds: 0` is the whole point of
@@ -419,6 +427,7 @@ export const spawnWorkerContext = ({
   sharedChannelHandler,
   denoCompletionDoorbell,
   stealPool,
+  unravelShared,
 }: {
   list: string[];
   ids: number[];
@@ -455,6 +464,8 @@ export const spawnWorkerContext = ({
   sharedChannelHandler?: ChannelHandler;
   /** Deno-only native callback shared by every thread worker in this pool. */
   denoCompletionDoorbell?: DenoCompletionDoorbell;
+  /** maxAwaitingTasks: "auto" pool-wide cold clock and estimates. */
+  unravelShared?: SharedArrayBuffer;
   /**
    * Work-stealing wiring. When present the submit region, both host-side locks
    * and the pending registry are owned by `createPool` and shared: every worker
@@ -473,6 +484,7 @@ export const spawnWorkerContext = ({
     regionLanes: number;
     stealClaim?: StealClaimDiscipline;
     singleClaimMicroseconds?: number;
+    awaitingCounts?: SharedArrayBuffer;
     abortSignalSAB?: LockBuffers["headers"];
     abortSignalMax?: number;
     processMemory?: ProcessStealMemoryLayout;
@@ -690,14 +702,85 @@ export const spawnWorkerContext = ({
   const a_load = Atomics.load;
   const a_notify = Atomics.notify;
   const canNotifySignal = thisSignal.buffer instanceof SharedArrayBuffer;
-  const notifySignal = nativeNotifySignal ??
+  const nativeWake = nativeNotifySignal ??
     (canNotifySignal ? (() => a_notify(thisSignal, 0, 1)) : undefined);
 
-  // Wake this lane when its worker is parked.
+  const processAsyncPark = processWorkerUsesIpc({
+    processRuntime: processWorkerRuntime,
+    commandPrefix: processWorkerCommandPrefix,
+  });
+  const notifySignal = nativeWake;
+  const ringAsyncWorker = () => {
+    const status = a_load(signalBox.rxStatus, 0);
+    if ((status === 2 || status === 3) &&
+      Atomics.compareExchange(signalBox.rxStatus, 0, status, 1) === status) {
+      worker.postMessage?.(PROCESS_WORKER_WAKE);
+    }
+  };
+
+  const wakeAsyncLane = () => {
+    a_add(thisSignal, 0, 1);
+    notifySignal?.();
+    ringAsyncWorker();
+  };
+
   const laneWake = () => {
     if (a_load(signalBox.rxStatus, 0) === 0) {
       a_add(thisSignal, 0, 1);
       notifySignal?.();
+    }
+  };
+  const wakeProcessLane = () => {
+    const status = a_load(signalBox.rxStatus, 0);
+    if (status === 0) {
+      a_add(thisSignal, 0, 1);
+      notifySignal?.();
+    } else if (status === 2) {
+      wakeAsyncLane();
+    }
+  };
+  // Shared-submit pools ring on each publication. Claim the parked state so
+  // a burst sends one futex wake while a child is still waiting for CPU.
+  // Private dispatchers already coalesce sends via check.isRunning.
+  const wakeNativeLane = () => {
+    if (a_load(signalBox.rxStatus, 0) === 0 &&
+      Atomics.compareExchange(signalBox.rxStatus, 0, 0, 1) === 0) {
+      a_add(thisSignal, 0, 1);
+      notifySignal?.();
+    }
+  };
+  const syncPublicWake = processAsyncPark && nativeNotifySignal !== undefined &&
+    (stealPool?.consumers ?? 0) > 1 ? wakeNativeLane : laneWake;
+
+  let processAsyncActive = false;
+  let asyncStateChanged: ((active: boolean) => void) | undefined;
+  let asyncWorkBlocked: (() => void) | undefined;
+  let syncDispatchSend: (() => void) | undefined;
+  let asyncDispatchSend: (() => void) | undefined;
+  const setProcessAsyncActive = (active: boolean, wakeOnDisable = true) => {
+    if (active === processAsyncActive) return;
+    processAsyncActive = active;
+    if (!active) {
+      // Disarm before restoring synchronous callbacks. The worker rechecks
+      // this word after publishing its park; wake one already parked as well.
+      Atomics.store(signalBox.asyncReady, 0, 0);
+      if (wakeOnDisable) ringAsyncWorker();
+    }
+    if (context.laneWake !== undefined) {
+      context.laneWake = active ? wakeProcessLane : syncPublicWake;
+    }
+    if (stealPool === undefined) {
+      setWakeAfterPass?.(active ? wakeProcessLane : undefined);
+      if (syncDispatchSend !== undefined && asyncDispatchSend !== undefined) {
+        dispatchSend = active ? asyncDispatchSend : syncDispatchSend;
+      }
+    }
+    asyncStateChanged?.(active);
+    if (active && processAsyncActive) {
+      // Publish readiness only after all wake callbacks have switched. A
+      // blocked host leaves the child on its old timer fallback until then.
+      Atomics.store(signalBox.asyncReady, 0, 1);
+      worker.postMessage?.(PROCESS_WORKER_WAKE);
     }
   };
 
@@ -733,14 +816,15 @@ export const spawnWorkerContext = ({
   const {
     check: dispatcherCheck,
     wakeCompletion: directCompletionWake,
+    setWakeAfterPass,
   } = stealPool !== undefined
-    ? { check: undefined, wakeCompletion: undefined }
+    ? { check: undefined, wakeCompletion: undefined, setWakeAfterPass: undefined }
     : hostDispatcherLoop({
       signalBox,
       queue,
       channelHandler: ownChannel,
       dispatcherOptions: host,
-      notifySignal: nativeNotifySignal,
+      notifySignal,
       crossProcess: useProcessWorkerRuntime,
       nativeCompletionDoorbell: canUseDenoCompletionDoorbell ||
         canUseNodeCompletionDoorbell,
@@ -754,12 +838,22 @@ export const spawnWorkerContext = ({
   if (ownsChannel && dispatcherCheck !== undefined) {
     ownChannel.open(dispatcherCheck);
     channelHandler = ownChannel;
-    dispatchSend = () => {
+    syncDispatchSend = () => {
       if (dispatcherCheck.isRunning === true) return;
       dispatcherCheck.isRunning = true;
       queueMicrotask(dispatcherCheck);
       laneWake();
     };
+    asyncDispatchSend = () => {
+      if (dispatcherCheck.isRunning !== true) {
+        dispatcherCheck.isRunning = true;
+        queueMicrotask(dispatcherCheck);
+      }
+      // The host may be publishing a long synchronous burst, so don't rely
+      // on its dispatcher microtask to ring an event-loop-parked child.
+      wakeProcessLane();
+    };
+    dispatchSend = syncDispatchSend;
   }
 
   let worker: SpawnedWorker;
@@ -806,6 +900,10 @@ export const spawnWorkerContext = ({
           typeof Atomics.waitAsync === "function")
       ),
     processCompletionDoorbell: canUseProcessCompletionDoorbell,
+    processAsyncPark,
+    processNativeWait: useProcessWorkerRuntime
+      ? nativeNotifySignal !== undefined
+      : undefined,
     denoCompletionDoorbell: canUseDenoCompletionDoorbell
       ? denoCompletionDoorbell.pointer
       : undefined,
@@ -818,7 +916,9 @@ export const spawnWorkerContext = ({
       regionLanes: stealPool.regionLanes,
       claim: stealPool.stealClaim,
       singleClaimMicroseconds: stealPool.singleClaimMicroseconds,
+      awaitingCounts: stealPool.awaitingCounts,
     },
+    unravelShared,
   } as WorkerData;
   const baseWorkerOptions = {
     //@ts-ignore Reason
@@ -958,6 +1058,7 @@ export const spawnWorkerContext = ({
   ): void => {
     if (closedReason) return;
     closedReason = reason;
+    setProcessAsyncActive(false, false);
     const error = new KnittingError(code, reason, cause);
     if (stealPool !== undefined && stealPool.stealClaim !== "ticket") {
       // Dekker's shared queue outlives one consumer: the surviving workers
@@ -977,6 +1078,19 @@ export const spawnWorkerContext = ({
   const onWorkerMessage = (message: unknown) => {
     if (isProcessCompletionDoorbell(message)) {
       processCompletionWake?.();
+      return;
+    }
+    if (processAsyncPark &&
+      (message === PROCESS_WORKER_ASYNC_ACTIVE || message === PROCESS_WORKER_ASYNC_IDLE)) {
+      if (!closedReason) setProcessAsyncActive(message === PROCESS_WORKER_ASYNC_ACTIVE);
+      return;
+    }
+    if (processAsyncPark && message === PROCESS_WORKER_ASYNC_DISCONNECTED) {
+      if (!closedReason) setProcessAsyncActive(false, false);
+      return;
+    }
+    if (processAsyncPark && message === PROCESS_WORKER_ASYNC_BLOCKED) {
+      if (!closedReason) asyncWorkBlocked?.();
       return;
     }
     if (!isWorkerFatalMessage(message)) return;
@@ -1063,6 +1177,7 @@ export const spawnWorkerContext = ({
       // otherwise leave a just-starting Andromeda worker parked after stop.
       a_add(signalBox.opView, 0, 1);
       notifySignal?.();
+      if (processAsyncPark) worker.postMessage?.(PROCESS_WORKER_WAKE);
     } catch {
       return false;
     }
@@ -1081,6 +1196,9 @@ export const spawnWorkerContext = ({
     dispatcherCheck?: DispatcherCheck;
     laneWake?: () => void;
     laneAwake?: () => boolean;
+    laneClaimable?: () => boolean;
+    bindAsyncWake?: (fn: () => void) => void;
+    bindAsyncState?: (fn: (active: boolean) => void) => void;
     bindSend?: (fn: () => void) => void;
     bindCompletionWake?: (fn: () => void) => void;
     processCompletionDoorbell?: boolean;
@@ -1101,10 +1219,25 @@ export const spawnWorkerContext = ({
     processSharedMemoryBackings: processSharedMemory?.backings,
     dispatcherCheck,
     laneWake: sharedChannelHandler !== undefined || stealPool !== undefined
-      ? laneWake
+      ? syncPublicWake
       : undefined,
     laneAwake: stealPool !== undefined
-      ? () => a_load(signalBox.rxStatus, 0) !== 0
+      ? () => a_load(signalBox.rxStatus, 0) === 1
+      : undefined,
+    laneClaimable: processAsyncPark && stealPool !== undefined
+      ? () => {
+        const status = a_load(signalBox.rxStatus, 0);
+        return status === 0 || status === 2;
+      }
+      : undefined,
+    bindAsyncWake: processAsyncPark && stealPool !== undefined
+      ? (fn) => { asyncWorkBlocked = fn; }
+      : undefined,
+    bindAsyncState: processAsyncPark
+      ? (fn) => {
+        asyncStateChanged = fn;
+        if (processAsyncActive) fn(true);
+      }
       : undefined,
     bindSend: sharedChannelHandler !== undefined || stealPool !== undefined
       ? ((fn: () => void) => void (dispatchSend = fn))

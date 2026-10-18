@@ -453,9 +453,16 @@ for (i32 at = 0; at < (i32)length.val; at++) {
       .c`memcpy(MEM + (i32)asciiText.val + 4, MEM + (i32)inputPointer.val, (i32)length.val);`;
     return asciiText;
   }
+  // Porffor's `+=` copies the whole left operand, so appending to one growing
+  // string is quadratic. Keep the appended string short and join once.
+  const parts: string[] = [];
   let text = "";
   let index = 0;
   while (index < length) {
+    if (text.length >= 1024) {
+      parts.push(text);
+      text = "";
+    }
     const first = input[index++]!;
     if (first < 0x80) {
       text += String.fromCharCode(first);
@@ -490,7 +497,9 @@ for (i32 at = 0; at < (i32)length.val; at++) {
       0xdc00 + (adjusted & 0x3ff),
     );
   }
-  return text;
+  if (parts.length === 0) return text;
+  parts.push(text);
+  return parts.join("");
 };
 
 const encodeUtf8 = (text: string): number => {

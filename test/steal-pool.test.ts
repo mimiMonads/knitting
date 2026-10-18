@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
 import test from "./_runner.ts";
-import { createPool, KnittingError } from "../knitting.ts";
+import { createPool, KnittingError, task } from "../knitting.ts";
 import { AbortSignalPoolExhausted } from "../src/shared/abortSignal.ts";
 import { RUNTIME } from "../src/common/runtime.ts";
 import { resolveStealSingleClaimMicroseconds } from "../src/runtime/pool.ts";
+import type { WorkerSettings } from "../src/types.ts";
+import { hasWorkerCpuClock } from "../src/worker/unravel.ts";
 import { abortA, abortB, abortReturnsInput } from "./fixtures/abort_tasks.ts";
 import { awaitThenSpin, concat, double } from "./fixtures/steal_tasks.ts";
-import { delayedEcho } from "./fixtures/loop_tasks.ts";
+import {
+  addOneAsync, delayedEcho, gatedCountRecovery, rejectOrEchoAsync, stampedDelay, timerRefillOrder,
+} from "./fixtures/loop_tasks.ts";
 
 const withTimeout = async <T>(promise: Promise<T>, ms = 5_000): Promise<T> => {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -686,4 +690,138 @@ test("worker.maxAwaitingTasks rejects values that are not positive integers", ()
       String(value),
     );
   }
+});
+
+const autoSupported = (RUNTIME === "node" || RUNTIME === "bun") && hasWorkerCpuClock();
+
+test("automatic admission completes async calls through the real worker loop", {
+  skip: !autoSupported,
+}, async () => {
+  const pool = createPool({
+    threads: 2, worker: { maxAwaitingTasks: "auto", unravel: { maxTasks: 8 } },
+  })({ delayedEcho });
+  try {
+    const values = Array.from({ length: 48 }, (_, i) => i % 4 + 1);
+    assert.deepEqual(await withTimeout(Promise.all(values.map((v) => pool.call.delayedEcho(v)))), values);
+  } finally {
+    await pool.shutdown();
+  }
+});
+
+for (const steal of [false, true]) {
+  test(`automatic admission respects its resource ceiling (steal=${steal})`, {
+    skip: !autoSupported,
+  }, async () => {
+    const buffers = Array.from({ length: 16 }, () => new SharedArrayBuffer(8));
+    const controls = buffers.map(buffer => new Int32Array(buffer));
+    const admissions = () => controls.reduce((n, control) => n + Atomics.load(control, 0), 0);
+    const pool = createPool({
+      threads: 2,
+      permission: { node: { allowAddons: true } },
+      host: { steal, doorbell: false },
+      worker: { maxAwaitingTasks: "auto", unravel: { maxTasks: 4 } },
+    })({ gatedCountRecovery, addOneAsync });
+    let jobs: Promise<number>[] = [];
+    let checking = true;
+    try {
+      await withTimeout(Promise.all(Array.from({ length: 64 }, (_, id) => pool.call.addOneAsync(id))));
+      jobs = buffers.map(buffer => pool.call.gatedCountRecovery(buffer));
+      const result = Promise.all(jobs); void result.catch(() => {});
+      await withTimeout(Promise.race([result, (async () => {
+        while (checking && admissions() < 8) await new Promise(resolve => setTimeout(resolve, 2));
+      })()]));
+      await new Promise(resolve => setTimeout(resolve, 10));
+      assert.equal(admissions(), 8, "each worker holds at most four tasks");
+      for (const control of controls) Atomics.store(control, 1, 1);
+      assert.deepEqual(await withTimeout(result), Array(16).fill(0));
+    } finally {
+      checking = false; for (const control of controls) Atomics.store(control, 1, 1);
+      await Promise.allSettled(jobs); await pool.shutdown();
+    }
+  });
+}
+
+test("the automatic slow start admits a waiting burst before its first task finishes", {
+  skip: !autoSupported,
+}, async () => {
+  // From 2 per worker, doubling per 1 ms tick reaches the share of 12 in a
+  // few ticks, long before any 150 ms task settles. Without the pool-wide
+  // cold clock or with a stuck cap the burst would wait out a whole task.
+  const pool = createPool({
+    threads: 2, host: { steal: true }, worker: { maxAwaitingTasks: "auto" },
+  })({ stampedDelay });
+  try {
+    const stamps = await withTimeout(Promise.all(
+      Array.from({ length: 24 }, () => pool.call.stampedDelay(150)),
+    ));
+    const lastStart = Math.max(...stamps.map(([started]) => started!));
+    const firstEnd = Math.min(...stamps.map(([, finished]) => finished!));
+    assert(lastStart < firstEnd, `last start ${lastStart - firstEnd} ms after the first finish`);
+  } finally {
+    await pool.shutdown();
+  }
+});
+
+test("automatic admission releases rejected tasks at a one-slot resource ceiling", {
+  skip: !autoSupported,
+}, async () => {
+  const pool = createPool({
+    threads: 2, worker: { maxAwaitingTasks: "auto", unravel: { maxTasks: 1 } },
+  })({ rejectOrEchoAsync });
+  try {
+    const failures = await withTimeout(Promise.allSettled(Array.from({ length: 12 }, () => pool.call.rejectOrEchoAsync(-1))));
+    assert(failures.every((r) => r.status === "rejected"));
+    const values = Array.from({ length: 24 }, (_, i) => i);
+    assert.deepEqual(await withTimeout(Promise.all(values.map((i) => pool.call.rejectOrEchoAsync(i)))), values);
+  } finally {
+    await pool.shutdown();
+  }
+});
+
+for (const [label, worker, interleave] of [
+  ["fixed", { maxAwaitingTasks: 2 }, false],
+  ["auto", { maxAwaitingTasks: "auto", unravel: { initialTasks: 2, minTasks: 2, maxTasks: 2 } }, true],
+] as Array<[string, WorkerSettings, boolean]>) {
+  test(`${label}: a freed slot refills ${interleave ? "between" : "after"} ready timer continuations`, {
+    skip: RUNTIME !== "node",
+  }, async () => {
+    const buffer = new SharedArrayBuffer(10 * 4);
+    const pool = createPool({
+      threads: 1,
+      permission: { node: { allowAddons: true } },
+      host: { doorbell: false, stealRegionLanes: 1, stealSingleClaimMicroseconds: 0 },
+      worker,
+    })({ timerRefillOrder, addOneAsync });
+    try {
+      await withTimeout(Promise.all(Array.from({ length: 32 }, (_, id) => pool.call.addOneAsync(id))));
+      assert.deepEqual(await withTimeout(Promise.all(
+        Array.from({ length: 4 }, () => pool.call.timerRefillOrder(buffer)),
+      )), [0, 1, 2, 3]);
+      const events = [...new Int32Array(buffer)].slice(2);
+      assert.equal(events.indexOf(-1) < events.indexOf(3) && events.indexOf(3) < events.indexOf(-2), interleave,
+        `refill ordering for ${label}: ${events}`);
+    } finally {
+      await pool.shutdown();
+    }
+  });
+}
+
+test("automatic admission rejects invalid configurations before launching workers", () => {
+  for (const worker of [
+    { unravel: {} },
+    { maxAwaitingTasks: 4, unravel: {} },
+    { maxAwaitingTasks: "u7" },
+    { maxAwaitingTasks: "auto", unravel: { growth: 1 } },
+    { maxAwaitingTasks: "auto", unravel: { tickMs: 0 } },
+    { maxAwaitingTasks: "auto", unravel: { epsilon: 0 } },
+    { maxAwaitingTasks: "auto", unravel: { maxTasks: 0 } },
+  ]) assert.throws(() => createPool({ worker: worker as WorkerSettings })({ double }), TypeError, JSON.stringify(worker));
+  assert.throws(() => createPool({ worker: { runtime: "process", maxAwaitingTasks: "auto" } })({ double }), /thread workers/);
+});
+
+test("automatic admission rejects timeout wrappers that would release ownership before execution ends", {
+  skip: !autoSupported,
+}, () => {
+  const timed = task({ f: async (value: number) => value, timeout: 10 });
+  assert.throws(() => createPool({ worker: { maxAwaitingTasks: "auto" } })({ timed }), /does not support task timeouts/);
 });
