@@ -318,6 +318,8 @@ export const createWorkerRxQueue = (
           const result = runByIndex[fnIndex]!(slot);
           slot[IDX_FLAGS] = 0;
           if (result instanceof Promise) {
+            // The synchronous prefix is not continuation CPU for pending tasks.
+            if (startedBusy !== undefined) autoAwaiting!.exclude(startedBusy);
             const token = autoAwaiting?.asyncStarted();
             slot.value = null;
             if (awaiting++ === 0) onAwaitingChange?.();

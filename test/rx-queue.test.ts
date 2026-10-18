@@ -11,6 +11,7 @@ import {
 } from "../src/memory/lock.ts";
 import { createWorkerRxQueue } from "../src/worker/rx-queue.ts";
 import { withResolvers } from "../src/common/with-resolvers.ts";
+import { createUnravelController } from "../src/worker/unravel.ts";
 
 test("wide return finalizers wait for upper-half acknowledgements", () => {
   const resolved = new RingQueue<Task>();
@@ -510,6 +511,35 @@ test("only a settle that leaves maxAwaitingTasks reports a free slot", async () 
     await settleOne();
     assert.equal(freed, expected, `maxAwaitingTasks=${maxAwaitingTasks}`);
   }
+});
+
+test("automatic admission excludes async synchronous prefixes while another promise is pending", async () => {
+  let wall = 0, busy = 0;
+  const controller = createUnravelController({ now: () => wall, busy: () => busy });
+  const releases: Array<() => void> = [];
+  const { queue, publish } = inFlightQueue({
+    autoAwaiting: controller,
+    listOfFunctions: [{
+      run: () => {
+        wall += 100;
+        busy += 100;
+        return new Promise<void>((resolve) => releases.push(resolve));
+      },
+    }],
+  });
+  publish(2);
+  queue.enqueueLock();
+  assert.equal(queue.serviceBatchImmediate(), 2);
+  assert.equal(queue.getAwaiting(), 2);
+  wall += 10;
+  controller.start();
+  wall += 2;
+  busy += 2;
+  releases.shift()!();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(controller.estimate()!.cpu, 2, "only continuation CPU is counted");
+  releases.shift()!();
+  await new Promise((resolve) => setTimeout(resolve, 0));
 });
 
 /** A stand-in "auto" controller whose limit is fixed at start and at settle. */
