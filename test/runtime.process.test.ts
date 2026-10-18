@@ -1267,6 +1267,15 @@ for (const processRuntime of ["node", "bun", "deno"] as const) {
     if (!hasProcessRuntime(processRuntime)) return;
     const directory = mkdtempSync(join(tmpdir(), "knitting-async-ready-"));
     const marker = join(directory, "awaiting");
+    const waitView = new Int32Array(new SharedArrayBuffer(4));
+    const waitForMarkerWhileBlocked = (path: string, label: string) => {
+      const deadline = performance.now() + 15_000;
+      while (!existsSync(path)) {
+        if (performance.now() > deadline) throw new Error(`${label} did not run while the host was blocked`);
+        // Keep the host event loop blocked without pinning its CPU core.
+        Atomics.wait(waitView, 0, 0, 1);
+      }
+    };
     const pool = createPool({
       threads: 1,
       host: { steal: false, dispatcher },
@@ -1276,28 +1285,19 @@ for (const processRuntime of ["node", "bun", "deno"] as const) {
     try {
       await withTimeout("boot activation worker", pool.call.double(1));
       pool.call.awaitWithMarker(marker).catch(() => {});
-      const deadline = performance.now() + PROMISE_TIMEOUT_MS;
-      // Keep the host's message loop blocked throughout the transition. The
-      // child must retain its timer fallback until the host publishes readiness.
-      while (!existsSync(marker)) {
-        if (performance.now() > deadline) throw new Error("await did not start");
-      }
-      let until = performance.now() + 25;
-      while (performance.now() < until) {}
+      // The child must retain its timer fallback until the host publishes readiness.
+      waitForMarkerWhileBlocked(marker, "pending await");
       const claimMarker = join(directory, "claimed");
       const claimed = pool.call.markAsyncClaim(claimMarker);
-      until = performance.now() + 100;
-      while (performance.now() < until) {}
-      // Check before yielding: runtimes use different hrtime epochs, so a file
-      // marker proves admission without comparing their clocks.
-      assert.ok(existsSync(claimMarker), "task did not run while the host was blocked");
+      // Observe rejections immediately, including when an assertion triggers shutdown.
+      void claimed.catch(() => {});
+      waitForMarkerWhileBlocked(claimMarker, "task during activation");
       await withTimeout("claim during blocked activation", claimed);
       await delay(30);
       const steadyMarker = join(directory, "steady");
       const steady = pool.call.markAsyncClaim(steadyMarker);
-      until = performance.now() + 100;
-      while (performance.now() < until) {}
-      assert.ok(existsSync(steadyMarker), "task did not run during steady async park");
+      void steady.catch(() => {});
+      waitForMarkerWhileBlocked(steadyMarker, "task during steady async park");
       await withTimeout("claim during steady async park", steady);
     } finally {
       await shutdownWithTimeout("activation handshake shutdown", pool.shutdown());
