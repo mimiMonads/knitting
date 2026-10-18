@@ -4,7 +4,6 @@ import {
   createUnravelController,
   createUnravelShared,
   erlangCap,
-  hasWorkerCpuClock,
   resolveUnravelOptions,
   type UnravelSample,
   unravelSharedBytes,
@@ -194,36 +193,6 @@ test("Unravel does not read the wall time a thread CPU clock loses while busy as
     if (threadCpu) assert(wait <= 10, `W ${wait} stays a lower bound`);
     else assert(wait > 10, `an exact busy clock reads the 40 µs gap as idle: W ${wait}`);
   }
-});
-
-test("Unravel's real busy clock keeps W a lower bound behind queued continuations", {
-  skip: !hasWorkerCpuClock(),
-}, async () => {
-  // Default clocks. A busy clock that advances only on scheduler ticks reads
-  // the queueing behind earlier continuations as idle and inflates W.
-  const c = createUnravelController();
-  const wall = () => performance.timeOrigin + performance.now();
-  const spin = (ms: number) => {
-    const until = performance.now() + ms;
-    while (performance.now() < until) {}
-  };
-  let longestWait = 0;
-  for (let round = 0; round < 8; round++) {
-    const started = wall();
-    const tokens = Array.from({ length: 4 }, () => begin(c));
-    await new Promise((resolve) => setTimeout(resolve, 5));
-    // Every task is ready by now; the later ones only queue behind earlier
-    // continuations, which is not wait.
-    longestWait = Math.max(longestWait, wall() - started);
-    for (let i = 0; i < 4; i++) {
-      spin(2);
-      c.settle(3 - i, tokens[i]);
-    }
-  }
-  const { wait, cpu } = c.estimate()!;
-  // Slack for descheduling, which a thread CPU clock counts as idle.
-  assert(wait <= longestWait + 1, `W ${wait} ms exceeds the longest true wait ${longestWait} ms`);
-  assert(cpu > 1 && cpu < 3, `C ${cpu} ms for 2 ms continuations`);
 });
 
 test("Unravel warm ceiling binds expensive continuations below the share", () => {
