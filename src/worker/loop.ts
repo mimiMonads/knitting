@@ -55,6 +55,12 @@ import { resolveDebugNamespaces } from "../debug/gate.ts";
 const WORKER_FATAL_MESSAGE_KEY = "__knittingWorkerFatal";
 // Park timeout while finished results wait for return slots (see the loop).
 const BLOCKED_RETURN_PARK_MS = 1;
+// After progress, process workers use up to 50 short wait attempts before
+// returning to the configured park timeout. This improved burst throughput in
+// benchmarks. It is roughly 50ms when each wait times out; early returns can
+// shorten the window. Short and long native waits use the same wake mechanism.
+const ACTIVE_PARK_MS = 1;
+const ACTIVE_PARKS = 50;
 
 const reportWorkerStartupFatal = (error: unknown): void => {
   const message = String((error as { message?: unknown })?.message ?? error);
@@ -419,6 +425,12 @@ export const workerMainLoop = async (
     });
   };
   let awaitingSpins = 0;
+  // Apply short waits only to process workers with a park timeout above 1ms,
+  // including explicit timeouts. Thread workers keep their configured waits.
+  const activeParks = RUNTIME_IS_PROCESS_WORKER && parkMs > ACTIVE_PARK_MS
+    ? ACTIVE_PARKS
+    : 0;
+  let activeParksLeft = 0;
   let lastAwaiting = 0;
   const MAX_AWAITING_MS = 10;
 
@@ -634,7 +646,8 @@ export const workerMainLoop = async (
         return;
       }
 
-      if (!progressed) {
+      if (progressed) activeParksLeft = activeParks;
+      else {
         if (txStatus[Comment.thisIsAHint] === 1) {
           // During a hint spin only host-driven state can change.
           do {
@@ -649,7 +662,11 @@ export const workerMainLoop = async (
         _pauseUntil(
           wakeToken,
           spinMicroseconds,
-          _hasCompleted() ? Math.min(parkMs, BLOCKED_RETURN_PARK_MS) : parkMs,
+          _hasCompleted()
+            ? Math.min(parkMs, BLOCKED_RETURN_PARK_MS)
+            : activeParksLeft > 0
+            ? (activeParksLeft--, ACTIVE_PARK_MS)
+            : parkMs,
         );
         wakeToken = a_load(opView, 0);
       }

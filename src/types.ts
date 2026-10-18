@@ -597,10 +597,13 @@ type WorkerTimers = {
    */
   spinMicroseconds?: number;
   /**
-   * Atomics.wait timeout when parked (milliseconds). Defaults to 1000 for
-   * thread workers, which the host wakes on every publish, so the timeout is
-   * only a safety net; 1 for process workers, most of which only rediscover
-   * work when it expires.
+   * Idle park timeout in milliseconds. Defaults to 1000 for thread workers
+   * and Node-hosted Node process workers; 1 for other process workers.
+   * Process workers with a timeout above 1 use up to 50 short wait attempts
+   * after progress before returning to this timeout.
+   * Node process workers use native cross-process wakes when both sides can
+   * load the addon; otherwise they poll at intervals capped at 1ms. Plain
+   * Node on Windows also caps native waits at 1ms.
    */
   parkMs?: number;
   /**

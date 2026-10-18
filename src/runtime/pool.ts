@@ -139,8 +139,11 @@ const withDefaultWorkerTimers = (
   options: WorkerSettings | undefined,
   workerCount: number,
 ): WorkerSettings => {
+  // Node→Node children are rung by the futex addon. If either side cannot load
+  // it, the child polls instead and that wait still clamps to 1ms.
   const parkMs = options?.timers?.parkMs ??
-    (options?.runtime === "process"
+    (options?.runtime === "process" &&
+        !(RUNTIME === "node" && readProcessWorkerRuntime(options) === "node")
       ? DEFAULT_PROCESS_WORKER_PARK_MS
       : DEFAULT_WORKER_PARK_MS);
   // `??` and not `||`: an explicit `spinMicroseconds: 0` is the whole point of
