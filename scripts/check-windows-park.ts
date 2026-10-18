@@ -2,6 +2,10 @@
 import { createPool } from "../knitting.ts";
 import { RUNTIME } from "../src/common/runtime.ts";
 import { delayedSyncDouble, double } from "../test/fixtures/steal_tasks.ts";
+import {
+  holdForAsyncPark,
+  readAsyncParkPolls,
+} from "../test/fixtures/process_async_park_tasks.ts";
 
 const nodeProcess = (globalThis as typeof globalThis & {
   process?: {
@@ -198,7 +202,7 @@ const checkProcessWorkerCallsSettle = async (): Promise<void> => {
     threads: 1,
     host: { doorbell: true, stallFreeLoops: 0 },
     worker: { runtime: "process", processRuntime: RUNTIME },
-  })({ double, delayedSyncDouble });
+  })({ double, delayedSyncDouble, holdForAsyncPark, readAsyncParkPolls });
 
   const callWithDeadline = async (
     call: Promise<number>,
@@ -253,6 +257,25 @@ const checkProcessWorkerCallsSettle = async (): Promise<void> => {
       `${calls}/${calls} warmed calls before watchdog; max=${
         maxMs.toFixed(1)
       }ms`,
+    );
+
+    const awaiting = pool.call.holdForAsyncPark(300);
+    await new Promise((resolve) => setTimeout(resolve, 75));
+    const admitted = await callWithDeadline(
+      pool.call.double(21),
+      perCallTimeoutMs,
+      "sync call while worker awaits",
+    );
+    const polls = await callWithDeadline(
+      awaiting,
+      perCallTimeoutMs,
+      "async-held task",
+    );
+    const observedPolls = await pool.call.readAsyncParkPolls();
+    report(
+      admitted === 42 && polls === 0 && observedPolls === 0,
+      "check: async-held process worker parks and admits work",
+      `sync result=${admitted}, completion polls=${polls}, quiet polls=${observedPolls}`,
     );
   } catch (error) {
     report(

@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import childProcess, { spawnSync } from "node:child_process";
 import test from "./_runner.ts";
 import { setTimeout as delay } from "node:timers/promises";
 import { createPool } from "../knitting.ts";
-import { loadNodeSharedMemoryAddon } from "../src/connections/node.ts";
+import {
+  PROCESS_WORKER_ASYNC_ACTIVE,
+  PROCESS_WORKER_ASYNC_IDLE,
+} from "../src/common/worker-runtime.ts";
+import { loadNodeFutexAddon, loadNodeSharedMemoryAddon } from "../src/connections/node.ts";
 import {
   addOnePromise,
   reportIsMain,
@@ -11,6 +18,15 @@ import {
 } from "./fixtures/runtime_tasks.ts";
 import { spawnChildProcess } from "./fixtures/permission_tasks.ts";
 import { concat, double } from "./fixtures/steal_tasks.ts";
+import {
+  disconnectDuringAsyncPark,
+  holdForAsyncPark,
+  occupyAsyncCapacity,
+  awaitWithMarker,
+  markAsyncClaim,
+  readAsyncParkPolls,
+  rejectAfterAsyncPark,
+} from "./fixtures/process_async_park_tasks.ts";
 import { abortReturnsInput } from "./fixtures/abort_tasks.ts";
 
 const PROMISE_TIMEOUT_MS = 5_000;
@@ -831,3 +847,469 @@ test("Node process IPC completion doorbell settles a directly armed host", {
     );
   }
 });
+
+for (const processRuntime of ["node", "bun", "deno"] as const) {
+  test(`${processRuntime} process completion rings flush between synchronous batches`, {
+    concurrency: false,
+    skip: processRuntimeTestSkip,
+    timeout: TEST_TIMEOUT_MS,
+  }, async () => {
+    if (!hasProcessRuntime(processRuntime)) return;
+    const pool = createPool({
+      threads: 4,
+      host: { steal: false, doorbell: true, stallFreeLoops: 0 },
+      worker: { runtime: "process", processRuntime },
+    })({ double });
+    try {
+      await withTimeout("boot completion-ring worker", pool.call.double(0));
+      for (let batch = 0; batch < 16; ++batch) {
+        const values = await withTimeout(
+          "synchronous batch must complete before the 1s watchdog",
+          Promise.all(Array.from({ length: 64 }, (_, i) => pool.call.double(i))),
+          500,
+        );
+        assert.deepEqual(values, Array.from({ length: 64 }, (_, i) => i * 2));
+      }
+    } finally {
+      await shutdownWithTimeout("completion-ring batch shutdown", pool.shutdown());
+    }
+  });
+}
+
+for (const processRuntime of ["node", "bun", "deno"] as const) {
+  for (const threads of [1, 2, 4]) {
+    for (const steal of [false, true]) {
+      test(
+        `${processRuntime} async park admits work without polling (${threads} workers, steal=${steal})`,
+        {
+          concurrency: false,
+          skip: processRuntimeTestSkip,
+          timeout: TEST_TIMEOUT_MS,
+        },
+        async () => {
+          if (!hasProcessRuntime(processRuntime)) return;
+          const pool = createPool({
+            threads,
+            host: { steal },
+            worker: {
+              runtime: "process",
+              processRuntime,
+              timers: { spinMicroseconds: 0, parkMs: 5_000 },
+            },
+          })({ holdForAsyncPark, readAsyncParkPolls, double });
+          try {
+            await withTimeout("boot async park worker", pool.call.double(1));
+            const held = pool.call.holdForAsyncPark(400);
+            await delay(100);
+            // Exercise repeated park/wake transitions and publications racing
+            // with the long task's final settlement.
+            for (let batch = 0; batch < 12; batch++) {
+              const values = await withTimeout(
+                "publish while awaiting",
+                Promise.all(
+                  Array.from(
+                    { length: 16 },
+                    (_, value) => pool.call.double(value),
+                  ),
+                ),
+              );
+              assert.deepEqual(
+                values,
+                Array.from({ length: 16 }, (_, value) => value * 2),
+              );
+              await delay(25);
+            }
+            assert.equal(await withTimeout("last await settles", held), 0);
+            assert.equal(
+              await withTimeout(
+                "dispatch after settlement",
+                pool.call.readAsyncParkPolls(),
+              ),
+              0,
+            );
+          } finally {
+            await shutdownWithTimeout("async park shutdown", pool.shutdown());
+          }
+        },
+      );
+    }
+  }
+
+  for (const maxAwaitingTasks of [1, 2] as const) {
+    test(`${processRuntime} async park resumes capped admission (${maxAwaitingTasks})`, {
+      concurrency: false,
+      skip: processRuntimeTestSkip,
+      timeout: TEST_TIMEOUT_MS,
+    }, async () => {
+      if (!hasProcessRuntime(processRuntime)) return;
+      const pool = createPool({
+        threads: 2,
+        worker: { runtime: "process", processRuntime, maxAwaitingTasks },
+      })({ holdForAsyncPark, double, rejectAfterAsyncPark, abortReturnsInput });
+      try {
+        await assert.rejects(
+          () =>
+            withTimeout(
+              "async parked rejection",
+              pool.call.rejectAfterAsyncPark(),
+            ),
+          /awaited task rejected/,
+        );
+        const aborted = pool.call.abortReturnsInput("aborted");
+        await delay(30);
+        aborted.reject();
+        assert.equal(await withTimeout("async parked abort", aborted), "aborted");
+        await withTimeout(
+          "capped awaited work settles",
+          Promise.all(
+            Array.from(
+              { length: 24 },
+              (_, i) => pool.call.holdForAsyncPark(30 + i % 5),
+            ),
+          ),
+        );
+        assert.equal(
+          await withTimeout("capped dispatch resumes", pool.call.double(21)),
+          42,
+        );
+        const pending = pool.call.holdForAsyncPark(30_000);
+        const rejected = assert.rejects(pending);
+        await delay(100);
+        await shutdownWithTimeout("shutdown during async park", pool.shutdown());
+        await rejected;
+      } finally {
+        await pool.shutdown();
+      }
+    });
+  }
+
+  for (const fallback of ["wrapper", "disconnect"] as const) {
+    test(`${processRuntime} async park falls back to polling with ${fallback}`, {
+      concurrency: false,
+      skip: processRuntimeTestSkip,
+      timeout: TEST_TIMEOUT_MS,
+    }, async () => {
+      if (!hasProcessRuntime(processRuntime)) return;
+      if (fallback === "wrapper" && !hasCommand("env")) return;
+      const pool = createPool({
+        threads: 1,
+        host: { doorbell: false },
+        worker: {
+          runtime: "process",
+          processRuntime,
+          ...(fallback === "wrapper" ? { processCommandPrefix: ["env"] } : {}),
+        },
+      })({ holdForAsyncPark, double, disconnectDuringAsyncPark });
+      try {
+        await withTimeout("boot fallback worker", pool.call.double(1));
+        const held = pool.call.holdForAsyncPark(300);
+        if (fallback === "disconnect") {
+          await withTimeout(
+            "schedule disconnect",
+            pool.call.disconnectDuringAsyncPark(),
+          );
+        }
+        assert.ok(await withTimeout("fallback await settles", held) > 0);
+        assert.equal(
+          await withTimeout("fallback admits work", pool.call.double(21)),
+          42,
+        );
+      } finally {
+        await shutdownWithTimeout("fallback shutdown", pool.shutdown());
+      }
+    });
+  }
+
+}
+
+for (const failure of ["backpressure", "callback", "throw"] as const) {
+  test(`Node async park handles IPC ${failure}`, {
+    concurrency: false,
+    skip: processRuntimeTestSkip,
+    timeout: TEST_TIMEOUT_MS,
+  }, async (t) => {
+    if (!isPlainNode || !hasProcessRuntime("node")) return;
+    const spawn = childProcess.spawn;
+    let rings = 0;
+    t.mock.method(
+      childProcess,
+      "spawn",
+      (...args: Parameters<typeof spawn>) => {
+        const child = spawn(...args);
+        const send = child.send.bind(child);
+        child.send =
+          ((message: unknown, callback: (error: Error | null) => void) => {
+            if (message !== "__knittingWorkerWake") {
+              return send(message, callback);
+            }
+            ++rings;
+            if (failure === "throw") {
+              throw new Error("injected wake send failure");
+            }
+            if (failure === "callback") {
+              queueMicrotask(() =>
+                callback(new Error("injected wake send failure"))
+              );
+              return false;
+            }
+            send(message, callback);
+            return false;
+          }) as typeof child.send;
+        return child;
+      },
+    );
+    const pool = createPool({
+      threads: 1,
+      worker: { runtime: "process", processRuntime: "node" },
+    })({ holdForAsyncPark, double });
+    try {
+      await withTimeout("boot send failure worker", pool.call.double(1));
+      // Attach rejection handlers before a deliberately failed ring closes
+      // the worker and rejects every accepted call.
+      const held = pool.call.holdForAsyncPark(300);
+      const settled = held.then(() => "resolved", () => "rejected");
+      await delay(100);
+      if (failure === "backpressure") {
+        assert.equal(
+          await withTimeout("backpressured ring", pool.call.double(21)),
+          42,
+        );
+        assert.equal(
+          await withTimeout("backpressured await", settled),
+          "resolved",
+        );
+      } else {
+        await assert.rejects(
+          () =>
+            withTimeout("failed ring rejects submission", pool.call.double(21)),
+          /injected wake send failure/,
+        );
+        assert.equal(
+          await withTimeout("failed ring rejects await", settled),
+          "rejected",
+        );
+      }
+      assert.ok(rings > 0, "test must exercise an async wake send");
+    } finally {
+      await shutdownWithTimeout("send failure shutdown", pool.shutdown());
+    }
+  });
+}
+
+for (const processRuntime of ["node", "bun", "deno"] as const) {
+  for (const steal of [false, true]) {
+  test(`${processRuntime} async park enables wake policy only across pending-await transitions (steal=${steal})`, {
+    concurrency: false,
+    skip: processRuntimeTestSkip,
+    timeout: TEST_TIMEOUT_MS,
+  }, async (t) => {
+    if (!isPlainNode || !hasProcessRuntime(processRuntime)) return;
+    const spawn = childProcess.spawn;
+    const states: unknown[] = [];
+    t.mock.method(childProcess, "spawn", (...args: Parameters<typeof spawn>) => {
+      const child = spawn(...args);
+      child.on("message", (message) => {
+        if (message === PROCESS_WORKER_ASYNC_ACTIVE || message === PROCESS_WORKER_ASYNC_IDLE) {
+          states.push(message);
+        }
+      });
+      return child;
+    });
+    const pool = createPool({
+      threads: 1,
+      host: { steal },
+      worker: { runtime: "process", processRuntime },
+    })({ holdForAsyncPark, double, addOnePromise });
+    const waitForState = async (state: string) => {
+      await withTimeout("async population transition", (async () => {
+        while (states.at(-1) !== state) await delay(1);
+      })());
+    };
+    try {
+      await withTimeout("sync work never enables async policy", Promise.all(
+        Array.from({ length: 128 }, (_, i) => pool.call.double(i)),
+      ));
+      assert.deepEqual(states, []);
+      await withTimeout("immediate promises coalesce to idle", Promise.all(
+        Array.from({ length: 128 }, (_, i) => pool.call.addOnePromise(i)),
+      ));
+      await delay(30);
+      assert.deepEqual(states, []);
+      const held = pool.call.holdForAsyncPark(300);
+      await waitForState(PROCESS_WORKER_ASYNC_ACTIVE);
+      assert.equal(await withTimeout("pending await settles", held), 0);
+      // No new publication is needed to flush the last-await transition before
+      // the worker goes back to its blocking native wait.
+      await waitForState(PROCESS_WORKER_ASYNC_IDLE);
+      await withTimeout("sync work returns to original policy", Promise.all(
+        Array.from({ length: 128 }, (_, i) => pool.call.double(i)),
+      ));
+      await delay(30);
+      assert.deepEqual(states, [PROCESS_WORKER_ASYNC_ACTIVE, PROCESS_WORKER_ASYNC_IDLE]);
+    } finally {
+      await shutdownWithTimeout("population transition shutdown", pool.shutdown());
+    }
+  });
+  }
+
+}
+
+test("Node native process wake coalesces publications while a parked child is stopped", {
+  concurrency: false,
+  skip: processRuntimeTestSkip,
+  timeout: TEST_TIMEOUT_MS,
+}, async (t) => {
+  if (!isPlainNode || runtimePlatform !== "linux" || !hasProcessRuntime("node")) return;
+  const spawn = childProcess.spawn;
+  const children: ReturnType<typeof spawn>[] = [];
+  t.mock.method(childProcess, "spawn", (...args: Parameters<typeof spawn>) => {
+    const child = spawn(...args);
+    children.push(child);
+    return child;
+  });
+  const futex = loadNodeFutexAddon();
+  const wake = futex.wakeU32;
+  let rings = 0;
+  t.mock.method(futex, "wakeU32", (...args: Parameters<typeof wake>) => {
+    ++rings;
+    return wake(...args);
+  });
+  const pool = createPool({
+    threads: 2,
+    host: { steal: true },
+    worker: {
+      runtime: "process",
+      processRuntime: "node",
+      timers: { spinMicroseconds: 0, parkMs: 5000 },
+    },
+  })({ double });
+  try {
+    assert.equal(await withTimeout("boot native coalescing worker", pool.call.double(1)), 2);
+    await delay(200);
+    for (const child of children) assert.ok(child.kill("SIGSTOP"));
+    await delay(20);
+    rings = 0;
+    const pending = Promise.all(Array.from({ length: 32 }, (_, i) => pool.call.double(i)));
+    pending.catch(() => {});
+    await delay(20);
+    assert.ok(rings > 0 && rings <= children.length,
+      `stopped workers must receive at most one ring per park, got ${rings}`);
+    for (const child of children) assert.ok(child.kill("SIGCONT"));
+    assert.deepEqual(
+      await withTimeout("coalesced burst resumes", pending),
+      Array.from({ length: 32 }, (_, i) => i * 2),
+    );
+  } finally {
+    for (const child of children) child.kill("SIGCONT");
+    await shutdownWithTimeout("native coalescing shutdown", pool.shutdown());
+  }
+});
+
+test("Node async park wakes the peer with capacity when other awaits never settle", {
+  concurrency: false,
+  skip: processRuntimeTestSkip,
+  timeout: TEST_TIMEOUT_MS,
+}, async (t) => {
+  if (!isPlainNode || !hasProcessRuntime("node")) return;
+  const spawn = childProcess.spawn;
+  const pids: number[] = [];
+  const counts = new Map<number, number>();
+  t.mock.method(childProcess, "spawn", (...args: Parameters<typeof spawn>) => {
+    const child = spawn(...args);
+    if (child.pid !== undefined) pids.push(child.pid);
+    child.on("message", (message) => {
+      const state = message as { __knittingCapacityHeld?: number; pid?: number };
+      if (typeof state?.__knittingCapacityHeld === "number" && typeof state.pid === "number") {
+        counts.set(state.pid, state.__knittingCapacityHeld);
+      }
+    });
+    return child;
+  });
+  const pool = createPool({
+    threads: 4,
+    host: { steal: true },
+    worker: { runtime: "process", processRuntime: "node", maxAwaitingTasks: 2 },
+  })({ occupyAsyncCapacity, double });
+  const held: Promise<unknown>[] = [];
+  try {
+    await withTimeout("boot capacity workers", pool.call.double(1));
+    assert.equal(pids.length, 4);
+    // Fill three workers. The fourth remains available to drain mismatched
+    // targeting calls until it receives its one deliberately pending task.
+    for (const pid of pids.slice(0, 3)) {
+      const deadline = performance.now() + PROMISE_TIMEOUT_MS;
+      while ((counts.get(pid) ?? 0) < 2) {
+        held.push(pool.call.occupyAsyncCapacity(pid).catch(() => null));
+        if (performance.now() > deadline) throw new Error("could not fill async capacity");
+        await delay(5);
+      }
+    }
+    const available = pids[3]!;
+    held.push(pool.call.occupyAsyncCapacity(available).catch(() => null));
+    const deadline = performance.now() + PROMISE_TIMEOUT_MS;
+    while (counts.get(available) !== 1) {
+      if (performance.now() > deadline) throw new Error("available peer did not begin its await");
+      await delay(1);
+    }
+    await delay(30);
+    for (let i = 0; i < 16; i++) {
+      assert.equal(
+        await withTimeout("free peer admits work before the 1s watchdog", pool.call.double(i), 500),
+        i * 2,
+      );
+    }
+  } finally {
+    await shutdownWithTimeout("shutdown full async parks", pool.shutdown());
+    await Promise.all(held);
+  }
+});
+
+for (const processRuntime of ["node", "bun", "deno"] as const) {
+  for (const dispatcher of ["per-thread", "serial-channel"] as const) {
+  test(`${processRuntime} async activation keeps admitting work while the host cannot process IPC (${dispatcher})`, {
+    concurrency: false,
+    skip: processRuntimeTestSkip,
+    timeout: TEST_TIMEOUT_MS,
+  }, async () => {
+    if (!hasProcessRuntime(processRuntime)) return;
+    const directory = mkdtempSync(join(tmpdir(), "knitting-async-ready-"));
+    const marker = join(directory, "awaiting");
+    const pool = createPool({
+      threads: 1,
+      host: { steal: false, dispatcher },
+      permission: { mode: "unsafe" },
+      worker: { runtime: "process", processRuntime },
+    })({ awaitWithMarker, markAsyncClaim, double });
+    try {
+      await withTimeout("boot activation worker", pool.call.double(1));
+      pool.call.awaitWithMarker(marker).catch(() => {});
+      const deadline = performance.now() + PROMISE_TIMEOUT_MS;
+      // Keep the host's message loop blocked throughout the transition. The
+      // child must retain its timer fallback until the host publishes readiness.
+      while (!existsSync(marker)) {
+        if (performance.now() > deadline) throw new Error("await did not start");
+      }
+      let until = performance.now() + 25;
+      while (performance.now() < until) {}
+      const claimMarker = join(directory, "claimed");
+      const claimed = pool.call.markAsyncClaim(claimMarker);
+      until = performance.now() + 100;
+      while (performance.now() < until) {}
+      // Check before yielding: runtimes use different hrtime epochs, so a file
+      // marker proves admission without comparing their clocks.
+      assert.ok(existsSync(claimMarker), "task did not run while the host was blocked");
+      await withTimeout("claim during blocked activation", claimed);
+      await delay(30);
+      const steadyMarker = join(directory, "steady");
+      const steady = pool.call.markAsyncClaim(steadyMarker);
+      until = performance.now() + 100;
+      while (performance.now() < until) {}
+      assert.ok(existsSync(steadyMarker), "task did not run during steady async park");
+      await withTimeout("claim during steady async park", steady);
+    } finally {
+      await shutdownWithTimeout("activation handshake shutdown", pool.shutdown());
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+  }
+}

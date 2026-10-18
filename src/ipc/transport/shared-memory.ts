@@ -12,6 +12,7 @@ const CACHE_LINE_BYTES = 64;
 const SIGNAL_OFFSETS = {
   op: 0,
   rxStatus: CACHE_LINE_BYTES,
+  asyncReady: CACHE_LINE_BYTES + Int32Array.BYTES_PER_ELEMENT,
   txStatus: CACHE_LINE_BYTES * 2,
   stop: CACHE_LINE_BYTES * 3,
 } as const;
@@ -67,6 +68,13 @@ export const createSharedMemoryTransport = (
 
   a_store(rxStatus, 0, 1);
 
+  const asyncReady = new Int32Array(
+    sab,
+    baseByteOffset + SIGNAL_OFFSETS.asyncReady,
+    1,
+  );
+  if (isMain) a_store(asyncReady, 0, 0);
+
   const stopView = new Int32Array(
     sab,
     baseByteOffset + SIGNAL_OFFSETS.stop,
@@ -80,6 +88,7 @@ export const createSharedMemoryTransport = (
     startAt,
     opView,
     rxStatus,
+    asyncReady,
     txStatus: new Int32Array(sab, baseByteOffset + SIGNAL_OFFSETS.txStatus, 1),
     stopView,
   };

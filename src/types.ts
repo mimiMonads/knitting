@@ -68,6 +68,10 @@ type WorkerData = {
   notifyOnHostPublish?: boolean;
   /** Process-local IPC channel can carry coalesced completion doorbells. */
   processCompletionDoorbell?: boolean;
+  /** Host can wake an awaiting process worker over IPC. */
+  processAsyncPark?: boolean;
+  /** Host has a native notifier matching the process worker's blocking wait. */
+  processNativeWait?: boolean;
   /** Process-local Deno callback pointer for waking the host completion pump. */
   denoCompletionDoorbell?: bigint;
   /** Process-local Node uv_async handle for waking the host completion pump. */

@@ -38,6 +38,9 @@ jobs:
         run: bun install --frozen-lockfile
       - name: Run Deno tests
         run: npm run test:deno
+      - name: Check process worker parking on Windows
+        if: runner.os == 'Windows'
+        run: deno run -A scripts/check-windows-park.ts
 
   runtime-test:
     runs-on: ${{ matrix.os }}
@@ -75,6 +78,12 @@ jobs:
       - name: Run Bun test script
         if: matrix.runtime == 'bun'
         run: npm run test:bun
+      - name: Check process worker parking on Windows (Node)
+        if: runner.os == 'Windows' && matrix.runtime == 'node'
+        run: node --no-warnings --experimental-transform-types scripts/check-windows-park.ts
+      - name: Check process worker parking on Windows (Bun)
+        if: runner.os == 'Windows' && matrix.runtime == 'bun'
+        run: bun run scripts/check-windows-park.ts
 
   browser-test:
     name: Browser (ubuntu-latest)

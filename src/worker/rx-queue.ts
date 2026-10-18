@@ -61,6 +61,10 @@ type ArgumentsForCreateWorkerQueue = {
    * can sit unused for most of that timer.
    */
   onSlotFree?: () => void;
+  /** Resume a timerless dispatcher after an awaited task settles. */
+  onSettled?: () => void;
+  /** Only the zero/nonzero transitions; synchronous results never call it. */
+  onAwaitingChange?: () => void;
 };
 
 /** Tasks run per `serviceBatchImmediate` call before returning to the loop. */
@@ -91,6 +95,8 @@ export const createWorkerRxQueue = (
     autoAwaiting,
     ownership,
     onSlotFree,
+    onSettled,
+    onAwaitingChange,
   }: ArgumentsForCreateWorkerQueue,
 ) => {
   const PLACE_HOLDER = (_?: unknown) => {
@@ -258,6 +264,17 @@ export const createWorkerRxQueue = (
     if (returnBusy !== undefined) autoAwaiting!.exclude(returnBusy);
   };
 
+  const settleAwaited = (
+    slot: Task,
+    isError: boolean,
+    value: unknown,
+    token?: number,
+  ) => {
+    settleNow(slot, isError, value, true, token);
+    if (awaiting === 0) onAwaitingChange?.();
+    onSettled?.();
+  };
+
   const writeOne = () => {
     const slot = pendingShift();
     if (!slot) return false;
@@ -271,6 +288,7 @@ export const createWorkerRxQueue = (
   return {
     hasCompleted,
     hasPending: () => toWork.size !== 0,
+    hasSubmitBacklog: () => (stealBacklog?.() ?? 0) > 0,
     writeBatch: (max: number) => {
       let wrote = 0;
       while (wrote < max) {
@@ -302,12 +320,12 @@ export const createWorkerRxQueue = (
           if (result instanceof Promise) {
             const token = autoAwaiting?.asyncStarted();
             slot.value = null;
-            awaiting++;
+            if (awaiting++ === 0) onAwaitingChange?.();
             ownership?.publish(awaiting);
 
             result.then(
-              (value) => settleNow(slot, false, value, true, token),
-              (err) => settleNow(slot, true, err, true, token),
+              (value) => settleAwaited(slot, false, value, token),
+              (err) => settleAwaited(slot, true, err, token),
             );
             // Only an async task can fill the last slot, so the limit check
             // lives here and sync tasks never pay for it.

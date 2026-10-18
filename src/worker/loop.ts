@@ -1,6 +1,10 @@
 import {
   createRuntimeMessageChannel,
   PROCESS_COMPLETION_DOORBELL,
+  PROCESS_WORKER_WAKE,
+  PROCESS_WORKER_ASYNC_ACTIVE,
+  PROCESS_WORKER_ASYNC_IDLE,
+  PROCESS_WORKER_ASYNC_BLOCKED,
   RUNTIME_IS_MAIN_THREAD,
   RUNTIME_IS_PROCESS_WORKER,
   RUNTIME_PARENT_PORT,
@@ -114,6 +118,8 @@ export const workerMainLoop = async (
     permission,
     notifyOnHostPublish,
     processCompletionDoorbell,
+    processAsyncPark,
+    processNativeWait,
     denoCompletionDoorbell,
     nodeCompletionDoorbell,
     totalNumberOfThread,
@@ -190,9 +196,11 @@ export const workerMainLoop = async (
   const processParentPort = processCompletionDoorbell === true
     ? RUNTIME_PARENT_PORT
     : undefined;
-  // Bun on Windows flushes process messages only after an event-loop turn.
+  // Deno and Bun on Windows flush process messages on an event-loop turn.
+  // Yield after a completion ring before returning to synchronous polling,
+  // otherwise a host waiting on IPC only progresses via its watchdog.
   let processRingPending = false;
-  const flushProcessRing = IS_BUN_WINDOWS;
+  const flushProcessRing = IS_BUN_WINDOWS || RUNTIME === "deno";
   const notifyProcessHost = processParentPort === undefined
     ? undefined
     : flushProcessRing
@@ -243,10 +251,12 @@ export const workerMainLoop = async (
     return () => fn(); // always a closure wrapper
   })();
 
-  const { opView, rxStatus, txStatus, stopView } = signals;
+  const { opView, rxStatus, asyncReady, txStatus, stopView } = signals;
   const a_store = Atomics.store;
   const a_load = Atomics.load;
-  const nativeWaitU32 = getProcessWorkerNativeWaitU32();
+  const nativeWaitU32 = processNativeWait === false
+    ? undefined
+    : getProcessWorkerNativeWaitU32();
 
   await runWorkerBootstrap({
     bootstrap: workerOptions?.bootstrap,
@@ -298,6 +308,7 @@ export const workerMainLoop = async (
     writeBatch,
     getAwaiting,
     getAwaitingLimit,
+    hasSubmitBacklog,
     coldGrow,
     drainReturnReleases,
     releaseDeferredReturns,
@@ -310,9 +321,12 @@ export const workerMainLoop = async (
     stealing: steal !== undefined,
     maxAwaitingTasks: autoAwaiting?.getLimit() ?? (maxAwaitingTasks as number),
     autoAwaiting,
-    ownership: steal?.awaitingCounts === undefined ? undefined :
-      createUnravelOwnership(steal.awaitingCounts, steal.consumerId),
+    ownership: steal?.awaitingCounts === undefined
+      ? undefined
+      : createUnravelOwnership(steal.awaitingCounts, steal.consumerId),
     onSlotFree: () => wakeFromBackoff(),
+    onSettled: processAsyncPark ? () => wakeAsyncPark() : undefined,
+    onAwaitingChange: processAsyncPark ? () => reportAsyncPresence() : undefined,
     // Only ticket batches wider than one can adapt their claim width.
     singleClaimAboveMs: steal !== undefined && steal.claim !== "dekker" &&
         steal.regionLanes > 1
@@ -349,6 +363,61 @@ export const workerMainLoop = async (
   let isInMacro = false;
   // Only the awaiting backoff schedules with a delay, so a pending timer is it.
   let backoffTimer: ReturnType<typeof setTimeout> | undefined;
+  let asyncParked = false;
+  const ipcProcess = getNodeProcess() as ReturnType<typeof getNodeProcess> & {
+    connected?: boolean;
+    send?: (message: unknown, callback: (error: Error | null) => void) => boolean;
+    removeListener?: (
+      event: string,
+      handler: (...args: unknown[]) => void,
+    ) => void;
+  };
+  let canAsyncPark = processAsyncPark === true && RUNTIME_IS_PROCESS_WORKER &&
+    ipcProcess?.connected === true && typeof ipcProcess.send === "function";
+  const wakeAsyncPark = () => {
+    if (!asyncParked) return;
+    asyncParked = false;
+    a_store(rxStatus, 0, 1);
+    scheduleMacro();
+  };
+  const onProcessWake = (message: unknown) => {
+    if (message !== PROCESS_WORKER_WAKE) return;
+    if (asyncParked) wakeAsyncPark();
+    else if (backoffTimer !== undefined) wakeFromBackoff();
+  };
+  const onDisconnect = () => {
+    canAsyncPark = false;
+    wakeAsyncPark();
+  };
+  if (canAsyncPark) {
+    ipcProcess.on!("message", onProcessWake);
+    ipcProcess.on!("disconnect", onDisconnect);
+  }
+  let presenceQueued = false;
+  let presenceReported = false;
+  const reportAsyncPresence = () => {
+    if (!canAsyncPark || presenceQueued) return;
+    presenceQueued = true;
+    processRingPending = true;
+    // Coalesce an event-loop turn: immediately resolved promise batches need
+    // no active/idle IPC traffic. Long awaits report before the loop parks.
+    SET_IMMEDIATE!(() => {
+      presenceQueued = false;
+      processRingPending = false;
+      if (!canAsyncPark || a_load(stopView, 0) !== WORKER_STOP.running) return;
+      const active = getAwaiting() > 0;
+      if (active === presenceReported) return;
+      presenceReported = active;
+      try {
+        ipcProcess.send!(
+          active ? PROCESS_WORKER_ASYNC_ACTIVE : PROCESS_WORKER_ASYNC_IDLE,
+          (error) => { if (error) onDisconnect(); },
+        );
+      } catch {
+        onDisconnect();
+      }
+    });
+  };
   let awaitingSpins = 0;
   let lastAwaiting = 0;
   const MAX_AWAITING_MS = 10;
@@ -460,6 +529,9 @@ export const workerMainLoop = async (
     // A shutdown rejects unconsumed calls, so no return can still be adopted.
     // Do not let a worker-isolate exit strand native BufferReference pins.
     _releaseDeferredReturns();
+    asyncParked = false;
+    ipcProcess?.removeListener?.("message", onProcessWake);
+    ipcProcess?.removeListener?.("disconnect", onDisconnect);
     a_store(stopView, 0, WORKER_STOP.acknowledged);
     a_store(rxStatus, 0, 0);
     try {
@@ -472,6 +544,10 @@ export const workerMainLoop = async (
   };
 
   const loop = () => {
+    if (asyncParked) {
+      asyncParked = false;
+      a_store(rxStatus, 0, 1);
+    }
     refillBudget = REFILL_PASSES;
     isInMacro = false;
     backoffTimer = undefined;
@@ -513,7 +589,39 @@ export const workerMainLoop = async (
           // At the cap no poll can admit work, and a settle that frees a slot
           // wakes the loop directly. Poll only for stop requests then, unless
           // finished results are waiting for return space.
-          if (awaiting >= getAwaitingLimit() && !_hasCompleted()) delay = MAX_AWAITING_MS;
+          if (awaiting >= getAwaitingLimit() && !_hasCompleted()) {
+            delay = MAX_AWAITING_MS;
+          }
+        }
+        if (canAsyncPark && a_load(asyncReady, 0) === 1 &&
+          !progressed && !_hasCompleted()) {
+          const token = a_load(opView, 0);
+          const atCapacity = awaiting >= getAwaitingLimit();
+          // 2 can admit work; 3 is parked at its async admission limit.
+          a_store(rxStatus, 0, atCapacity ? 3 : 2);
+          // Publish the parked state before rechecking shared work. A host
+          // publication either shows up here or observes a parked worker.
+          const claimed = pump();
+          if (
+            claimed || a_load(opView, 0) !== token ||
+            a_load(asyncReady, 0) !== 1 || a_load(stopView, 0) !== WORKER_STOP.running
+          ) {
+            a_store(rxStatus, 0, 1);
+            scheduleMacro();
+          } else {
+            asyncParked = true;
+            // A claim can fill the last slot while a publish races with a
+            // wake. Hand remaining shared work to a peer with capacity.
+            if (atCapacity && steal !== undefined && hasSubmitBacklog()) {
+              try {
+                ipcProcess.send!(PROCESS_WORKER_ASYNC_BLOCKED, (error) => {
+                  if (error) onDisconnect();
+                });
+              } catch { onDisconnect(); }
+            }
+            dbg?.log("signals", "idle async-park");
+          }
+          return;
         }
         scheduleTimer(delay);
         return;
@@ -521,7 +629,7 @@ export const workerMainLoop = async (
       awaitingSpins = lastAwaiting = 0;
 
       if (processRingPending) {
-        processRingPending = false;
+        if (!presenceQueued) processRingPending = false;
         scheduleTimer(0);
         return;
       }

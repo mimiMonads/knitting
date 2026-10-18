@@ -49,6 +49,14 @@ export const RUNTIME_PROCESS_WORKER_BOOT_VERSION = 1;
 
 export const RUNTIME_POOL_DEPTH_ENV = "KNITTING_POOL_DEPTH";
 
+/** Host-to-child ring for a process worker awaiting tasks. */
+export const PROCESS_WORKER_WAKE = "__knittingWorkerWake";
+/** Coalesced transitions of a worker's unresolved async population. */
+export const PROCESS_WORKER_ASYNC_ACTIVE = "__knittingWorkerAsyncActive";
+export const PROCESS_WORKER_ASYNC_IDLE = "__knittingWorkerAsyncIdle";
+export const PROCESS_WORKER_ASYNC_BLOCKED = "__knittingWorkerAsyncBlocked";
+export const PROCESS_WORKER_ASYNC_DISCONNECTED = "__knittingWorkerAsyncDisconnected";
+
 /**
  * A coalesced completion wake sent over a process worker's existing IPC
  * channel. The result itself remains in shared memory; this is only the

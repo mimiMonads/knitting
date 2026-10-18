@@ -104,3 +104,85 @@ particular, allocation microbenchmarks that only consume `.byteLength` do not
 establish the cost of touching every page, and local lock microbenchmarks do not
 establish cross-core contention cost. An accepted benchmark result still needs
 its workload and units checked against the claim it is used to support.
+
+## Awaiting process workers
+
+`process-async-park.ts` compares Node, Bun and Deno process workers holding long awaits. Run
+identical copies of the harness against the old and new source, in separate
+processes, alternating run order. It confirms that **every** worker holds a
+pending await, warms dispatch, then measures quiet idle CPU and arrivals with
+seeded gaps of 1–15 ms. Results are JSON; raw latency samples are retained.
+
+```sh
+PARK_THREADS=4 PARK_STEAL=true \
+  node --no-warnings --experimental-transform-types bench/process-async-park.ts
+
+# Sparse arrivals let the old backoff reach its full 10ms cap.
+PARK_SAMPLES=128 PARK_GAP_MIN_MS=60 PARK_GAP_SPAN_MS=16 \
+  node --no-warnings --experimental-transform-types bench/process-async-park.ts
+
+# Measure synchronous tasks with longer warmup and measurement windows.
+PARK_ONLY_SYNC=true PARK_THREADS=4 PARK_STEAL=true \
+PARK_SYNC_WARMUP_MS=750 PARK_SYNC_MIN_MS=1000 \
+  node --no-warnings --experimental-transform-types bench/process-async-park.ts
+
+# The worker runtime defaults to the host runtime.
+PARK_ONLY_SYNC=true PARK_THREADS=4 PARK_STEAL=true \
+  bun run bench/process-async-park.ts
+PARK_ONLY_SYNC=true PARK_THREADS=4 PARK_STEAL=true \
+  deno run -A --no-check bench/process-async-park.ts
+```
+
+Submit-to-task-start uses high-resolution epoch stamps
+(`performance.timeOrigin + performance.now()`) across the host and child,
+so it includes enqueue, serialization and queueing. Round-trip adds completion
+delivery. Neither is an isolated futex/IPC syscall measurement. Sync throughput
+uses batches of 64 and validates results. `PARK_SYNC_CALLS` sets the batch-run
+size (default 524288); minimum duration settings repeat those runs as needed.
+`PARK_WARMUP_CALLS` sets the warmup batch size. `PARK_TASK=immediate` measures
+immediately resolved promises; `PARK_TASK=awaited` measures 2 ms awaits.
+`PARK_MAX_AWAITING=2` caps admission, and `PARK_WORKER=thread` provides a thread
+pool control (`PARK_ONLY_SYNC=true` required). Thread pools also accept
+`PARK_MAX_AWAITING=auto`. The `sync_*` output fields report the selected task's
+throughput, including when that task awaits.
+
+Local duration measurements use `process.hrtime.bigint()`. Its process-relative
+origins on Bun/Deno make it unsuitable for cross-process task-start stamps.
+The harness rejects negative admission samples and samples exceeding their
+round-trip duration; it does not clamp or discard them. Epoch comparisons still
+depend on the machine clock staying stable between host and worker startup.
+`PARK_PROCESS_RUNTIME` selects the child runtime.
+`PARK_WORKER_CPUS=1,2,3,4` pins process workers after
+boot and verifies their affinity; pin the host separately with `taskset -c 0`.
+
+On Linux, idle CPU uses `/proc/<pid>/schedstat` for **worker main threads**,
+summed across workers; it excludes helper threads and host CPU. On other
+platforms, CPU and affinity fields are omitted. Backoff timer counts observe the
+child's 1–10 ms timers during a quiet interval, excluding the long task timers,
+and admission/round-trip latency works on Windows too. Shutdown time includes
+process termination and cleanup, so it does not measure just stop
+acknowledgement. `PARK_WORKER_CPUS` is Linux-only.
+
+On Windows, run the harness before and after the change with identical runtime,
+worker count, task kind, and sample settings. For example, these commands
+measure an async-heavy process pool and a sync-only control:
+
+```powershell
+$env:PARK_THREADS = "4"
+$env:PARK_TASK = "awaited"
+bun run bench/process-async-park.ts
+Remove-Item Env:PARK_TASK
+$env:PARK_ONLY_SYNC = "true"
+bun run bench/process-async-park.ts
+```
+
+Repeat with `node --no-warnings --experimental-transform-types` or
+`deno run -A --no-check` to compare hosts. Windows has no worker CPU counter in
+this harness, so use the quiet-period timer count and arrival latency as the
+portable evidence; the `check:windows-park` probe also checks warmed synchronous
+calls against the 1s watchdog.
+
+Results: [initial async parking](reports/process-async-park-2026-10-18.md) and
+[runtime regression check](reports/process-async-regression-2026-10-18.md).
+The latter covers the current async-only wake policy, the Deno completion-flush
+fix, and the remaining measured Bun immediate-promise cost.
