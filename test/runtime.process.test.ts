@@ -851,7 +851,11 @@ test("Node process IPC completion doorbell settles a directly armed host", {
 for (const processRuntime of ["node", "bun", "deno"] as const) {
   test(`${processRuntime} process completion rings flush between synchronous batches`, {
     concurrency: false,
-    skip: processRuntimeTestSkip,
+    skip: processRuntimeTestSkip ||
+      (runtimePlatform === "win32" && typeof versions?.bun === "string" &&
+          processRuntime === "bun"
+        ? "Bun Windows completion-ring timeout followed by a runtime crash"
+        : false),
     timeout: TEST_TIMEOUT_MS,
   }, async () => {
     if (!hasProcessRuntime(processRuntime)) return;
