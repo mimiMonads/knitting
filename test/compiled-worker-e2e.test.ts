@@ -119,6 +119,9 @@ test("compiled workers round-trip binary values and shared buffers", {
     "sharedByteLength",
     "readClock",
     "echoObject",
+    "repeatText",
+    "numberResult",
+    "escapedText",
   ];
   const { context, call } = openWorker("compiled_special_tasks", names);
   const primitives = getDefaultProcessSharedBufferPrimitives();
@@ -133,6 +136,95 @@ test("compiled workers round-trip binary values and shared buffers", {
       '{"__proto__":{"marker":123},"constructor":7,"nested":{"__proto__":null},"text":"Héllo"}',
     );
     assert.deepEqual(await call("echoObject", object), object);
+    for (
+      const value of [
+        null,
+        true,
+        false,
+        0,
+        -1,
+        2 ** 31,
+        Number.MAX_SAFE_INTEGER,
+        Number.MIN_SAFE_INTEGER,
+        Number.MAX_SAFE_INTEGER + 1,
+        Math.PI,
+        Number.MIN_VALUE,
+        Number.MAX_VALUE,
+        1e-300,
+        1e21,
+        "",
+        "hello",
+        'quotes: " \\ \n \t \u0000',
+        "é".repeat(4096),
+        new Int8Array([-128, 0, 127]),
+        new Uint16Array([0, 256, 65535]),
+        new Int16Array([-32768, 32767]),
+        new Uint32Array([0, 0xffffffff]),
+        new Float32Array([0, -0, Math.PI, NaN, Infinity]),
+        new Float64Array([0, -0, Math.PI, NaN, -Infinity]),
+      ]
+    ) {
+      assert.deepEqual(await call("echoObject", value), value);
+    }
+    assert.equal(
+      await call("escapedText", 0),
+      String.fromCharCode(
+        0,
+        34,
+        92,
+        8,
+        12,
+        10,
+        13,
+        9,
+        0x7f,
+        0x80,
+        0xff,
+      ),
+    );
+    // JSON quotes count against the same exact 1 MiB response budget.
+    assert.equal(
+      (await call("repeatText", 1024 * 1024 - 2) as string).length,
+      1024 * 1024 - 2,
+    );
+    await assert.rejects(
+      call("repeatText", 1024 * 1024 - 1),
+      /result is too large/,
+    );
+    const maxInput = "x".repeat(1024 * 1024 - 2);
+    assert.equal(await call("echoObject", maxInput), maxInput);
+    await assert.rejects(
+      call("echoObject", maxInput + "x"),
+      /input is too large/,
+    );
+    for (const value of [-0, NaN, Infinity, -Infinity]) {
+      await assert.rejects(call("echoObject", value), /lossless JSON numbers/);
+    }
+    for (const value of [undefined, 1n, Symbol("unsupported"), () => 0]) {
+      await assert.rejects(call("echoObject", value), /JSON-compatible values/);
+    }
+    const cyclic: unknown[] = [];
+    cyclic.push(cyclic);
+    await assert.rejects(call("echoObject", cyclic), /cyclic values/);
+    for (const kind of [0, 1, 2, 3]) {
+      assert.equal(await call("numberResult", kind), kind === 0 ? 0 : null);
+    }
+    assert.equal(await call("echoObject", true), true);
+    // Cross multiple read-ahead buffers and host write batches. Unique values
+    // expose dropped/reordered frames; responses also exceed pipe capacity.
+    const burst = Array.from({ length: 256 }, (_, index) => ({
+      index,
+      text: "x".repeat(index % 31 === 0 ? 70000 : 700),
+      unicode: "Héllo",
+    }));
+    const replies = await Promise.all(
+      burst.map((value) => call("echoObject", value)),
+    );
+    replies.forEach((value, index) => assert.deepEqual(value, burst[index]));
+    // Reading ahead must not require another request to flush a response.
+    assert.deepEqual(await call("echoObject", { after: true }), {
+      after: true,
+    });
     for (const length of [0, 1, 2, 4, 5, 7]) {
       const bytes = new Uint8Array(length).fill(254);
       assert.deepEqual(

@@ -22,14 +22,35 @@ const outputPointer = dataPointer(output);
 
 Porffor.c`
 #include <time.h>
+#include <errno.h>
+#include <sys/uio.h>
+#include <stdlib.h>
+#include <math.h>
+
+/* Read ahead across frame boundaries when the host sends a batch. Never wait
+   for a full buffer: a single request must still receive an immediate reply. */
+static u8 knit_input_buffer[65536];
+static i32 knit_input_used = 0;
+static i32 knit_input_end = 0;
 
 static i32 knit_json_read_exact(void* output, i32 length) {
   u8* cursor = (u8*)output;
   i32 remaining = length;
   while (remaining > 0) {
-    long count = read(STDIN_FILENO, cursor, (size_t)remaining);
-    if (count == 0) return 0;
-    if (count < 0) return -1;
+    if (knit_input_used == knit_input_end) {
+      long count = read(STDIN_FILENO, knit_input_buffer, sizeof(knit_input_buffer));
+      if (count == 0) return 0;
+      if (count < 0) {
+        if (errno == EINTR) continue;
+        return -1;
+      }
+      knit_input_used = 0;
+      knit_input_end = (i32)count;
+    }
+    i32 count = knit_input_end - knit_input_used;
+    if (count > remaining) count = remaining;
+    memcpy(cursor, knit_input_buffer + knit_input_used, (size_t)count);
+    knit_input_used += count;
     cursor += count;
     remaining -= (i32)count;
   }
@@ -149,22 +170,28 @@ static i32 knit_json_read_request(i32 pointer, i32 capacity) {
   return task_index;
 }
 
-static i32 knit_json_write_exact(const void* input, i32 length) {
-  const u8* cursor = (const u8*)input;
-  i32 remaining = length;
-  while (remaining > 0) {
-    long count = write(STDOUT_FILENO, cursor, (size_t)remaining);
-    if (count <= 0) return -1;
-    cursor += count;
-    remaining -= (i32)count;
-  }
-  return 0;
-}
-
 static i32 knit_json_write_response(i32 status, i32 pointer, i32 length) {
   i32 header[2] = {status, length};
-  if (knit_json_write_exact(header, (i32)sizeof(header)) != 0) return -1;
-  return knit_json_write_exact(MEM + pointer, length);
+  struct iovec parts[2] = {
+    {header, sizeof(header)},
+    {MEM + pointer, (size_t)length}
+  };
+  i32 first = 0;
+  i32 end = length == 0 ? 1 : 2;
+  while (first < end) {
+    long count = writev(STDOUT_FILENO, parts + first, end - first);
+    if (count < 0 && errno == EINTR) continue;
+    if (count <= 0) return -1;
+    while (first < end && (size_t)count >= parts[first].iov_len) {
+      count -= parts[first].iov_len;
+      first++;
+    }
+    if (first < end) {
+      parts[first].iov_base = (u8*)parts[first].iov_base + count;
+      parts[first].iov_len -= count;
+    }
+  }
+  return 0;
 }
 `;
 
@@ -229,9 +256,11 @@ const mapProcessShared = (name: string, size: number): number => {
   let mapped: i32 = 0;
   const scratch = new Uint8Array(size + 8192);
   const hint = dataPointerOf(scratch);
+  // Use a local C binding: newer Porffor versions mangle module globals.
+  const namePointer = sharedNamePointer;
   Porffor.c`
 mapped = knit_map_named_shm(
-  (i32)sharedNamePointer.val,
+  (i32)namePointer.val,
   (i32)hint.val,
   (i32)size.val
 );`;
@@ -405,6 +434,7 @@ const binaryTagOf = (value: unknown): string => {
 };
 
 const encodeWireValue = (value: unknown): unknown => {
+  if (value === null || typeof value !== "object") return value;
   const tag = binaryTagOf(value);
   if (tag !== "") {
     const bytes = value instanceof ArrayBuffer
@@ -442,15 +472,16 @@ const decodeUtf8 = (length: number): string => {
   // The host escapes non-ASCII code units. Copy that common case into one
   // bytestring allocation; retain UTF-8 decoding for other protocol clients.
   let ascii: i32 = 1;
+  const pointer = inputPointer;
   Porffor.c`
 for (i32 at = 0; at < (i32)length.val; at++) {
-  if (((u8*)MEM)[(i32)inputPointer.val + at] >= 128) { ascii = 0; break; }
+  if (((u8*)MEM)[(i32)pointer.val + at] >= 128) { ascii = 0; break; }
 }
 `;
   if (ascii !== 0) {
     const asciiText = " ".repeat(length);
     Porffor
-      .c`memcpy(MEM + (i32)asciiText.val + 4, MEM + (i32)inputPointer.val, (i32)length.val);`;
+      .c`memcpy(MEM + (i32)asciiText.val + 4, MEM + (i32)pointer.val, (i32)length.val);`;
     return asciiText;
   }
   // Porffor's `+=` copies the whole left operand, so appending to one growing
@@ -503,40 +534,177 @@ for (i32 at = 0; at < (i32)length.val; at++) {
 };
 
 const encodeUtf8 = (text: string): number => {
-  let offset = 0;
-  for (let index = 0; index < text.length; index++) {
-    let point = text.charCodeAt(index);
-    if (
-      point >= 0xd800 && point <= 0xdbff && index + 1 < text.length
-    ) {
-      const low = text.charCodeAt(index + 1);
-      if (low >= 0xdc00 && low <= 0xdfff) {
-        point = 0x10000 + ((point - 0xd800) << 10) + (low - 0xdc00);
-        index++;
-      }
-    }
-
-    if (point < 0x80) {
-      if (offset + 1 > MAX_PAYLOAD_BYTES) return -1;
-      output[offset++] = point;
-    } else if (point < 0x800) {
-      if (offset + 2 > MAX_PAYLOAD_BYTES) return -1;
-      output[offset++] = 0xc0 | (point >> 6);
-      output[offset++] = 0x80 | (point & 0x3f);
-    } else if (point < 0x10000) {
-      if (offset + 3 > MAX_PAYLOAD_BYTES) return -1;
-      output[offset++] = 0xe0 | (point >> 12);
-      output[offset++] = 0x80 | ((point >> 6) & 0x3f);
-      output[offset++] = 0x80 | (point & 0x3f);
-    } else {
-      if (offset + 4 > MAX_PAYLOAD_BYTES) return -1;
-      output[offset++] = 0xf0 | (point >> 18);
-      output[offset++] = 0x80 | ((point >> 12) & 0x3f);
-      output[offset++] = 0x80 | ((point >> 6) & 0x3f);
-      output[offset++] = 0x80 | (point & 0x3f);
+  const length = text.length;
+  const pointer = outputPointer;
+  const capacity = output.length;
+  let result: i32 = 0;
+  // JSON.stringify has already escaped lone surrogates. Read either of
+  // Porffor's string layouts directly, retaining the existing UTF-8 framing.
+  Porffor.c`
+const u8* characters = (u8*)(MEM + (i32)text.val + 4);
+u8* destination = (u8*)(MEM + (i32)pointer.val);
+i32 stride = ((i32)text.type & 0x80) ? 1 : 2;
+i32 used = 0;
+for (i32 at = 0; at < (i32)length.val; at++) {
+  u32 point = stride == 1 ? characters[at] : ((const u16*)characters)[at];
+  if (point >= 0xd800 && point <= 0xdbff && at + 1 < (i32)length.val) {
+    u32 low = stride == 1 ? characters[at + 1] : ((const u16*)characters)[at + 1];
+    if (low >= 0xdc00 && low <= 0xdfff) {
+      point = 0x10000 + ((point - 0xd800) << 10) + low - 0xdc00;
+      at++;
     }
   }
-  return offset;
+  i32 count = point < 0x80 ? 1 : point < 0x800 ? 2 : point < 0x10000 ? 3 : 4;
+  if (used + count > (i32)capacity.val) { used = -1; break; }
+  if (count == 1) {
+    destination[used++] = point;
+  } else if (count == 2) {
+    destination[used++] = 0xc0 | (point >> 6);
+    destination[used++] = 0x80 | (point & 0x3f);
+  } else if (count == 3) {
+    destination[used++] = 0xe0 | (point >> 12);
+    destination[used++] = 0x80 | ((point >> 6) & 0x3f);
+    destination[used++] = 0x80 | (point & 0x3f);
+  } else {
+    destination[used++] = 0xf0 | (point >> 18);
+    destination[used++] = 0x80 | ((point >> 12) & 0x3f);
+    destination[used++] = 0x80 | ((point >> 6) & 0x3f);
+    destination[used++] = 0x80 | (point & 0x3f);
+  }
+}
+result = used;
+`;
+  return result;
+};
+
+/** Common scalar JSON needs neither an intermediate string nor JSON.parse.
+ * Escapes, non-ASCII strings, and containers use the general codec. */
+const decodeRequest = (): unknown => {
+  const length = requestLength();
+  const pointer = inputPointer;
+  let kind: i32 = 0;
+  let numeric = 0;
+  Porffor.c`
+const u8* bytes = (u8*)(MEM + (i32)pointer.val);
+i32 count = (i32)length.val;
+if (count == 4 && memcmp(bytes, "null", 4) == 0) kind = 1;
+else if (count == 5 && memcmp(bytes, "false", 5) == 0) kind = 2;
+else if (count == 4 && memcmp(bytes, "true", 4) == 0) kind = 3;
+else if (count >= 2 && bytes[0] == 34 && bytes[count - 1] == 34) {
+  kind = 4;
+  for (i32 at = 1; at < count - 1; at++) {
+    u8 code = bytes[at];
+    if (code < 32 || code >= 128 || code == 34 || code == 92) { kind = 0; break; }
+  }
+} else if (count > 0 && count <= 17) {
+  i32 negative = bytes[0] == 45;
+  i32 start = negative ? 1 : 0;
+  i32 valid = start < count && !(bytes[start] == 48 && count - start > 1);
+  f64 value = 0;
+  for (i32 at = start; valid && at < count; at++) {
+    if (bytes[at] < 48 || bytes[at] > 57) { valid = 0; break; }
+    value = value * 10 + (bytes[at] - 48);
+    if (value > 9007199254740991.0) valid = 0;
+  }
+  if (valid) { kind = 5; numeric = negative ? -value : value; }
+}
+/* Canonical JS numbers are short. Validate JSON grammar before strtod: its
+   hexadecimal, infinity, whitespace, and partial-parse extensions are not JSON.
+   This keeps conversion independent of Porffor's numeric JSON implementation. */
+if (kind == 0 && count > 0 && count < 128
+    && (bytes[0] == 45 || (bytes[0] >= 48 && bytes[0] <= 57))) {
+  i32 at = bytes[0] == 45 ? 1 : 0;
+  i32 valid = at < count;
+  if (valid && bytes[at] == 48) at++;
+  else if (valid && bytes[at] >= 49 && bytes[at] <= 57) {
+    do { at++; } while (at < count && bytes[at] >= 48 && bytes[at] <= 57);
+  } else valid = 0;
+  if (valid && at < count && bytes[at] == 46) {
+    i32 start = ++at;
+    while (at < count && bytes[at] >= 48 && bytes[at] <= 57) at++;
+    if (at == start) valid = 0;
+  }
+  if (valid && at < count && (bytes[at] == 69 || bytes[at] == 101)) {
+    at++;
+    if (at < count && (bytes[at] == 43 || bytes[at] == 45)) at++;
+    i32 start = at;
+    while (at < count && bytes[at] >= 48 && bytes[at] <= 57) at++;
+    if (at == start) valid = 0;
+  }
+  if (valid && at == count) {
+    char text[128];
+    memcpy(text, bytes, count);
+    text[count] = 0;
+    numeric = strtod(text, (char**)0);
+    kind = 5;
+  }
+}
+`;
+  if (kind === 1) return null;
+  if (kind === 2) return false;
+  if (kind === 3) return true;
+  if (kind === 5) return numeric;
+  if (kind === 4) {
+    const text = " ".repeat(length - 2);
+    Porffor.c`
+memcpy(MEM + (i32)text.val + 4, MEM + (i32)pointer.val + 1, (i32)length.val - 2);
+`;
+    return text;
+  }
+  return decodeWireValue(JSON.parse(decodeUtf8(length)));
+};
+
+/** -2 requests the general JSON encoder; -1 means the response exceeds budget. */
+const encodePlainString = (text: string): number => {
+  const pointer = outputPointer;
+  const capacity = output.length;
+  let result: i32 = -2;
+  Porffor.c`
+const u8* characters = (u8*)(MEM + (i32)text.val + 4);
+u8* destination = (u8*)(MEM + (i32)pointer.val);
+i32 stride = ((i32)text.type & 0x80) ? 1 : 2;
+i32 count = *(i32*)(MEM + (i32)text.val);
+i32 plain = 1;
+if (count > (i32)capacity.val - 2) { result = -1; plain = 0; }
+for (i32 at = 0; plain && at < count; at++) {
+  u32 code = stride == 1 ? characters[at] : ((const u16*)characters)[at];
+  if (code < 32 || code >= 128 || code == 34 || code == 92) { plain = 0; break; }
+}
+if (plain) {
+  destination[0] = 34;
+  if (stride == 1) memcpy(destination + 1, characters, count);
+  else for (i32 at = 0; at < count; at++) {
+    destination[at + 1] = ((const u16*)characters)[at];
+  }
+  destination[count + 1] = 34;
+  result = count + 2;
+}
+`;
+  return result;
+};
+
+const encodeNumber = (value: number): number => {
+  const pointer = outputPointer;
+  let length: i32 = 0;
+  // Seventeen significant digits round-trip every finite f64. The wire need
+  // not use JSON.stringify's shortest spelling, but must preserve its value.
+  Porffor.c`
+char* destination = (char*)(MEM + (i32)pointer.val);
+if (!isfinite(value.val)) { memcpy(destination, "null", 4); length = 4; }
+else if (value.val == 0) { destination[0] = '0'; length = 1; }
+else length = snprintf(destination, 32, "%.17g", (double)value.val);
+`;
+  return length;
+};
+
+const encodeLiteral = (text: string): number => {
+  const pointer = outputPointer;
+  let length: i32 = 0;
+  Porffor.c`
+length = *(i32*)(MEM + (i32)text.val);
+memcpy(MEM + (i32)pointer.val, MEM + (i32)text.val + 4, length);
+`;
+  return length;
 };
 
 /**
@@ -555,14 +723,23 @@ export const runJsonWorker = (functions: WorkerFunction[]): void => {
     }
 
     try {
-      const value = decodeWireValue(JSON.parse(decodeUtf8(requestLength())));
+      const value = decodeRequest();
       const result = functions[taskIndex]!(value, abortSignal);
-      const serialized = JSON.stringify(encodeWireValue(result));
-      if (typeof serialized !== "string") {
-        if (writeResponse(2, outputPointer, 0) !== 0) return;
-        continue;
+      let length = -2;
+      if (typeof result === "string") length = encodePlainString(result);
+      else if (typeof result === "number") length = encodeNumber(result);
+      else if (result === null) length = encodeLiteral("null");
+      else if (typeof result === "boolean") {
+        length = encodeLiteral(result ? "true" : "false");
       }
-      const length = encodeUtf8(serialized);
+      if (length === -2) {
+        const serialized = JSON.stringify(encodeWireValue(result));
+        if (typeof serialized !== "string") {
+          if (writeResponse(2, outputPointer, 0) !== 0) return;
+          continue;
+        }
+        length = encodeUtf8(serialized);
+      }
       if (length < 0) {
         if (writeResponse(4, outputPointer, 0) !== 0) return;
         continue;

@@ -29,7 +29,6 @@ const NO_ABORT_SLOT = -1;
 const JSON_HEADER_BYTES = 12;
 const NUMBER_FRAME_BYTES = 16;
 const NUMBER_ARGUMENT_OFFSET = 8;
-const EMPTY_PAYLOAD = new Uint8Array(0);
 
 type NodeWritable = {
   end: (callback: (error?: Error | null) => void) => void;
@@ -357,7 +356,7 @@ const fromBase64 = (text: unknown): Uint8Array => {
  */
 const encodeCompiledValue = (
   value: unknown,
-  ancestors = new Set<object>(),
+  ancestors?: Set<object>,
 ): unknown => {
   if (
     value === null || typeof value === "string" || typeof value === "boolean"
@@ -371,7 +370,7 @@ const encodeCompiledValue = (
   if (typeof value !== "object") {
     throw new TypeError("Compiled workers only accept JSON-compatible values");
   }
-  if (ancestors.has(value)) {
+  if (ancestors?.has(value)) {
     throw new TypeError("Compiled workers do not accept cyclic values");
   }
 
@@ -407,6 +406,7 @@ const encodeCompiledValue = (
     throw new TypeError("Compiled workers do not support BigInt typed arrays");
   }
 
+  ancestors ??= new Set<object>();
   ancestors.add(value);
   let encoded: unknown;
   if (Array.isArray(value)) {
@@ -501,20 +501,19 @@ const decodeCompiledValue = (value: unknown): unknown => {
 const asciiJson = (value: unknown): string | undefined => {
   const wireValue = encodeCompiledValue(value);
   const serialized = JSON.stringify(wireValue);
-  if (serialized !== undefined) {
-    for (let index = 0; index < serialized.length; index++) {
-      const unit = serialized.charCodeAt(index);
+  // Let the regexp scan ASCII in native code, and validate surrogate code
+  // units only when escaping non-ASCII. Avoid a second JS pass over strings.
+  return serialized?.replace(
+    /[^\x00-\x7f]/g,
+    (character) => {
+      const unit = character.charCodeAt(0);
       if (unit >= 0xd800 && unit <= 0xdfff) {
         throw new TypeError(
           "Compiled workers do not yet support non-BMP Unicode",
         );
       }
-    }
-  }
-  return serialized?.replace(
-    /[^\x00-\x7f]/g,
-    (character) =>
-      "\\u" + character.charCodeAt(0).toString(16).padStart(4, "0"),
+      return "\\u" + unit.toString(16).padStart(4, "0");
+    },
   );
 };
 
@@ -607,6 +606,8 @@ export const spawnCompiledWorkerContext = ({
   let closing = false;
   let closedReason: string | undefined;
   let writeTail = Promise.resolve();
+  let writeScheduled = false;
+  let queuedFrames: Uint8Array[] = [];
 
   const rejectPending = (reason: unknown): void => {
     while (pending.length > 0) pending.shift()!.reject(reason);
@@ -664,8 +665,42 @@ export const spawnCompiledWorkerContext = ({
   });
 
   const queueWrite = (frame: Uint8Array): Promise<void> => {
-    writeTail = writeTail.then(() => native.write(frame));
-    void writeTail.catch(fail);
+    queuedFrames.push(frame);
+    if (!writeScheduled) {
+      writeScheduled = true;
+      writeTail = writeTail.then(async () => {
+        const frames = queuedFrames;
+        queuedFrames = [];
+        writeScheduled = false;
+        // Calls issued together share a pipe write. Bound copies to 64 KiB;
+        // an individual larger frame goes straight to the stream. Await each
+        // write so Node and Deno retain back-pressure and FIFO ordering.
+        for (let start = 0; start < frames.length;) {
+          let end = start + 1;
+          let length = frames[start]!.byteLength;
+          while (
+            end < frames.length && length + frames[end]!.byteLength <= 65536
+          ) {
+            length += frames[end++]!.byteLength;
+          }
+          let batch = frames[start]!;
+          if (end > start + 1) {
+            batch = new Uint8Array(length);
+            let offset = 0;
+            for (let index = start; index < end; index++) {
+              batch.set(frames[index]!, offset);
+              offset += frames[index]!.byteLength;
+            }
+          }
+          await native.write(batch);
+          start = end;
+        }
+      });
+      void writeTail.catch((error) => {
+        queuedFrames = [];
+        fail(error);
+      });
+    }
     return writeTail;
   };
 
@@ -673,14 +708,14 @@ export const spawnCompiledWorkerContext = ({
    * Everything that can reject a call lives here, so it all runs before an
    * abort slot is claimed and a claimed slot can never leak.
    */
-  const encodePayload = (taskName: string, value: unknown): Uint8Array => {
+  const encodePayload = (taskName: string, value: unknown): string => {
     if (!jsonProtocol) {
       if (typeof value !== "number") {
         throw new TypeError(
           "Compiled worker task " + taskName + " only accepts a number",
         );
       }
-      return EMPTY_PAYLOAD;
+      return "";
     }
     // Porffor's JSON parser is reliable with escaped UTF-16 code units;
     // keeping request bytes ASCII also avoids depending on its internal
@@ -692,11 +727,12 @@ export const spawnCompiledWorkerContext = ({
           " only accepts JSON-compatible values",
       );
     }
-    const payload = encoder.encode(serialized);
-    if (payload.byteLength > MAX_PAYLOAD_BYTES) {
+    // asciiJson guarantees one byte per code unit. Encode directly into the
+    // final frame instead of allocating and then copying a payload buffer.
+    if (serialized.length > MAX_PAYLOAD_BYTES) {
       throw new RangeError("Compiled worker input is too large");
     }
-    return payload;
+    return serialized;
   };
 
   const call = ({
@@ -725,7 +761,7 @@ export const spawnCompiledWorkerContext = ({
           return;
         }
 
-        let payload: Uint8Array;
+        let payload: string;
         try {
           payload = encodePayload(taskName, value);
         } catch (error) {
@@ -746,13 +782,13 @@ export const spawnCompiledWorkerContext = ({
           );
         }
 
-        const frame = new Uint8Array(requestHeaderBytes + payload.byteLength);
+        const frame = new Uint8Array(requestHeaderBytes + payload.length);
         const header = new DataView(frame.buffer);
         header.setInt32(0, targetIndex, true);
         header.setInt32(4, signal, true);
         if (jsonProtocol) {
-          header.setUint32(8, payload.byteLength, true);
-          frame.set(payload, requestHeaderBytes);
+          header.setUint32(8, payload.length, true);
+          encoder.encodeInto(payload, frame.subarray(requestHeaderBytes));
         } else {
           header.setFloat64(NUMBER_ARGUMENT_OFFSET, value as number, true);
         }
