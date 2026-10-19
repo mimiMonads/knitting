@@ -51,3 +51,27 @@ export const readClock = task({
 export const echoObject = task({
   f: (value: Record<string, unknown>) => value,
 });
+
+export const repeatText = task({ f: (length: number) => "x".repeat(length) });
+
+export const numberResult = task({
+  f: (kind: number) =>
+    kind === 0 ? -0 : kind === 1 ? NaN : kind === 2 ? Infinity : -Infinity,
+});
+
+export const escapedText = task({
+  f: (_value: number) =>
+    String.fromCharCode(
+      0,
+      34,
+      92,
+      8,
+      12,
+      10,
+      13,
+      9,
+      0x7f,
+      0x80,
+      0xff,
+    ),
+});
