@@ -1844,3 +1844,69 @@ test("randomized unicode JSON boundary stress preserves integrity and layout", (
     assertEquals(second.value, secondValue);
   }
 });
+
+test("SharedArrayBuffer warm cache bounds entries without evicting in-flight tokens", () => {
+  const { encode, decode, headersBuffer } = makeCodec();
+  const first = new SharedArrayBuffer(16);
+  const task = makeTask();
+  for (let i = 0; i < 65; i++) {
+    task.value = i === 0 ? first : new SharedArrayBuffer(16);
+    assert.equal(encode(task, 0), true);
+    assert.equal(task[TaskIndex.PayloadLen], 32);
+    assert.equal(headersBuffer[7], i < 64 ? 0 : 1);
+    decode(task, 0);
+  }
+  task.value = first;
+  assert.equal(encode(task, 0), true);
+  assert.equal(task[TaskIndex.PayloadLen], 8);
+  decode(task, 0);
+  new Uint8Array(task.value as ArrayBuffer)[0] = 91;
+  assert.equal(new Uint8Array(first)[0], 91);
+});
+
+test("SharedArrayBuffer warm cache bounds bytes and leaves large buffers uncached", () => {
+  const { encode, decode, headersBuffer } = makeCodec();
+  const task = makeTask();
+  const retained = new SharedArrayBuffer(8 * 1024 * 1024);
+  task.value = retained;
+  assert.equal(encode(task, 0), true);
+  assert.equal(headersBuffer[7], 0);
+  decode(task, 0);
+  const uncached = new SharedArrayBuffer(16);
+  task.value = uncached;
+  assert.equal(encode(task, 0), true);
+  assert.equal(headersBuffer[7], 1);
+  decode(task, 0);
+  const alias = task.value;
+  task.value = uncached;
+  assert.equal(encode(task, 0), true);
+  assert.equal(task[TaskIndex.PayloadLen], 32);
+  decode(task, 0);
+  assert.notEqual(task.value, alias, "uncached aliases must not be retained");
+  task.value = retained;
+  assert.equal(encode(task, 0), true);
+  assert.equal(task[TaskIndex.PayloadLen], 8);
+  decode(task, 0);
+});
+
+test("uncached SharedArrayBuffer frames can arrive before cacheable frames", () => {
+  const { encode, decode, headersBuffer } = makeCodec();
+  const retained = new SharedArrayBuffer(8 * 1024 * 1024);
+  const first = makeTask();
+  first.value = retained;
+  assert.equal(encode(first, 0), true);
+  const savedHeader = headersBuffer.slice(0, 8);
+
+  const second = makeTask();
+  second.value = new SharedArrayBuffer(16);
+  assert.equal(encode(second, 0), true);
+  assert.equal(headersBuffer[7], 1);
+  decode(second, 0);
+  headersBuffer.set(savedHeader);
+  decode(first, 0);
+
+  first.value = retained;
+  assert.equal(encode(first, 0), true);
+  assert.equal(first[TaskIndex.PayloadLen], 8);
+  assert.doesNotThrow(() => decode(first, 0));
+});

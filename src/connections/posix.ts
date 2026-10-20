@@ -271,3 +271,40 @@ export const makeDarwinSharedMemoryName = (
 
   return `/knit_${runtimeTag}_${pidTag}_${timeTag}_${nonce}`;
 };
+
+// 64-bit libc stat layouts, on the x64/arm64 targets supported by these FFI
+// backends. Darwin x64's unsuffixed fstat uses the legacy inode layout.
+// https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/stat.h
+// https://github.com/torvalds/linux/blob/master/include/uapi/asm-generic/stat.h
+export const getPosixFstatSymbolName = (
+  platform = detectPosixPlatform(),
+): string =>
+  platform === "darwin" && /^(x64|x86_64)$/.test(detectArch())
+    ? "fstat$INODE64"
+    : "fstat";
+
+// Calls are synchronous and cannot re-enter JavaScript, so all mappings in an
+// isolate can reuse one scratch record. No allocation on the mapping path.
+const statRecord = new Uint8Array(256);
+const statView = new DataView(statRecord.buffer);
+export const assertPosixBackingSize = (
+  fd: number,
+  size: number,
+  fstat: (fd: number, record: Uint8Array) => number,
+  errno?: ErrnoReader,
+  platform = detectPosixPlatform(),
+): void => {
+  if (!/^(x64|x86_64|arm64|aarch64)$/.test(detectArch())) {
+    throw new Error(
+      "shared memory size validation requires a 64-bit x64/arm64 target",
+    );
+  }
+  checkPosixResult(fstat(fd, statRecord), "fstat failed", errno, platform);
+  const backingSize = statView.getBigInt64(
+    platform === "darwin" ? 96 : 48,
+    true,
+  );
+  if (backingSize < BigInt(size)) {
+    throw new RangeError("shared memory mapping exceeds backing size");
+  }
+};

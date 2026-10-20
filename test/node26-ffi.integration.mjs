@@ -46,7 +46,7 @@ if (isMain) {
             size: 64,
             duplicateFd: false,
           }),
-        /mmap failed/,
+        /mmap failed|mapping exceeds backing size/,
       );
       assert.doesNotThrow(() => fstatSync(callerFd));
     } finally {
