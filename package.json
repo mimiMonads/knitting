@@ -10,7 +10,7 @@
   "bugs": {
     "url": "https://github.com/mimiMonads/knitting/issues"
   },
-  "homepage": "https://github.com/mimiMonads/knitting#readme",
+  "homepage": "https://js.knitting.run/",
   "type": "module",
   "main": "./knitting.js",
   "module": "./knitting.js",
