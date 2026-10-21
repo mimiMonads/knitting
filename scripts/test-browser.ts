@@ -11,7 +11,7 @@
 // Skips instead of failing when no Chromium-family browser is installed; set
 // KNITTING_CHROMIUM to point at one explicitly.
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { browserStubPlugin, type BunPlugin } from "./browser-stubs/plugin.ts";
@@ -57,10 +57,18 @@ const findBrowser = (): string | undefined => {
 
 const browser = findBrowser();
 if (browser === undefined) {
-  console.log(
-    "skipping browser tests: no Chromium-family browser found " +
-      "(set KNITTING_CHROMIUM to override)",
-  );
+  const message = "Browser tests skipped: no Chromium-family browser found " +
+    "(set KNITTING_CHROMIUM to override).";
+  console.log(message);
+  if (process.env.GITHUB_ACTIONS === "true") {
+    console.log(`::warning::${message}`);
+  }
+  if (process.env.GITHUB_STEP_SUMMARY) {
+    appendFileSync(
+      process.env.GITHUB_STEP_SUMMARY,
+      `### Browser checks\n\n${message} No browser scenarios were executed.\n`,
+    );
+  }
   process.exit(0);
 }
 
@@ -214,4 +222,10 @@ if (!ok) {
 }
 
 console.log("\nall browser checks passed");
+if (process.env.GITHUB_STEP_SUMMARY) {
+  appendFileSync(
+    process.env.GITHUB_STEP_SUMMARY,
+    `### Browser checks\n\nPassed ${scenarios.length} scenarios using ${browser}.\n`,
+  );
+}
 process.exit(0);

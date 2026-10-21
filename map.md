@@ -25,8 +25,11 @@ The core flow is:
 - `unsafe.ts`: Public export for experimental lower-level capabilities such as
   `BufferReference`.
 - `utils.ts`: Public export for request/response buffer conversion helpers.
-- `README.md`: User-facing documentation, examples, configuration, and command
-  reference.
+- `README.md`: Project introduction, quick start, and documentation links.
+- `docs/guide.md`: Detailed API, runtime, platform, and configuration reference.
+- `CONTRIBUTING.md`: Development setup, validation, and PR guidance.
+- `SECURITY.md`: Vulnerability reporting and isolation boundaries.
+- `docs/releases.md`: Release validation, publishing, and release-note checklist.
 - `package.json`: Package metadata, export map, shipped files, scripts, runtime
   engine requirements, and dev dependencies.
 - `deno.json`: Deno config used by Deno tests/checks.
@@ -62,14 +65,10 @@ The core flow is:
   Node and Windows FFI prebuilds, checks the JSR package contents, and commits
   updated `prebuilds/` artifacts back to the branch.
 
-## Project Guidance And Docs
+## Design Notes
 
-- `docs/AGENTS.md`: Agent/contributor orientation, invariants, and workflow
-  notes.
-- `docs/CLAUDE.md`: Pointer to the shared agent guidance.
 - `docs/buffer-reference-ownership-move.md`: Design record for `BufferReference`
   ownership transfer.
-- `docs/knitting.pdf`: Longer-form project design/theory document.
 
 ## Public API Layer
 

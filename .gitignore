@@ -62,7 +62,10 @@ bower_components
 
 .lock-wscript
 
-/docs
+# Keep local documentation drafts ignored while tracking the public guides.
+/docs/*
+!/docs/guide.md
+!/docs/releases.md
 
 # Compiled binary addons (https://nodejs.org/api/addons.html)
 

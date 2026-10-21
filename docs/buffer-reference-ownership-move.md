@@ -193,7 +193,7 @@ and refreshed `prebuilds/`.
    (`returnLock.hostBits ^ returnLock.workerBits == 0`). Fixtures
    `returnsBuffer`
    - `echoBufferPlusOne`; full Deno suite (250) + Bun green.
-4. **Hardening — mostly DONE.** README + `ref.ts` rewritten to the move contract
+4. **Hardening — mostly DONE.** README examples rewritten to the move contract
    (both verified runnable on Deno + Bun); `bench/buffer-reference.ts` added
    (BufferReference round trip vs Uint8Array transport). Node worker shutdown
    now waits for the loop acknowledgement to drain returned pins, and the addon

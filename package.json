@@ -43,6 +43,7 @@
   },
   "files": [
     "README.md",
+    "docs/guide.md",
     "BROWSER.md",
     "map.md",
     "LICENSE",
