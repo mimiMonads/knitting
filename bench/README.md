@@ -91,6 +91,11 @@ as null, rather than presenting no observations as zero lag.
 
 ## Interpreting results
 
+For a small Linux C++ shared-memory channel compared directly with Unix domain
+sockets, including sockets carrying shared-buffer descriptors, see
+[the native IPC experiment](native-ipc/README.md) and
+[the measured comparison](reports/native-ipc-2026-10-22.md).
+
 Record the commit, OS, runtime versions, command, and environment overrides with
 any result used for a performance claim. Run competing configurations separately
 and alternate their order. Avoid running tests or other benchmarks alongside a
