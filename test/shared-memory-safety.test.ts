@@ -5,20 +5,24 @@ import { getDefaultProcessSharedBufferPrimitives } from "../src/connections/proc
 const platform = process.platform;
 const posix = platform === "linux" || platform === "darwin";
 
+// Darwin reports the page-rounded shm size through fstat. Align the fixture
+// to both 4 KiB and 16 KiB pages so size + 1 exceeds the actual backing size.
+const backingSize = 64 * 1024;
+
 test("shared memory rejects a mapping beyond the backing object's size", {
   skip: !posix,
 }, () => {
   const primitives = getDefaultProcessSharedBufferPrimitives();
-  const owner = primitives.createSharedMemory(64);
+  const owner = primitives.createSharedMemory(backingSize);
   try {
     assert.throws(
-      () => primitives.mapSharedMemory({ fd: owner.fd, size: 8192 }),
+      () => primitives.mapSharedMemory({ fd: owner.fd, size: backingSize + 1 }),
       /mapping exceeds backing size/,
     );
     // Failed mapping must not consume the caller's descriptor.
-    const peer = primitives.mapSharedMemory({ fd: owner.fd, size: 64 });
-    new Uint8Array(peer.buffer)[0] = 73;
-    assert.equal(new Uint8Array(owner.buffer)[0], 73);
+    const peer = primitives.mapSharedMemory({ fd: owner.fd, size: backingSize });
+    new Uint8Array(peer.buffer)[backingSize - 1] = 73;
+    assert.equal(new Uint8Array(owner.buffer)[backingSize - 1], 73);
     peer.close?.();
   } finally {
     owner.close?.();
@@ -54,15 +58,27 @@ test("named open also rejects a mapping beyond the backing size", {
   const primitives = getDefaultProcessSharedBufferPrimitives();
   const name = `safety_${process.pid}_${Date.now().toString(36)}`;
   const owner = primitives.createSharedMemory({
-    size: 64,
+    size: backingSize,
     mode: "create",
     name,
   });
   try {
     assert.throws(
-      () => primitives.createSharedMemory({ size: 8192, mode: "open", name }),
+      () => primitives.createSharedMemory({
+        size: backingSize + 1,
+        mode: "open",
+        name,
+      }),
       /mapping exceeds backing size/,
     );
+    const peer = primitives.createSharedMemory({
+      size: backingSize,
+      mode: "open",
+      name,
+    });
+    new Uint8Array(peer.buffer)[backingSize - 1] = 91;
+    assert.equal(new Uint8Array(owner.buffer)[backingSize - 1], 91);
+    peer.close?.();
   } finally {
     owner.close?.();
     primitives.unlinkSharedMemory?.(name);
