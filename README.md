@@ -10,6 +10,12 @@ Knitting is a worker pool for Node.js, Deno, and Bun, with a focus on HTTP serve
 and request offloading. It runs JavaScript and TypeScript functions in threads or
 separate processes. Calls use shared memory, and results come back as promises.
 
+Website: [js.knitting.run](https://js.knitting.run/)
+
+For agents, the website provides a compact documentation map in
+[`llms.txt`](https://js.knitting.run/llms.txt) and full documentation in
+[`llms-full.txt`](https://js.knitting.run/llms-full.txt).
+
 Knitting specializes in:
 
 - Offloading CPU-heavy work from HTTP request handlers.
@@ -18,7 +24,7 @@ Knitting specializes in:
 - Sharing large buffers between workers.
 - Running tasks across threads and processes.
 
-[Documentation](https://knittingdocs.netlify.app/) · [API guide](docs/guide.md) · [Source map](map.md) · [Discord](https://discord.gg/qUguPADQnT)
+[Documentation](https://js.knitting.run/) · [API guide](docs/guide.md) · [Source map](map.md) · [Discord](https://discord.gg/qUguPADQnT)
 
 ## Install
 
