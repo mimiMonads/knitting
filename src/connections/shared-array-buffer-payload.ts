@@ -1,10 +1,6 @@
 import { RUNTIME } from "../common/runtime.ts";
 import { getNodeProcess } from "../common/node-compat.ts";
 import { getBufferReferenceCapabilities } from "./buffer-reference-native.ts";
-import {
-  type BufferReferenceRuntime,
-  detachArrayBufferBestEffort,
-} from "./buffer-reference.ts";
 
 // SharedArrayBuffer transport uses a process-local pointer and is limited to
 // thread workers; SABs are not moved or detached.
@@ -80,26 +76,59 @@ type SharedPin = { token: bigint; pointer: bigint; byteLength: number };
 
 const pinnedBySab = new WeakMap<SharedArrayBuffer, SharedPin>();
 const payloadBySharedBuffer = new WeakMap<object, SharedArrayBufferPayload>();
-const warmedTokensByTransport = new WeakMap<object, Set<bigint>>();
+// Admit a bounded set for the lane's lifetime. Never evict a warm token: calls
+// can finish out of order, and a token-only frame may still be in flight.
+// Cache hits retain the original Map fast path, without WeakRef/finalizer work.
+const SHARED_CACHE_MAX_ENTRIES = 64;
+const SHARED_CACHE_MAX_BYTES = 8 * 1024 * 1024;
+class SharedBufferCache<T> extends Map<bigint, T> {
+  #bytes = 0;
+  constructor(private readonly byteLengthOf: (value: T) => number) {
+    super();
+  }
+  override set(token: bigint, value: T): this {
+    if (this.has(token)) return this;
+    const bytes = this.byteLengthOf(value);
+    if (
+      this.size >= SHARED_CACHE_MAX_ENTRIES ||
+      this.#bytes + bytes > SHARED_CACHE_MAX_BYTES
+    ) return this;
+    this.#bytes += bytes;
+    return super.set(token, value);
+  }
+}
+const warmedTokensByTransport = new WeakMap<
+  object,
+  SharedBufferCache<SharedPin>
+>();
 
-// Tokens are isolate-local, so adopted aliases are cached per transport lane.
+// JSON frames do not warm tokens at the sender. Keep their admission budget
+// separate so they cannot displace a numeric token needed by an in-flight call.
 const adoptedByTransport = new WeakMap<
   object,
-  Map<bigint, ArrayBuffer | SharedArrayBuffer>
+  SharedBufferCache<ArrayBuffer | SharedArrayBuffer>
 >();
-const adoptedWithoutTransport = new Map<
-  bigint,
-  ArrayBuffer | SharedArrayBuffer
+const jsonAdoptedByTransport = new WeakMap<
+  object,
+  SharedBufferCache<ArrayBuffer | SharedArrayBuffer>
 >();
+const bufferByteLength = (buffer: ArrayBuffer | SharedArrayBuffer): number =>
+  buffer.byteLength;
+const adoptedWithoutTransport = new SharedBufferCache(bufferByteLength);
+const jsonAdoptedWithoutTransport = new SharedBufferCache(bufferByteLength);
 
 const adoptedCacheFor = (
   transportKey?: object,
-): Map<bigint, ArrayBuffer | SharedArrayBuffer> => {
-  if (transportKey === undefined) return adoptedWithoutTransport;
-  let cache = adoptedByTransport.get(transportKey);
+  numeric = false,
+): SharedBufferCache<ArrayBuffer | SharedArrayBuffer> => {
+  if (transportKey === undefined) {
+    return numeric ? adoptedWithoutTransport : jsonAdoptedWithoutTransport;
+  }
+  const lanes = numeric ? adoptedByTransport : jsonAdoptedByTransport;
+  let cache = lanes.get(transportKey);
   if (cache === undefined) {
-    cache = new Map<bigint, ArrayBuffer | SharedArrayBuffer>();
-    adoptedByTransport.set(transportKey, cache);
+    cache = new SharedBufferCache(bufferByteLength);
+    lanes.set(transportKey, cache);
   }
   return cache;
 };
@@ -148,11 +177,13 @@ const decodeRuntime = (value: number): string | undefined => {
   }
 };
 
-const getWarmTokens = (transportKey?: object): Set<bigint> | undefined => {
+const getWarmTokens = (
+  transportKey?: object,
+): SharedBufferCache<SharedPin> | undefined => {
   if (transportKey === undefined) return undefined;
   let warmTokens = warmedTokensByTransport.get(transportKey);
   if (warmTokens === undefined) {
-    warmTokens = new Set<bigint>();
+    warmTokens = new SharedBufferCache((pin) => pin.byteLength);
     warmedTokensByTransport.set(transportKey, warmTokens);
   }
   return warmTokens;
@@ -233,22 +264,38 @@ const createSharedArrayBufferPayload = (
 
   const fullNumeric = makeFullNumericMetadata(pin);
   const tokenOnlyNumeric = makeTokenNumericMetadata(pin);
+  let uncachedNumeric: SharedArrayBufferNumericMetadata | undefined;
 
   payload = {
     [EXTERNAL_PAYLOAD_BRAND]: SHARED_ARRAY_BUFFER_CODEC_ID,
     toMetadata: (): SharedArrayBufferMetadata => metadata,
     [SHARED_ARRAY_BUFFER_NUMERIC_TRANSFER]: (
       transportKey?: object,
-    ): SharedArrayBufferNumericMetadata | SharedArrayBufferTokenNumericMetadata |
-      undefined => {
+    ):
+      | SharedArrayBufferNumericMetadata
+      | SharedArrayBufferTokenNumericMetadata
+      | undefined => {
       if (fullNumeric === undefined) {
         return undefined;
       }
       const warmTokens = getWarmTokens(transportKey);
       if (warmTokens === undefined) return fullNumeric;
       if (warmTokens.has(pin.token)) return tokenOnlyNumeric;
-      warmTokens.add(pin.token);
-      return fullNumeric;
+      warmTokens.set(pin.token, pin);
+      if (warmTokens.has(pin.token)) return fullNumeric;
+      // Mark frames that must not occupy a receiver warm-cache entry. An
+      // uncached frame may arrive before an earlier cacheable frame.
+      uncachedNumeric ??= [
+        fullNumeric[0],
+        fullNumeric[1],
+        fullNumeric[2],
+        fullNumeric[3],
+        fullNumeric[4],
+        fullNumeric[5],
+        fullNumeric[6],
+        1,
+      ];
+      return uncachedNumeric;
     },
   };
   payloadBySharedBuffer.set(buffer, payload);
@@ -258,7 +305,9 @@ const createSharedArrayBufferPayload = (
 export const getSharedArrayBufferPayload = (
   value: object,
 ): SharedArrayBufferPayload | undefined => {
-  if (isSharedArrayBufferValue(value)) return wrapSharedArrayBufferPayload(value);
+  if (isSharedArrayBufferValue(value)) {
+    return wrapSharedArrayBufferPayload(value);
+  }
   return payloadBySharedBuffer.get(value);
 };
 
@@ -281,8 +330,9 @@ const isSharedArrayBufferMetadata = (
 
 const materializeSharedBuffer = (
   metadata: SharedArrayBufferMetadata,
-  warmOnly: boolean,
+  numeric: boolean,
   transportKey?: object,
+  cacheable = true,
 ): ArrayBuffer | SharedArrayBuffer => {
   if (metadata.origin !== PROCESS_ORIGIN) {
     throw new Error(
@@ -292,13 +342,9 @@ const materializeSharedBuffer = (
   }
 
   const token = BigInt(metadata.token);
-  const cache = adoptedCacheFor(transportKey);
+  const cache = adoptedCacheFor(transportKey, numeric);
   const cached = cache.get(token);
   if (cached !== undefined) return cached;
-
-  if (warmOnly) {
-    throw new TypeError("SharedArrayBuffer cache miss for warm token payload");
-  }
 
   const region = getBufferReferenceCapabilities().adoptShared({
     token,
@@ -306,7 +352,7 @@ const materializeSharedBuffer = (
     byteOffset: 0,
     byteLength: metadata.byteLength,
   });
-  cache.set(token, region.buffer);
+  if (cacheable) cache.set(token, region.buffer);
   createSharedArrayBufferPayload(region.buffer, {
     token,
     pointer: BigInt(metadata.pointer),
@@ -331,7 +377,7 @@ const decodeNumeric = (
 ): ArrayBuffer | SharedArrayBuffer => {
   if (words.length === SHARED_ARRAY_BUFFER_TOKEN_NUMERIC_WORDS) {
     const token = joinU64(words[0] ?? 0, words[1] ?? 0);
-    const cached = adoptedCacheFor(transportKey).get(token);
+    const cached = adoptedCacheFor(transportKey, true).get(token);
     if (cached !== undefined) return cached;
     throw new TypeError("SharedArrayBuffer cache miss for warm token payload");
   }
@@ -363,7 +409,7 @@ const decodeNumeric = (
     byteLength: words[4] ?? 0,
   };
 
-  return materializeSharedBuffer(metadata, false, transportKey);
+  return materializeSharedBuffer(metadata, true, transportKey, words[7] === 0);
 };
 
 const codecGlobal = globalThis as typeof globalThis & {

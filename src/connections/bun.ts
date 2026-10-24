@@ -1,11 +1,14 @@
+import { requireDetachedExternalArrayBuffer } from "./external-array-buffer.ts";
 import {
   assertNamedSharedMemoryIsReopenable,
+  assertPosixBackingSize,
   checkPosixResult,
   DARWIN_O_CREAT,
   DARWIN_O_EXCL,
   DARWIN_SHM_MODE,
   detectPosixPlatform,
   encodeCString,
+  getPosixFstatSymbolName,
   getPosixLibcPath,
   LINUX_O_CREAT,
   LINUX_O_EXCL,
@@ -85,6 +88,7 @@ type BunLibc = {
       ...rest: number[]
     ) => number;
     shm_unlink?: (name: Uint8Array) => number;
+    [symbol: `fstat${string}`]: (fd: number, record: Uint8Array) => number;
     ftruncate: (fd: number, length: bigint) => number;
     dup: (fd: number) => number;
     fcntl: (fd: number, cmd: number, arg: number) => number;
@@ -104,6 +108,10 @@ type BunLibc = {
 export const openBunLibc = (): BunLibc =>
   getBunFFI().dlopen(getPosixLibcPath(), {
     ...getBunCreateSymbols(),
+    [getPosixFstatSymbolName()]: {
+      args: [FFIType.i32, FFIType.ptr],
+      returns: FFIType.i32,
+    },
     ftruncate: {
       args: [FFIType.i32, FFIType.i64],
       returns: FFIType.i32,
@@ -183,7 +191,6 @@ const callShmOpen = (
   shmOpenModeIsStackPassed(platform)
     ? shmOpen(name, flags, ...SHM_OPEN_STACK_PAD, mode)
     : shmOpen(name, flags, mode);
-
 
 const isBunMmapFailed = (pointer: BunPointer): boolean =>
   !pointer || pointer < 0 || pointer >= Number.MAX_SAFE_INTEGER;
@@ -302,6 +309,18 @@ export const mapBunSharedMemory = (
       throw error;
     }
   }
+  try {
+    assertPosixBackingSize(
+      fd,
+      size,
+      libc.symbols[getPosixFstatSymbolName() as `fstat${string}`],
+    );
+  } catch (error) {
+    if (options.name !== undefined || options.duplicateFd !== false) {
+      libc.symbols.close(fd);
+    }
+    throw error;
+  }
   const pointer = libc.symbols.mmap(
     null,
     size,
@@ -319,6 +338,7 @@ export const mapBunSharedMemory = (
 
   const arrayBuffer = getBunFFI().toArrayBuffer(pointer, 0, size);
 
+  let closed = false;
   return {
     runtime: "bun",
     fd,
@@ -330,8 +350,14 @@ export const mapBunSharedMemory = (
     arrayBuffer,
     unsafePointer: pointer,
     close: () => {
-      libc.symbols.munmap(pointer, size);
-      libc.symbols.close(fd);
+      if (closed) return;
+      requireDetachedExternalArrayBuffer(arrayBuffer);
+      closed = true;
+      try {
+        libc.symbols.munmap(pointer, size);
+      } finally {
+        libc.symbols.close(fd);
+      }
     },
   };
 };

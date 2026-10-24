@@ -1,5 +1,7 @@
+import { requireDetachedExternalArrayBuffer } from "./external-array-buffer.ts";
 import {
   assertNamedSharedMemoryIsReopenable,
+  assertPosixBackingSize,
   checkPosixResult,
   DARWIN_O_CREAT,
   DARWIN_O_EXCL,
@@ -8,6 +10,7 @@ import {
   encodeCString,
   type ErrnoReader,
   getErrnoSymbolName,
+  getPosixFstatSymbolName,
   getPosixLibcPath,
   LINUX_O_CREAT,
   LINUX_O_EXCL,
@@ -53,6 +56,7 @@ type DenoLibc = {
     shm_unlink?: (name: Uint8Array) => number;
     __error?: () => unknown;
     __errno_location?: () => unknown;
+    [symbol: `fstat${string}`]: (fd: number, record: Uint8Array) => number;
     ftruncate: (fd: number, length: bigint) => number;
     dup: (fd: number) => number;
     fcntl: (fd: number, cmd: number, arg: number) => number;
@@ -101,6 +105,10 @@ export const openDenoLibc = (): DenoLibc =>
   getDeno().dlopen(getPosixLibcPath(), {
     ...getDenoCreateSymbols(),
     ...getDenoErrnoSymbols(),
+    [getPosixFstatSymbolName()]: {
+      parameters: ["i32", "buffer"],
+      result: "i32",
+    },
     ftruncate: {
       parameters: ["i32", "i64"],
       result: "i32",
@@ -319,6 +327,18 @@ export const mapDenoSharedMemory = (
       throw error;
     }
   }
+  try {
+    assertPosixBackingSize(
+      fd,
+      size,
+      libc.symbols[getPosixFstatSymbolName() as `fstat${string}`],
+    );
+  } catch (error) {
+    if (options.name !== undefined || options.duplicateFd !== false) {
+      libc.symbols.close(fd);
+    }
+    throw error;
+  }
   const pointer = libc.symbols.mmap(
     null,
     size,
@@ -337,6 +357,7 @@ export const mapDenoSharedMemory = (
   const arrayBuffer = new (getDeno().UnsafePointerView)(pointer)
     .getArrayBuffer(size);
 
+  let closed = false;
   return {
     runtime: "deno",
     fd,
@@ -348,8 +369,14 @@ export const mapDenoSharedMemory = (
     arrayBuffer,
     unsafePointer: pointer,
     close: () => {
-      libc.symbols.munmap(pointer, size);
-      libc.symbols.close(fd);
+      if (closed) return;
+      requireDetachedExternalArrayBuffer(arrayBuffer);
+      closed = true;
+      try {
+        libc.symbols.munmap(pointer, size);
+      } finally {
+        libc.symbols.close(fd);
+      }
     },
   };
 };

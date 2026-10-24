@@ -381,6 +381,20 @@ void ReturnMappedRegion(
     return;
   }
 #else
+  // mmap accepts lengths past EOF; touching those pages would raise SIGBUS.
+  struct stat backing_stat;
+  if (fstat(fd, &backing_stat) == -1) {
+    int saved = errno;
+    close(fd);
+    ThrowErrno(isolate, "fstat failed", saved);
+    return;
+  }
+  if (backing_stat.st_size < 0 ||
+      static_cast<uint64_t>(backing_stat.st_size) < size) {
+    close(fd);
+    ThrowRange(isolate, "shared memory mapping exceeds backing size");
+    return;
+  }
   void* mapped = mmap(nullptr, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
   if (mapped == MAP_FAILED) {
     int saved = errno;

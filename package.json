@@ -43,6 +43,7 @@
   },
   "files": [
     "README.md",
+    "docs/guide.md",
     "BROWSER.md",
     "map.md",
     "LICENSE",
@@ -94,7 +95,8 @@
     "coverage:node": "node --no-warnings --experimental-transform-types --experimental-test-coverage --test \"./test/*.test.ts\"",
     "coverage:node:90": "node --no-warnings --experimental-transform-types --experimental-test-coverage --test-coverage-lines=90 --test-coverage-exclude=src/common/task-source.ts --test-coverage-exclude=src/ipc/protocol/parsers/NumericBuffer.ts --test-coverage-exclude=src/runtime/balancer.ts --test-coverage-exclude=src/worker/task-loader.ts --test \"./test/*.test.ts\"",
     "bench": "./run.sh",
-    "bench:json": "./run.sh --json"
+    "bench:json": "./run.sh --json",
+    "bench:compare": "node scripts/compare-release.mjs"
   },
   "engines": {
     "node": ">=22.0.0",

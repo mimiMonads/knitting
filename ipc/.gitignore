@@ -1,0 +1,3 @@
+/build/
+/benchmarks/iceoryx2/target/
+__pycache__/

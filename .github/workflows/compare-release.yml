@@ -1,0 +1,53 @@
+name: Compare with published release
+
+on:
+  workflow_dispatch:
+    inputs:
+      baseline:
+        description: Published knitting version or tag
+        required: true
+        default: latest
+        type: string
+      repetitions:
+        description: Independent runs per version (1–30)
+        required: true
+        default: '5'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install build dependencies
+        run: bun install --frozen-lockfile
+      - name: Compare local and published packages
+        env:
+          COMPARE_BASELINE: ${{ inputs.baseline }}
+          COMPARE_REPETITIONS: ${{ inputs.repetitions }}
+        run: npm run bench:compare -- --baseline "$COMPARE_BASELINE" --repetitions "$COMPARE_REPETITIONS"
+      - name: Add comparison report to job summary
+        if: always()
+        shell: bash
+        run: |
+          if [ -d results/release-comparison ]; then
+            find results/release-comparison -name report.md -type f -exec cat '{}' \; >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload comparison artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-comparison-node24-${{ github.run_id }}
+          path: results/release-comparison/
+          if-no-files-found: warn
+          retention-days: 30

@@ -1,5 +1,6 @@
 import {
   assertNamedSharedMemoryIsReopenable,
+  assertPosixBackingSize,
   checkPosixResult,
   DARWIN_O_CREAT,
   DARWIN_O_EXCL,
@@ -8,6 +9,7 @@ import {
   encodeCString,
   type ErrnoReader,
   getErrnoSymbolName,
+  getPosixFstatSymbolName,
   getPosixLibcPath,
   LINUX_O_CREAT,
   LINUX_O_EXCL,
@@ -62,6 +64,7 @@ type NodePosixFunctions = {
   shm_unlink?: (name: Uint8Array) => number;
   __error?: () => bigint;
   __errno_location?: () => bigint;
+  [symbol: `fstat${string}`]: (fd: number, record: Uint8Array) => number;
   ftruncate: (fd: number, length: bigint) => number;
   dup: (fd: number) => number;
   fcntl: (fd: number, cmd: number, arg: number) => number;
@@ -129,6 +132,10 @@ const getNodeErrnoSymbols = (
 
 const getNodePosixSymbols = (): Record<string, NodeFfiFunctionSignature> => ({
   ...getNodeCreateSymbols(),
+  [getPosixFstatSymbolName()]: {
+    arguments: ["i32", "pointer"],
+    return: "i32",
+  },
   ftruncate: {
     arguments: ["i32", "i64"],
     return: "i32",
@@ -305,6 +312,17 @@ const mapFd = (
   libc: NodePosixFunctions,
   closeFdOnFailure: boolean,
 ): SharedMemoryMapping<ArrayBuffer> => {
+  try {
+    assertPosixBackingSize(
+      fd,
+      size,
+      libc[getPosixFstatSymbolName() as `fstat${string}`],
+      errnoOf(libc),
+    );
+  } catch (error) {
+    if (closeFdOnFailure) libc.close(fd);
+    throw error;
+  }
   const pointer = libc.mmap(
     null,
     BigInt(size),

@@ -91,6 +91,10 @@ as null, rather than presenting no observations as zero lag.
 
 ## Interpreting results
 
+The standalone Linux C++ buffer channel has its own
+[benchmark runner](../ipc/benchmarks/README.md), covering Unix sockets and
+the 32/64-slot layouts.
+
 Record the commit, OS, runtime versions, command, and environment overrides with
 any result used for a performance claim. Run competing configurations separately
 and alternate their order. Avoid running tests or other benchmarks alongside a
@@ -186,3 +190,55 @@ Results: [initial async parking](reports/process-async-park-2026-10-18.md) and
 [runtime regression check](reports/process-async-regression-2026-10-18.md).
 The latter covers the current async-only wake policy, the Deno completion-flush
 fix, and the remaining measured Bun immediate-promise cost.
+
+## Compare against the published npm release
+
+`npm run bench:compare` builds the local JavaScript and native addons, resolves
+`knitting@latest` once, and compares the two packaged snapshots in isolated Node
+processes. It requires Node 22/24 on a supported native target, npm, Bun, and a C++
+compiler. The native build updates the current platform's prebuild in the working
+tree. Dependencies of the two snapshots install in temporary directories with
+lifecycle scripts disabled; the runner removes those directories after completion.
+
+```sh
+npm run bench:compare
+# Short harness smoke check; timings are not a performance conclusion.
+npm run bench:compare -- --repetitions 2 --iterations 30 --warmup 10 --memory-buffers 24
+# Pin the baseline for subsequent comparisons.
+npm run bench:compare -- --baseline 0.1.77 --repetitions 7
+```
+
+Each invocation creates a new `results/release-comparison/TIMESTAMP-PID/` directory:
+
+- `report.md`: readable correctness, timing, and memory comparison.
+- `summary.json`, `summary.csv`: machine-readable results. JSON also includes raw run results.
+- `metadata.json`: exact published version, registry integrity, SHA-256 hashes of
+  both tarballs, source commit/dirty status, runtime, CPU, OS, and workload options.
+- `runs/`: raw timings, memory checkpoints, correctness checks, stdout, and stderr
+  for each version and repetition. Failed runs keep partial captures.
+- `packages/`: the exact tested tarballs, installation lockfiles, and generated
+  workload modules. Generated modules record temporary paths; use the checked-in
+  template and runner to reproduce a run rather than executing those copies.
+- `logs/`: build, registry, packaging, and installation diagnostics.
+
+The workflow **Compare with published release** is manually dispatched and uploads
+these files as a downloadable artifact, including when a workload fails. It also
+puts the report in the job summary. No performance threshold blocks a run;
+correctness failures and missing/invalid results exit nonzero. It is separate from
+ordinary unit tests, which stay offline with respect to the npm baseline.
+
+Five workloads measure warm scalar calls, reused/fresh 1 MiB shared inputs,
+copied 1 MiB inputs, and 4 KiB mappings. Payload validation touches every 4 KiB
+page and the final byte. A separate workload returns fresh 1 MiB shared buffers
+and records memory growth after requested GC, before shutdown and after shutdown.
+RSS includes worker memory and allocator retention; memory growth is diagnostic,
+not proof of a leak. Security regression tests run separately against local code,
+because failing those tests is expected for an affected older release.
+
+Versions alternate order between repetitions, and workload order rotates. The
+report compares medians of independent run medians; p99 values are medians of
+per-run p99 values. Positive timing changes mean local is slower. Keep the
+machine quiet, inspect raw samples, and increase repetitions before treating a
+small difference as meaningful. Use `--help` for options, including `--output`
+(which must name a new directory) and `--skip-build` (requires an already current
+JavaScript **and native** build).
