@@ -51,4 +51,9 @@ For shared-memory or native changes, explain how memory and handles are cleaned
 up and whether permissions are affected.
 
 Report vulnerabilities through [Security](SECURITY.md).
+
+The standalone [C++ buffer channel](ipc/README.md) has separate Linux checks:
+`make -C ipc check` and `make -C ipc sanitize sanitize64`. Edit the C++ sources
+directly. Keep ABI changes and ownership rules in [the protocol](ipc/PROTOCOL.md),
+and follow [its benchmark method](ipc/benchmarks/README.md) for performance claims.
 Maintainers can use the [release checklist](docs/releases.md) when publishing.

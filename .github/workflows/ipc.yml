@@ -1,0 +1,35 @@
+name: Buffer IPC
+
+on:
+  push:
+    branches: [main]
+    paths: ["ipc/**", ".github/workflows/ipc.yml"]
+  pull_request:
+    paths: ["ipc/**", ".github/workflows/ipc.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cpp:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        slots: [32, 64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check library, headers and process example
+        run: make -C ipc QUEUE_SLOTS=${{ matrix.slots }} test demo headers
+      - name: Check ownership and bounds under sanitizers
+        run: make -C ipc QUEUE_SLOTS=${{ matrix.slots }} sanitize
+
+  socket-harness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Smoke-test socket and IPC variants
+        run: >-
+          python3 ipc/benchmarks/run.py --wide --smoke --repetitions 1
+          --output results/ipc-smoke

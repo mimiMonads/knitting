@@ -67,6 +67,13 @@ The core flow is:
 
 ## Design Notes
 
+- `ipc/`: Standalone Linux C++20 buffer channel, with 32/64-slot queues,
+  move-only loans and independent arena-region release. `ipc/PROTOCOL.md`
+  specifies the experimental ABI. `ipc/benchmarks/` contains a reproducible
+  Unix domain socket comparison.
+- `.github/workflows/ipc.yml`: Linux buffer-channel tests, sanitizer checks,
+  and benchmark smoke tests.
+
 - `docs/buffer-reference-ownership-move.md`: Design record for `BufferReference`
   ownership transfer.
 
